@@ -42,24 +42,24 @@ derived from Claude Code hooks.
 - Agents run on the host with normal permission prompts (no bypass mode before Phase 3).
 
 **Definition of Done**
-- [ ] `agent-office serve` listens on loopback only, serves the embedded UI, and starts one
+- [x] `agent-office serve` listens on loopback only, serves the embedded UI, and starts one
       Claude Code session from the UI.
-- [ ] The terminal streams live; typing and resizing work; closing and reopening the tab shows the
+- [x] The terminal streams live; typing and resizing work; closing and reopening the tab shows the
       session again (scrollback + redraw) without restarting the agent.
-- [ ] Cross-origin WebSocket handshakes are rejected (test).
-- [ ] State in the UI follows the hooks: starting → idle → working → waiting_permission → working →
+- [x] Cross-origin WebSocket handshakes are rejected (test).
+- [x] State in the UI follows the hooks: starting → idle → working → waiting_permission → working →
       idle → exited, using `PermissionRequest` for waiting and ignoring events with `agent_id`.
-- [ ] State cannot stay stuck: process exit always ends in `exited`, even without a SessionEnd hook.
-- [ ] Hook events reach the daemon for every event type, including SessionStart, through the
+- [x] State cannot stay stuck: process exit always ends in `exited`, even without a SessionEnd hook.
+- [x] Hook events reach the daemon for every event type, including SessionStart, through the
       forwarder; a payload whose `session_id` does not match its socket's agent is rejected (test).
-- [ ] If the daemon is down, the forwarder exits 0 within its timeout (test).
-- [ ] The child env contains no `CLAUDECODE`/`CLAUDE_CODE_*` variables from the daemon (test).
-- [ ] Raw hook payloads are not logged or persisted; only reduced fields (test with a fixture
+- [x] If the daemon is down, the forwarder exits 0 within its timeout (test).
+- [x] The child env contains no `CLAUDECODE`/`CLAUDE_CODE_*` variables from the daemon (test).
+- [x] Raw hook payloads are not logged or persisted; only reduced fields (test with a fixture
       containing a prompt).
-- [ ] Unit tests for payload parsing (fixtures with redacted shapes from Spike B) and the state
+- [x] Unit tests for payload parsing (fixtures with redacted shapes from Spike B) and the state
       machine; `go test -race ./...`, `go vet`, `gofmt` pass; the web typecheck and build pass.
-- [ ] A single `make build` produces one binary containing the built UI.
-- [ ] Open from Phase 0, answered or recorded: Stop on interrupt (Esc), the permission-denied path,
+- [x] A single `make build` produces one binary containing the built UI.
+- [x] Open from Phase 0, answered or recorded: Stop on interrupt (Esc), the permission-denied path,
       the trust dialog for new paths.
 
 ---
@@ -71,6 +71,9 @@ derived from Claude Code hooks.
 **Scope**
 - SQLite persistence (`modernc.org/sqlite` + `sqlc`) with migrations: agents, tasks, sessions.
 - One git worktree + branch per worker agent; lifecycle (create, clean up).
+- Worktree location: Claude Code's workspace trust covers subfolders and **all worktrees of a
+  trusted repo**, wherever they live (`docs/research/claude-code-trust.md`). Decide the location
+  in the Phase 2 plan; still detect agents stuck in `starting`.
 - Task board UI (columns by status); multiple terminals.
 
 **Definition of Done**
