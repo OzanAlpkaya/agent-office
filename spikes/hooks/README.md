@@ -9,7 +9,7 @@ Captured payloads go to `out/` (gitignored: it contains prompts and paths).
 
 ```sh
 go run . -scenario print         # claude -p, one allowed Bash call
-go run . -scenario inject        # Stop hook injects a message once
+go run . -scenario inject        # Stop hook injects a message once (-inject-via http|command)
 go run . -scenario interactive   # TUI in a PTY: permission prompt -> approve -> idle -> /exit
 go run . -summarize out/<run>    # shapes only: event names, enums, key types
 ```
@@ -80,8 +80,9 @@ should keep only what state tracking needs and treat the rest as sensitive.
 
 The receiver answered the first Stop with `{"decision":"block","reason":"New message from the lead
 agent: ..."}`. The agent continued in the same session and followed the message. A second Stop
-then arrived with `stop_hook_active=true`, and the receiver let it end. Result: it works over HTTP
-hooks, and `stop_hook_active` prevents loops.
+then arrived with `stop_hook_active=true`, and the receiver let it end. Result: it works over
+**both** transports (HTTP response body, and command-hook stdout via `curl`), and
+`stop_hook_active` prevents loops.
 
 Limitation: this only works at the end of a turn. An agent that is already idle has no pending
 Stop. Because the daemon owns the PTY, it can also deliver a message by typing it as user input.

@@ -57,10 +57,11 @@ type receiver struct {
 	out    *os.File
 	events chan event
 
-	mu       sync.Mutex
-	seq      int
-	inject   string // non-empty: block the first Stop (via=http) with this reason
-	injected bool
+	mu        sync.Mutex
+	seq       int
+	inject    string // non-empty: block the first Stop (on injectVia) with this reason
+	injectVia string
+	injected  bool
 }
 
 func (rc *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +90,7 @@ func (rc *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = rc.out.Write(append(line, '\n'))
 	name, _ := p["hook_event_name"].(string)
 	resp := []byte("{}")
-	if rc.inject != "" && !rc.injected && via == "http" && name == "Stop" && p["stop_hook_active"] != true {
+	if rc.inject != "" && !rc.injected && via == rc.injectVia && name == "Stop" && p["stop_hook_active"] != true {
 		rc.injected = true
 		resp, _ = json.Marshal(map[string]string{"decision": "block", "reason": rc.inject})
 		slog.Info("injecting message via Stop hook")
@@ -140,6 +141,7 @@ func childEnv() []string {
 func main() {
 	scenario := flag.String("scenario", "", "print | inject | interactive")
 	summarize := flag.String("summarize", "", "run dir to summarize")
+	injectVia := flag.String("inject-via", "http", "inject scenario: which hook transport answers the Stop (http | command)")
 	flag.Parse()
 	if *summarize != "" {
 		if err := summary(*summarize); err != nil {
@@ -172,6 +174,7 @@ func main() {
 		runErr = runPrint(run, append(base, "--allowedTools", "Bash(echo spike-ok)"),
 			"Run exactly this shell command: echo spike-ok. Then reply with only the word done.")
 	case "inject":
+		rc.injectVia = *injectVia
 		rc.inject = "New message from the lead agent: reply with only the word PINEAPPLE."
 		runErr = runPrint(run, base, "Reply with only the word ready.")
 	case "interactive":
