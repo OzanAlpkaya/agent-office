@@ -65,7 +65,7 @@ that socket. Adapters translate CLI-specific payloads into common events (`Sessi
 - **No hook fires when the user interrupts a turn (Esc) or dismisses a permission prompt**, and
   no `idle_prompt` follows within 75 s (measured end to end in Phase 1). Terminal input therefore
   goes through the engine, which treats a lone Esc or Ctrl-C while `working` or
-  `waiting_permission` as a `UserInterrupted` event (→ `idle`). The next real hook corrects the
+  `waiting_permission` as a `UserInterrupted` event (→ `idle`); see ADR 0008. The next real hook corrects the
   state if that guess was wrong. Process exit always ends in `exited`, with or without SessionEnd.
 - New folders show Claude Code's workspace-trust dialog, and hooks are held back until it is
   answered (see `docs/research/claude-code-trust.md`).
