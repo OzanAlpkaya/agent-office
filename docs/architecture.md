@@ -90,6 +90,8 @@ stateDiagram-v2
   working --> waiting_permission: PermissionRequest
   waiting_permission --> working: PostToolUse / PostToolUseFailure
   working --> idle: Stop
+  working --> idle: user interrupt (Esc / Ctrl-C, seen by the daemon)
+  waiting_permission --> idle: user dismisses prompt (Esc)
   idle --> idle: Notification(idle_prompt)
   idle --> exited: SessionEnd
   working --> exited: SessionEnd / process exit
@@ -97,7 +99,9 @@ stateDiagram-v2
 ```
 
 Events that carry an `agent_id` (subagents, internal background agents) update activity details
-but never the main state.
+but never the main state. Claude Code sends no hook for an interrupted turn or a dismissed
+permission prompt, so the daemon, which carries all terminal input, treats a lone Esc or Ctrl-C
+in those states as a user interrupt.
 
 **Message delivery (Phase 4).** If the recipient is **working**, the message is queued and returned
 as `{"decision":"block","reason":"<message>"}` on its next Stop hook (unless `stop_hook_active`).

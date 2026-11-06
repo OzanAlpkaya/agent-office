@@ -90,6 +90,10 @@ Phase 4 should use both: Stop-hook injection for busy agents, PTY input for idle
 
 ## Open questions
 
+Answered in Phase 1 (see ADR 0003 and `docs/research/claude-code-trust.md`): no hook fires on
+interrupt or on a dismissed permission prompt, and the trust dialog appears for new folders but not
+for subfolders or worktrees of a trusted repo. Original list:
+
 - Interrupt (Esc / Ctrl-C mid-turn): does Stop fire? If not, state can stay stuck at "working".
 - Permission **denied** path (PermissionDenied / PostToolUseFailure) was not exercised.
 - Per-agent auth header on HTTP hooks (env interpolation) not yet tested.
