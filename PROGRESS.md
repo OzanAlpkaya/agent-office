@@ -1,13 +1,13 @@
 # Progress
 
-**Current phase:** Phase 1 (Single agent), not started; Phase 0 complete, awaiting review
+**Current phase:** Phase 2 (Multi-agent + task board), not started; Phase 1 complete, awaiting review
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
 ## Phases
 
 - [x] Phase 0: Research & design
-- [ ] Phase 1: Single agent (PTY, live terminal, Claude Code hooks)
+- [x] Phase 1: Single agent (PTY, live terminal, Claude Code hooks)
 - [ ] Phase 2: Multi-agent + task board (SQLite, worktrees)
 - [ ] Phase 3: Isolation & security (rootless Podman, egress allowlist, secrets)
 - [ ] Phase 4: Team MCP server + lead agent
@@ -26,3 +26,10 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   Claude Code hook capture (print, Stop injection, interactive), session-file structure, Podman vs
   Claude Code sandbox, unix socket into a network-less container. Docs: verified library API notes,
   Codex research, architecture + threat model, ADRs 0002–0007. Phase 1 DoD refined.
+- 2026-11-06: Phase 0 merged into `main` (`--no-ff`). Playground repo created at
+  `~/projects/agent-office-playground`.
+- 2026-11-06: Phase 1 done on `phase-1/single-agent`. Packages `terminal`, `agent` (Claude Code
+  adapter), `hooks` (state machine + per-agent socket), `engine`, `api`; `serve`/`hook` commands;
+  React UI embedded in the binary; Makefile. End-to-end with haiku in the playground: approve,
+  deny, interrupt, re-attach, stop. Findings: no hook on interrupt or dismissed permission
+  (fixed via input-aware state); trust dialog for new folders, inherited by worktrees.

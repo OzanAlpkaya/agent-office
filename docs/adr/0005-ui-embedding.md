@@ -20,8 +20,11 @@ Development needs fast UI reloads without rebuilding Go.
 
 ## Decision
 
-Option 1. A small Go package in `web/` exposes `//go:embed all:dist` as an `fs.FS`. `web/dist/` is
-gitignored except for a placeholder `index.html`, so `go build` and `go test` work without Node.
+Option 1. A small Go package in `web/` embeds `all:dist`. Vite builds into `web/dist/app/`
+(gitignored); `web/dist/.gitkeep` is committed so the embed pattern always matches. Without a build,
+the package serves a built-in placeholder page, so `go build` and `go test` work without Node.
+(Amended in Phase 1: the first draft put a placeholder `index.html` into `dist/` itself, which a
+Vite build would overwrite or delete.)
 A `Makefile` target builds the UI first, then the binary. In development, `vite` proxies `/api` and
 `/ws` to `127.0.0.1:<daemon port>`, and the daemon's origin check allows the Vite dev origin only
 when started with `--dev`.

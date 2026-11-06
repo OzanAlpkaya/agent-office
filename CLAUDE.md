@@ -19,6 +19,7 @@ These rules apply to every session in this repo.
 | `internal/github/` | GitHub integration via go-github |
 | `internal/sandbox/` | Agent isolation (rootless Podman, egress allowlist) |
 | `internal/api/` | HTTP + WebSocket API for the web UI |
+| `internal/terminal/` | PTY sessions: scrollback, fan-out to viewers, input/resize |
 | `web/` | React + Vite + TypeScript UI, embedded into the binary |
 | `docs/plan.md` | Phased roadmap with Definitions of Done |
 | `docs/adr/` | Architecture Decision Records |
@@ -26,6 +27,12 @@ These rules apply to every session in this repo.
 | `docs/research/` | Verified library/API notes and external tool research |
 | `spikes/` | Throwaway experiments, each its own Go module; never imported by `internal/` |
 | `PROGRESS.md` | Phase checklist and progress log |
+
+## Playground repo
+
+`~/projects/agent-office-playground` (outside this repo) is a small Go project ("linkshelf") used
+for end-to-end tests and demos: agents work on it in Phase 1, worktrees in Phase 2, GitHub in
+Phase 5. Keep it small and realistic; its backlog is in its `TODO.md`.
 
 ## Stack
 

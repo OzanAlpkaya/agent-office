@@ -8,7 +8,7 @@ coverage.*
 
 # Web UI
 web/node_modules/
-web/dist/
+web/dist/app/
 
 # Local databases
 *.db

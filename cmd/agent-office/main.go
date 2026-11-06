@@ -1,16 +1,248 @@
-// Command agent-office is the local daemon that runs a team of AI coding agents on a
-// git repository. It is a placeholder until Phase 1; see docs/plan.md.
+// Command agent-office runs a team of AI coding agents on a git repository.
+//
+//	agent-office serve --repo <path>   run the daemon and web UI
+//	agent-office hook                  forward a hook payload (stdin) to the daemon; used by agents
+//	agent-office version               print the version
 package main
 
 import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/OzanAlpkaya/agent-office/internal/agent"
+	"github.com/OzanAlpkaya/agent-office/internal/api"
+	"github.com/OzanAlpkaya/agent-office/internal/engine"
+	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/terminal"
+	"github.com/OzanAlpkaya/agent-office/web"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
-var version = "0.0.0-dev"
+var version = "0.1.0-dev"
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	logger.Info("agent-office", "version", version, "status", "not implemented yet")
+	if len(os.Args) < 2 {
+		usage(os.Stderr)
+		os.Exit(2)
+	}
+	switch os.Args[1] {
+	case "serve":
+		if err := serve(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "agent-office:", err)
+			os.Exit(1)
+		}
+	case "hook":
+		os.Exit(hook())
+	case "version":
+		fmt.Println(version)
+	case "-h", "--help", "help":
+		usage(os.Stdout)
+	default:
+		usage(os.Stderr)
+		os.Exit(2)
+	}
+}
+
+func usage(w io.Writer) {
+	fmt.Fprint(w, `usage: agent-office <command>
+
+commands:
+  serve     run the daemon and web UI (agent-office serve -h for flags)
+  hook      forward a hook payload from stdin to the daemon (used by agents)
+  version   print the version
+`)
+}
+
+// hookTimeout must stay below the hook timeout in the generated settings
+// (10 s), so the forwarder always exits on its own terms.
+const hookTimeout = 8 * time.Second
+
+// hook forwards one hook payload. It always exits 0: a broken daemon must not
+// block or alter the agent; the failure is reported on stderr.
+func hook() int {
+	sock := os.Getenv(agent.SocketEnv)
+	if sock == "" {
+		fmt.Fprintln(os.Stderr, "agent-office hook:", agent.SocketEnv, "is not set")
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)
+	defer cancel()
+	if err := hooks.Forward(ctx, sock, os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, "agent-office hook:", err)
+	}
+	return 0
+}
+
+type serveConfig struct {
+	addr                string
+	repo                string
+	model               string
+	claudeBin           string
+	inheritUserSettings bool
+	dev                 bool
+	logLevel            string
+}
+
+func parseServe(args []string) (serveConfig, error) {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	var c serveConfig
+	fs.StringVar(&c.addr, "addr", envOr("AGENT_OFFICE_ADDR", "127.0.0.1:7680"), "listen address; must be loopback [AGENT_OFFICE_ADDR]")
+	fs.StringVar(&c.repo, "repo", os.Getenv("AGENT_OFFICE_REPO"), "repository the agent works in [AGENT_OFFICE_REPO]")
+	fs.StringVar(&c.model, "model", os.Getenv("AGENT_OFFICE_MODEL"), "model for agents, e.g. haiku; empty = CLI default [AGENT_OFFICE_MODEL]")
+	fs.StringVar(&c.claudeBin, "claude-bin", envOr("AGENT_OFFICE_CLAUDE_BIN", "claude"), "Claude Code binary [AGENT_OFFICE_CLAUDE_BIN]")
+	inherit, err := envBool("AGENT_OFFICE_INHERIT_USER_SETTINGS", true)
+	if err != nil {
+		return c, err
+	}
+	fs.BoolVar(&c.inheritUserSettings, "inherit-user-settings", inherit,
+		"host mode: agents load your own Claude Code settings and hooks [AGENT_OFFICE_INHERIT_USER_SETTINGS]")
+	fs.BoolVar(&c.dev, "dev", false, "allow the Vite dev server origin (localhost:5173)")
+	fs.StringVar(&c.logLevel, "log-level", envOr("AGENT_OFFICE_LOG_LEVEL", "info"), "debug | info | warn [AGENT_OFFICE_LOG_LEVEL]")
+	if err := fs.Parse(args); err != nil {
+		return c, err
+	}
+	if c.repo == "" {
+		return c, errors.New("--repo is required")
+	}
+	abs, err := filepath.Abs(c.repo)
+	if err != nil {
+		return c, err
+	}
+	c.repo = abs
+	host, _, err := net.SplitHostPort(c.addr)
+	if err != nil {
+		return c, fmt.Errorf("--addr: %w", err)
+	}
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return c, fmt.Errorf("--addr must be a loopback address, got %q (remote access is a later phase)", c.addr)
+	}
+	return c, nil
+}
+
+func serve(args []string) error {
+	cfg, err := parseServe(args)
+	if err != nil {
+		return err
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(cfg.logLevel)); err != nil {
+		return fmt.Errorf("--log-level: %w", err)
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	claudeBin, err := exec.LookPath(cfg.claudeBin)
+	if err != nil {
+		return fmt.Errorf("claude binary: %w", err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate own binary: %w", err)
+	}
+	runtimeDir, err := runtimeDir()
+	if err != nil {
+		return err
+	}
+
+	eng, err := engine.New(engine.Options{
+		Repo: cfg.repo, Model: cfg.model, InheritUserSettings: cfg.inheritUserSettings,
+		ClaudeBin: claudeBin, HookCommand: agent.ShellQuote(self) + " hook",
+		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
+		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
+	})
+	if err != nil {
+		return err
+	}
+
+	ui, built := web.FS()
+	var devOrigins []string
+	if cfg.dev {
+		devOrigins = []string{"localhost:5173", "127.0.0.1:5173"}
+	}
+	_, port, _ := net.SplitHostPort(cfg.addr)
+	srv := &http.Server{
+		Addr:              cfg.addr,
+		Handler:           api.New(eng, ui, api.Options{Port: port, DevOrigins: devOrigins, Version: version, Logger: log}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	log.Info("agent-office starting", "version", version, "addr", "http://"+cfg.addr, "repo", cfg.repo,
+		"claude", claudeBin, "claude_version", claudeVersion(claudeBin), "model", cfg.model,
+		"inherit_user_settings", cfg.inheritUserSettings, "ui_built", built, "dev", cfg.dev)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	errc := make(chan error, 1)
+	go func() { errc <- srv.ListenAndServe() }()
+	select {
+	case err := <-errc:
+		eng.Shutdown()
+		return err
+	case <-ctx.Done():
+	}
+	log.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutdownCtx)
+	eng.Shutdown()
+	return nil
+}
+
+// runtimeDir returns a private directory for sockets and settings files.
+func runtimeDir() (string, error) {
+	base := os.Getenv("XDG_RUNTIME_DIR")
+	if base == "" {
+		base = filepath.Join(os.TempDir(), "agent-office-"+strconv.Itoa(os.Getuid()))
+	}
+	dir := filepath.Join(base, "agent-office")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("runtime dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", fmt.Errorf("runtime dir: %w", err)
+	}
+	return dir, nil
+}
+
+// claudeVersion logs which CLI version hook payloads were produced by.
+func claudeVersion(bin string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "--version").Output()
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envBool(key string, def bool) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", key, err)
+	}
+	return b, nil
 }

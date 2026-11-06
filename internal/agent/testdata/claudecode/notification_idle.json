@@ -1,0 +1,1 @@
+{"hook_event_name":"Notification","session_id":"11111111-2222-4333-8444-555555555555","transcript_path":"/redacted/transcript.jsonl","cwd":"/redacted/repo","prompt_id":"p-1","permission_mode":"default","effort":{"level":"medium"},"scratchpad_dir":"/redacted/scratch","notification_type":"idle_prompt","message":"SENSITIVE message"}
