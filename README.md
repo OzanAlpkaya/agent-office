@@ -5,8 +5,9 @@ A lead agent plans the work and assigns tasks; each worker agent gets its own gi
 sandbox; a web UI shows a task board, live terminals and, later, a pixel-art office where you can
 watch the team at work.
 
-> **Status:** early development. Phase 1 works: one Claude Code agent in a live browser terminal,
-> with its state tracked from hooks. Multi-agent support starts in Phase 2.
+> **Status:** early development. Phase 2 works: a task board, several Claude Code agents in
+> parallel, each in its own git worktree, with live terminals and state tracked from hooks.
+> Sandboxing comes in Phase 3.
 
 ## Quick start (Linux)
 
@@ -15,11 +16,14 @@ Requires Go 1.27+, Node 26+ and Claude Code on `PATH`.
 ```sh
 make build
 ./bin/agent-office serve --repo ~/path/to/a/git/repo --model haiku
-# open http://127.0.0.1:7680 and click "Start agent"
+# open http://127.0.0.1:7680, add a task and click "Start agent"
 ```
 
+Agents work in worktrees under `~/.local/share/agent-office/worktrees/`; removing an agent never
+deletes uncommitted work. Trust the repository once in Claude Code; its worktrees inherit that.
 Configuration flags and `AGENT_OFFICE_*` variables are listed in `.env.example` and
-`agent-office serve -h`. The daemon only listens on loopback. Agents run on the host with Claude
+`agent-office serve -h`. `make check` runs lint, tests and the build; `make e2e` runs real Claude
+Code sessions (opt-in, costs a few cents). The daemon only listens on loopback. Agents run on the host with Claude
 Code's normal permission prompts. Sandboxed full-permission agents come in Phase 3.
 
 ## Planned features
