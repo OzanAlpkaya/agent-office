@@ -1,0 +1,11 @@
+# sqlc configuration (ADR 0004). Run `make generate`; generated code is committed.
+version: "2"
+sql:
+  - engine: "sqlite"
+    schema: "internal/store/migrations"
+    queries: "internal/store/queries.sql"
+    gen:
+      go:
+        package: "db"
+        out: "internal/store/db"
+        emit_empty_slices: true
