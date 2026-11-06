@@ -95,6 +95,12 @@ function AgentCard({ agent: a, selected, onSelect, onStop, onRemove }: CardProps
         <span className={`badge state-${a.state}`}>{stateLabel[a.state]}</span>
       </div>
       {a.activity && <div className="small">Tool: <span className="mono">{a.activity}</span></div>}
+      {a.state === "starting" && (
+        <div className="small hint">
+          Still starting? Claude Code may be waiting for an answer in the terminal, e.g. whether to
+          trust this folder. Answer it there; agent-office never accepts it for you.
+        </div>
+      )}
       <div className="small muted">
         {a.model ? `model ${a.model}` : "default model"} · user settings {a.inherit_user_settings ? "on" : "off"}
       </div>
