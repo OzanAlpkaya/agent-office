@@ -35,6 +35,30 @@ func main() {
 		runProxy(*listen, strings.Split(*allow, ","))
 	case "probe":
 		runProbe()
+	case "dial-unix": // egress dial-unix <path>: send "ping", print the reply
+		c, err := net.Dial("unix", os.Args[2])
+		if err != nil {
+			fmt.Println("dial-unix:", err)
+			os.Exit(1)
+		}
+		_, _ = c.Write([]byte("ping\n"))
+		reply, _ := bufio.NewReader(c).ReadString('\n')
+		fmt.Printf("dial-unix reply: %q\n", strings.TrimSpace(reply))
+	case "serve-unix": // egress serve-unix <path>: answer one "ping" with "pong"
+		_ = os.Remove(os.Args[2])
+		l, err := net.Listen("unix", os.Args[2])
+		if err != nil {
+			fmt.Println("serve-unix:", err)
+			os.Exit(1)
+		}
+		_ = os.Chmod(os.Args[2], 0o600)
+		c, err := l.Accept()
+		if err != nil {
+			os.Exit(1)
+		}
+		line, _ := bufio.NewReader(c).ReadString('\n')
+		_, _ = c.Write([]byte("pong to " + strings.TrimSpace(line) + "\n"))
+		c.Close()
 	default:
 		os.Exit(2)
 	}

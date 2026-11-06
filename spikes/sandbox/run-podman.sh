@@ -60,3 +60,12 @@ podman create --pull=never --name "$P-inspect" -e PLAIN_ENV=dummy-plain-value \
 ENVS=$(podman inspect "$P-inspect" --format '{{.Config.Env}}')
 echo "plain -e value visible in inspect:   $(grep -c dummy-plain-value <<<"$ENVS" || true)"
 echo "podman secret value visible in inspect: $(grep -c dummy-value-not-a-secret <<<"$ENVS" || true)"
+
+echo "== container with --network none reaches a host unix socket via bind mount"
+SOCK="$PWD/$OUT/agent.sock"
+"$OUT/egress" serve-unix "$SOCK" & SERVER=$!
+sleep 0.5
+podman run --rm --pull=never --network none --userns=keep-id --read-only --cap-drop=all \
+  --security-opt no-new-privileges -v "$SOCK:/run/agent-office.sock" \
+  "localhost/$P-egress" dial-unix /run/agent-office.sock
+wait $SERVER

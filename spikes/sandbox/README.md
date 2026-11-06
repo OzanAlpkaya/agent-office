@@ -34,6 +34,7 @@ delegated), bubblewrap present, Claude Code 2.1.319.
 | Capabilities | `CapEff=0`, `NoNewPrivs=1` | n/a |
 | Secret in env | present (`--secret type=env`) | not tested (Bash inherits the session env) |
 | Secret visible in `podman inspect` | **no** with `podman secret`; **yes** with plain `-e` | n/a |
+| Reach a host unix socket (mode 0600) via bind mount, with `--network none` | **yes** (`ping` → `pong`) | n/a |
 | Covers Read/Edit/Write tools, hooks, MCP servers | **yes**: the whole process tree is inside | **no**: per the docs, Bash/Monitor only. Other tools rely on permission rules; hooks and MCP servers run outside |
 
 ## Findings
@@ -55,8 +56,8 @@ delegated), bubblewrap present, Claude Code 2.1.319.
 - Running Claude Code itself inside the container. That needs an image with the CLI, auth as an
   env var (API key) instead of mounting the host credential store, and the Anthropic API domains on
   the allowlist.
-- Hooks from inside the container to the daemon: the plan is a mounted unix socket plus a small
-  `agent-office hook` forwarder (see ADR 0003).
+- Full hook/MCP traffic over the mounted socket. The socket path itself is verified above; the
+  plan is a small `agent-office hook` / `agent-office mcp` forwarder (see ADRs 0003 and 0006).
 - Running the built-in sandbox *inside* the container as defence in depth (needs nested user
   namespaces; may not work with `--cap-drop=all`).
 - Non-HTTP egress (git over SSH to GitHub): either an SSH-aware allowlist or pushing from the host.
