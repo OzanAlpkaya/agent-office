@@ -20,6 +20,7 @@ These rules apply to every session in this repo.
 | `internal/sandbox/` | Agent isolation (rootless Podman, egress allowlist) |
 | `internal/api/` | HTTP + WebSocket API for the web UI |
 | `internal/terminal/` | PTY sessions: scrollback, fan-out to viewers, input/resize |
+| `internal/git/` | git CLI wrapper: worktrees, branches, branch-name slugs |
 | `web/` | React + Vite + TypeScript UI, embedded into the binary |
 | `docs/plan.md` | Phased roadmap with Definitions of Done |
 | `docs/adr/` | Architecture Decision Records |
