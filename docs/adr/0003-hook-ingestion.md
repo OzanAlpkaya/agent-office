@@ -51,8 +51,16 @@ that socket. Adapters translate CLI-specific payloads into common events (`Sessi
   reduced fields it needs and never persists raw payloads.
 - The child env is scrubbed of the daemon's own `CLAUDECODE`/`CLAUDE_CODE_*` variables (one is a
   messaging token).
-- Open: should host-mode agents (Phases 1–2) also load the user's own settings and hooks? Default:
-  yes (they may be protective, e.g. secret guards), switchable via `--setting-sources`. In
-  container mode the agent gets a dedicated config dir, so this question goes away.
+- **User settings are an explicit option, not an assumption** (decided by Ozan, 2026-11-06):
+  - **Host mode:** a config option `inherit_user_settings` (bool, **default `true`**; its exact name
+    and location get fixed with the Phase 1 config) decides whether an agent loads the user's own
+    settings and hooks, which may be protective (e.g. secret guards). `true` uses Claude Code's
+    default setting sources plus the daemon's `--settings` file (hook lists merge). `false` passes
+    `--setting-sources project,local`. The effective value is logged at agent start and shown in
+    the UI.
+  - **Container mode:** agents always get a clean, project-defined config: a dedicated
+    `CLAUDE_CONFIG_DIR` inside the container, containing only the daemon-generated settings and
+    the project's settings. The user's config directory is never mounted. The option does not
+    apply.
 - Not yet observed: Stop on interrupt (Esc), and the permission-denied path. Phase 1 adds a
   process-exit and timeout fallback so state cannot stay "working" forever.
