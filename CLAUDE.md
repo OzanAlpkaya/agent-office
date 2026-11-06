@@ -69,6 +69,9 @@ These rules apply to every session in this repo.
 - Small, focused commits with Conventional Commits messages (`feat:`, `fix:`, `refactor:`, `test:`,
   `docs:`, `chore:`).
 - Never push to `main` without approval. Never push, merge or open PRs unless explicitly asked.
+- Merging a phase branch: only after Ozan approves, with `git merge --no-ff` to keep the commit
+  history (no squash; this overrides the global default). Ozan pushes himself.
+- Stage explicit paths, never `git add -A`: Claude Code writes temp files under `.claude/`.
 
 ## Quality
 
