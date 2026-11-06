@@ -1,0 +1,212 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:7682/hook?via=http",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "curl -sS --max-time 5 -H \"Content-Type: application/json\" --data-binary @- \"http://127.0.0.1:7682/hook?via=command\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

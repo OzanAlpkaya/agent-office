@@ -19,11 +19,11 @@ and write down the architecture.
 - First sandbox evaluation: rootless Podman vs Claude Code's built-in sandbox.
 
 **Definition of Done**
-- [ ] Spikes run and their findings are written up (no raw captured data committed).
-- [ ] `docs/architecture.md` exists with a component diagram, data flow and domain model.
-- [ ] ADRs for: terminal transport, hook ingestion, persistence, UI embedding, MCP transport,
+- [x] Spikes run and their findings are written up (no raw captured data committed).
+- [x] `docs/architecture.md` exists with a component diagram, data flow and domain model.
+- [x] ADRs for: terminal transport, hook ingestion, persistence, UI embedding, MCP transport,
       sandbox approach.
-- [ ] Phase 1 DoD refined based on the spike results.
+- [x] Phase 1 DoD refined based on the spike results.
 
 ---
 
@@ -32,19 +32,35 @@ and write down the architecture.
 **Goal:** Run one Claude Code agent in a PTY and watch it live in the browser, with its state
 derived from Claude Code hooks.
 
-**Scope**
-- Daemon with `net/http`; agent spawned in a PTY (`creack/pty`).
-- Terminal streamed to the browser over WebSocket (`coder/websocket`), rendered with xterm.js;
-  input and resize work both ways.
-- Hook ingestion endpoint; hook events map to agent state.
-- React + Vite UI embedded via `go:embed`; dev workflow with Vite's dev server.
+**Scope** (see ADRs 0002, 0003, 0005)
+- Daemon on loopback with `net/http`; one Claude Code agent spawned in a PTY (`creack/pty`) with
+  `--session-id`, a generated `--settings` file and a scrubbed child env.
+- Terminal sessions that outlive WebSocket connections: scrollback ring, fan-out, redraw on attach.
+- `agent-office hook` forwarder + per-agent unix socket; adapter that maps Claude Code hook
+  payloads to common events; agent state machine.
+- React + Vite + TS UI with xterm.js, embedded via `go:embed`; Vite dev server proxy in `--dev`.
+- Agents run on the host with normal permission prompts (no bypass mode before Phase 3).
 
 **Definition of Done**
-- [ ] `agent-office` starts, serves the UI, and can start one Claude Code session from the UI.
-- [ ] The terminal streams live; typing and resizing work; reconnecting a browser tab works.
-- [ ] Hook events update the agent state (idle / working / waiting for input / done) in the UI.
-- [ ] Unit tests for hook event parsing and the state machine; `go test ./...` passes.
-- [ ] A single binary contains the built UI.
+- [ ] `agent-office serve` listens on loopback only, serves the embedded UI, and starts one
+      Claude Code session from the UI.
+- [ ] The terminal streams live; typing and resizing work; closing and reopening the tab shows the
+      session again (scrollback + redraw) without restarting the agent.
+- [ ] Cross-origin WebSocket handshakes are rejected (test).
+- [ ] State in the UI follows the hooks: starting → idle → working → waiting_permission → working →
+      idle → exited, using `PermissionRequest` for waiting and ignoring events with `agent_id`.
+- [ ] State cannot stay stuck: process exit always ends in `exited`, even without a SessionEnd hook.
+- [ ] Hook events reach the daemon for every event type, including SessionStart, through the
+      forwarder; a payload whose `session_id` does not match its socket's agent is rejected (test).
+- [ ] If the daemon is down, the forwarder exits 0 within its timeout (test).
+- [ ] The child env contains no `CLAUDECODE`/`CLAUDE_CODE_*` variables from the daemon (test).
+- [ ] Raw hook payloads are not logged or persisted; only reduced fields (test with a fixture
+      containing a prompt).
+- [ ] Unit tests for payload parsing (fixtures with redacted shapes from Spike B) and the state
+      machine; `go test -race ./...`, `go vet`, `gofmt` pass; the web typecheck and build pass.
+- [ ] A single `make build` produces one binary containing the built UI.
+- [ ] Open from Phase 0, answered or recorded: Stop on interrupt (Esc), the permission-denied path,
+      the trust dialog for new paths.
 
 ---
 

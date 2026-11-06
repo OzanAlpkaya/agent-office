@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>spike: pty-ws</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css">
+  <style>html,body,#term{margin:0;height:100%;background:#111}</style>
+</head>
+<body>
+<div id="term"></div>
+<script type="module">
+  import { Terminal } from "https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/+esm";
+  import { FitAddon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/+esm";
+
+  const session = new URLSearchParams(location.search).get("session") || "demo";
+  const term = new Terminal({ cursorBlink: true });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById("term"));
+  fit.fit();
+
+  const ws = new WebSocket(`ws://${location.host}/ws?session=${encodeURIComponent(session)}`);
+  ws.binaryType = "arraybuffer";
+  const send = (m) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
+  const sendSize = () => send({ type: "resize", cols: term.cols, rows: term.rows });
+
+  ws.onopen = sendSize;
+  ws.onmessage = (e) => term.write(new Uint8Array(e.data));
+  ws.onclose = (e) => term.write(`\r\n[disconnected: ${e.reason || e.code}]\r\n`);
+  term.onData((data) => send({ type: "input", data }));
+  window.addEventListener("resize", () => { fit.fit(); sendSize(); });
+</script>
+</body>
+</html>

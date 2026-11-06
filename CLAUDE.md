@@ -22,6 +22,9 @@ These rules apply to every session in this repo.
 | `web/` | React + Vite + TypeScript UI, embedded into the binary |
 | `docs/plan.md` | Phased roadmap with Definitions of Done |
 | `docs/adr/` | Architecture Decision Records |
+| `docs/architecture.md` | Components, flows, domain model, threat model |
+| `docs/research/` | Verified library/API notes and external tool research |
+| `spikes/` | Throwaway experiments, each its own Go module; never imported by `internal/` |
 | `PROGRESS.md` | Phase checklist and progress log |
 
 ## Stack
@@ -66,6 +69,9 @@ These rules apply to every session in this repo.
 - Small, focused commits with Conventional Commits messages (`feat:`, `fix:`, `refactor:`, `test:`,
   `docs:`, `chore:`).
 - Never push to `main` without approval. Never push, merge or open PRs unless explicitly asked.
+- Merging a phase branch: only after Ozan approves, with `git merge --no-ff` to keep the commit
+  history (no squash; this overrides the global default). Ozan pushes himself.
+- Stage explicit paths, never `git add -A`: Claude Code writes temp files under `.claude/`.
 
 ## Quality
 
