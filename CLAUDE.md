@@ -22,6 +22,9 @@ These rules apply to every session in this repo.
 | `web/` | React + Vite + TypeScript UI, embedded into the binary |
 | `docs/plan.md` | Phased roadmap with Definitions of Done |
 | `docs/adr/` | Architecture Decision Records |
+| `docs/architecture.md` | Components, flows, domain model, threat model |
+| `docs/research/` | Verified library/API notes and external tool research |
+| `spikes/` | Throwaway experiments, each its own Go module; never imported by `internal/` |
 | `PROGRESS.md` | Phase checklist and progress log |
 
 ## Stack
