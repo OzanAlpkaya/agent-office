@@ -48,7 +48,7 @@ func fakeClaude() int {
 	send("SessionStart", `,"source":"startup"`)
 	in := bufio.NewScanner(os.Stdin)
 	for in.Scan() {
-		switch strings.TrimSpace(in.Text()) {
+		switch strings.Trim(in.Text(), " \t\r\x1b") {
 		case "work":
 			send("UserPromptSubmit", `,"prompt":"SENSITIVE"`)
 			send("PreToolUse", `,"tool_name":"Write"`)
@@ -178,6 +178,33 @@ func waitFor(t *testing.T, updates <-chan AgentInfo, ok func(AgentInfo) bool) Ag
 		case <-timeout:
 			t.Fatal("timeout")
 		}
+	}
+}
+
+func TestUserInterruptLeavesWaitingState(t *testing.T) {
+	e := newEngine(t)
+	updates, cancel := e.Subscribe()
+	defer cancel()
+	a, err := e.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, updates, hooks.Idle)
+	typeLine(t, e, a.ID, "work")
+	waitState(t, updates, hooks.WaitingPermission)
+	if err := e.Input(a.ID, []byte("\x1b")); err != nil { // Esc dismisses the permission prompt
+		t.Fatal(err)
+	}
+	waitState(t, updates, hooks.Idle)
+	// Escape sequences such as arrow keys are not interrupts.
+	typeLine(t, e, a.ID, "work")
+	waitState(t, updates, hooks.WaitingPermission)
+	_ = e.Input(a.ID, []byte("\x1b[A"))
+	if got, _ := e.Get(a.ID); got.State != string(hooks.WaitingPermission) {
+		t.Fatalf("arrow key changed state to %s", got.State)
+	}
+	if err := e.Input("missing", []byte("x")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Input unknown agent: %v", err)
 	}
 }
 

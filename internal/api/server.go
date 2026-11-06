@@ -201,7 +201,7 @@ func (s *server) terminalWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer sub.Close()
 
-	go s.readTerminalInput(ctx, cancel, c, term, log)
+	go s.readTerminalInput(ctx, cancel, c, id, term, log)
 	for {
 		select {
 		case <-ctx.Done():
@@ -226,7 +226,7 @@ func (s *server) terminalWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) readTerminalInput(ctx context.Context, cancel context.CancelFunc, c *websocket.Conn,
-	term *terminal.Session, log *slog.Logger) {
+	id string, term *terminal.Session, log *slog.Logger) {
 	defer cancel()
 	firstResize := true
 	for {
@@ -244,7 +244,8 @@ func (s *server) readTerminalInput(ctx context.Context, cancel context.CancelFun
 		}
 		switch m.Type {
 		case "input":
-			_, _ = term.Write([]byte(m.Data))
+			// Through the engine, so it can notice interrupts (Esc / Ctrl-C).
+			_ = s.eng.Input(id, []byte(m.Data))
 		case "resize":
 			if m.Cols < 1 || m.Rows < 1 || m.Cols > maxTermDimension || m.Rows > maxTermDimension {
 				continue

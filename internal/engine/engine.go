@@ -220,6 +220,30 @@ func (e *Engine) hookHandler(id string) hooks.Handler {
 	}
 }
 
+// Input sends terminal input from the UI to the agent. A lone Esc or Ctrl-C is
+// also treated as a user interrupt (see agent.UserInterrupted).
+func (e *Engine) Input(id string, data []byte) error {
+	e.mu.Lock()
+	a, ok := e.agents[id]
+	e.mu.Unlock()
+	if !ok {
+		return ErrNotFound
+	}
+	if _, err := a.term.Write(data); err != nil {
+		return err
+	}
+	if s := string(data); s == "\x1b" || s == "\x03" {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if next := hooks.Next(a.status, agent.Event{Kind: agent.UserInterrupted}); next != a.status {
+			e.log.Debug("user interrupt", "agent_id", id, "from", a.status.State, "state", next.State)
+			a.status = next
+			e.publishLocked(a)
+		}
+	}
+	return nil
+}
+
 // Stop terminates a running agent and waits until it has exited.
 func (e *Engine) Stop(id string) error {
 	e.mu.Lock()

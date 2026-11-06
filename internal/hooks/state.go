@@ -46,6 +46,11 @@ func Next(cur Status, ev agent.Event) Status {
 		return Status{State: WaitingPermission, Activity: activity}
 	case agent.SessionEnded:
 		return Status{State: Exited}
+	case agent.UserInterrupted:
+		if cur.State == Working || cur.State == WaitingPermission {
+			return Status{State: Idle}
+		}
+		return cur
 	default:
 		return cur
 	}

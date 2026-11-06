@@ -16,6 +16,12 @@ const (
 	Idle                EventKind = "idle"
 	SessionEnded        EventKind = "session_ended"
 	Other               EventKind = "other"
+
+	// UserInterrupted is raised by the daemon, not by a hook: the user sent a
+	// lone Esc or Ctrl-C through the UI. Claude Code fires no hook when a turn
+	// is interrupted or a permission prompt is dismissed (measured in Phase 1),
+	// so without this the state would stay "working" or "waiting_permission".
+	UserInterrupted EventKind = "user_interrupted"
 )
 
 // Event is the reduced, non-sensitive form of a hook payload. It never carries
