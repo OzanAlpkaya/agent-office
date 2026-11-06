@@ -26,7 +26,9 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
 	"github.com/OzanAlpkaya/agent-office/internal/api"
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
+	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
 	"github.com/OzanAlpkaya/agent-office/web"
 )
@@ -90,6 +92,8 @@ func hook() int {
 type serveConfig struct {
 	addr                string
 	repo                string
+	dataDir             string
+	maxAgents           int
 	model               string
 	claudeBin           string
 	inheritUserSettings bool
@@ -102,6 +106,13 @@ func parseServe(args []string) (serveConfig, error) {
 	var c serveConfig
 	fs.StringVar(&c.addr, "addr", envOr("AGENT_OFFICE_ADDR", "127.0.0.1:7680"), "listen address; must be loopback [AGENT_OFFICE_ADDR]")
 	fs.StringVar(&c.repo, "repo", os.Getenv("AGENT_OFFICE_REPO"), "repository the agent works in [AGENT_OFFICE_REPO]")
+	fs.StringVar(&c.dataDir, "data-dir", envOr("AGENT_OFFICE_DATA_DIR", defaultDataDir()),
+		"database and worktrees [AGENT_OFFICE_DATA_DIR]")
+	maxAgents, err := envInt("AGENT_OFFICE_MAX_AGENTS", 4)
+	if err != nil {
+		return c, err
+	}
+	fs.IntVar(&c.maxAgents, "max-agents", maxAgents, "agents running at the same time [AGENT_OFFICE_MAX_AGENTS]")
 	fs.StringVar(&c.model, "model", os.Getenv("AGENT_OFFICE_MODEL"), "model for agents, e.g. haiku; empty = CLI default [AGENT_OFFICE_MODEL]")
 	fs.StringVar(&c.claudeBin, "claude-bin", envOr("AGENT_OFFICE_CLAUDE_BIN", "claude"), "Claude Code binary [AGENT_OFFICE_CLAUDE_BIN]")
 	inherit, err := envBool("AGENT_OFFICE_INHERIT_USER_SETTINGS", true)
@@ -123,6 +134,12 @@ func parseServe(args []string) (serveConfig, error) {
 		return c, err
 	}
 	c.repo = abs
+	if c.dataDir, err = filepath.Abs(c.dataDir); err != nil {
+		return c, err
+	}
+	if c.maxAgents < 1 || c.maxAgents > 32 {
+		return c, fmt.Errorf("--max-agents must be between 1 and 32, got %d", c.maxAgents)
+	}
 	host, _, err := net.SplitHostPort(c.addr)
 	if err != nil {
 		return c, fmt.Errorf("--addr: %w", err)
@@ -157,8 +174,20 @@ func serve(args []string) error {
 		return err
 	}
 
-	eng, err := engine.New(engine.Options{
-		Repo: cfg.repo, Model: cfg.model, InheritUserSettings: cfg.inheritUserSettings,
+	g := git.Git{}
+	gitVersion, err := g.Version(context.Background())
+	if err != nil {
+		return fmt.Errorf("git is required: %w", err)
+	}
+	st, err := store.Open(context.Background(), filepath.Join(cfg.dataDir, "agent-office.db"))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	eng, err := engine.New(context.Background(), engine.Options{
+		Repo: cfg.repo, WorktreeRoot: filepath.Join(cfg.dataDir, "worktrees"), Store: st, Git: g,
+		MaxAgents: cfg.maxAgents, Model: cfg.model, InheritUserSettings: cfg.inheritUserSettings,
 		ClaudeBin: claudeBin, HookCommand: agent.ShellQuote(self) + " hook",
 		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
@@ -179,7 +208,8 @@ func serve(args []string) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Info("agent-office starting", "version", version, "addr", "http://"+cfg.addr, "repo", cfg.repo,
+	log.Info("agent-office starting", "version", version, "addr", "http://"+cfg.addr, "repo", eng.Project().RepoPath,
+		"data_dir", cfg.dataDir, "max_agents", cfg.maxAgents, "git_version", gitVersion,
 		"claude", claudeBin, "claude_version", claudeVersion(claudeBin), "model", cfg.model,
 		"inherit_user_settings", cfg.inheritUserSettings, "ui_built", built, "dev", cfg.dev)
 
@@ -226,6 +256,31 @@ func claudeVersion(bin string) string {
 		return "unknown"
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// defaultDataDir is $XDG_DATA_HOME/agent-office (default ~/.local/share/agent-office).
+func defaultDataDir() string {
+	base := os.Getenv("XDG_DATA_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(base, "agent-office")
+}
+
+func envInt(key string, def int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	return n, nil
 }
 
 func envOr(key, def string) string {

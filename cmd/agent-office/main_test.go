@@ -26,6 +26,15 @@ func TestParseServe(t *testing.T) {
 			t.Errorf("parseServe(%v) accepted", args)
 		}
 	}
+	for _, n := range []string{"0", "33"} {
+		if _, err := parseServe([]string{"--repo", "/tmp", "--max-agents", n}); err == nil {
+			t.Errorf("--max-agents %s accepted", n)
+		}
+	}
+	t.Setenv("XDG_DATA_HOME", "/xdg")
+	if c, _ := parseServe([]string{"--repo", "/tmp"}); c.dataDir != "/xdg/agent-office" || c.maxAgents != 4 {
+		t.Errorf("data dir / max agents defaults: %+v", c)
+	}
 	if _, err := parseServe([]string{"--repo", "/tmp", "--addr", "[::1]:7680"}); err != nil {
 		t.Errorf("IPv6 loopback rejected: %v", err)
 	}
