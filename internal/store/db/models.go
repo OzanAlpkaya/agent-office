@@ -9,6 +9,18 @@ import (
 	"time"
 )
 
+type AccessRequest struct {
+	ID        int64
+	AgentID   string
+	Kind      string
+	Value     string
+	Reason    string
+	Status    string
+	CreatedAt time.Time
+	DecidedAt sql.NullTime
+	DecidedBy string
+}
+
 type Agent struct {
 	ID                  string
 	ProjectID           string
@@ -23,6 +35,7 @@ type Agent struct {
 	ExitReason          string
 	RemovedAt           sql.NullTime
 	Sandbox             string
+	Role                string
 }
 
 type Event struct {
@@ -50,6 +63,17 @@ type Import struct {
 	At       time.Time
 }
 
+type Message struct {
+	ID          int64
+	ProjectID   string
+	FromAgentID sql.NullString
+	ToAgentID   string
+	Body        string
+	CreatedAt   time.Time
+	DeliveredAt sql.NullTime
+	Delivery    string
+}
+
 type Project struct {
 	ID        string
 	Name      string
@@ -66,13 +90,15 @@ type Session struct {
 }
 
 type Task struct {
-	ID          string
-	ProjectID   string
-	Title       string
-	Description string
-	Status      string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID           string
+	ProjectID    string
+	Title        string
+	Description  string
+	Status       string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	ParentTaskID sql.NullString
+	CreatedBy    string
 }
 
 type Worktree struct {

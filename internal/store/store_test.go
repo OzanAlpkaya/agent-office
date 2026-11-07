@@ -91,7 +91,7 @@ func TestAgentLifecycleAndRestart(t *testing.T) {
 	seedProject(t, s)
 	now := time.Now().UTC()
 	err := s.Tx(ctx, func(q *db.Queries) error {
-		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting", Sandbox: "host",
+		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting", Sandbox: "host", Role: "worker",
 			InheritUserSettings: true, StartedAt: now}); err != nil {
 			return err
 		}
@@ -128,7 +128,7 @@ func TestTxRollsBack(t *testing.T) {
 	seedProject(t, s)
 	boom := errors.New("boom")
 	err := s.Tx(ctx, func(q *db.Queries) error {
-		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting", Sandbox: "host", StartedAt: time.Now().UTC()}); err != nil {
+		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting", Sandbox: "host", Role: "worker", StartedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
 		return boom
@@ -147,7 +147,7 @@ func TestConcurrentWriters(t *testing.T) {
 	s, _ := open(t)
 	ctx := context.Background()
 	seedProject(t, s)
-	if err := s.Q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "idle", Sandbox: "host", StartedAt: time.Now().UTC()}); err != nil {
+	if err := s.Q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "idle", Sandbox: "host", Role: "worker", StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
@@ -178,7 +178,7 @@ func TestImportsConstraints(t *testing.T) {
 	ctx := context.Background()
 	seedProject(t, s)
 	now := time.Now().UTC()
-	if err := s.Q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "exited", Sandbox: "podman", StartedAt: now}); err != nil {
+	if err := s.Q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "exited", Sandbox: "podman", Role: "worker", StartedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	imp, err := s.Q.InsertImport(ctx, db.InsertImportParams{AgentID: "a1", Trigger: "exit", Outcome: "diverged",

@@ -86,3 +86,13 @@ button.danger { border-color: #ff6b6b; color: #ff6b6b; }
 .events summary { cursor: pointer; }
 .events ul { list-style: none; margin: 0.25rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.15rem; max-height: 10rem; overflow-y: auto; }
 .events .mono { white-space: normal; overflow-wrap: anywhere; }
+
+/* Phase 4: roles, approvals, messages */
+.role-lead { color: #c49bff; }
+.role-worker { color: var(--muted); }
+.approvals { padding: 0.5rem 1rem; border-bottom: 1px solid #c49bff; background: #1d1828; }
+.approvals h2 { font-size: 0.85rem; margin: 0 0 0.35rem; color: #c49bff; }
+.approvals ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.approvals li { display: flex; flex-direction: column; gap: 0.25rem; }
+.strong { font-weight: 600; }
+.quote { white-space: pre-wrap; overflow-wrap: anywhere; }

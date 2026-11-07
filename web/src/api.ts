@@ -1,11 +1,13 @@
 // Types mirror internal/engine (AgentInfo, Task, Update, RemoveResult,
-// ImportInfo, Status), internal/sandbox (Event) and the API in internal/api.
+// ImportInfo, Status, Message, AccessRequest), internal/sandbox (Event) and
+// the API in internal/api.
 // Written by hand for now (ADR 0005); keep them in sync.
 
 export type AgentState = "starting" | "idle" | "working" | "waiting_permission" | "exited";
 export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "blocked";
 export type WorktreeStatus = "active" | "kept" | "removed";
 export type SandboxMode = "host" | "podman";
+export type Role = "lead" | "worker";
 
 export const taskStatuses: readonly TaskStatus[] = ["todo", "in_progress", "review", "done", "blocked"];
 const agentStates: readonly string[] = ["starting", "idle", "working", "waiting_permission", "exited"];
@@ -19,6 +21,7 @@ export interface Agent {
   model?: string;
   inherit_user_settings: boolean;
   sandbox: SandboxMode;
+  role: Role;
   branch: string;
   worktree_path: string;
   workspace_kind: "worktree" | "clone";
@@ -62,8 +65,36 @@ export interface Task {
   title: string;
   description: string;
   status: TaskStatus;
+  parent_task_id?: string; // the goal of a sub-task
+  created_by?: string; // agent id; absent: created by you
   created_at: string;
   updated_at: string;
+}
+
+// Message between agents (ADR 0018). from is absent for agent-office itself.
+// The body is written by an agent: render it as text only.
+export interface Message {
+  id: number;
+  from?: string;
+  to: string;
+  body: string;
+  created_at: string;
+  delivered_at?: string;
+  delivery?: "stop_hook" | "pty";
+}
+
+// AccessRequest is an agent asking for more access (ADR 0019). The reason is
+// written by the agent: render it as text only.
+export interface AccessRequest {
+  id: number;
+  agent_id: string;
+  kind: string;
+  value: string;
+  reason: string;
+  status: "pending" | "approved" | "denied" | "expired";
+  created_at: string;
+  decided_at?: string;
+  decided_by?: string;
 }
 
 export interface Project {
@@ -84,12 +115,14 @@ export interface RemoveResult {
 }
 
 export type EventMessage =
-  | { type: "snapshot"; agents: Agent[]; tasks: Task[] }
+  | { type: "snapshot"; agents: Agent[]; tasks: Task[]; accessRequests: AccessRequest[] }
   | { type: "agent"; agent: Agent }
   | { type: "agent_removed"; id: string }
   | { type: "task"; task: Task }
   | { type: "task_deleted"; id: string }
-  | { type: "sandbox_event"; agent_id: string; event: SandboxEvent };
+  | { type: "sandbox_event"; agent_id: string; event: SandboxEvent }
+  | { type: "message"; message: Message }
+  | { type: "access_request"; request: AccessRequest };
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null;
@@ -101,7 +134,7 @@ function isImport(v: unknown): v is ImportInfo {
 
 function isAgent(v: unknown): v is Agent {
   return isObj(v) && typeof v.id === "string" && typeof v.state === "string" && agentStates.includes(v.state) &&
-    (v.sandbox === "host" || v.sandbox === "podman") &&
+    (v.sandbox === "host" || v.sandbox === "podman") && (v.role === "lead" || v.role === "worker") &&
     typeof v.branch === "string" && typeof v.worktree_path === "string" && typeof v.has_terminal === "boolean" &&
     typeof v.started_at === "string" && (v.last_import === undefined || isImport(v.last_import));
 }
@@ -110,10 +143,24 @@ export function isSandboxEvent(v: unknown): v is SandboxEvent {
   return isObj(v) && typeof v.kind === "string" && typeof v.detail === "string" && typeof v.at === "string";
 }
 
+export function isMessage(v: unknown): v is Message {
+  return isObj(v) && typeof v.id === "number" && typeof v.to === "string" && typeof v.body === "string" &&
+    typeof v.created_at === "string" && (v.from === undefined || typeof v.from === "string");
+}
+
+const accessStatuses: readonly string[] = ["pending", "approved", "denied", "expired"];
+
+function isAccessRequest(v: unknown): v is AccessRequest {
+  return isObj(v) && typeof v.id === "number" && typeof v.agent_id === "string" && typeof v.kind === "string" &&
+    typeof v.value === "string" && typeof v.reason === "string" && typeof v.status === "string" &&
+    accessStatuses.includes(v.status) && typeof v.created_at === "string";
+}
+
 function isTask(v: unknown): v is Task {
   return isObj(v) && typeof v.id === "string" && typeof v.title === "string" &&
     typeof v.description === "string" && typeof v.status === "string" &&
-    (taskStatuses as readonly string[]).includes(v.status);
+    (taskStatuses as readonly string[]).includes(v.status) &&
+    (v.parent_task_id === undefined || typeof v.parent_task_id === "string");
 }
 
 // parseEventMessage validates a message from /api/events; it returns undefined
@@ -128,8 +175,9 @@ export function parseEventMessage(raw: string): EventMessage | undefined {
   if (!isObj(m)) return undefined;
   switch (m.type) {
     case "snapshot":
-      return Array.isArray(m.agents) && m.agents.every(isAgent) && Array.isArray(m.tasks) && m.tasks.every(isTask)
-        ? { type: "snapshot", agents: m.agents, tasks: m.tasks }
+      return Array.isArray(m.agents) && m.agents.every(isAgent) && Array.isArray(m.tasks) && m.tasks.every(isTask) &&
+        Array.isArray(m.access_requests) && m.access_requests.every(isAccessRequest)
+        ? { type: "snapshot", agents: m.agents, tasks: m.tasks, accessRequests: m.access_requests }
         : undefined;
     case "agent":
       return isAgent(m.agent) ? { type: "agent", agent: m.agent } : undefined;
@@ -144,6 +192,10 @@ export function parseEventMessage(raw: string): EventMessage | undefined {
         ? { type: "sandbox_event", agent_id: se.agent_id, event: se.event }
         : undefined;
     }
+    case "message":
+      return isMessage(m.message) ? { type: "message", message: m.message } : undefined;
+    case "access_request":
+      return isAccessRequest(m.access_request) ? { type: "access_request", request: m.access_request } : undefined;
     default:
       return undefined;
   }
@@ -175,8 +227,8 @@ export const api = {
   health: (): Promise<Health> => request("GET", "/api/health"),
   project: (): Promise<Project> => request("GET", "/api/project"),
   status: (): Promise<Status> => request("GET", "/api/status"),
-  startAgent: (taskId?: string): Promise<Agent> =>
-    request("POST", "/api/agents", taskId ? { task_id: taskId } : undefined),
+  startAgent: (taskId?: string, role: Role = "worker"): Promise<Agent> =>
+    request("POST", "/api/agents", taskId ? { task_id: taskId, role } : undefined),
   stopAgent: (id: string): Promise<Agent> => request("POST", `/api/agents/${id}/stop`),
   removeAgent: (id: string): Promise<RemoveResult> => request("DELETE", `/api/agents/${id}`),
   discardAgent: (id: string): Promise<RemoveResult> => request("POST", `/api/agents/${id}/discard`),
@@ -186,6 +238,12 @@ export const api = {
     const evs: unknown = await request("GET", `/api/agents/${id}/events`);
     return Array.isArray(evs) ? evs.filter(isSandboxEvent) : [];
   },
+  agentMessages: async (id: string): Promise<Message[]> => {
+    const msgs: unknown = await request("GET", `/api/agents/${id}/messages`);
+    return Array.isArray(msgs) ? msgs.filter(isMessage) : [];
+  },
+  approveAccess: (id: number): Promise<AccessRequest> => request("POST", `/api/access-requests/${id}/approve`),
+  denyAccess: (id: number): Promise<AccessRequest> => request("POST", `/api/access-requests/${id}/deny`),
   createTask: (title: string, description: string): Promise<Task> =>
     request("POST", "/api/tasks", { title, description }),
   updateTask: (id: string, patch: Partial<Pick<Task, "title" | "description" | "status">>): Promise<Task> =>

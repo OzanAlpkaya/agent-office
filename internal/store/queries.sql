@@ -7,9 +7,15 @@ ON CONFLICT (repo_path) DO UPDATE SET name = excluded.name
 RETURNING *;
 
 -- name: CreateTask :one
-INSERT INTO tasks (id, project_id, title, description, status, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO tasks (id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
+
+-- name: ListChildTasks :many
+SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY created_at, id;
+
+-- name: CountChildTasks :one
+SELECT count(*) FROM tasks WHERE parent_task_id = ?;
 
 -- name: GetTask :one
 SELECT * FROM tasks WHERE id = ?;
@@ -26,8 +32,8 @@ RETURNING *;
 DELETE FROM tasks WHERE id = ?;
 
 -- name: CreateAgent :exec
-INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, role)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: UpdateAgentState :exec
 UPDATE agents SET state = ?, activity = ? WHERE id = ?;
@@ -89,3 +95,72 @@ SELECT * FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT 1;
 
 -- name: ListImports :many
 SELECT * FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT ?;
+
+-- name: InsertMessage :one
+INSERT INTO messages (project_id, from_agent_id, to_agent_id, body, created_at)
+VALUES (?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: ClaimMessages :many
+-- Hands out a recipient's oldest undelivered messages exactly once (ADR 0018).
+UPDATE messages SET delivered_at = ?, delivery = ?
+WHERE id IN (
+    SELECT m.id FROM messages m
+    WHERE m.to_agent_id = ? AND m.delivered_at IS NULL
+    ORDER BY m.id LIMIT 10
+)
+RETURNING *;
+
+-- name: CountPendingMessages :one
+SELECT count(*) FROM messages WHERE to_agent_id = ? AND delivered_at IS NULL;
+
+-- name: CountMessagesSentSince :one
+SELECT count(*) FROM messages WHERE from_agent_id = ? AND created_at >= ?;
+
+-- name: ListAgentMessages :many
+SELECT * FROM messages WHERE to_agent_id = sqlc.arg(agent_id) OR from_agent_id = sqlc.arg(agent_id)
+ORDER BY id DESC LIMIT sqlc.arg(lim);
+
+-- name: InsertAccessRequest :one
+INSERT INTO access_requests (agent_id, kind, value, reason, created_at)
+VALUES (?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetAccessRequest :one
+SELECT * FROM access_requests WHERE id = ?;
+
+-- name: FindPendingAccessRequest :one
+SELECT * FROM access_requests WHERE agent_id = ? AND kind = ? AND value = ? AND status = 'pending'
+ORDER BY id LIMIT 1;
+
+-- name: CountPendingAccessRequests :one
+SELECT count(*) FROM access_requests WHERE agent_id = ? AND status = 'pending';
+
+-- name: DecideAccessRequest :one
+-- Compare-and-swap from pending, so a request is decided once (ADR 0019).
+UPDATE access_requests SET status = ?, decided_at = ?, decided_by = ?
+WHERE id = ? AND status = 'pending'
+RETURNING *;
+
+-- name: ExpireAccessRequests :many
+UPDATE access_requests SET status = 'expired', decided_at = ?, decided_by = 'agent-office'
+WHERE agent_id = ? AND status = 'pending'
+RETURNING *;
+
+-- name: ExpireAllAccessRequests :execrows
+UPDATE access_requests SET status = 'expired', decided_at = ?, decided_by = 'agent-office'
+WHERE status = 'pending'
+  AND agent_id IN (SELECT id FROM agents WHERE project_id = ?);
+
+-- name: ListAccessRequests :many
+SELECT access_requests.* FROM access_requests JOIN agents ON agents.id = access_requests.agent_id
+WHERE agents.project_id = ?
+ORDER BY (access_requests.status = 'pending') DESC, access_requests.id DESC
+LIMIT ?;
+
+-- name: UnclaimMessage :exec
+-- Returns a message to the queue when typing it into the terminal failed (ADR 0018).
+UPDATE messages SET delivered_at = NULL, delivery = '' WHERE id = ?;
+
+-- name: CountPendingMessagesFrom :one
+SELECT count(*) FROM messages WHERE to_agent_id = ? AND from_agent_id = ? AND delivered_at IS NULL;

@@ -34,12 +34,14 @@ const (
 
 // Task is the public view of a task.
 type Task struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	Title        string    `json:"title"`
+	Description  string    `json:"description"`
+	Status       string    `json:"status"`
+	ParentTaskID string    `json:"parent_task_id,omitempty"` // the goal of a sub-task (ADR 0017)
+	CreatedBy    string    `json:"created_by,omitempty"`     // empty: the user; else the creating agent's id
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // TaskInput creates a task.
@@ -57,7 +59,7 @@ type TaskPatch struct {
 
 func taskFromRow(t db.Task) Task {
 	return Task{ID: t.ID, Title: t.Title, Description: t.Description, Status: t.Status,
-		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
+		ParentTaskID: t.ParentTaskID.String, CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
 }
 
 // normalizeTitle trims the title and replaces control characters (including
@@ -86,8 +88,14 @@ func normalizeDescription(s string) (string, error) {
 	return s, nil
 }
 
-// CreateTask adds a task in status todo.
+// CreateTask adds a top-level task in status todo, created by the user.
 func (e *Engine) CreateTask(ctx context.Context, in TaskInput) (Task, error) {
+	return e.createTask(ctx, in, "", "")
+}
+
+// createTask adds a task in status todo; parent and createdBy are empty for
+// the user's own tasks.
+func (e *Engine) createTask(ctx context.Context, in TaskInput, parent, createdBy string) (Task, error) {
 	title, err := normalizeTitle(in.Title)
 	if err != nil {
 		return Task{}, err
@@ -98,7 +106,8 @@ func (e *Engine) CreateTask(ctx context.Context, in TaskInput) (Task, error) {
 	}
 	t := now()
 	row, err := e.q.CreateTask(ctx, db.CreateTaskParams{ID: randomHex(6), ProjectID: e.project.ID, Title: title,
-		Description: desc, Status: StatusTodo, CreatedAt: t, UpdatedAt: t})
+		Description: desc, Status: StatusTodo, CreatedAt: t, UpdatedAt: t, ParentTaskID: nullString(parent),
+		CreatedBy: createdBy})
 	if err != nil {
 		return Task{}, err
 	}

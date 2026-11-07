@@ -2,6 +2,7 @@
 //
 //	agent-office serve --repo <path>   run the daemon and web UI
 //	agent-office hook                  forward a hook payload (stdin) to the daemon; used by agents
+//	agent-office mcp                   team MCP server for an agent: stdio <-> the daemon (ADR 0006)
 //	agent-office sandbox-init -- cmd   in-container init of a sandboxed worker (ADR 0016)
 //	agent-office worker-image          build the worker container image with podman
 //	agent-office version               print the version
@@ -30,6 +31,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
 	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -52,6 +54,8 @@ func main() {
 		}
 	case "hook":
 		os.Exit(hook())
+	case "mcp":
+		os.Exit(mcpBridge())
 	case "sandbox-init":
 		os.Exit(sandboxInit(os.Args[2:]))
 	case "worker-image":
@@ -75,6 +79,7 @@ func usage(w io.Writer) {
 commands:
   serve     run the daemon and web UI (agent-office serve -h for flags)
   hook      forward a hook payload from stdin to the daemon (used by agents)
+  mcp       team MCP server over stdio, bridged to the daemon (used by agents)
   sandbox-init -- <command>
             in-container init of a sandboxed worker (started by the daemon)
   worker-image [--tag]
@@ -142,6 +147,24 @@ func hook() int {
 	defer cancel()
 	if err := hooks.Forward(ctx, sock, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "agent-office hook:", err)
+	}
+	return 0
+}
+
+// mcpBridge is the stdio MCP server Claude Code starts for an agent: it
+// pipes stdio to the agent's MCP socket in the daemon (ADR 0006). Unlike
+// hook, a failure exits non-zero, so Claude Code shows the server as failed.
+func mcpBridge() int {
+	sock := os.Getenv(mcp.SocketEnv)
+	if sock == "" {
+		fmt.Fprintln(os.Stderr, "agent-office mcp:", mcp.SocketEnv, "is not set")
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	if err := mcp.Bridge(ctx, sock, os.Stdin, os.Stdout); err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintln(os.Stderr, "agent-office mcp:", err)
+		return 1
 	}
 	return 0
 }
@@ -297,7 +320,7 @@ func serve(args []string) error {
 		ClaudeBin: claudeBin, HookCommand: agent.ShellQuote(self) + " hook",
 		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
-		Sandbox: sb, Warnings: warnings,
+		Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version,
 	})
 	if err != nil {
 		return err

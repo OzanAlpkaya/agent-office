@@ -76,6 +76,12 @@ func (r *recorder) all() []Event {
 // allowed target to an in-process echo server and records the address.
 func startEgress(t *testing.T, allow ...string) (sock string, rec *recorder, dialed *[]string) {
 	t.Helper()
+	return startEgressGrants(t, nil, allow...)
+}
+
+// startEgressGrants is startEgress with a run-time grant set (ADR 0019).
+func startEgressGrants(t *testing.T, g *Grants, allow ...string) (sock string, rec *recorder, dialed *[]string) {
+	t.Helper()
 	a, err := ParseAllowlist(allow)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +102,7 @@ func startEgress(t *testing.T, allow ...string) (sock string, rec *recorder, dia
 	var mu sync.Mutex
 	dialed = &[]string{}
 	rec = &recorder{}
-	p := &EgressProxy{Allow: a, OnEvent: rec.add, Log: slog.New(slog.DiscardHandler),
+	p := &EgressProxy{Allow: a, Grants: g, OnEvent: rec.add, Log: slog.New(slog.DiscardHandler),
 		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			mu.Lock()
 			*dialed = append(*dialed, addr)
@@ -214,5 +220,46 @@ func TestSanitize(t *testing.T) {
 	}
 	if got := sanitize(strings.Repeat("a", 500)); len(got) > maxDetail+len("…") {
 		t.Fatalf("not truncated: %d", len(got))
+	}
+}
+
+// A granted host is reachable for this proxy's agent only, from the moment it
+// is added; other hosts stay refused.
+func TestEgressGrants(t *testing.T) {
+	g := &Grants{}
+	sock, _, dialed := startEgressGrants(t, g, DefaultEgressAllow...)
+	req := "CONNECT docs.example.org:443 HTTP/1.1\r\nHost: docs.example.org:443\r\n\r\n"
+	status, c, _ := connect(t, sock, req)
+	c.Close()
+	if !strings.Contains(status, " 403 ") {
+		t.Fatalf("before the grant: %q", status)
+	}
+	if err := g.Add("docs.example.org"); err != nil {
+		t.Fatal(err)
+	}
+	status, c, _ = connect(t, sock, req)
+	c.Close()
+	if !strings.Contains(status, " 200 ") || len(*dialed) != 1 {
+		t.Fatalf("after the grant: %q, dialed %v", status, *dialed)
+	}
+	status, c, _ = connect(t, sock, "CONNECT other.example.org:443 HTTP/1.1\r\nHost: other.example.org:443\r\n\r\n")
+	c.Close()
+	if !strings.Contains(status, " 403 ") {
+		t.Fatalf("ungranted host: %q", status)
+	}
+	other, _, _ := startEgress(t, DefaultEgressAllow...) // another agent's proxy
+	status, c, _ = connect(t, other, req)
+	c.Close()
+	if !strings.Contains(status, " 403 ") {
+		t.Fatalf("grant leaked to another proxy: %q", status)
+	}
+	for _, bad := range []string{".example.org", "*.example.org", "1.2.3.4", "Example.org", "localhost", "a.org:443"} {
+		if g.Add(bad) == nil {
+			t.Errorf("Add(%q) accepted", bad)
+		}
+	}
+	var none *Grants
+	if none.Allows("docs.example.org") {
+		t.Fatal("nil grants allowed a host")
 	}
 }

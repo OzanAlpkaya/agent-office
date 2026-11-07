@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 )
 
 func TestParseClaudeHookFixtures(t *testing.T) {
@@ -112,8 +114,50 @@ func TestCommand(t *testing.T) {
 		t.Fatalf("initial prompt must follow --: %v", cmd.Args)
 	}
 
+	spec.InitialPrompt = "do it"
+	spec.MCPConfigPath = "/run/mcp.json"
+	cmd, _ = ClaudeCode{Bin: "claude"}.Command(spec)
+	if i := slices.Index(cmd.Args, "--mcp-config"); i < 0 || cmd.Args[i+1] != "/run/mcp.json" ||
+		slices.Contains(cmd.Args, "--strict-mcp-config") {
+		t.Fatalf("inherit=true: team MCP config without --strict-mcp-config: %v", cmd.Args)
+	}
+	spec.InheritUserSettings = false
+	cmd, _ = ClaudeCode{Bin: "claude"}.Command(spec)
+	if !slices.Contains(cmd.Args, "--strict-mcp-config") {
+		t.Fatalf("inherit=false must also drop the user's MCP servers: %v", cmd.Args)
+	}
+	if n := len(cmd.Args); cmd.Args[n-2] != "--" || cmd.Args[n-1] != "do it" {
+		t.Fatalf("variadic --mcp-config must not swallow the prompt: %v", cmd.Args)
+	}
+
 	if _, err := (ClaudeCode{Bin: "claude"}).Command(LaunchSpec{}); err == nil {
 		t.Fatal("empty spec accepted")
+	}
+}
+
+func TestMCPConfig(t *testing.T) {
+	raw, err := MCPConfig("/opt/agent office/agent-office", "/run/user/1000/agent-office/agents/a.mcp.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		MCPServers map[string]struct {
+			Type    string            `json:"type"`
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	s, ok := doc.MCPServers[mcp.ServerName]
+	if !ok || len(doc.MCPServers) != 1 || s.Type != "stdio" || s.Command != "/opt/agent office/agent-office" ||
+		!slices.Equal(s.Args, []string{"mcp"}) || s.Env[mcp.SocketEnv] != "/run/user/1000/agent-office/agents/a.mcp.sock" {
+		t.Fatalf("config %s", raw)
+	}
+	if _, err := MCPConfig("agent-office", "/a.sock"); err == nil {
+		t.Fatal("relative command accepted")
 	}
 }
 
@@ -142,6 +186,14 @@ func TestHookSettings(t *testing.T) {
 		if got := h[0].Hooks[0].Command; got != `'/opt/agent office/agent-office' hook` {
 			t.Fatalf("%s command = %q", e, got)
 		}
+	}
+	var perms struct {
+		Permissions struct {
+			Allow []string `json:"allow"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(raw, &perms); err != nil || !slices.Equal(perms.Permissions.Allow, []string{"mcp__agent-office"}) {
+		t.Fatalf("only the team tools are pre-allowed: %+v %v", perms, err)
 	}
 }
 

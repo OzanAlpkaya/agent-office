@@ -142,7 +142,8 @@ func TestSandboxEndToEnd(t *testing.T) {
 	// Import now, while the agent still runs.
 	var imp importInfo
 	d.json("POST", "/api/agents/"+a.ID+"/import", nil, 200, &imp)
-	if imp.Outcome != "created" || imp.Branch != a.Branch || imp.Commits < 1 {
+	// up_to_date when the agent already called report_done (Phase 4), which imports first.
+	if (imp.Outcome != "created" && imp.Outcome != "up_to_date") || imp.Branch != a.Branch || imp.Commits < 1 {
 		t.Fatalf("import %+v", imp)
 	}
 	if len(imp.Flagged) != 0 {

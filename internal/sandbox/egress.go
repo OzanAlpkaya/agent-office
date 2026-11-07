@@ -68,6 +68,44 @@ func (a Allowlist) Allows(host string) bool {
 	return false
 }
 
+// ValidHost reports whether h is an exact host name the allowlist could hold:
+// lower case, at least two labels, no IP literal, port, wildcard or ".suffix".
+// Access requests (ADR 0019) may only name such hosts.
+func ValidHost(h string) bool { return validHostname(h) }
+
+// Grants is a per-agent set of host names a human approved at run time
+// (request_access, ADR 0019). It is safe for concurrent use; the zero value is
+// empty, and a nil *Grants allows nothing.
+type Grants struct {
+	mu    sync.Mutex
+	hosts map[string]bool
+}
+
+// Add grants host; it must be a ValidHost.
+func (g *Grants) Add(host string) error {
+	if !validHostname(host) {
+		return fmt.Errorf("sandbox: invalid host name %q", host)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.hosts == nil {
+		g.hosts = map[string]bool{}
+	}
+	g.hosts[host] = true
+	return nil
+}
+
+// Allows reports whether host was granted.
+func (g *Grants) Allows(host string) bool {
+	if g == nil {
+		return false
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.hosts[host]
+}
+
 // validHostname accepts lower-case DNS names with at least two labels and
 // rejects IP literals.
 func validHostname(h string) bool {
@@ -133,6 +171,7 @@ func isSharedOrReserved(a netip.Addr) bool {
 // contents.
 type EgressProxy struct {
 	Allow   Allowlist
+	Grants  *Grants                                                           // optional: hosts approved for this agent at run time (ADR 0019)
 	Dial    func(ctx context.Context, network, addr string) (net.Conn, error) // nil: public addresses only, 10 s timeout
 	OnEvent func(Event)                                                       // optional; called for denials and failures
 	Log     *slog.Logger                                                      // carries the agent id
@@ -191,7 +230,7 @@ func (p *EgressProxy) handle(c net.Conn) {
 		return
 	}
 	host, port, err := net.SplitHostPort(req.Host)
-	if err != nil || port != "443" || !p.Allow.Allows(host) {
+	if err != nil || port != "443" || !(p.Allow.Allows(host) || p.Grants.Allows(host)) {
 		p.event(EgressDenied, req.Host)
 		reply(c, http.StatusForbidden)
 		return

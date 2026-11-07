@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 0 design, updated through Phase 3 (isolation), based on the spikes in `spikes/` and
+Status: Phase 0 design, updated through Phase 4 (team MCP server and lead agent), based on the spikes in `spikes/` and
 the ADRs in `docs/adr/`. Parts marked *(later)* belong to later phases and will be detailed then.
 
 ## Overview
@@ -58,7 +58,7 @@ flowchart LR
 | `agent` | Adapter per agent CLI: command line, env, settings file, and translating CLI-specific hook payloads into common events. |
 | `engine` | Owns the lifecycle of agents, tasks, worktrees and messages. All state changes go through it. |
 | `hooks` | Accepts forwarded hook events from the per-agent sockets and runs the agent state machine. |
-| `mcp` | Team MCP server (go-sdk): `create_task`, `assign_task`, `send_message`, `report_done`, `request_access`. *(Phase 4)* |
+| `mcp` | Team MCP server (go-sdk v1.8.0): `create_task`, `assign_task`, `list_tasks`, `send_message`, `report_done`, `request_access` over a `Team` interface the engine implements; per-agent socket listener; the `agent-office mcp` stdio bridge (ADR 0006). |
 | `store` | SQLite via modernc + sqlc, forward-only goose migrations; refuses schemas newer than the binary and backs up before migrating (ADR 0004, 0011, 0012, 0013). |
 | `git` | git CLI wrapper: worktrees, branches, branch-name slugs (ADR 0009, 0010). |
 | `sandbox` | Starts workers in rootless Podman (`--network none`); per-agent egress proxy and credential-injecting API proxy; token file reader (ADR 0007, 0014–0016). |
@@ -113,10 +113,61 @@ but never the main state. Claude Code sends no hook for an interrupted turn or a
 permission prompt, so the daemon, which carries all terminal input, treats a lone Esc or Ctrl-C
 in those states as a user interrupt.
 
-**Message delivery (Phase 4).** If the recipient is **working**, the message is queued and returned
-as `{"decision":"block","reason":"<message>"}` on its next Stop hook (unless `stop_hook_active`).
-If it is **idle**, the daemon types the message into the PTY as user input. Both paths were shown
-to work in Spike B.
+**Team (Phase 4, ADR 0017).** The user starts a **lead** on a top-level task, the goal (one lead at a
+time). Every agent's CLI gets a `--mcp-config` file naming one stdio server, `agent-office mcp`,
+which bridges stdio to the agent's own MCP socket (`mcp.sock`, mode 0600, next to its hook socket;
+bind-mounted into sandboxed workers). The daemon serves one MCP server per agent on that socket, so
+every tool call is attributed to the socket's agent, never to a tool argument (ADR 0006). The
+engine authorizes each call from the caller's recorded role and task:
+
+```mermaid
+sequenceDiagram
+  participant U as User (UI)
+  participant L as Lead (Claude Code)
+  participant D as Daemon (engine + MCP)
+  participant W as Worker (Claude Code)
+  U->>D: POST /api/agents {task_id: goal, role: lead}
+  D->>L: start with the lead prompt
+  L->>D: create_task × n (sub-tasks of the goal)
+  L->>D: assign_task(sub-task)
+  D->>W: Start (worktree or sandboxed clone, task to in_progress)
+  L-->>D: Stop (turn ends, lead idle)
+  W->>W: edit, test, commit
+  W->>D: report_done(summary)
+  D->>D: dirty check, import (sandbox), task to review
+  D->>D: message to the lead (queued)
+  D->>L: typed into the idle lead's terminal (or Stop-hook block)
+  W-->>D: Stop → the worker is ended (slot freed)
+  L->>D: report_done (no sub-task in progress) → goal to review
+```
+
+- A lead may create up to 20 sub-tasks of its goal, assign those in `todo`/`blocked` (each
+  assignment starts a worker through `Start`, within `--max-agents`), message their workers and
+  list them. A worker may message only its lead, report only its own task (with committed work),
+  and request access. `done` stays a human decision.
+- Prompts: the lead is told to plan and delegate, not to edit code, and to end its turn after
+  assigning; workers are told to commit, then call `report_done`. In host mode the team tools are
+  pre-allowed (`mcp__agent-office` in the settings file); every other tool still prompts.
+
+**Message delivery (Phase 4, ADR 0018).** Messages are rows in `messages`; delivery claims a
+recipient's undelivered rows with one `UPDATE … RETURNING`, so each is handed out once.
+- On the recipient's **Stop** hook (main agent, not `StopFailure`, not `stop_hook_active`), the
+  reply is `{"decision":"block","reason":"<messages>"}`; the turn continues and the state stays
+  `working`.
+- When the recipient is **idle** (after a finished turn, an interrupt or `idle_prompt`), after a
+  1.5 s settle delay, and only once it has finished its first turn and the user has not typed for
+  5 s, the daemon types the messages into the PTY as **one line with every control character
+  removed**, then Enter.
+- Deliveries are framed as information from other agents, not instructions that override the
+  recipient's task. Limits: 30 messages per sender per 10 minutes, 50 undelivered per sender and recipient,
+  4 000 characters each.
+
+**Access requests (Phase 4, ADR 0019).** `request_access(kind="domain", value, reason)` from a
+sandboxed agent creates a `pending` row and nothing else. The UI's approval queue shows it; the
+user allows or denies (`POST /api/access-requests/{id}/approve|deny`, decided once). An approval
+adds the host to that running agent's egress grant set, checked by its egress proxy next to the
+allowlist, until it exits. The agent gets a message with the decision. Pending requests expire when
+their agent exits and at daemon start.
 
 **Isolation (Phase 3).** Each sandboxed worker is a rootless Podman container with
 `--network none`, a read-only rootfs and no capabilities (ADR 0007). It mounts its own shared
@@ -148,18 +199,18 @@ events: logged, stored (rate-limited), pushed to the UI live and listed by
 
 | Entity | Key fields | Notes |
 |---|---|---|
-| **Agent** | id, name, role (lead / worker / reviewer), adapter (claude-code / codex), state, worktree_id, current_session_id | One live session at a time. |
+| **Agent** | id, role (lead / worker; reviewer later), sandbox, state, task_id, current_session_id | One live session at a time; at most one running lead (ADR 0017). |
 | **Session** | id (= CLI session UUID), agent_id, started_at, ended_at, end_reason, transcript_path, cost_usd, tokens | One per CLI process; cost comes from the transcript (Phase 8). |
-| **Task** | id, title, description, status (todo / assigned / in_progress / review / done / blocked), assignee_agent_id, created_by, parent_task_id | The lead creates tasks through MCP. |
+| **Task** | id, title, description, status (todo / in_progress / review / done / blocked), parent_task_id, created_by | A goal is a top-level task; the lead creates its sub-tasks through MCP. Agents point to their task (`agents.task_id`). |
 | **Worktree** | id, repo_path, path, branch, base_ref, kind (worktree / clone), created_at, removed_at | One per worker agent; sandboxed agents get a shared clone (ADR 0014). |
 | **Import** | id, agent_id, trigger, outcome, branch, head, previous, commits, flagged, at | One per import of a sandboxed agent's branch (migration 0003). |
-| **Message** | id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery (stop_hook / pty) | Delivered exactly once. |
-| **AccessRequest** | id, agent_id, kind (domain / secret / path), value, reason, status, decided_by | A human approves in the UI (Phase 4). |
+| **Message** | id, from_agent_id (empty: agent-office), to_agent_id, body, created_at, delivered_at, delivery (stop_hook / pty) | Claimed once, then delivered (ADR 0018). |
+| **AccessRequest** | id, agent_id, kind (domain; secret / path reserved), value, reason, status (pending / approved / denied / expired), decided_at, decided_by | A human decides in the UI; a grant lasts for that agent's run (ADR 0019). |
 | **Event** | id, agent_id, session_id, kind, at, summary | Hook events, reduced to non-sensitive fields. |
 
-## Threat model (first draft, updated in Phase 3)
+## Threat model (first draft, updated in Phases 3 and 4)
 
-Phase 3 rows name the tests that check them. `make sandbox-test` runs against real rootless
+Phase 3 and 4 rows name the tests that check them. `make sandbox-test` runs against real rootless
 Podman; `make e2e` runs real Claude Code.
 
 **Assets:** the user's host (files, SSH keys, credentials), secrets given to agents (API keys,
@@ -172,7 +223,7 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Threat | Mitigation | Phase |
 |---|---|---|
 | A website drives the local daemon (CSRF / cross-site WebSocket) | Bind to loopback only; WebSocket same-origin check (tested in Spike A); later an auth token for the API | 1, 10 |
-| Another local process forges hook events or MCP calls | Per-agent unix socket, mode 0600, in `$XDG_RUNTIME_DIR`; check `session_id` against the socket's agent | 1, 4 |
+| Another local process forges hook events or MCP calls | Per-agent unix sockets (hooks, MCP), mode 0600, in a 0700 dir under `$XDG_RUNTIME_DIR`; hooks: `session_id` checked against the socket's agent; MCP: one server per agent bound to its socket, the caller never comes from arguments. Tested: `TestListenerIdentity`, `TestMCPOverAgentSocket`, `TestSandboxedTeamWorker` (through the in-container bridge). Residual: any process of the same user can reach the sockets (same as hooks) | 1, 4 |
 | Agent reads host secrets (`~/.ssh`, credential stores) | Container mounts only its own repository, the read-only object store and its sockets; env built from an allowlist (no `SSH_AUTH_SOCK`, tokens) (Spike F). Claude Code's own sandbox is not enough: reads are open by default and file tools are not covered (Spike E). Tested: `TestWorkerIsolation` (no host files beyond the mounts, read-only mounts refuse writes, no SSH or git credentials), `TestWorkerArgsIsolation` | 3 |
 | Agent exfiltrates data over the network | `--network none`; per-agent CONNECT proxy, :443 and allowlisted names only, denials logged and shown (ADR 0016). Tested: `TestWorkerIsolation` (no DNS or direct TCP; other hosts, ports and plain HTTP refused), `TestWorkerEgress` (registries reachable, GitHub blocked). Residual: allowlisted registries (e.g. `proxy.golang.org` fetching arbitrary module paths) can carry data out | 3 |
 | Secret leakage via the process list, `podman inspect`, disk or logs | Token in one user-only file, read by the daemon at each launch and injected by its API proxy; never `-e`, argv or `podman secret` (ADR 0015, 0016); `Secret` type redacts itself; never log env or hook payload contents; scrub `CLAUDE_CODE_*` from the child env. Tested: `TestSandboxedTokenStaysOutside` (a canary token reaches the upstream and nothing else: worker, `podman inspect`, terminal, updates, logs, DB, repositories) and `TestSandboxEndToEnd` (the real token, including Claude Code's transcripts) | 1, 3 |
@@ -181,9 +232,13 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Host tools (shell prompt, editor, file manager) run git in an agent repository and trigger agent-written config | Agent repositories are owned by a subordinate uid; git's `safe.directory` check refuses before reading their config (measured, ADR 0014). Residual: tools that offer to mark the repo safe, or read files without git; the UI and docs warn not to open agent repositories | 3 |
 | Container escape (kernel or runtime bug) | Rootless Podman, a subordinate uid on the host, no capabilities, `no-new-privileges`, read-only rootfs. Residual: kernel and container-runtime vulnerabilities; keep the kernel and Podman updated | 3 |
 | Agent exhausts host resources | Per-worker memory and pids limits (`--sandbox-memory`, `--sandbox-pids`); sandbox events rate-limited per agent; API request bodies size-limited | 3 |
-| Agent spends inference without limit through the API socket | Budget limits on the API socket (deterministic, outside the model) | 4, 8 |
-| Agent escalates its own permissions | `request_access` needs human approval; access changes are made by deterministic code, not the model | 4 |
-| Runaway cost / loops | Stop-hook loop guard (`stop_hook_active`); per-agent budget and turn limits; cost tracking | 4, 8 |
+| Agent spends inference without limit through the API socket | Phase 4 bounds the number of sessions (below); token budgets on the API socket (deterministic, outside the model) come with cost tracking | 8 |
+| Agent escalates its own permissions | `request_access` only creates a pending row; a human decides in the UI (same-origin POST); the grant is made by the engine, for that agent's run only, domains only (ADR 0019). Tested: `TestAccessRequests` (no grant before approval, grant reaches this agent only, decided once, expiry on exit), `TestRestartExpiresAccessRequests`, `TestAccessRequestsAPI`, `TestEgressGrants`. Team authority comes from the caller's socket and role (ADR 0017); `TestTeamAuthorization`, `TestToolsPerRole` | 4 |
+| A prompt-injected lead spawns workers or floods the team | Lead authority is limited to its goal: 20 sub-tasks, assignments only within `--max-agents`, no human-free path to anything else; reported workers end and free their slot. Tested: `TestTeamLimits`, `TestAssignTaskIsExclusive` | 4 |
+| Runaway cost / loops (agents keep each other busy) | Stop-hook loop guard (`stop_hook_active`: no delivery on that Stop); 30 messages per sender per 10 minutes, 50 undelivered per sender and recipient (report notices and agent-office's own messages are exempt, so a flood cannot block them); messages to agents that reported are refused. Residual: within those limits two agents can keep answering each other; budgets come in Phase 8. Tested: `TestStopHookDeliveryExactlyOnce`, `TestTeamLimits`, `TestQueueCapIsPerSender` | 4, 8 |
+| Prompt injection between agents (a compromised agent's message steers another) | Messages are framed as information from other agents, not instructions, with every body line quoted so it cannot forge a header (`TestQueueCapIsPerSender`); workers can reach only their lead and the lead only its workers; the recipient's own task and authorization are unchanged by any message. Residual: the recipient model may still follow a persuasive message within its own permissions | 4 |
+| Terminal injection through message delivery (escape sequences, Esc / Ctrl-C typed into another agent's PTY) | Stored bodies lose control characters except newline and tab; the PTY line loses all of them; delivery goes through the engine's input path (ADR 0008, 0018). Tested: `TestIdleDeliveryOverPTY`, `TestPTYLine` | 4 |
+| Agent-written text in the UI (messages, access reasons, task titles) | Rendered as text by React, never as HTML; message lists and the approval queue label it as the agent's words | 4 |
 | Malicious repo content runs on the host | Phases 1–2 run agents on the host with normal permission prompts (no bypass); full permissions only inside the sandbox | 1–3 |
 | Agent pushes or merges unreviewed code | No git credentials or route to a remote in the sandbox (tested in Spike F); the daemon pushes from the main repository; imported commits are checked for author and trailer; merging stays human | 3, 5 |
 | Sensitive data in captured payloads | Store reduced events only; raw hook payloads and transcripts are never persisted or sent to the UI in full | 1, 8 |

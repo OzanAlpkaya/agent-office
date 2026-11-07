@@ -87,7 +87,12 @@ func workerRun(t *testing.T, script string) (string, []Event) {
 		return path
 	}
 	hookSock, egressSock, apiSock := listen("hook.sock"), listen("egress.sock"), listen("api.sock")
-	if err := p.Chown(context.Background(), root, ws, cfgDir, hookSock, egressSock, apiSock); err != nil {
+	mcpSock := listen("mcp.sock")
+	mcpConfig := filepath.Join(root, "mcp.json")
+	if err := os.WriteFile(mcpConfig, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Chown(context.Background(), root, ws, cfgDir, hookSock, egressSock, apiSock, mcpSock); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -100,7 +105,7 @@ func workerRun(t *testing.T, script string) (string, []Event) {
 
 	args, err := WorkerArgs(WorkerSpec{
 		Instance: "0123456789ab", AgentID: "e2e0123456ab", Image: WorkerImage(), Workspace: ws, ObjectsDir: objects, ConfigDir: cfgDir,
-		HookSocket: hookSock, EgressSocket: egressSock, APISocket: apiSock,
+		HookSocket: hookSock, MCPSocket: mcpSock, MCPConfig: mcpConfig, EgressSocket: egressSock, APISocket: apiSock,
 		AgentOffice: self, Claude: "/bin/true", Settings: settings, GitHooks: hooks,
 		Git:     GitIdentity{Name: "Ozan", Email: "ozan@example.com", CoAuthor: CoAuthor("worker-e2e")},
 		Command: []string{"sh", "-c", script},

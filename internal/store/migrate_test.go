@@ -245,3 +245,72 @@ func TestMigration0002KeepsPhase2Rows(t *testing.T) {
 		}
 	}
 }
+
+// Migration 0004 (Phase 4) on a database with Phase 3 rows: agents read as
+// workers, tasks as top-level user tasks, and the rebuilt imports table keeps
+// every row, its ids and its id sequence.
+func TestMigration0004KeepsPhase3Rows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agent-office.db")
+	v3, err := openWith(ctx, path, sourcesUpTo(t, 3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)
+	for _, q := range []string{
+		`INSERT INTO projects (id, name, repo_path, slug, created_at) VALUES ('p1', 'linkshelf', '/repo', 'linkshelf-1', ?)`,
+		`INSERT INTO tasks (id, project_id, title, status, created_at, updated_at) VALUES ('t1', 'p1', 'Add tags', 'review', ?, ?1)`,
+		`INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox) VALUES ('a1', 'p1', 't1', 'haiku', 0, 'exited', ?, 'podman')`,
+		`INSERT INTO worktrees (agent_id, project_id, path, branch, base_commit, status, created_at, kind) VALUES ('a1', 'p1', '/ws/a1', 'agent-office/x', 'abc', 'active', ?, 'clone')`,
+		`INSERT INTO imports (id, agent_id, trigger, outcome, branch, head, commits, flagged, at) VALUES (7, 'a1', 'exit', 'created', 'agent-office/x', 'def', 2, '[]', ?)`,
+		`INSERT INTO imports (id, agent_id, trigger, outcome, at) VALUES (9, 'a1', 'manual', 'up_to_date', ?)`,
+	} {
+		if _, err := v3.DB.ExecContext(ctx, q, ts); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	v3.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Migration.From != 3 || s.Migration.To < 4 || s.Migration.Backup == "" {
+		t.Fatalf("migration %+v", s.Migration)
+	}
+	rows, err := s.Q.ListVisibleAgents(ctx, "p1")
+	if err != nil || len(rows) != 1 || rows[0].Role != "worker" || rows[0].Sandbox != "podman" {
+		t.Fatalf("agents %+v %v", rows, err)
+	}
+	task, err := s.Q.GetTask(ctx, "t1")
+	if err != nil || task.ParentTaskID.Valid || task.CreatedBy != "" || task.Status != "review" {
+		t.Fatalf("task %+v %v", task, err)
+	}
+	imps, err := s.Q.ListImports(ctx, db.ListImportsParams{AgentID: "a1", Limit: 10})
+	if err != nil || len(imps) != 2 {
+		t.Fatalf("imports %+v %v", imps, err)
+	}
+	if imps[0].ID != 9 || imps[1].ID != 7 || imps[1].Commits != 2 || imps[1].Head != "def" || !imps[1].At.Equal(ts) {
+		t.Fatalf("imports after rebuild %+v", imps)
+	}
+	added, err := s.Q.InsertImport(ctx, db.InsertImportParams{AgentID: "a1", Trigger: "report_done",
+		Outcome: "up_to_date", Flagged: "[]", At: ts})
+	if err != nil || added.ID <= 9 {
+		t.Fatalf("new import %+v %v (ids must continue after the old ones)", added, err)
+	}
+	for _, q := range []string{
+		`UPDATE agents SET role = 'boss' WHERE id = 'a1'`,
+		`UPDATE imports SET trigger = 'push' WHERE id = 7`,
+		`INSERT INTO access_requests (agent_id, kind, value, reason, created_at) VALUES ('a1', 'root', 'x', 'y', '2026-01-01')`,
+		`INSERT INTO messages (project_id, to_agent_id, body, created_at) VALUES ('p1', 'a1', '', '2026-01-01')`,
+	} {
+		if _, err := s.DB.ExecContext(ctx, q); err == nil {
+			t.Errorf("CHECK constraint missing: %s", q)
+		}
+	}
+	var idx int
+	if err := s.DB.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'imports_agent'`).Scan(&idx); err != nil || idx != 1 {
+		t.Fatalf("imports index %d %v", idx, err)
+	}
+}

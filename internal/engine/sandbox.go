@@ -13,6 +13,7 @@ import (
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -67,6 +68,7 @@ type sandboxRes struct {
 	container string
 	egress    net.Listener
 	api       *http.Server
+	grants    *sandbox.Grants // hosts approved at run time (ADR 0019)
 }
 
 // eventLimit is the per-agent rate limit for sandbox events.
@@ -161,19 +163,24 @@ func (e *Engine) createClone(ctx context.Context, id, path, branch, base string)
 
 // launchSandboxed starts the per-agent sockets and proxies and the worker
 // container in a PTY.
-func (e *Engine) launchSandboxed(id, sid, branch, wsPath, base, taskID string, started time.Time,
-	task *db.Task, prep sandboxPrep) (AgentInfo, error) {
+func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, error) {
+	id, sid, branch, wsPath, base, taskID, started := l.id, l.sid, l.branch, l.path, l.base, l.taskID, l.started
 	s := e.opts.Sandbox
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	log := e.log.With("agent_id", id)
 
-	res := &sandboxRes{dir: filepath.Join(e.opts.RuntimeDir, "agents", id), container: sandbox.ContainerName(id)}
+	res := &sandboxRes{dir: filepath.Join(e.opts.RuntimeDir, "agents", id), container: sandbox.ContainerName(id),
+		grants: &sandbox.Grants{}}
 	cfgDir := filepath.Join(s.AgentsRoot, id, "config")
 	var ln *hooks.Listener
+	var mln *mcp.Listener
 	fail := func(err error) (AgentInfo, error) {
 		if ln != nil {
 			ln.Close()
+		}
+		if mln != nil {
+			mln.Close()
 		}
 		e.closeSandbox(res, log)
 		return AgentInfo{}, err
@@ -203,13 +210,24 @@ func (e *Engine) launchSandboxed(id, sid, branch, wsPath, base, taskID string, s
 	if ln, err = hooks.Listen(filepath.Join(res.dir, "hook.sock"), e.hookHandler(id), log); err != nil {
 		return fail(err)
 	}
+	mcpPath, mcpConfig := filepath.Join(res.dir, "mcp.sock"), filepath.Join(res.dir, "mcp.json")
+	cfg, err := agent.MCPConfig(sandbox.AgentOfficeBin, sandbox.MCPSocket)
+	if err != nil {
+		return fail(err)
+	}
+	if err := os.WriteFile(mcpConfig, cfg, 0o644); err != nil { // read by the container user; dir is 0700
+		return fail(err)
+	}
+	if mln, err = e.listenMCP(mcpPath, id, l.role); err != nil {
+		return fail(err)
+	}
 	onEvent := func(ev sandbox.Event) { e.sandboxEvent(id, ev) }
 	egressPath, apiPath := filepath.Join(res.dir, "egress.sock"), filepath.Join(res.dir, "api.sock")
 	if res.egress, err = listenUnix(egressPath); err != nil {
 		return fail(err)
 	}
 	go func() {
-		p := &sandbox.EgressProxy{Allow: s.Allow, OnEvent: onEvent, Log: log.With("proxy", "egress")}
+		p := &sandbox.EgressProxy{Allow: s.Allow, Grants: res.grants, OnEvent: onEvent, Log: log.With("proxy", "egress")}
 		if err := p.Serve(res.egress); err != nil {
 			log.Warn("egress proxy stopped", "err", err)
 		}
@@ -222,25 +240,21 @@ func (e *Engine) launchSandboxed(id, sid, branch, wsPath, base, taskID string, s
 	res.api = &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = res.api.Serve(apiLn) }()
 
-	if err := s.Podman.Chown(ctx, e.opts.RuntimeDir, ln.Path(), egressPath, apiPath); err != nil {
+	if err := s.Podman.Chown(ctx, e.opts.RuntimeDir, ln.Path(), mcpPath, egressPath, apiPath); err != nil {
 		return fail(err)
 	}
 	if err := s.Podman.Chown(ctx, s.AgentsRoot, filepath.Join(s.AgentsRoot, id)); err != nil {
 		return fail(err)
 	}
 
-	prompt := ""
-	if task != nil {
-		prompt = taskPrompt(task.Title, task.Description, branch)
-	}
 	command, err := agent.ContainerArgs(agent.ContainerSpec{Bin: sandbox.ClaudeBin, SessionID: sid,
-		Model: e.opts.Model, SettingsPath: sandbox.SettingsFile, InitialPrompt: prompt})
+		Model: e.opts.Model, SettingsPath: sandbox.SettingsFile, MCPConfigPath: sandbox.MCPConfigFile, InitialPrompt: l.prompt})
 	if err != nil {
 		return fail(err)
 	}
 	args, err := sandbox.WorkerArgs(sandbox.WorkerSpec{
 		Instance: s.Instance, AgentID: id, Image: s.Image, Workspace: wsPath, ObjectsDir: prep.objects, ConfigDir: cfgDir,
-		HookSocket: ln.Path(), EgressSocket: egressPath, APISocket: apiPath,
+		HookSocket: ln.Path(), MCPSocket: mcpPath, MCPConfig: mcpConfig, EgressSocket: egressPath, APISocket: apiPath,
 		AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
 		Git: prep.ident, Memory: s.Memory, Pids: s.Pids, Command: command,
 	})
@@ -253,7 +267,7 @@ func (e *Engine) launchSandboxed(id, sid, branch, wsPath, base, taskID string, s
 	}
 
 	a := &agentProc{
-		info: AgentInfo{ID: id, SessionID: sid, TaskID: taskID, Model: e.opts.Model, Sandbox: SandboxPodman,
+		info: AgentInfo{ID: id, SessionID: sid, TaskID: taskID, Model: e.opts.Model, Sandbox: SandboxPodman, Role: l.role,
 			Branch: branch, WorktreePath: wsPath, WorkspaceKind: KindClone, WorktreeStatus: WorktreeActive,
 			HasTerminal: true, StartedAt: started},
 		status:     hooks.Status{State: hooks.Starting},
@@ -263,13 +277,15 @@ func (e *Engine) launchSandboxed(id, sid, branch, wsPath, base, taskID string, s
 		settings:   settingsPath,
 		sandbox:    res,
 		exited:     make(chan struct{}),
+		mcp:        mln,
+		hasPrompt:  l.prompt != "",
 	}
 	e.mu.Lock()
 	e.agents[id] = a
 	e.order = append(e.order, id)
 	e.publishAgentLocked(a)
 	e.mu.Unlock()
-	log.Info("agent started", "sandbox", SandboxPodman, "session_id", sid, "task_id", taskID, "branch", branch,
+	log.Info("agent started", "role", l.role, "sandbox", SandboxPodman, "session_id", sid, "task_id", taskID, "branch", branch,
 		"workspace", wsPath, "container", res.container, "image", s.Image, "model", e.opts.Model)
 	e.wg.Add(1)
 	go e.watch(a)

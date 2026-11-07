@@ -18,6 +18,13 @@ func TestContainerArgs(t *testing.T) {
 	if !slices.Equal(args, want) {
 		t.Fatalf("args %q", args)
 	}
+	args, _ = ContainerArgs(ContainerSpec{Bin: "/opt/claude/claude", SessionID: "sid",
+		SettingsPath: "/opt/agent-office/settings.json", MCPConfigPath: "/opt/agent-office/mcp.json", InitialPrompt: "p"})
+	want = []string{"/opt/claude/claude", "--session-id", "sid", "--settings", "/opt/agent-office/settings.json",
+		"--mcp-config", "/opt/agent-office/mcp.json", "--strict-mcp-config", "--dangerously-skip-permissions", "--", "p"}
+	if !slices.Equal(args, want) {
+		t.Fatalf("args with MCP %q", args)
+	}
 	if _, err := ContainerArgs(ContainerSpec{Bin: "/opt/claude/claude"}); err == nil {
 		t.Fatal("incomplete spec accepted")
 	}
