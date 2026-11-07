@@ -190,7 +190,8 @@ func TestBundleHandoffRoundTrip(t *testing.T) {
 	// The agent commits, and also plants config that would run for anyone
 	// who runs git in its repository.
 	marker := filepath.Join(t.TempDir(), "PWNED")
-	sandboxGit(t, clone, "config", "core.fsmonitor", "touch "+marker)
+	// git appends arguments to the hook command; "#" makes the shell ignore them.
+	sandboxGit(t, clone, "config", "core.fsmonitor", "touch "+marker+" #")
 	if err := os.WriteFile(filepath.Join(clone, "page.go"), []byte("package x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -201,8 +202,16 @@ func TestBundleHandoffRoundTrip(t *testing.T) {
 		t.Fatalf("count = %s", n)
 	}
 	head := strings.TrimSpace(string(sandboxGit(t, clone, "rev-parse", "HEAD")))
+	_ = os.Remove(marker) // add and commit above ran the trap inside the "sandbox"
+	// StatusArgs overrides the planted fsmonitor even inside the sandbox.
+	if n, err := ParseStatus(sandboxGit(t, clone, StatusArgs()...)); err != nil || n != 0 {
+		t.Fatalf("status %d %v", n, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("StatusArgs ran the agent's core.fsmonitor")
+	}
 	// Control: the trap is live. Plain git status in the clone runs it.
-	sandboxGit(t, clone, StatusArgs()...)
+	sandboxGit(t, clone, "status")
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("control failed, core.fsmonitor did not run: %v", err)
 	}

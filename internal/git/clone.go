@@ -131,9 +131,12 @@ func CountArgs(base, branch string) []string {
 	return []string{"rev-list", "--count", base + "..refs/heads/" + branch, "--"}
 }
 
-// StatusArgs prints the working tree status for ParseStatus.
+// StatusArgs prints the working tree status for ParseStatus. Command-line
+// config outranks the repository's, so an agent-written core.fsmonitor does
+// not run even inside the helper container.
 func StatusArgs() []string {
-	return []string{"status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none"}
+	return []string{"-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z",
+		"--untracked-files=normal", "--ignore-submodules=none"}
 }
 
 // MaxStatusBytes bounds the status output read from a sandbox.
