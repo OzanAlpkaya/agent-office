@@ -2,6 +2,7 @@
 //
 //	agent-office serve --repo <path>   run the daemon and web UI
 //	agent-office hook                  forward a hook payload (stdin) to the daemon; used by agents
+//	agent-office sandbox-init -- cmd   in-container init of a sandboxed worker (ADR 0016)
 //	agent-office version               print the version
 package main
 
@@ -28,6 +29,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
 	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
 	"github.com/OzanAlpkaya/agent-office/web"
@@ -49,6 +51,8 @@ func main() {
 		}
 	case "hook":
 		os.Exit(hook())
+	case "sandbox-init":
+		os.Exit(sandboxInit(os.Args[2:]))
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -65,8 +69,33 @@ func usage(w io.Writer) {
 commands:
   serve     run the daemon and web UI (agent-office serve -h for flags)
   hook      forward a hook payload from stdin to the daemon (used by agents)
+  sandbox-init -- <command>
+            in-container init of a sandboxed worker (started by the daemon)
   version   print the version
 `)
+}
+
+// sandboxInitFailed is the exit code when sandbox-init itself fails, so it is
+// told apart from the agent's own exit codes.
+const sandboxInitFailed = 125
+
+// sandboxInit runs inside a worker container: it bridges the loopback proxy
+// addresses to the mounted sockets and runs the agent CLI as its child.
+func sandboxInit(args []string) int {
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	// The tty delivers SIGINT/SIGQUIT to the agent itself; init must survive
+	// them to keep the bridges up. SIGTERM/SIGHUP are passed on.
+	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
+	code, err := sandbox.RunInit(ctx, sandbox.InitFromEnv(args))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "agent-office:", err)
+		return sandboxInitFailed
+	}
+	return code
 }
 
 // hookTimeout must stay below the hook timeout in the generated settings
