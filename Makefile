@@ -8,7 +8,7 @@ SQLC_VERSION ?= v1.31.1
 DEV_ROOT ?= $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/agent-office-dev
 DEV_DATA_DIR ?= $(DEV_ROOT)/data
 
-.PHONY: build web test lint check dev serve clean generate e2e
+.PHONY: build web test lint check dev serve clean generate e2e sandbox-test
 
 build: web
 	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/agent-office ./cmd/agent-office
@@ -37,6 +37,10 @@ check: lint test build
 e2e:
 	@test -n "$(AO_E2E_REPO)" || (echo "set AO_E2E_REPO to a trusted git repository"; exit 1)
 	AO_E2E_REPO="$(AO_E2E_REPO)" go test -tags e2e -count=1 -v -timeout 15m ./test/e2e/
+
+# Opt-in integration tests against real rootless Podman (no tokens; needs the pinned base image).
+sandbox-test:
+	go test -tags sandbox -race -count=1 -v ./internal/sandbox/
 
 # Run the built daemon against DEV_DATA_DIR, never the real data dir.
 #   make serve REPO=~/projects/agent-office-playground [ARGS="--dev --addr 127.0.0.1:7690"]

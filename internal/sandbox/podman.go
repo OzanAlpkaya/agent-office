@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -70,6 +72,14 @@ type HelperSpec struct {
 
 // ContainerName is the worker container's name for agentID.
 func ContainerName(agentID string) string { return containerPrefix + agentID }
+
+// helperName is a unique name for one helper run, so it can be removed by
+// name: stopping the podman client does not stop the container.
+func helperName(agentID string) string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return containerPrefix + "helper-" + agentID + "-" + hex.EncodeToString(b)
+}
 
 // builtinEnv are names the builder sets itself; callers cannot override them.
 var builtinEnv = map[string]bool{
@@ -160,34 +170,37 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 	return append(args, s.Command...), nil
 }
 
-// HelperArgs returns the `podman` arguments for a git helper container.
-func HelperArgs(s HelperSpec) ([]string, error) {
+// HelperArgs returns the container name and the `podman` arguments for a git
+// helper container. Run it with Podman.RunContainer, which removes it by
+// name if the run fails or is cancelled.
+func HelperArgs(s HelperSpec) (name string, args []string, err error) {
 	if !AgentIDPattern.MatchString(s.AgentID) {
-		return nil, fmt.Errorf("sandbox: invalid agent id %q", s.AgentID)
+		return "", nil, fmt.Errorf("sandbox: invalid agent id %q", s.AgentID)
 	}
 	if s.Image == "" || len(s.Command) == 0 {
-		return nil, fmt.Errorf("sandbox: helper needs an image and a command")
+		return "", nil, fmt.Errorf("sandbox: helper needs an image and a command")
 	}
-	args := baseArgs(s.AgentID, "helper", helperMemory, helperPids)
+	name = helperName(s.AgentID)
+	args = append(baseArgs(s.AgentID, "helper", helperMemory, helperPids), "--name", name)
 	for _, m := range []struct {
 		src, dst string
 		ro       bool
 	}{{s.Workspace, WorkspaceDir, false}, {s.ObjectsDir, s.ObjectsDir, true}} {
 		v, err := volume(m.src, m.dst, m.ro)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		args = append(args, "-v", v)
 	}
 	extra, err := checkEnv(s.Env)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	for _, kv := range append([]string{"HOME=" + HomeDir}, extra...) {
 		args = append(args, "-e", kv)
 	}
 	args = append(args, s.Image)
-	return append(args, s.Command...), nil
+	return name, append(args, s.Command...), nil
 }
 
 // baseArgs are the isolation flags every agent-office container gets.

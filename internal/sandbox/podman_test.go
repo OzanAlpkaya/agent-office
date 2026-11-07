@@ -122,10 +122,15 @@ func TestWorkerArgsRejects(t *testing.T) {
 }
 
 func TestHelperArgs(t *testing.T) {
-	args, err := HelperArgs(HelperSpec{AgentID: "abcdef123456", Image: "img",
+	name, args, err := HelperArgs(HelperSpec{AgentID: "abcdef123456", Image: "img",
 		Workspace: "/data/ws", ObjectsDir: "/repo/.git/objects", Command: []string{"git", "status"}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	name2, _, _ := HelperArgs(HelperSpec{AgentID: "abcdef123456", Image: "img",
+		Workspace: "/data/ws", ObjectsDir: "/repo/.git/objects", Command: []string{"git", "status"}})
+	if !strings.HasPrefix(name, "ao-helper-abcdef123456-") || name == name2 || !slices.Contains(flagValues(args, "--name"), name) {
+		t.Fatalf("helper names %q %q", name, name2)
 	}
 	img := slices.Index(args, "img")
 	opts := args[:img]
