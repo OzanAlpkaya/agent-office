@@ -152,12 +152,15 @@ func expectLines(t *testing.T, out string, want ...string) {
 	}
 }
 
+// TestWorkerImageAndInit runs the base image (no toolchain, ADR 0023); the
+// pack toolchains are tested in internal/engine (TestSandboxedPackToolchains).
 func TestWorkerImageAndInit(t *testing.T) {
 	script := `
 echo "uid=$(id -u) gid=$(id -g)"
 grep -E '^(CapEff|NoNewPrivs):' /proc/self/status | tr -s '\t ' ' '
 echo "net=$(ls /sys/class/net | tr '\n' ' ')"
-go version | cut -d' ' -f3; go env CGO_ENABLED GOTOOLCHAIN
+command -v go >/dev/null && echo go=present || echo go=absent
+command -v node >/dev/null && echo node=present || echo node=absent
 git --version >/dev/null && echo git=ok
 rg --version >/dev/null && echo rg=ok
 command -v ssh >/dev/null && echo ssh=present || echo ssh=absent
@@ -174,7 +177,7 @@ curl -s -o /dev/null -w 'api-noauth=%{http_code}\n' -X POST http://127.0.0.1:808
 	out, events := workerRun(t, script)
 	expectLines(t, out,
 		"uid=1000 gid=1000", "CapEff: 0000000000000000", "NoNewPrivs: 1", "net=lo ",
-		"go1.27.3", "0", "local", "git=ok", "rg=ok", "ssh=absent", "certs=ok", "rootfs=ro",
+		"go=absent", "node=absent", "git=ok", "rg=ok", "ssh=absent", "certs=ok", "rootfs=ro",
 		"token="+Placeholder, "tmpdir=own", "init-vars-leaked=0",
 		"author=Ozan <ozan@example.com>", "Co-Authored-By: worker-e2e (agent-office) <noreply@agent-office.invalid>",
 		"api-models=403", "api-noauth=401")
@@ -248,12 +251,10 @@ func TestWorkerEgress(t *testing.T) {
 curl -sS -o /dev/null -w 'proxy.golang.org=%{http_code}\n' https://proxy.golang.org/github.com/google/uuid/@v/list
 curl -sS -o /dev/null -w 'registry.npmjs.org=%{http_code}\n' https://registry.npmjs.org/left-pad
 curl -sS -o /dev/null https://github.com/ 2>/dev/null && echo github=reachable || echo github=blocked
-cd /tmp && mkdir m && cd m && go mod init example.com/m >/dev/null 2>&1 \
-  && go get github.com/google/uuid@v1.6.0 >/dev/null 2>&1 && echo go-get=ok || echo go-get=failed
 git ls-remote https://github.com/golang/go >/dev/null 2>&1 && echo git-github=reachable || echo git-github=blocked
 `
 	out, events := workerRun(t, script)
-	expectLines(t, out, "proxy.golang.org=200", "registry.npmjs.org=200", "github=blocked", "go-get=ok", "git-github=blocked")
+	expectLines(t, out, "proxy.golang.org=200", "registry.npmjs.org=200", "github=blocked", "git-github=blocked")
 	denied := 0
 	for _, e := range events {
 		if e.Kind == EgressDenied && e.Detail == "github.com:443" {

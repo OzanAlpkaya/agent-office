@@ -36,22 +36,26 @@ check: lint test build
 # Opt-in end-to-end test with real Claude Code sessions (haiku; costs a few cents).
 # The test passes --data-dir with a temp dir to every daemon it starts. TestEndToEnd runs host
 # mode in AO_E2E_REPO; TestSandboxEndToEnd runs a sandboxed agent on a throwaway clone of it and
-# needs podman, `make worker-image` and the OAuth token file (ADR 0015). TestGitHubEndToEnd also
+# needs podman, the OAuth token file (ADR 0015) and the image of the stack pack AO_E2E_PACK
+# (default go, the playground's stack: make worker-image PACK=go). TestGitHubEndToEnd also
 # pushes to GitHub and opens a PR there, only when AO_E2E_GITHUB_REPO (owner/name, the push remote
 # of AO_E2E_REPO) is set; it needs the GitHub token file (ADR 0020). AO_E2E_KEEP=1 keeps its PR.
 #   AO_E2E_REPO=~/projects/agent-office-playground make e2e
 #   AO_E2E_REPO=... AO_E2E_GITHUB_REPO=OzanAlpkaya/agent-office-playground make e2e
 e2e:
 	@test -n "$(AO_E2E_REPO)" || (echo "set AO_E2E_REPO to a trusted git repository"; exit 1)
-	AO_E2E_REPO="$(AO_E2E_REPO)" AO_E2E_GITHUB_REPO="$(AO_E2E_GITHUB_REPO)" go test -tags e2e -count=1 -v -timeout 40m ./test/e2e/
+	AO_E2E_REPO="$(AO_E2E_REPO)" AO_E2E_GITHUB_REPO="$(AO_E2E_GITHUB_REPO)" AO_E2E_PACK="$(AO_E2E_PACK)" go test -tags e2e -count=1 -v -timeout 40m ./test/e2e/
 
-# Build the worker image (podman; needs network). The tag comes from internal/sandbox/Containerfile.
+# Build the base worker image, and a stack pack's image with PACK=<name> (podman; needs network).
+# Tags come from internal/sandbox/Containerfile and the pack's files (ADR 0023).
+#   make worker-image PACK=go
 worker-image: build
-	./bin/agent-office worker-image
+	./bin/agent-office worker-image $(if $(PACK),--pack $(PACK))
 
 # Opt-in integration tests against real rootless Podman (no tokens; needs the pinned base image,
-# and `make worker-image` for the worker tests). AO_SANDBOX_NET=1 adds HTTPS through the egress
-# proxy, which needs internet access.
+# `make worker-image` for the worker tests, and the go and node pack images for the toolchain
+# tests: make worker-image PACK=go; make worker-image PACK=node). AO_SANDBOX_NET=1 adds HTTPS
+# through the egress proxy, which needs internet access.
 sandbox-test: build
 	go test -tags sandbox -race -count=1 -v ./internal/sandbox/ ./internal/engine/
 

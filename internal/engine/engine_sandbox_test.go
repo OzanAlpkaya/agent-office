@@ -67,6 +67,7 @@ while IFS= read -r line; do
           '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
           "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"$tool\",\"arguments\":$args}}"
         sleep 8; } | /opt/agent-office/agent-office mcp | grep '"id":2' | sed 's/^/mcp-reply=/' ;;
+    sh\ *) sh -c "${line#sh }" 2>&1 | sed 's/^/sh: /' ;;
     stop*) send Stop ;;
     exit*) send SessionEnd; exit 0 ;;
   esac
