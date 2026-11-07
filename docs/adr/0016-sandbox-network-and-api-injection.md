@@ -122,7 +122,10 @@ option, with the exfiltration risk stated in the UI.
     paths from their origin, so data can leave encoded in a module path. The allowlist narrows
     exfiltration but cannot close it.
 - Denials of `downloads.claude.ai` and `github.com` (the official plugin marketplace auto-install)
-  are expected and harmless. The UI shows them like any other denial.
+  are expected and harmless. The UI shows them like any other denial. In the Phase 3 runs (Claude
+  Code 2.1.319) these were the only denied hosts.
+- Events are stored per agent (rate-limited) and listed by `GET /api/agents/{id}/events`, so the
+  UI still shows them after a reload; live ones arrive as `sandbox_event` updates.
 - If Claude Code changes how it authenticates or which endpoints it calls, sessions fail with a
   visible, logged rejection. The fix is a small, evidence-based change to this proxy, or the
   fallback.

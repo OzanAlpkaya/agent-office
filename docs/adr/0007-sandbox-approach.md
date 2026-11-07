@@ -1,6 +1,7 @@
 # 0007. Isolation: rootless Podman per worker; Claude Code's sandbox at most as an inner layer
 
-- **Status:** Accepted (implementation in Phase 3)
+- **Status:** Accepted; implemented in Phase 3 (2026-11-07). Claude Code's sandbox nested inside
+  the worker is still untested: its prerequisite (nested user namespaces) holds (Spike F).
 - **Amended by:** ADR 0015 (credential source, not `podman secret`), ADR 0016 (`--network none`
   with per-agent egress and API sockets instead of an internal network and a proxy container;
   credential injection), ADR 0014 (git in the sandbox)
