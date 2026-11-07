@@ -82,6 +82,57 @@ image and restrictions as the agent (`--network none`, read-only rootfs, no capa
 - Import happens when the agent exits and on request from the UI. Phase 5 pushes from the main
   repository, never from the agent repository.
 
+**Ownership: agent repositories belong to a subordinate uid, not to the user** (revised
+2026-11-07, Spike F addendum `spikes/sandbox-claude/subuid.sh`):
+
+- The daemon is not the only program that runs git on the host. The shell prompt, editors (VS
+  Code refreshes repositories in the background), file managers and IDE plugins run git in any
+  folder they open. The rule "the host never runs git in agent repositories" cannot bind them.
+- Git refuses to work in a repository owned by another user ("detected dubious ownership",
+  `safe.directory`), and it does so **before reading the repository's config**. Agent workers
+  therefore run **without `--userns=keep-id`**, as container uid/gid `1000:1000`. On the host, that
+  is a subordinate id (`100999` with this machine's `/etc/subuid` range `100000:65536`). After
+  `CreateSharedClone`, the daemon hands the repository to that id with
+  `podman unshare chown -R 1000:1000`.
+- Measured: with the subordinate owner, host `git status`, `git log` and git inside `.git` were all
+  refused, and the planted `core.fsmonitor` never ran. The **control**, the same repository owned
+  by the user, ran the trap on a plain `git status`. Starship 1.27 did not run it even in the
+  user-owned control, so it was not a vector in this setup. VS Code's git integration and
+  Dolphin's git plugin use the git CLI as far as known; not tested here, and Dolphin's plugins
+  are not installed on this machine.
+- Options considered: keep `keep-id` and rely on the daemon guard plus warnings (protects nothing
+  outside the daemon); a deny-list in the user's global git config (git has none, and repository
+  config overrides global values); `--userns=auto`, with a separate id range per container
+  (stronger isolation between agents too, but needs extra subordinate-id setup; possible later).
+- Costs, all measured in the addendum:
+  - The host user cannot delete or modify agent files. Removal and "discard" use
+    `podman unshare rm -rf`, only on validated paths under the workspaces root.
+  - Files the agent creates are readable by the host user (container umask 022). Claude Code's
+    own 0600 files (e.g. `.claude.json`) are not. Token usage comes from the API socket
+    (ADR 0016), so the daemon does not need them.
+  - Uncommitted work in a kept repository can no longer be committed by hand there. The UI offers
+    **"Save uncommitted work"**: a helper container commits everything as a WIP commit (with the
+    trailer), and the daemon imports the branch.
+  - Mounted sockets must be usable by the subordinate id. Each socket stays mode 0600 and is
+    chowned to it with `podman unshare chown`. A socket owned by the user was not writable
+    for the agent. Its directory stays 0700 and owned by the user, so other host users still
+    cannot reach it. The daemon-generated settings file is mode 0644 in a 0700 directory, and
+    the per-agent config dir is chowned like the repository.
+  - The main repository's objects must be readable by "others" (the agent's id is not the
+    user). This holds with the usual umask 022 (`-r--r--r--` objects, `drwxr-xr-x` dirs). The
+    first helper call (status) doubles as a readiness check and fails with a clear message
+    otherwise.
+  - All agents share the same subordinate id. That is no regression (with `keep-id` they shared
+    the user's id), and each container only mounts its own paths.
+- Spike E's note that `keep-id` keeps worktree files owned by the user, so that host git keeps
+  working, no longer applies: host git in agent repositories is exactly what must not work.
+- **This does not make agent repositories safe to open.** Git refuses, but VS Code offers to mark
+  such a repository as safe (its "unsafe repository" handling; not tested here), which adds a `safe.directory` entry and switches the protection off
+  for that path. Other tools may read files without git (language servers, `.envrc`, project
+  scripts). The rule for the user: **do not `cd` into or open agent repositories. Use the branch
+  in the main repository.** The daemon puts a `README.txt` saying so in the workspaces root, the UI
+  shows it next to every workspace path, and the architecture document states it.
+
 **Commit identity:**
 - Author and committer come from the user's `user.name` / `user.email`, read by the daemon in the
   main repository and passed as `GIT_AUTHOR_*` / `GIT_COMMITTER_*` env vars.
@@ -101,8 +152,9 @@ image and restrictions as the agent (`--network none`, read-only rootfs, no capa
   - a dirty one is kept until the user discards it.
 - The daemon state (DB) records which kind of workspace an agent has (`worktree` in host mode,
   `clone` in sandbox mode). Migration 0002 adds this.
-- **The user should not run git inside an agent repository on the host** either. The same config
-  attack applies. The UI points to the branch in the main repository instead, and the docs say so.
+- **Do not `cd` into or open agent repositories on the host.** Subordinate-uid ownership stops git
+  itself, but not tools that read files directly or that offer to mark the repository as safe. The UI
+  points to the branch in the main repository instead.
 - Submodules and Git LFS are not supported in sandboxed workspaces yet: LFS needs network access,
   and submodules need their own object stores.
 - If the main repository itself uses alternates, the chain must be mounted too. This is not

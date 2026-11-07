@@ -124,7 +124,10 @@ clone (the main repository's objects read-only), its per-agent sockets and the r
 `agent-office` and versioned `claude` binaries. An init process bridges loopback ports to the egress
 socket (CONNECT allowlist) and the API socket, where the daemon injects the OAuth token, so the
 token never enters the container (ADR 0016). Work comes back as a bundle that the host verifies and
-fetches; the host never runs git inside the agent's repository (ADR 0014). Host mode (no sandbox,
+fetches; the host never runs git inside the agent's repository (ADR 0014). Agent repositories belong
+to a subordinate uid (no `--userns=keep-id`), so git run by host tools (prompt, editor, file
+manager) refuses to work there. **Do not `cd` into or open agent repositories; use the agent's
+branch in the main repository.** Host mode (no sandbox,
 permission prompts on) stays available as an explicit, labelled option.
 
 ## Domain model (first draft)
@@ -157,6 +160,7 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Secret leakage via the process list, `podman inspect`, disk or logs | Token in one user-only file, delivered over the agent socket, never `-e`, argv or `podman secret` (ADR 0015); `Secret` type redacts itself; never log env or hook payload contents; scrub `CLAUDE_CODE_*` from the child env | 1, 3 |
 | Agent exfiltrates its own credential | The token never enters the container: the daemon injects it on the API socket, which forwards only `POST /v1/messages` and logs and surfaces every rejected request (ADR 0016) | 3 |
 | Agent-written git config runs on the host (`core.fsmonitor`, hooks) | The host never runs git inside an agent repository after start (enforced in `internal/git`); work comes back as a verified bundle fetched with `transfer.fsckObjects` (ADR 0014, Spike F) | 3 |
+| Host tools (shell prompt, editor, file manager) run git in an agent repository and trigger agent-written config | Agent repositories are owned by a subordinate uid; git's `safe.directory` check refuses before reading their config (measured, ADR 0014). Residual: tools that offer to mark the repo safe, or read files without git; the UI and docs warn not to open agent repositories | 3 |
 | Agent spends inference without limit through the API socket | Budget limits on the API socket (deterministic, outside the model) | 4, 8 |
 | Agent escalates its own permissions | `request_access` needs human approval; access changes are made by deterministic code, not the model | 4 |
 | Runaway cost / loops | Stop-hook loop guard (`stop_hook_active`); per-agent budget and turn limits; cost tracking | 4, 8 |

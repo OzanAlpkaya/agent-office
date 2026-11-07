@@ -121,3 +121,26 @@ base `docker.io/library/debian:trixie-slim@sha256:7378260c0a098d27ac206225db5e7d
 
 - Claude Code's built-in sandbox nested inside the worker (prerequisite met, test deferred).
 - Long sessions: token refresh behaviour, many tool calls, subagents. Covered by the Phase 3 e2e run.
+
+## Addendum: agent repository owned by a subordinate uid (`./subuid.sh`)
+
+Question: host tools (shell prompt, editor, file manager) also run git in folders they open, and
+the daemon's rule cannot bind them. Does running the worker **without `--userns=keep-id`**, as
+container uid 1000 (host: subordinate uid 100999), let git's `safe.directory` check protect them?
+
+| Check | Result |
+|---|---|
+| Clone after `podman unshare chown -R 1000:1000` | owned by `100999:100999` on the host |
+| Agent commit inside, main objects via read-only alternates (umask 022 repo) | ok |
+| Host `git status` / `git log` / git inside `.git`, with a planted `core.fsmonitor` | refused ("detected dubious ownership"); **trap not run** |
+| `starship prompt` in the clone (default and the user's config) | trap not run |
+| **Control:** same clone owned by the host user (keep-id style), host `git status` | **trap ran** |
+| Control: `starship prompt` in the user-owned clone | trap not run (starship 1.27 is not a vector here) |
+| Bundle from a helper container to stdout, import on the host | ok |
+| Socket 0600 owned by the host user, used by container uid 1000 | not writable |
+| Same socket after `podman unshare chown 1000:1000` | writable (still 0600) |
+| Host `rm -rf` of the clone / `podman unshare rm -rf` | permission denied / ok |
+| Host user reads files the agent wrote | yes (container umask 022) |
+
+Decision recorded in ADR 0014. VS Code's and Dolphin's git integrations were not tested (no
+headless way; Dolphin's plugins are not installed on this machine).

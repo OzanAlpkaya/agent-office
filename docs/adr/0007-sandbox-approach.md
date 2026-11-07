@@ -35,7 +35,8 @@ Option 1 is the security boundary. Each worker container:
   allowlist proxy at a static IP (`HTTPS_PROXY`), CONNECT to port 443 only. The allowlist comes
   from stack packs (Phase 6) plus the agent CLI's API domains.
 - runs with `--read-only --cap-drop=all --security-opt no-new-privileges --userns=keep-id`, plus
-  pids and memory limits.
+  pids and memory limits. *(Revised in ADR 0014: no `keep-id`; workers run as container uid 1000,
+  a subordinate id on the host, so host tools refuse to run git in agent repositories.)*
 - mounts only its worktree, its agent socket, and the `agent-office` binary (read-only).
 - gets secrets through `podman secret` (type=env), never plain `-e`.
 - runs the agent CLI with its permission prompts disabled, **only inside the container**.
