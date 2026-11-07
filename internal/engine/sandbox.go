@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -33,6 +34,8 @@ type SandboxOptions struct {
 	Allow         sandbox.Allowlist // egress allowlist
 	Memory        string            // per-worker memory limit; empty: sandbox default
 	Pids          int               // per-worker pids limit; 0: sandbox default
+
+	apiUpstream *url.URL // tests only: the API proxy's upstream; nil: the Anthropic API
 }
 
 // workspacesReadme is put into the workspaces root (ADR 0014).
@@ -215,7 +218,7 @@ func (e *Engine) launchSandboxed(id, sid, branch, wsPath, base, taskID string, s
 	if err != nil {
 		return fail(err)
 	}
-	api := &sandbox.APIProxy{Token: prep.token, OnEvent: onEvent, Log: log.With("proxy", "api")}
+	api := &sandbox.APIProxy{Token: prep.token, Upstream: s.apiUpstream, OnEvent: onEvent, Log: log.With("proxy", "api")}
 	res.api = &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = res.api.Serve(apiLn) }()
 

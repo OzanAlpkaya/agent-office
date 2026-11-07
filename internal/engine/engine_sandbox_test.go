@@ -5,11 +5,20 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -48,6 +57,8 @@ while IFS= read -r line; do
     amend*) cd /workspace && git commit -q --amend -m "feat: agent work (amended)" && echo amended ;;
     nohook*) cd /workspace && git -c core.hooksPath=/dev/null commit -q --allow-empty -m "chore: no trailer" && echo nohook ;;
     dirty*) echo wip > /workspace/uncommitted.txt && echo dirty ;;
+    message*) curl -s -o /dev/null -w 'message=%{http_code}\n' -X POST -H 'content-type: application/json' \
+      -H "Authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN" -d '{"model":"m","messages":[]}' http://127.0.0.1:8080/v1/messages ;;
     exit*) send SessionEnd; exit 0 ;;
   esac
 done
@@ -534,5 +545,177 @@ func TestSandboxedRestartRemovesOrphanAndImports(t *testing.T) {
 	got, _ := e2.Get(a.ID)
 	if got.ExitReason != ExitDaemonRestart {
 		t.Fatalf("exit reason %q", got.ExitReason)
+	}
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) Bytes() []byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return bytes.Clone(l.b.Bytes())
+}
+
+// noToken fails if data contains the token; the message names only where.
+func noToken(t *testing.T, where string, data []byte, token string) {
+	t.Helper()
+	if len(data) == 0 {
+		t.Errorf("%s: nothing to check", where)
+	}
+	if bytes.Contains(data, []byte(token)) {
+		t.Errorf("the token is in %s", where)
+	}
+}
+
+// hostFiles concatenates the regular files under dir, skipping skip.
+func hostFiles(t *testing.T, dir, skip string) []byte {
+	t.Helper()
+	var all []byte
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && p == skip {
+			return filepath.SkipDir
+		}
+		if d.Type().IsRegular() {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			all = append(all, b...)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return all
+}
+
+// agentFilesContain greps files owned by the container's subordinate uid.
+// The pattern goes through stdin, never argv, which other users can read.
+func agentFilesContain(t *testing.T, token string, dirs ...string) bool {
+	t.Helper()
+	cmd := exec.Command("podman", append([]string{"unshare", "grep", "-rqF", "-f", "-", "--"}, dirs...)...)
+	cmd.Stdin = strings.NewReader(token + "\n")
+	err := cmd.Run()
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return true
+	case errors.As(err, &ee) && ee.ExitCode() == 1:
+		return false
+	default:
+		t.Fatalf("grep agent files: %v", err)
+		return false
+	}
+}
+
+// TestSandboxedTokenStaysOutside is the Phase 3 secrets DoD (ADR 0015, ADR
+// 0016): the OAuth token from the token file reaches the API upstream and
+// nothing else. It is absent from the worker's processes, env and files,
+// podman inspect, the runtime dir, the terminal, updates, logs, the database
+// and both repositories.
+func TestSandboxedTokenStaysOutside(t *testing.T) {
+	f := sandboxFixture(t, false)
+	token := "sk-ant-oat01-aoCanary" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if err := os.WriteFile(f.opts.Sandbox.TokenFile, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logs lockedBuffer
+	f.opts.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	auth := make(chan string, 4)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"type":"message","content":[]}`)
+	}))
+	t.Cleanup(up.Close)
+	f.opts.Sandbox.apiUpstream, _ = url.Parse(up.URL)
+	e := f.engine(t)
+	log := record(t, e)
+	ctx := context.Background()
+	task, err := e.CreateTask(ctx, TaskInput{Title: "Sayfalama ekle", Description: "GET /bookmarks"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := e.Start(ctx, StartRequest{TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 30*time.Second, agentState(a.ID, hooks.Idle))
+
+	// Positive control: the proxy injects the token from the file.
+	typeLine(t, e, a.ID, "message")
+	screen(t, e, a.ID, "message=200\n")
+	select {
+	case got := <-auth:
+		if got != "Bearer "+token {
+			t.Fatal("the upstream did not get the token from the token file")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no request reached the upstream")
+	}
+
+	name := sandbox.ContainerName(a.ID)
+	inspect, err := exec.Command("podman", "inspect", name).Output()
+	if err != nil || !bytes.Contains(inspect, []byte("CLAUDE_CODE_OAUTH_TOKEN="+sandbox.Placeholder)) {
+		t.Fatalf("podman inspect without the placeholder env: %v", err)
+	}
+	noToken(t, "podman inspect", inspect, token)
+	inside, err := exec.Command("podman", "exec", name, "sh", "-c",
+		`cat /proc/[0-9]*/environ /proc/[0-9]*/cmdline 2>/dev/null; find /workspace /config /tmp /run -type f -exec cat {} + 2>/dev/null; true`).Output()
+	if err != nil || !bytes.Contains(inside, []byte("sandbox-init")) {
+		t.Fatalf("worker processes not read: %v", err)
+	}
+	noToken(t, "the worker's processes, env and files", inside, token)
+	noToken(t, "the runtime dir", hostFiles(t, filepath.Join(f.opts.RuntimeDir, "agents", a.ID), ""), token)
+
+	typeLine(t, e, a.ID, "commit")
+	noToken(t, "the terminal", []byte(screen(t, e, a.ID, "committed 1\n")), token)
+	exitAgent(t, e, log, a.ID)
+	if imp := waitImport(t, log, a.ID, TriggerExit); imp.Commits != 1 {
+		t.Fatalf("import %+v", imp)
+	}
+
+	log.mu.Lock()
+	ups, err := json.Marshal(log.all)
+	log.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	noToken(t, "the updates", ups, token)
+	noToken(t, "the daemon log", logs.Bytes(), token)
+	for _, p := range []string{f.dbp, f.dbp + "-wal"} {
+		b, err := os.ReadFile(p)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if err == nil {
+			noToken(t, filepath.Base(p), b, token)
+		}
+	}
+	history, err := exec.Command("git", "-C", f.repo, "log", "--all", "-p", "--format=raw").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	noToken(t, "the main repository's history", history, token)
+	noToken(t, "the main repository's files", hostFiles(t, f.repo, filepath.Join(f.repo, ".git", "objects")), token)
+	if agentFilesContain(t, token, a.WorktreePath, f.opts.Sandbox.AgentsRoot) {
+		t.Error("the token is in the agent's repository or config dir")
+	}
+	// The check above can find it: the token file itself.
+	if !agentFilesContain(t, token, filepath.Dir(f.opts.Sandbox.TokenFile)) {
+		t.Fatal("grep did not find the token in the token file")
 	}
 }

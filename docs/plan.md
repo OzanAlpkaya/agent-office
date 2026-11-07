@@ -93,7 +93,8 @@ derived from Claude Code hooks.
 **Scope**
 - Rootless Podman container per worker, with only the worktree mounted.
 - Egress allowlist (deny by default, allow listed domains).
-- Secrets passed as environment variables at launch; never written to disk or logs.
+- Secrets stay outside the worker: the daemon reads the OAuth token from a user-only file and
+  its API proxy injects it (ADR 0015, ADR 0016); never written to disk or logs by agent-office.
 - Agents run with permission prompts disabled only inside the sandbox.
 - One worker image (`internal/sandbox/Containerfile`): Debian slim pinned by digest,
   ca-certificates, git (no SSH client), curl, ripgrep, and the toolchain the playground needs:
@@ -103,7 +104,7 @@ derived from Claude Code hooks.
 
 **Definition of Done**
 - [ ] A worker cannot read files outside its worktree or reach non-allowlisted domains (tested).
-- [ ] Secrets are present in the agent's env and absent from logs, DB and repo (tested).
+- [ ] The OAuth token is absent from the agent's env, logs, DB, repo and `podman inspect` (tested).
 - [ ] Threat model updated; ADR on Podman vs Claude Code sandbox accepted.
 
 ---
