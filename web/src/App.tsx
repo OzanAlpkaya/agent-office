@@ -23,6 +23,7 @@ const exitLabel: Record<string, string> = {
   start_failed: "start failed",
   reported_done: "reported done",
   review_submitted: "review submitted",
+  follow_up: "ended for a review follow-up",
 };
 
 const importOutcome: Record<string, string> = {

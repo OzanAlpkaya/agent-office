@@ -40,9 +40,13 @@ Option 3 and option 2.
 - **Actionable feedback:** verdict `changes_requested` (internal: the agent's verdict; CodeRabbit:
   ADR 0021's mapping). `approve` and `comment` verdicts are shown and end the round.
 - **Follow-up**, decided per review, recorded in `reviews.followup`:
-  - The PR's **original agent still runs** (a top-level worker that kept its session): the
-    feedback goes to it as a message from agent-office (ADR 0018 delivery) → `messaged`.
-  - It has **exited** and its workspace exists (not removed): the task moves back to
+  - The PR's **original agent still runs** (a top-level worker keeps its session after
+    `report_done`): agent-office waits until it is idle and the user has not typed in its terminal
+    for a minute, ends it (exit reason `follow_up`), and relaunches it as below. Changed during the
+    phase: the first version sent the review as a team message (ADR 0018), and in the real e2e run
+    haiku read it as "information from other agents", ended its turn and did nothing. The
+    follow-up instruction must come from agent-office in a prompt, not as a team message.
+  - It has **exited** (or was just ended) and its workspace exists (not removed): the task moves back to
     `in_progress` and the agent is **relaunched**: same agent id, workspace, branch and base, a new
     session id (a new `sessions` row), the agent row reopened (state `starting`, exit fields
     cleared). The prompt is the task, the PR, the review (verdict, summary, each comment as
@@ -61,8 +65,7 @@ Option 3 and option 2.
   import runs; within `--max-agents`; leads and reviewers are never relaunched.
 - **Messages and sessions:** a relaunched agent keeps its id, so message delivery only considers
   messages queued during the current session; one meant for the previous session is never
-  delivered to the next one (ADR 0018). If a worker exits before a review sent to it as a message
-  was delivered, it is relaunched with the review in its prompt instead.
+  delivered to the next one (ADR 0018).
 - **Restart:** a follow-up whose worker died with the daemon before it pushed a new head is set to
   `refused` with that reason, so "Send to worker" offers it again.
 - **Removal:** removing an agent whose PR is open is allowed (the branch is in the main repository

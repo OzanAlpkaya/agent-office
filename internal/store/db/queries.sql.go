@@ -456,26 +456,6 @@ func (q *Queries) GetAccessRequest(ctx context.Context, id int64) (AccessRequest
 	return i, err
 }
 
-const getMessage = `-- name: GetMessage :one
-SELECT id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery FROM messages WHERE id = ?
-`
-
-func (q *Queries) GetMessage(ctx context.Context, id int64) (Message, error) {
-	row := q.db.QueryRowContext(ctx, getMessage, id)
-	var i Message
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.FromAgentID,
-		&i.ToAgentID,
-		&i.Body,
-		&i.CreatedAt,
-		&i.DeliveredAt,
-		&i.Delivery,
-	)
-	return i, err
-}
-
 const getPullRequest = `-- name: GetPullRequest :one
 SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at FROM pull_requests WHERE id = ?
 `

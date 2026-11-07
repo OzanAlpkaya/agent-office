@@ -54,6 +54,7 @@ const (
 	ExitStartFailed   = "start_failed"
 	ExitReported      = "reported_done"    // the agent called report_done and its turn ended (ADR 0017)
 	ExitReviewed      = "review_submitted" // a reviewer called submit_review and its turn ended (ADR 0021)
+	ExitFollowUp      = "follow_up"        // ended to be relaunched with review feedback (ADR 0022)
 )
 
 // Worktree statuses (ADR 0010).
@@ -729,9 +730,6 @@ func (e *Engine) watch(a *agentProc) {
 	close(a.afterExit)
 	if a.reviewID != 0 {
 		e.reviewerExited(a.reviewID, a.info.ID)
-	}
-	if e.gh != nil {
-		e.followupAfterExit(a.info.ID)
 	}
 }
 

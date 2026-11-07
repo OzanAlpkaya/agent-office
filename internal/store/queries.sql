@@ -116,9 +116,6 @@ RETURNING *;
 -- name: CountPendingMessages :one
 SELECT count(*) FROM messages WHERE to_agent_id = ? AND delivered_at IS NULL AND created_at >= ?;
 
--- name: GetMessage :one
-SELECT * FROM messages WHERE id = ?;
-
 -- name: CountMessagesSentSince :one
 SELECT count(*) FROM messages WHERE from_agent_id = ? AND created_at >= ?;
 

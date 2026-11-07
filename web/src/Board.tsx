@@ -152,7 +152,7 @@ const verdictLabel: Record<string, string> = {
   approve: "approves", changes_requested: "requests changes", comment: "comments",
 };
 const followupLabel: Record<string, string> = {
-  started: "sent to the worker (relaunched)", messaged: "sent to the worker (message)",
+  started: "sent to the worker (relaunched)",
   skipped: "not sent: round limit", refused: "could not be sent",
 };
 

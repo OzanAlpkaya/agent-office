@@ -250,12 +250,13 @@ many review rounds run on their own) is decided by deterministic Go code in the 
   `pull_requests.pending_flagged` during the phase (not applied anywhere outside tests yet).
 - **People's GitHub reviews** are recorded (reviewer `human`) and offered with "Send to worker";
   they never start anything on their own.
-- **A running worker gets the review as a message** (a top-level worker keeps its session after
-  `report_done`); only exited workers are relaunched.
+- **A running worker is ended (once idle, the user not typing) and relaunched** with the review.
+  The first version sent it the review as a team message; in the real e2e run haiku read that as
+  "information from other agents" (ADR 0018's framing), ended its turn and changed nothing. The
+  follow-up instruction now always comes from agent-office in a prompt (ADR 0022 updated).
 - **Messages are delivered only to the session they were queued for**, found while testing the
   relaunch: a relaunched agent keeps its id and would otherwise get its previous session's
-  messages (ADR 0018 says it must not). A review message that a worker misses by exiting
-  relaunches it with the review in its prompt.
+  messages (ADR 0018 says it must not).
 - **`Shutdown` refuses new starts and waits for starts in progress**, so a follow-up cannot start
   an agent while the daemon stops (found as a test hang).
 - **The exit import runs before `afterExit` closes**, and a relaunch waits for it.
@@ -264,7 +265,8 @@ many review rounds run on their own) is decided by deterministic Go code in the 
   reviews per PR; reviews of older heads are superseded; an internal reviewer that never submits
   is ended after 30 minutes; titles and Markdown images in agent text are neutralized; early
   refusals are recorded on the PR row; follow-ups left by a restart are offered again; a failed
-  relaunch puts the task back; a recording error after posting never allows a second post.
+  relaunch puts the task back; a recording error after posting never allows a second post. (The
+  review's message-race findings went away with the message path.)
 - **Not done live:** CodeRabbit. It is covered by the shared contract test and a filter test
   against the fake; a live run needs the CodeRabbit app installed on the private playground
   (possibly a paid plan), which is Ozan's call.

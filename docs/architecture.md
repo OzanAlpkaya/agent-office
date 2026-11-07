@@ -187,7 +187,7 @@ sequenceDiagram
   D->>R: start on the PR head (own review branch, own slot)
   R->>D: submit_review(verdict, summary, comments)
   D->>G: COMMENT review on the reviewed commit
-  D->>W: changes requested: relaunch in its workspace with the review (or a message if it still runs)
+  D->>W: changes requested: relaunch in its workspace with the review in its prompt
   W->>D: commit, report_done → push (fast-forward) → same PR, next review
   Note over D,G: poll loop: PR state, checks, CodeRabbit and people's reviews; a human merge → task done
 ```
@@ -198,7 +198,8 @@ sequenceDiagram
   review and posts it as a `COMMENT` review. CodeRabbit is read by bot login and reviewed commit
   (ADR 0021).
 - Actionable feedback (`changes_requested`) from the configured reviewer relaunches the original
-  worker: same agent, workspace and branch, new session, the review quoted in its prompt; at most
+  worker (a still-running one is ended first, once idle): same agent, workspace and branch, new
+  session, the review quoted in its prompt; at most
   `--review-rounds` (default 2) automatic rounds per PR, then "Send to worker" by hand (ADR 0022).
   Messages are only delivered to the session they were queued for.
 - Polling: every 30 s while a review or checks are pending, every 2 minutes otherwise; no webhooks
