@@ -360,6 +360,48 @@ func (q *Queries) ListImports(ctx context.Context, arg ListImportsParams) ([]Imp
 	return items, nil
 }
 
+const listSandboxEvents = `-- name: ListSandboxEvents :many
+SELECT id, agent_id, session_id, kind, hook, tool, detail, state, at FROM events WHERE agent_id = ? AND hook = 'sandbox' ORDER BY id DESC LIMIT ?
+`
+
+type ListSandboxEventsParams struct {
+	AgentID string
+	Limit   int64
+}
+
+func (q *Queries) ListSandboxEvents(ctx context.Context, arg ListSandboxEventsParams) ([]Event, error) {
+	rows, err := q.db.QueryContext(ctx, listSandboxEvents, arg.AgentID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.SessionID,
+			&i.Kind,
+			&i.Hook,
+			&i.Tool,
+			&i.Detail,
+			&i.State,
+			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTasks = `-- name: ListTasks :many
 SELECT id, project_id, title, description, status, created_at, updated_at FROM tasks WHERE project_id = ? ORDER BY created_at, id
 `

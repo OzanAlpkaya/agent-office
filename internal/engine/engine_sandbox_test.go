@@ -265,6 +265,9 @@ func TestSandboxedAgentLifecycle(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("sandbox events persisted: %d", n)
 	}
+	if evs, err := e.SandboxEvents(ctx, a.ID, 10); err != nil || len(evs) != 1 || evs[0].Detail != "GET /v1/models" {
+		t.Fatalf("listed sandbox events %+v %v", evs, err)
+	}
 	if st := e.Status(); st.Sandbox != SandboxPodman || st.Image != sandbox.WorkerImage() {
 		t.Fatalf("status %+v", st)
 	}

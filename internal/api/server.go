@@ -62,6 +62,7 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/agents/{id}/discard", s.discardAgent)
 	mux.HandleFunc("POST /api/agents/{id}/import", s.importAgent)
 	mux.HandleFunc("POST /api/agents/{id}/save-work", s.saveWork)
+	mux.HandleFunc("GET /api/agents/{id}/events", s.agentEvents)
 	mux.HandleFunc("DELETE /api/agents/{id}", s.removeAgent)
 	mux.HandleFunc("GET /api/agents/{id}/terminal", s.terminalWS)
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
@@ -168,6 +169,16 @@ func (s *server) saveWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, imp)
+}
+
+// agentEvents lists an agent's recent sandbox events, newest first (ADR 0016).
+func (s *server) agentEvents(w http.ResponseWriter, r *http.Request) {
+	evs, err := s.eng.SandboxEvents(r.Context(), r.PathValue("id"), 50)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, evs)
 }
 
 // removeAgent cleans up the worktree (keeping uncommitted work, ADR 0010).

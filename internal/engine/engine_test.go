@@ -17,6 +17,7 @@ import (
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
@@ -540,5 +541,43 @@ func TestTaskPrompt(t *testing.T) {
 	}
 	if strings.Contains(taskPrompt("T", "", "b"), "\n\n\n") {
 		t.Error("empty description leaves a blank block")
+	}
+}
+
+func TestSandboxEventsListsOnlySandboxEventsNewestFirst(t *testing.T) {
+	f := newFixture(t)
+	e := f.engine(t)
+	ctx := context.Background()
+	updates, cancel := e.Subscribe()
+	defer cancel()
+	a, err := e.Start(ctx, StartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitAgent(t, updates, a.ID, hooks.Idle)
+	at := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	for i, ev := range []db.InsertEventParams{
+		{Kind: "egress_denied", Hook: "sandbox", Detail: "github.com:443"},
+		{Kind: "Stop", Hook: "Stop"}, // a hook event: not listed
+		{Kind: "api_rejected", Hook: "sandbox", Detail: "GET /v1/models"},
+	} {
+		ev.AgentID, ev.SessionID, ev.State, ev.At = a.ID, a.SessionID, "idle", at.Add(time.Duration(i)*time.Second)
+		if err := f.store.Q.InsertEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := e.SandboxEvents(ctx, a.ID, 10)
+	if err != nil || len(got) != 2 || got[0].Detail != "GET /v1/models" || got[1].Kind != sandbox.EgressDenied ||
+		!got[1].At.Equal(at) {
+		t.Fatalf("events %+v %v", got, err)
+	}
+	if got, _ := e.SandboxEvents(ctx, a.ID, 1); len(got) != 1 {
+		t.Fatalf("limit 1: %+v", got)
+	}
+	if _, err := e.SandboxEvents(ctx, "nope", 10); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown agent: %v", err)
+	}
+	if _, err := e.SandboxEvents(ctx, a.ID, 0); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("limit 0: %v", err)
 	}
 }

@@ -325,6 +325,33 @@ func (e *Engine) sandboxEvent(id string, ev sandbox.Event) {
 	e.publishLocked(Update{Type: "sandbox_event", SandboxEvent: &SandboxEvent{AgentID: id, Event: ev}})
 }
 
+// MaxSandboxEventsListed bounds SandboxEvents.
+const MaxSandboxEventsListed = 100
+
+// SandboxEvents returns agent id's most recent recorded sandbox events
+// (proxy refusals and import problems), newest first, at most limit (1 to
+// MaxSandboxEventsListed). Host agents have none.
+func (e *Engine) SandboxEvents(ctx context.Context, id string, limit int) ([]sandbox.Event, error) {
+	if limit < 1 || limit > MaxSandboxEventsListed {
+		return nil, fmt.Errorf("%w: limit must be 1 to %d", ErrInvalid, MaxSandboxEventsListed)
+	}
+	e.mu.Lock()
+	_, ok := e.agents[id]
+	e.mu.Unlock()
+	if !ok {
+		return nil, ErrNotFound
+	}
+	rows, err := e.q.ListSandboxEvents(ctx, db.ListSandboxEventsParams{AgentID: id, Limit: int64(limit)})
+	if err != nil {
+		return nil, fmt.Errorf("engine: list sandbox events: %w", err)
+	}
+	out := make([]sandbox.Event, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, sandbox.Event{Kind: sandbox.EventKind(r.Kind), Detail: r.Detail, At: r.At.UTC()})
+	}
+	return out, nil
+}
+
 func listenUnix(path string) (net.Listener, error) {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err

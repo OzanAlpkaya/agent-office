@@ -195,6 +195,22 @@ func TestImportRefusesHostAgents(t *testing.T) {
 	}
 }
 
+func TestAgentEventsAPI(t *testing.T) {
+	f := newFixture(t)
+	ct := map[string]string{"Content-Type": "application/json"}
+	r := f.doBody(t, "POST", "/api/agents", ct, `{}`)
+	var a engine.AgentInfo
+	_ = json.NewDecoder(r.Body).Decode(&a)
+	r = f.doBody(t, "GET", "/api/agents/"+a.ID+"/events", nil, "")
+	body, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "[]" {
+		t.Fatalf("events of a host agent: %d %s", r.StatusCode, body)
+	}
+	if r := f.doBody(t, "GET", "/api/agents/nope/events", nil, ""); r.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown agent: %d", r.StatusCode)
+	}
+}
+
 func TestTasksAPI(t *testing.T) {
 	f := newFixture(t)
 	json415 := f.doBody(t, "POST", "/api/tasks", nil, `{"title":"x"}`) // no Content-Type

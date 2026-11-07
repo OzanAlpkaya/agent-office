@@ -76,6 +76,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 -- name: ListEvents :many
 SELECT * FROM events WHERE agent_id = ? ORDER BY id DESC LIMIT ?;
 
+-- name: ListSandboxEvents :many
+SELECT * FROM events WHERE agent_id = ? AND hook = 'sandbox' ORDER BY id DESC LIMIT ?;
+
 -- name: InsertImport :one
 INSERT INTO imports (agent_id, trigger, outcome, branch, head, previous, commits, flagged, at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
