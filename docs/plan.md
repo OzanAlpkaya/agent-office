@@ -163,12 +163,15 @@ derived from Claude Code hooks.
 
 **Goal:** Configure agents per tech stack with declarative YAML packs.
 
-**Scope**
+**Scope** (see ADR 0023, `docs/packs.md` and `docs/plans/phase-6.md`)
 - YAML per tool/stack: allowed domains, skills, MCP servers, env var names (names only, no values),
   and the **toolchain**, i.e. which worker image a project's agents get. This replaces Phase 3's single
   image, which carries only the playground's Go toolchain (e.g. a Go pack with a C toolchain for
   `-race`, a Node/TypeScript pack with Node and npm).
 - Schema validation with clear errors; packs applied when launching an agent/sandbox.
+- Packs come from the binary or a user-owned directory, never from the repository; one per daemon
+  run (`--pack`). The Phase 3 image becomes a base image without a toolchain (the default); pack
+  images build `FROM` it. Secret values are user-only files, served once to the container's init.
 
 **Definition of Done**
 - [ ] At least two example packs (e.g. Go, Node/TypeScript).
