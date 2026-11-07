@@ -1,6 +1,6 @@
 # web
 
-React + Vite + TypeScript UI (xterm.js for terminals; PixiJS arrives in Phase 7).
+React + Vite + TypeScript UI: xterm.js for terminals, PixiJS for the office view.
 
 - `npm run build` writes to `dist/app/`, which `web/embed.go` embeds into the binary (ADR 0005).
   Without a build, the binary serves a placeholder page.
@@ -8,3 +8,14 @@ React + Vite + TypeScript UI (xterm.js for terminals; PixiJS arrives in Phase 7)
   the daemon. Start the daemon with `--dev` so it accepts that origin.
 - API types in `src/api.ts` mirror the Go structs by hand; messages from the events WebSocket
   are validated before use.
+- `src/office/` is the Office tab (ADR 0024): pure modules (`art`, `pose`, `layout`, `model`)
+  and the Pixi scene (`scene`, `textures`) behind a lazy-loaded React component (`Office.tsx`).
+  The art is drawn in code; see `src/office/ART.md`.
+
+## Tests (ADR 0025)
+
+- `npm test` (in `make check`): Vitest unit tests, `src/**/*.test.ts`.
+- `npm run ui-test` (`make ui-test`, opt-in): Playwright against `vite preview` of the build, with
+  a mocked daemon (`ui-tests/daemon.ts`); no daemon or tokens needed. Install the browser once
+  with `npx playwright install chromium-headless-shell` (it goes to `~/.cache/ms-playwright`).
+  Screenshots are written to `test-results/screens/`.
