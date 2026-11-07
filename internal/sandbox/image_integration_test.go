@@ -23,7 +23,9 @@ import (
 // workerRun starts a real worker container (WorkerArgs + sandbox-init) in a
 // PTY, with host-side egress and API proxies on unix sockets, and a shell
 // script in place of the agent CLI. It returns the terminal output and the
-// proxy events.
+// proxy events. In the script, @ROOT@ is the host directory that holds the
+// mounted workspace, config and objects directories, next to a host-only
+// file (host-only.txt) the worker must not see.
 func workerRun(t *testing.T, script string) (string, []Event) {
 	t.Helper()
 	p := Podman{}
@@ -47,6 +49,15 @@ func workerRun(t *testing.T, script string) (string, []Event) {
 		return d
 	}
 	ws, cfgDir, objects, socks := dir("ws", 0o755), dir("config", 0o755), dir("objects", 0o755), dir("socks", 0o700)
+	if err := os.WriteFile(filepath.Join(root, "host-only.txt"), []byte("host\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// World-writable, so only the read-only mount can stop a write from the
+	// worker (its uid is a subordinate uid that file modes would stop too).
+	if err := os.Chmod(objects, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	script = strings.ReplaceAll(script, "@ROOT@", root)
 	hooks := filepath.Join(root, "git-hooks")
 	if err := WriteGitHooks(hooks); err != nil {
 		t.Fatal(err)
@@ -166,6 +177,58 @@ curl -s -o /dev/null -w 'api-noauth=%{http_code}\n' -X POST http://127.0.0.1:808
 	}
 	if kinds[APIRejected] != "GET /v1/models" || kinds[APIAuth] != "POST /v1/messages" {
 		t.Fatalf("events %+v", events)
+	}
+}
+
+// TestWorkerIsolation is the Phase 3 isolation DoD inside a real worker: no
+// host files beyond the mounts, read-only mounts stay read-only, no SSH or git
+// credentials, and no network except the egress proxy, which refuses
+// non-allowlisted hosts, other ports and plain HTTP. Every refusal happens
+// before an upstream dial, so the test needs no internet access.
+func TestWorkerIsolation(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `
+test -e @ROOT@/host-only.txt && echo host-file=visible || echo host-file=hidden
+test -e ` + home + ` && echo host-home=visible || echo host-home=hidden
+echo "home-entries=$(ls -A /home | wc -l)"
+test -e /run/user && echo run-user=present || echo run-user=absent
+test -e "$HOME/.ssh" && echo ssh-dir=present || echo ssh-dir=absent
+test -e "$HOME/.gitconfig" && echo gitconfig=present || echo gitconfig=absent
+echo "ssh-auth-sock=${SSH_AUTH_SOCK:-unset}"
+env | grep -ciE '^(GH|GITHUB|GIT_ASKPASS|SSH_ASKPASS|ANTHROPIC_API_KEY)' | sed 's/^/credential-vars=/'
+git config --global --get-regexp '^credential' >/dev/null && echo git-credential-helper=set || echo git-credential-helper=none
+grep -q sandbox-init /proc/1/cmdline && echo pid1=sandbox-init
+touch @ROOT@/objects/x 2>&1 | grep -q 'Read-only file system' && echo objects=ro
+touch /opt/agent-office/x 2>&1 | grep -q 'Read-only file system' && echo opt=ro
+touch /opt/claude/x 2>&1 | grep -q 'Read-only file system' && echo claude-dir=ro
+touch /workspace/x 2>/dev/null && echo workspace=writable
+getent hosts example.com >/dev/null 2>&1 && echo dns=works || echo dns=none
+curl --noproxy '*' -s -m 5 -o /dev/null https://1.1.1.1/ && echo direct-tcp=works || echo direct-tcp=blocked
+curl -s -m 10 -o /dev/null -w 'connect-github=%{http_connect}\n' https://github.com/
+curl -s -m 10 -x http://127.0.0.1:3128 -p -o /dev/null -w 'connect-port22=%{http_connect}\n' http://proxy.golang.org:22/
+curl -s -m 10 -x http://127.0.0.1:3128 -o /dev/null -w 'plain-http=%{http_code}\n' http://proxy.golang.org/
+cd /workspace && git init -q -b main && git commit -q --allow-empty -m 'chore: x' \
+  && git push https://github.com/example/repo.git main 2>&1 | grep -q 'CONNECT tunnel failed, response 403' \
+  && echo git-push-https=refused
+`
+	out, events := workerRun(t, script)
+	expectLines(t, out,
+		"host-file=hidden", "host-home=hidden", "home-entries=0", "run-user=absent",
+		"ssh-dir=absent", "gitconfig=absent", "ssh-auth-sock=unset", "credential-vars=0", "git-credential-helper=none",
+		"pid1=sandbox-init", "objects=ro", "opt=ro", "claude-dir=ro", "workspace=writable",
+		"dns=none", "direct-tcp=blocked", "connect-github=403", "connect-port22=403", "plain-http=405",
+		"git-push-https=refused")
+	denied := map[string]int{}
+	for _, e := range events {
+		if e.Kind == EgressDenied {
+			denied[e.Detail]++
+		}
+	}
+	if denied["github.com:443"] < 2 || denied["proxy.golang.org:22"] != 1 || denied["GET proxy.golang.org"] != 1 {
+		t.Fatalf("want denials for github.com:443 (curl, git), proxy.golang.org:22 and plain GET, got %+v", events)
 	}
 }
 
