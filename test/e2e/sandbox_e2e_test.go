@@ -196,6 +196,30 @@ func TestSandboxEndToEnd(t *testing.T) {
 	}
 	noToken(t, "the worker's processes, env and files (including Claude Code's config and transcripts)", inside, token)
 
+	// Claude Code lists the pack's skill: /skills shows the available skills without a model call
+	// (code.claude.com/docs/en/commands). Esc closes the list.
+	if e2ePack() == "go" {
+		tm := attach(t, ctx, d.base, a.ID)
+		time.Sleep(2 * time.Second) // the scrollback replay and redraw after attaching
+		from := tm.len()            // only output after /skills counts: the task turn may name the skill
+		tm.typeLine(ctx, "/skills")
+		after := func() string {
+			tm.mu.Lock()
+			defer tm.mu.Unlock()
+			return ansi.ReplaceAllString(string(tm.buf.Bytes()[from:]), "")
+		}
+		listed := false
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline) && !listed; time.Sleep(500 * time.Millisecond) {
+			listed = strings.Contains(after(), "go-sandbox")
+		}
+		tm.send(ctx, "\x1b")
+		if !listed {
+			t.Errorf("/skills did not list the pack's go-sandbox skill:\n%s", tail(after(), 40))
+		} else {
+			t.Log("/skills lists the pack's go-sandbox skill")
+		}
+	}
+
 	// Hard crash: the worker outlives the daemon; the restart removes it and
 	// imports the agent's work.
 	d.signal(syscall.SIGKILL)

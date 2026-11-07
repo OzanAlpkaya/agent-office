@@ -31,6 +31,8 @@ type prReview struct {
 	Summary  string `json:"summary"`
 	URL      string `json:"url"`
 	Followup string `json:"followup"`
+	Reply    string `json:"reply"`
+	ReplyURL string `json:"reply_url"`
 	Error    string `json:"error"`
 }
 
@@ -257,6 +259,62 @@ func TestGitHubEndToEnd(t *testing.T) {
 	// 4. Nothing merged.
 	if ghPR.GetMerged() || ghPR.GetState() != "open" {
 		t.Fatalf("PR merged or closed: %s merged=%v", ghPR.GetState(), ghPR.GetMerged())
+	}
+
+	// 5. A review that needs no change: the relaunched worker cannot report_done without a new
+	// commit, so it answers with report_no_change, whose reason is posted on the PR (ADR 0022).
+	// The internal review of the follow-up head finishes first, so no automatic round races it.
+	head2 := pr.Head
+	pr = waitPR("the review of the follow-up head", 10*time.Minute, func(p pullRequest) bool {
+		for _, r := range p.Reviews {
+			if r.Reviewer == "internal" && r.Head == head2 && r.Status != "queued" && r.Status != "running" {
+				return true
+			}
+		}
+		return false
+	})
+	automatic := false
+	for _, r := range pr.Reviews {
+		automatic = automatic || (r.Reviewer == "internal" && r.Head == head2 && r.Verdict == "changes_requested")
+	}
+	if automatic {
+		t.Logf("the reviewer requested changes on %s, which starts an automatic round; the no-change step is skipped", head2)
+	} else {
+		body := "A question only, no change is requested: " + file + " now has the lines hello and world, which is " +
+			"what the task needs. Do not edit or commit anything; answer this review with report_no_change and say so."
+		if _, _, err := client.PullRequests.CreateReview(ctx, ghRepo.Owner, ghRepo.Name, pr.Number, &gh.PullRequestReviewRequest{
+			CommitID: gh.Ptr(head2), Body: gh.Ptr(body), Event: gh.Ptr("COMMENT")}); err != nil {
+			t.Fatal(err)
+		}
+		pr = waitPR("the second human review", 3*time.Minute, func(p pullRequest) bool {
+			return len(p.Reviews) > 0 && p.Reviews[0].Reviewer == "human" && p.Reviews[0].Head == head2
+		})
+		question := pr.Reviews[0].ID
+		d.json("POST", "/api/pull-requests/"+strconv.FormatInt(pr.ID, 10)+"/follow-up", map[string]int64{"review_id": question}, 200, nil)
+		pr = waitPR("the no-change reply", 10*time.Minute, func(p pullRequest) bool {
+			for _, r := range p.Reviews {
+				if r.ID == question && r.ReplyURL != "" {
+					return true
+				}
+			}
+			return p.Head != head2
+		})
+		if pr.Head != head2 {
+			t.Fatalf("the worker committed (%s -> %s) instead of answering with report_no_change", head2, pr.Head)
+		}
+		comments, _, err := client.Issues.ListComments(ctx, ghRepo.Owner, ghRepo.Name, pr.Number, nil)
+		found := false
+		for _, c := range comments {
+			found = found || strings.Contains(c.GetBody(), "made no change")
+		}
+		if err != nil || !found {
+			t.Fatalf("no-change reply not on GitHub: %v %d comments", err, len(comments))
+		}
+		for _, r := range pr.Reviews {
+			if r.ID == question {
+				t.Logf("no-change reply %s: %s", r.ReplyURL, r.Reply)
+			}
+		}
 	}
 	logData, _ := os.ReadFile(d.logPath)
 	for _, line := range strings.Split(string(logData), "\n") {
