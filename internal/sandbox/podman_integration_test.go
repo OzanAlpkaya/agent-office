@@ -62,7 +62,7 @@ func workspace(t *testing.T, p Podman) (root, ws string) {
 func helper(t *testing.T, img, ws string, cmd ...string) (string, []string) {
 	t.Helper()
 	name, args, err := HelperArgs(HelperSpec{AgentID: "abcdef123456", Image: img, Workspace: ws,
-		ObjectsDir: ws, Command: cmd}) // ObjectsDir: any existing dir; mounted read-only
+		ObjectsDir: ws, Git: GitIdentity{Name: "Test", Email: "t@example.com"}, Command: cmd}) // ObjectsDir: any existing dir
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,8 @@ func workerSpec() WorkerSpec {
 		EgressSocket: "/run/user/1000/ao/a/egress.sock", APISocket: "/run/user/1000/ao/a/api.sock",
 		AgentOffice: "/usr/bin/agent-office", Claude: "/home/u/.local/share/claude/versions/2.1.319",
 		Settings: "/data/agents/abcdef123456/settings.json", GitHooks: "/data/git-hooks",
-		Env:     []string{"GIT_AUTHOR_NAME=Ozan", "GIT_AUTHOR_EMAIL=ozan@example.com"},
+		Git:     GitIdentity{Name: "Ozan", Email: "ozan@example.com", CoAuthor: CoAuthor("worker-1")},
+		Env:     []string{"GOFLAGS=-mod=mod"},
 		Command: []string{ClaudeBin, "--settings", SettingsFile, "--dangerously-skip-permissions"},
 	}
 }
@@ -81,7 +82,10 @@ func TestWorkerArgsIsolation(t *testing.T) {
 	env := flagValues(opts, "-e")
 	for _, want := range []string{"CLAUDE_CODE_OAUTH_TOKEN=" + Placeholder, "ANTHROPIC_BASE_URL=http://" + APIAddr,
 		"HTTPS_PROXY=http://" + EgressAddr, "NO_PROXY=127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-		"DISABLE_AUTOUPDATER=1", "CLAUDE_CONFIG_DIR=" + ConfigDir, "AGENT_OFFICE_SOCKET=" + HookSocket, "GIT_AUTHOR_NAME=Ozan"} {
+		"DISABLE_AUTOUPDATER=1", "CLAUDE_CONFIG_DIR=" + ConfigDir, "AGENT_OFFICE_SOCKET=" + HookSocket,
+		"GIT_AUTHOR_NAME=Ozan", "GIT_COMMITTER_EMAIL=ozan@example.com", "GOFLAGS=-mod=mod",
+		"AGENT_OFFICE_CO_AUTHOR=worker-1 (agent-office) <noreply@agent-office.invalid>",
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=" + GitHooksDir} {
 		if !slices.Contains(env, want) {
 			t.Errorf("env missing %s", want)
 		}
@@ -95,22 +99,28 @@ func TestWorkerArgsIsolation(t *testing.T) {
 
 func TestWorkerArgsRejects(t *testing.T) {
 	cases := map[string]func(s *WorkerSpec){
-		"bad agent id":     func(s *WorkerSpec) { s.AgentID = "../x" },
-		"relative mount":   func(s *WorkerSpec) { s.Workspace = "workspaces/x" },
-		"unclean mount":    func(s *WorkerSpec) { s.Workspace = "/data/../etc" },
-		"colon in path":    func(s *WorkerSpec) { s.ConfigDir = "/data/a:b" },
-		"comma in path":    func(s *WorkerSpec) { s.Settings = "/data/a,b" },
-		"empty mount":      func(s *WorkerSpec) { s.GitHooks = "" },
-		"no command":       func(s *WorkerSpec) { s.Command = nil },
-		"bad memory":       func(s *WorkerSpec) { s.Memory = "lots" },
-		"credential env":   func(s *WorkerSpec) { s.Env = []string{"ANTHROPIC_API_KEY=x"} },
-		"token-ish env":    func(s *WorkerSpec) { s.Env = []string{"MY_SERVICE_TOKEN=x"} },
-		"ssh agent":        func(s *WorkerSpec) { s.Env = []string{"SSH_AUTH_SOCK=/run/ssh"} },
-		"override builtin": func(s *WorkerSpec) { s.Env = []string{"CLAUDE_CODE_OAUTH_TOKEN=real"} },
-		"override proxy":   func(s *WorkerSpec) { s.Env = []string{"HTTPS_PROXY=http://evil"} },
-		"newline in value": func(s *WorkerSpec) { s.Env = []string{"GIT_AUTHOR_NAME=a\nb"} },
-		"malformed env":    func(s *WorkerSpec) { s.Env = []string{"NOEQUALS"} },
-		"option-like env":  func(s *WorkerSpec) { s.Env = []string{"-e=x"} },
+		"bad agent id":       func(s *WorkerSpec) { s.AgentID = "../x" },
+		"relative mount":     func(s *WorkerSpec) { s.Workspace = "workspaces/x" },
+		"unclean mount":      func(s *WorkerSpec) { s.Workspace = "/data/../etc" },
+		"colon in path":      func(s *WorkerSpec) { s.ConfigDir = "/data/a:b" },
+		"comma in path":      func(s *WorkerSpec) { s.Settings = "/data/a,b" },
+		"empty mount":        func(s *WorkerSpec) { s.GitHooks = "" },
+		"no command":         func(s *WorkerSpec) { s.Command = nil },
+		"bad memory":         func(s *WorkerSpec) { s.Memory = "lots" },
+		"credential env":     func(s *WorkerSpec) { s.Env = []string{"ANTHROPIC_API_KEY=x"} },
+		"token-ish env":      func(s *WorkerSpec) { s.Env = []string{"MY_SERVICE_TOKEN=x"} },
+		"ssh agent":          func(s *WorkerSpec) { s.Env = []string{"SSH_AUTH_SOCK=/run/ssh"} },
+		"override builtin":   func(s *WorkerSpec) { s.Env = []string{"CLAUDE_CODE_OAUTH_TOKEN=real"} },
+		"override proxy":     func(s *WorkerSpec) { s.Env = []string{"HTTPS_PROXY=http://evil"} },
+		"newline in value":   func(s *WorkerSpec) { s.Env = []string{"GOFLAGS=a\nb"} },
+		"override git ident": func(s *WorkerSpec) { s.Env = []string{"GIT_AUTHOR_NAME=x"} },
+		"override hooksPath": func(s *WorkerSpec) { s.Env = []string{"GIT_CONFIG_VALUE_0=/tmp"} },
+		"no co-author":       func(s *WorkerSpec) { s.Git.CoAuthor = "" },
+		"bad co-author":      func(s *WorkerSpec) { s.Git.CoAuthor = "x\nCo-Authored-By: y <y@z>" },
+		"bad email":          func(s *WorkerSpec) { s.Git.Email = "not an email" },
+		"name with angle":    func(s *WorkerSpec) { s.Git.Name = "a <b@c>" },
+		"malformed env":      func(s *WorkerSpec) { s.Env = []string{"NOEQUALS"} },
+		"option-like env":    func(s *WorkerSpec) { s.Env = []string{"-e=x"} },
 	}
 	for name, mutate := range cases {
 		s := workerSpec()
@@ -123,12 +133,14 @@ func TestWorkerArgsRejects(t *testing.T) {
 
 func TestHelperArgs(t *testing.T) {
 	name, args, err := HelperArgs(HelperSpec{AgentID: "abcdef123456", Image: "img",
-		Workspace: "/data/ws", ObjectsDir: "/repo/.git/objects", Command: []string{"git", "status"}})
+		Workspace: "/data/ws", ObjectsDir: "/repo/.git/objects", Git: GitIdentity{Name: "Ozan", Email: "o@example.com"},
+		Command: []string{"git", "status"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	name2, _, _ := HelperArgs(HelperSpec{AgentID: "abcdef123456", Image: "img",
-		Workspace: "/data/ws", ObjectsDir: "/repo/.git/objects", Command: []string{"git", "status"}})
+		Workspace: "/data/ws", ObjectsDir: "/repo/.git/objects", Git: GitIdentity{Name: "Ozan", Email: "o@example.com"},
+		Command: []string{"git", "status"}})
 	if !strings.HasPrefix(name, "ao-helper-abcdef123456-") || name == name2 || !slices.Contains(flagValues(args, "--name"), name) {
 		t.Fatalf("helper names %q %q", name, name2)
 	}

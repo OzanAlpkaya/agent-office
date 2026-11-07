@@ -52,7 +52,8 @@ type WorkerSpec struct {
 	AgentOffice  string // static agent-office binary
 	Claude       string // the resolved, versioned claude binary
 	Settings     string // daemon-generated settings file
-	GitHooks     string // directory with the commit-msg hook
+	GitHooks     string // directory with the commit-msg hook (WriteGitHooks)
+	Git          GitIdentity
 	Env          []string
 	Memory       string // e.g. "2g"; empty: DefaultMemory
 	Pids         int    // 0: DefaultPids
@@ -66,6 +67,7 @@ type HelperSpec struct {
 	Image      string
 	Workspace  string
 	ObjectsDir string
+	Git        GitIdentity // needed by helpers that commit ("save uncommitted work")
 	Env        []string
 	Command    []string
 }
@@ -88,6 +90,9 @@ var builtinEnv = map[string]bool{
 	"HTTP_PROXY": true, "http_proxy": true, "NO_PROXY": true, "no_proxy": true, "ANTHROPIC_BASE_URL": true,
 	"CLAUDE_CODE_OAUTH_TOKEN": true, "AGENT_OFFICE_SOCKET": true, "TERM": true, "COLORTERM": true,
 	"AGENT_OFFICE_EGRESS_SOCKET": true, "AGENT_OFFICE_API_SOCKET": true,
+	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
+	"AGENT_OFFICE_CO_AUTHOR": true, "GIT_CONFIG_COUNT": true, "GIT_CONFIG_KEY_0": true, "GIT_CONFIG_VALUE_0": true,
+	"GIT_CONFIG_GLOBAL": true, "GIT_CONFIG_SYSTEM": true, "GIT_CONFIG_NOSYSTEM": true,
 }
 
 // credentialEnv are names that carry credentials; they never enter a
@@ -158,11 +163,22 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 		"AGENT_OFFICE_EGRESS_SOCKET=" + EgressSocket,
 		"AGENT_OFFICE_API_SOCKET=" + APISocket,
 		"TERM=xterm-256color", "COLORTERM=truecolor",
+		// Command-scope config outranks the repository's: the hooks are the
+		// mounted, read-only ones (ADR 0014).
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=" + GitHooksDir,
+	}
+	if s.Git.CoAuthor == "" {
+		return nil, fmt.Errorf("sandbox: worker needs a co-author trailer")
+	}
+	gitEnv, err := s.Git.env()
+	if err != nil {
+		return nil, err
 	}
 	extra, err := checkEnv(s.Env)
 	if err != nil {
 		return nil, err
 	}
+	env = append(env, gitEnv...)
 	for _, kv := range append(env, extra...) {
 		args = append(args, "-e", kv)
 	}
@@ -192,11 +208,15 @@ func HelperArgs(s HelperSpec) (name string, args []string, err error) {
 		}
 		args = append(args, "-v", v)
 	}
+	gitEnv, err := s.Git.env()
+	if err != nil {
+		return "", nil, err
+	}
 	extra, err := checkEnv(s.Env)
 	if err != nil {
 		return "", nil, err
 	}
-	for _, kv := range append([]string{"HOME=" + HomeDir}, extra...) {
+	for _, kv := range append(append([]string{"HOME=" + HomeDir}, gitEnv...), extra...) {
 		args = append(args, "-e", kv)
 	}
 	args = append(args, s.Image)
