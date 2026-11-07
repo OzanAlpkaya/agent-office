@@ -39,3 +39,6 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   runs up to `--max-agents` agents in worktrees under the XDG data dir, with tasks, persistence,
   restart reconciliation and work-preserving removal. Task board UI. Opt-in `make e2e` passes
   twice against the playground, including daemon SIGKILL and restart.
+- 2026-11-07: Phase 2 review: task prompt now forbids pushing and touching other branches (push and
+  PRs are the daemon's job in Phase 5); ADR 0012 (forward-only migrations). Merged into `main`
+  (`--no-ff`).
