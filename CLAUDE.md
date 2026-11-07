@@ -67,6 +67,11 @@ Phase 5. Keep it small and realistic; its backlog is in its `TODO.md`.
 
 - Work phase by phase from `docs/plan.md`.
 - **Before each phase:** propose a short plan (goal, files, approach, risks) and wait for approval.
+- **During a phase:** once the plan is approved, execute all of its steps without stopping to ask
+  whether to continue. Make the decisions yourself, record significant ones in ADRs, and list every
+  decision in the end-of-phase summary for review. Stop only when the phase is done, when something
+  needs Ozan (sudo, a token, a manual UI check), or when a decision is irreversible or would change
+  the approved plan's scope.
 - **After each phase:** update `PROGRESS.md` and explain in plain language what was built and why,
   including trade-offs and alternatives, so it can be discussed in interviews.
 - Record every significant decision as an ADR in `docs/adr/`: copy `0000-template.md`, number
