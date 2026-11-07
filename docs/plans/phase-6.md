@@ -1,6 +1,6 @@
 # Phase 6 plan: Stack packs
 
-- **Status:** Done on `phase-6/stack-packs`, waiting for Ozan's review. Written 2026-11-07 with the recommended option
+- **Status:** Done on `phase-6/stack-packs`; approved by Ozan and merged into `main` (2026-11-07). Written 2026-11-07 with the recommended option
   for every open question and executed straight away, as Ozan asked ("write the Phase 6 plan using
   your recommended options, then execute it immediately without asking me anything"). Every
   decision is listed in the end-of-phase summary; nothing is merged until Ozan has read it.
@@ -246,6 +246,16 @@ agents work on, and everything they produce is checked by the same deterministic
   `report_done` without a new commit, which the engine accepts because the branch already had
   one. A rerun passed (including the relaunch through the read-only skills mount). Proposed for
   later: refuse `report_done` in a follow-up round until the head has moved.
-- **Not verified live:** whether Claude Code actually listed the pack skill (it is mounted in the
-  worker, but nothing in its config dir names it); HTTP MCP servers through the egress proxy and whether Claude Code
+- **After the review (Ozan):** all decisions approved. Two additions before the merge:
+  - **A follow-up round needs a new commit, or `report_no_change`** (ADR 0022 amended,
+    migration 0006, new worker tool, `github.PostComment`): `report_done` is refused while the
+    branch is still at the reviewed head; `report_no_change(reason)` answers without a commit,
+    posts the reason on the PR as a comment and moves the task back to review. Live in
+    `TestGitHubEndToEnd`: a change request was committed and pushed, and a question-only review
+    was answered with `report_no_change` and posted on PR #6. On the run before, the e2e's own
+    review contradicted its task ("the single line hello" vs. "add a second line"), and haiku
+    rightly answered with `report_no_change`; the task text was fixed.
+  - **`/skills` check:** `TestSandboxEndToEnd` types `/skills` into the sandboxed worker and
+    finds the go pack's `go-sandbox` skill in what Claude Code prints (no model call). Passed.
+- **Not verified live:** HTTP MCP servers through the egress proxy and whether Claude Code
   passes stdio MCP servers the agent's environment (documented in `docs/packs.md`).

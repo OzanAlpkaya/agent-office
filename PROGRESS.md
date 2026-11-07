@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 6 (Stack packs) done on `phase-6/stack-packs`, waiting for review
+**Current phase:** Phase 7 (Pixel office UI), not started; Phase 6 merged
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
@@ -12,7 +12,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 3: Isolation & security (rootless Podman, egress allowlist, secrets)
 - [x] Phase 4: Team MCP server + lead agent
 - [x] Phase 5: GitHub loop + pluggable code review
-- [x] Phase 6: Stack packs (on `phase-6/stack-packs`, not merged)
+- [x] Phase 6: Stack packs
 - [ ] Phase 7: Pixel office UI
 - [ ] Phase 8: Observability & cost
 - [ ] Phase 9: Memory & persistence
@@ -91,3 +91,8 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   exec bits, image tag inputs, reserved names). Two pre-existing tests that failed without
   `-race` fixed. `make check`, `make sandbox-test` and `make e2e` pass (the GitHub run on a
   rerun: haiku once reported a follow-up without committing).
+- 2026-11-07: Phase 6 review: all decisions approved. Added before the merge, as Ozan asked: in a
+  review follow-up round `report_done` needs a new commit, and `report_no_change(reason)` answers
+  without one, posting the reason on the PR (ADR 0022 amended, migration 0006); the sandbox e2e
+  checks with `/skills` that Claude Code lists the pack's skill. `make check`, `make sandbox-test`
+  and the sandbox and GitHub e2e runs pass. Merged into `main` (`--no-ff`).
