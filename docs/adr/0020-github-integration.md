@@ -57,7 +57,8 @@ Option 2 in each group.
 - **Token permissions** (fine-grained, that repository only): Metadata read, Pull requests
   read/write, Commit statuses read, Checks read where offered. **No Contents write**: pushing goes
   over SSH, and without it the token cannot merge even by mistake. The daemon cannot see a
-  token's permissions; a 403 on checks shows "checks unavailable" and nothing fails.
+  token's permissions; a 403 on checks shows "checks unavailable" and nothing fails. Ozan narrowed
+  the playground token to Contents read-only after the phase (2026-11-07).
 - **Repository:** from `git remote get-url --push <remote>` (`--github-remote`, default `origin`),
   accepted forms `git@<host>:owner/name(.git)`, `ssh://git@<host>/owner/name(.git)` and
   `https://github.com/owner/name(.git)`; owner and name must match GitHub's character rules. At

@@ -1,6 +1,7 @@
 # Phase 5 plan: GitHub loop + pluggable code review
 
-- **Status:** Done on `phase-5/github-review`, waiting for Ozan's review; not merged. Written 2026-11-07 with the recommended option
+- **Status:** Done on `phase-5/github-review`; all decisions approved by Ozan and merged into `main`
+  (2026-11-07). Written 2026-11-07 with the recommended option
   for every open question and executed straight away, as Ozan asked ("write the Phase 5 plan using
   your recommended options, then execute it immediately without asking me anything"). Every
   decision is listed in the end-of-phase summary; nothing is merged until Ozan has read it.
@@ -270,5 +271,7 @@ many review rounds run on their own) is decided by deterministic Go code in the 
 - **Not done live:** CodeRabbit. It is covered by the shared contract test and a filter test
   against the fake; a live run needs the CodeRabbit app installed on the private playground
   (possibly a paid plan), which is Ozan's call.
+- **After the review (Ozan):** all decisions approved; the playground token narrowed to Contents
+  read-only; the commit-message closing-keyword gap added to the roadmap (Phase 11).
 - **Tests added:** `TestSandboxedReviewLoop` (`make sandbox-test`, real Podman, no tokens) and
   `TestGitHubEndToEnd` (`make e2e` with `AO_E2E_GITHUB_REPO`, real Claude Code and GitHub).

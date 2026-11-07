@@ -247,6 +247,10 @@ derived from Claude Code hooks.
 - Release builds, demo script, write-up of key decisions.
 - Pin Debian package versions in the worker image (reproducible builds); Phase 3 pins only the
   base image digest and the Go download.
+- Closing keywords in agents' commit messages (`fixes #N`): Phase 5 neutralizes them in PR titles,
+  bodies and reviews, but pushes commits as they are, so merging such a PR closes the issue. Flag
+  them at push time (like flagged commits) or have the daemon rewrite the PR's merge message
+  (ADR 0020, residual).
 
 **Definition of Done**
 - [ ] A fresh Linux machine can install and run it by following the README.

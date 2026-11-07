@@ -1,7 +1,6 @@
 # Progress
 
-**Current phase:** Phase 5 (GitHub loop + pluggable code review), done on `phase-5/github-review`,
-waiting for Ozan's review; not merged
+**Current phase:** Phase 6 (Stack packs), not started; Phase 5 merged
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
@@ -12,7 +11,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 2: Multi-agent + task board (SQLite, worktrees)
 - [x] Phase 3: Isolation & security (rootless Podman, egress allowlist, secrets)
 - [x] Phase 4: Team MCP server + lead agent
-- [x] Phase 5: GitHub loop + pluggable code review (not merged yet)
+- [x] Phase 5: GitHub loop + pluggable code review
 - [ ] Phase 6: Stack packs
 - [ ] Phase 7: Pixel office UI
 - [ ] Phase 8: Observability & cost
@@ -76,4 +75,6 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   whose new commit updates the same PR; a human merge moves the task to done. An independent review
   of the diff led to 14 fixes (host mode refused, `.github/` gate, review cap, superseded reviews,
   races). The real e2e run changed the follow-up path from a team message to a relaunch.
-
+- 2026-11-07: Phase 5 review: all decisions approved. Ozan narrowed the GitHub token to Contents
+  read-only. Closing keywords in agents' commit messages added to Phase 11 as a later item. Merged
+  into `main` (`--no-ff`).
