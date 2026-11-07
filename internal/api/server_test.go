@@ -334,10 +334,11 @@ func TestEventsSnapshotAndUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	type msg struct {
-		Type   string             `json:"type"`
-		Agents []engine.AgentInfo `json:"agents"`
-		Tasks  []engine.Task      `json:"tasks"`
-		Agent  engine.AgentInfo   `json:"agent"`
+		Type   string                 `json:"type"`
+		Agents []engine.AgentInfo     `json:"agents"`
+		Tasks  []engine.Task          `json:"tasks"`
+		Agent  engine.AgentInfo       `json:"agent"`
+		Access []engine.AccessRequest `json:"access_requests"`
 	}
 	read := func() msg {
 		_, data, err := c.Read(ctx)
@@ -348,7 +349,7 @@ func TestEventsSnapshotAndUpdates(t *testing.T) {
 		_ = json.Unmarshal(data, &m)
 		return m
 	}
-	if m := read(); m.Type != "snapshot" || len(m.Agents) != 1 || m.Agents[0].ID != a.ID || m.Tasks == nil {
+	if m := read(); m.Type != "snapshot" || len(m.Agents) != 1 || m.Agents[0].ID != a.ID || m.Tasks == nil || m.Access == nil {
 		t.Fatalf("snapshot %+v", m)
 	}
 	f.do(t, "POST", "/api/agents/"+a.ID+"/stop", nil)
@@ -368,5 +369,63 @@ func TestUIFallbackAndHeaders(t *testing.T) {
 	}
 	if r.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatal("missing nosniff")
+	}
+}
+
+func TestStartRoleAPI(t *testing.T) {
+	f := newFixture(t)
+	ct := map[string]string{"Content-Type": "application/json"}
+	if r := f.doBody(t, "POST", "/api/agents", ct, `{"role":"lead"}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("lead without a goal: %d", r.StatusCode)
+	}
+	if r := f.doBody(t, "POST", "/api/agents", ct, `{"role":"admin"}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown role: %d", r.StatusCode)
+	}
+	r := f.doBody(t, "POST", "/api/tasks", ct, `{"title":"Goal"}`)
+	var task engine.Task
+	_ = json.NewDecoder(r.Body).Decode(&task)
+	r = f.doBody(t, "POST", "/api/agents", ct, `{"task_id":"`+task.ID+`","role":"lead"}`)
+	var a engine.AgentInfo
+	if err := json.NewDecoder(r.Body).Decode(&a); err != nil || r.StatusCode != http.StatusCreated || a.Role != engine.RoleLead {
+		t.Fatalf("start lead: %d %+v %v", r.StatusCode, a, err)
+	}
+	r = f.doBody(t, "GET", "/api/agents/"+a.ID+"/messages", nil, "")
+	body, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "[]" {
+		t.Fatalf("messages: %d %s", r.StatusCode, body)
+	}
+	if r := f.doBody(t, "GET", "/api/agents/nope/messages", nil, ""); r.StatusCode != http.StatusNotFound {
+		t.Fatalf("messages of an unknown agent: %d", r.StatusCode)
+	}
+}
+
+// Deciding an access request is a state change: it needs a same-origin POST,
+// and unknown or malformed ids are refused.
+func TestAccessRequestsAPI(t *testing.T) {
+	f := newFixture(t)
+	r := f.doBody(t, "GET", "/api/access-requests", nil, "")
+	body, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "[]" {
+		t.Fatalf("list: %d %s", r.StatusCode, body)
+	}
+	cases := []struct {
+		path string
+		hdr  map[string]string
+		want int
+	}{
+		{"/api/access-requests/1/approve", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		{"/api/access-requests/1/deny", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		{"/api/access-requests/1/approve", nil, http.StatusNotFound},
+		{"/api/access-requests/abc/approve", nil, http.StatusBadRequest},
+		{"/api/access-requests/0/deny", nil, http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		if r := f.do(t, "POST", tc.path, tc.hdr); r.StatusCode != tc.want {
+			t.Errorf("POST %s %v: %d, want %d", tc.path, tc.hdr, r.StatusCode, tc.want)
+		}
+	}
+	// A GET never reaches the decision handler; it falls through to the UI.
+	if r := f.do(t, "GET", "/api/access-requests/1/approve", nil); strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		t.Error("GET reached the decision handler")
 	}
 }

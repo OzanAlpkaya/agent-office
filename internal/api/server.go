@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,12 +64,16 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/agents/{id}/import", s.importAgent)
 	mux.HandleFunc("POST /api/agents/{id}/save-work", s.saveWork)
 	mux.HandleFunc("GET /api/agents/{id}/events", s.agentEvents)
+	mux.HandleFunc("GET /api/agents/{id}/messages", s.agentMessages)
 	mux.HandleFunc("DELETE /api/agents/{id}", s.removeAgent)
 	mux.HandleFunc("GET /api/agents/{id}/terminal", s.terminalWS)
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
 	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTask)
 	mux.HandleFunc("DELETE /api/tasks/{id}", s.deleteTask)
+	mux.HandleFunc("GET /api/access-requests", s.listAccess)
+	mux.HandleFunc("POST /api/access-requests/{id}/approve", s.decideAccess(true))
+	mux.HandleFunc("POST /api/access-requests/{id}/deny", s.decideAccess(false))
 	mux.HandleFunc("GET /api/events", s.eventsWS)
 	if ui != nil {
 		mux.HandleFunc("GET /", s.serveUI)
@@ -125,6 +130,7 @@ func (s *server) listAgents(w http.ResponseWriter, _ *http.Request) {
 // startRequest is the optional JSON body of POST /api/agents.
 type startRequest struct {
 	TaskID string `json:"task_id"`
+	Role   string `json:"role"` // "worker" (default) or "lead" (needs task_id, ADR 0017)
 }
 
 func (s *server) startAgent(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +138,7 @@ func (s *server) startAgent(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
 		return
 	}
-	a, err := s.eng.Start(r.Context(), engine.StartRequest{TaskID: req.TaskID})
+	a, err := s.eng.Start(r.Context(), engine.StartRequest{TaskID: req.TaskID, Role: req.Role})
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -179,6 +185,45 @@ func (s *server) agentEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, evs)
+}
+
+// agentMessages lists an agent's recent messages, sent and received, newest
+// first (ADR 0018). Bodies come from agents: the UI renders them as text.
+func (s *server) agentMessages(w http.ResponseWriter, r *http.Request) {
+	msgs, err := s.eng.Messages(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, msgs)
+}
+
+// listAccess lists access requests, pending first (ADR 0019).
+func (s *server) listAccess(w http.ResponseWriter, r *http.Request) {
+	list, err := s.eng.AccessRequests(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// decideAccess approves or denies an access request: the human decision
+// ADR 0019 requires. POST, so the origin guard applies.
+func (s *server) decideAccess(approve bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id < 1 {
+			writeError(w, http.StatusBadRequest, "invalid access request id")
+			return
+		}
+		ar, err := s.eng.DecideAccess(r.Context(), id, approve)
+		if err != nil {
+			s.engineError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, ar)
+	}
 }
 
 // removeAgent cleans up the worktree (keeping uncommitted work, ADR 0010).
@@ -287,8 +332,13 @@ func (s *server) engineError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, engine.ErrNoTerminal):
 		writeError(w, http.StatusGone, err.Error())
+	case errors.Is(err, engine.ErrForbidden):
+		writeError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, engine.ErrLimit):
+		writeError(w, http.StatusTooManyRequests, err.Error())
 	case errors.Is(err, engine.ErrStillRunning), errors.Is(err, engine.ErrTooManyAgents),
 		errors.Is(err, engine.ErrWorktreeDirty), errors.Is(err, engine.ErrTaskHasRunning),
+		errors.Is(err, engine.ErrLeadRunning), errors.Is(err, engine.ErrDecided),
 		errors.Is(err, git.ErrBranchCheckedOut):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
@@ -420,6 +470,11 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusInternalError, "could not load tasks")
 		return
 	}
+	access, err := s.eng.AccessRequests(r.Context())
+	if err != nil {
+		c.Close(websocket.StatusInternalError, "could not load access requests")
+		return
+	}
 	ctx := c.CloseRead(r.Context())
 
 	write := func(v any) error {
@@ -428,7 +483,8 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		return c.Write(wctx, websocket.MessageText, b)
 	}
-	if err := write(map[string]any{"type": "snapshot", "agents": s.eng.List(), "tasks": tasks}); err != nil {
+	if err := write(map[string]any{"type": "snapshot", "agents": s.eng.List(), "tasks": tasks,
+		"access_requests": access}); err != nil {
 		return
 	}
 	for {
