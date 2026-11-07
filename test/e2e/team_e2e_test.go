@@ -45,7 +45,7 @@ type message struct {
 // made; the approval path is covered by the engine and API tests.
 //
 // Like TestSandboxEndToEnd it works on a throwaway clone of AO_E2E_REPO and
-// needs podman, the worker image and the OAuth token file.
+// needs podman, the stack pack image (make worker-image PACK=go) and the OAuth token file.
 func TestTeamEndToEnd(t *testing.T) {
 	src := os.Getenv("AO_E2E_REPO")
 	if src == "" {
@@ -86,7 +86,7 @@ func TestTeamEndToEnd(t *testing.T) {
 	port := freePort(t)
 	d := &daemon{t: t, bin: bin, base: "http://127.0.0.1:" + port, logPath: filepath.Join(tmp, "daemon.log"),
 		args: []string{"serve", "--repo", repo, "--addr", "127.0.0.1:" + port, "--data-dir", data,
-			"--model", model, "--max-agents", "3", "--log-level", "debug", "--sandbox", "podman"}}
+			"--model", model, "--max-agents", "3", "--log-level", "debug", "--sandbox", "podman", "--pack", e2ePack()}}
 	listAgents := func() []teamAgent {
 		var list []teamAgent
 		d.json("GET", "/api/agents", nil, 200, &list)

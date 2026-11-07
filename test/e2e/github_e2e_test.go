@@ -62,7 +62,7 @@ type pullRequest struct {
 //  4. nothing is merged.
 //
 // Afterwards the PR is closed and the branch deleted on GitHub, unless
-// AO_E2E_KEEP=1. Needs podman, the worker image, the OAuth token file and the
+// AO_E2E_KEEP=1. Needs podman, the stack pack image (make worker-image PACK=go), the OAuth token file and the
 // GitHub token file (ADR 0020).
 func TestGitHubEndToEnd(t *testing.T) {
 	src, want := os.Getenv("AO_E2E_REPO"), os.Getenv("AO_E2E_GITHUB_REPO")
@@ -129,7 +129,7 @@ func TestGitHubEndToEnd(t *testing.T) {
 	port := freePort(t)
 	d := &daemon{t: t, bin: bin, base: "http://127.0.0.1:" + port, logPath: filepath.Join(tmp, "daemon.log"),
 		args: []string{"serve", "--repo", repo, "--addr", "127.0.0.1:" + port, "--data-dir", data, "--model", model,
-			"--max-agents", "3", "--log-level", "debug", "--sandbox", "podman", "--github", "--reviewer", "internal",
+			"--max-agents", "3", "--log-level", "debug", "--sandbox", "podman", "--pack", e2ePack(), "--github", "--reviewer", "internal",
 			"--review-rounds", "1"}}
 	var pr pullRequest
 	t.Cleanup(func() {
