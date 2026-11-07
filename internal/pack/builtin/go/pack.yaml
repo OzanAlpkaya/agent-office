@@ -1,0 +1,11 @@
+schema: 1
+name: go
+description: Go 1.27.3 with a C toolchain (cgo), so go test -race works; modules from the Go proxy.
+toolchain:
+  containerfile: Containerfile
+egress:
+  allow:
+    - proxy.golang.org
+    - sum.golang.org
+skills:
+  - go-sandbox

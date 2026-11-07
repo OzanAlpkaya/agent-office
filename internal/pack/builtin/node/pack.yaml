@@ -1,0 +1,10 @@
+schema: 1
+name: node
+description: Node.js and npm from Debian; packages from the npm registry.
+toolchain:
+  containerfile: Containerfile
+egress:
+  allow:
+    - registry.npmjs.org
+skills:
+  - node-sandbox
