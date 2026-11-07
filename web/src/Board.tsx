@@ -1,5 +1,6 @@
 import { type FormEvent, type JSX, useState } from "react";
 import { type Agent, type PullRequest, type Review, type Task, type TaskStatus, taskStatuses } from "./api";
+import { type UsageRow, formatMoney, formatTokens, totalTokens } from "./usage";
 
 const columnTitle: Record<TaskStatus, string> = {
   todo: "To do",
@@ -26,6 +27,8 @@ interface Props {
   onRequestReview: (pr: PullRequest) => void;
   onSendToWorker: (pr: PullRequest, review: Review) => void;
   onAcceptFlagged: (pr: PullRequest) => void;
+  usageByTask?: Map<string, UsageRow>; // token usage per task (ADR 0026)
+  usageByGoal?: Map<string, UsageRow>; // per goal: the lead, its workers and their reviewers
 }
 
 export function Board(p: Props): JSX.Element {
@@ -46,6 +49,21 @@ export function Board(p: Props): JSX.Element {
             ))}
         </section>
       ))}
+    </div>
+  );
+}
+
+// TaskUsage is a task's tokens and estimated cost; a goal also shows its
+// team's (ADR 0026). Nothing when no session has run yet.
+function TaskUsage({ own, team }: { own?: UsageRow; team?: UsageRow }): JSX.Element | null {
+  const showTeam = team && team.sessions > (own?.sessions ?? 0);
+  if (!own && !showTeam) return null;
+  const line = (u: UsageRow): string => `${formatTokens(totalTokens(u.tokens))} tokens · ${formatMoney(u.costMicroUSD)}` +
+    (u.unpricedTokens > 0 ? " + unpriced" : "");
+  return (
+    <div className="small muted usage-line" title="estimated from token counts; see the Usage tab">
+      {own && <span>{line(own)}</span>}
+      {showTeam && <span>{own ? " · " : ""}team {line(team)}</span>}
     </div>
   );
 }
@@ -113,6 +131,7 @@ function TaskCard(p: CardProps): JSX.Element {
           ))}
         </div>
       )}
+      <TaskUsage own={p.usageByTask?.get(task.id)} team={isGoal ? p.usageByGoal?.get(task.id) : undefined} />
       {prs.map((pr) => <PRPanel key={pr.id} pr={pr} {...p} />)}
       <div className="row">
         <select value={task.status} onChange={(e) => onStatus(task, e.target.value as TaskStatus)}>

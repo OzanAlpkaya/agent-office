@@ -144,3 +144,27 @@ button.badge.pack { background: none; color: #ffd580; cursor: pointer; font: inh
 .nameplate .dot, .office-count .dot { flex: none; }
 .nameplate .mono, .nameplate-task { color: var(--text); }
 .nameplate-task { color: var(--muted); }
+
+/* Phase 8: usage (ADR 0026). One series per bar (share of the largest row's cost): accent fill,
+   rounded data end, values in text ink beside it. */
+.usage { flex: 1; overflow: auto; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.usage-head h2 { font-size: 1rem; margin: 0 0 0.25rem; }
+.usage-head p { margin: 0.15rem 0; max-width: 70rem; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.5rem; }
+.tile { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.75rem; }
+.tile-label { color: var(--muted); font-size: 0.75rem; }
+.tile-value { font-size: 1.4rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile-note { color: var(--muted); font-size: 0.75rem; }
+.segmented { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.segmented button.active { border-color: var(--accent); background: #1d2230; }
+.usage-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+.usage-table th { text-align: left; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); padding: 0.35rem 0.5rem; white-space: nowrap; }
+.usage-table td { border-bottom: 1px solid #1f232c; padding: 0.35rem 0.5rem; vertical-align: middle; }
+.usage-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage-table .name { max-width: 22rem; overflow-wrap: anywhere; }
+.usage-table td.cost { min-width: 14rem; white-space: nowrap; }
+.usage-table .cost-value { font-variant-numeric: tabular-nums; margin-left: 0.5rem; }
+.bar-track { display: inline-block; vertical-align: middle; width: 8rem; height: 6px; }
+.bar { height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+.usage-line { font-variant-numeric: tabular-nums; }
+.terminal-banner .muted { display: block; margin-top: 0.2rem; font-size: 0.8rem; }

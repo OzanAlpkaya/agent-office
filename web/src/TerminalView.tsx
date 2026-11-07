@@ -74,7 +74,15 @@ export function TerminalView({ agentId }: Props): JSX.Element {
       <div className="terminal" ref={host} />
       {status.kind === "closed" && (
         <div className="terminal-banner">
-          {status.exited ? "The agent process has exited." : `Disconnected: ${status.reason}.`}
+          {status.exited ? (
+            <span>
+              The agent process has exited.{" "}
+              <span className="muted" data-testid="resume-note">
+                The “Resume this session with: claude --resume …” line above cannot be used with agent-office yet:
+                the session belongs to this agent’s own config{" "}(and sandbox). Resuming from agent-office comes in Phase 9.
+              </span>
+            </span>
+          ) : `Disconnected: ${status.reason}.`}
           {!status.exited && <button onClick={() => setAttempt((n) => n + 1)}>Reconnect</button>}
         </div>
       )}

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import {
-  type AccessRequest, type Agent, type Message, type PullRequest, type SandboxEvent, type Task, api, parseEventMessage,
-  wsURL,
+  type AccessRequest, type Agent, type Message, type PullRequest, type SandboxEvent, type SessionUsage, type Task, api,
+  parseEventMessage, wsURL,
 } from "./api";
+import { totalTokens } from "./usage";
 
 export type Connection = "connecting" | "open" | "closed";
 
@@ -13,7 +14,22 @@ export interface World {
   messages: Record<string, Message[]>; // messages sent or received per agent id, newest first
   accessRequests: AccessRequest[]; // pending first, then the most recent
   pullRequests: PullRequest[]; // in creation order (ADR 0020)
+  usage: Record<string, SessionUsage>; // token usage per session id (ADR 0026)
   connection: Connection;
+}
+
+// newerUsage keeps whichever copy of a session's usage has seen more: live
+// updates and the fetched report can arrive in any order, and every counter
+// only grows.
+export function newerUsage(a: SessionUsage | undefined, b: SessionUsage): SessionUsage {
+  if (!a) return b;
+  const key = (s: SessionUsage): number[] =>
+    [s.messages, totalTokens(s.tokens), s.turns, s.tool_calls, s.ended_at ? 1 : 0];
+  const ka = key(a), kb = key(b);
+  for (let i = 0; i < ka.length; i++) {
+    if (ka[i] !== kb[i]) return kb[i] > ka[i] ? b : a;
+  }
+  return b;
 }
 
 // Messages kept per agent in the UI; the API returns at most this many too.
@@ -64,6 +80,7 @@ export function useWorld(): World {
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
   const [pullRequests, setPullRequests] = useState<PullRequest[]>([]);
+  const [usage, setUsage] = useState<Record<string, SessionUsage>>({});
   const [connection, setConnection] = useState<Connection>("connecting");
 
   useEffect(() => {
@@ -93,6 +110,15 @@ export function useWorld(): World {
             setMessages({});
             setAccessRequests(sortAccess(msg.accessRequests));
             setPullRequests(msg.pullRequests);
+            // Usage history; live updates arriving meanwhile are merged, not overwritten.
+            void api.usage().then(
+              (rep) => setUsage((prev) => {
+                const next: Record<string, SessionUsage> = {};
+                for (const s of rep.sessions) next[s.session_id] = newerUsage(prev[s.session_id], s);
+                return next;
+              }),
+              () => console.warn("agent-office: could not load usage"),
+            );
             for (const a of msg.agents) {
               // Fire-and-forget like the events below; a failure only loses history.
               void api.agentMessages(a.id).then(
@@ -152,6 +178,11 @@ export function useWorld(): World {
           case "sandbox_event":
             setEvents((prev) => ({ ...prev, [msg.agent_id]: mergeEvents(prev[msg.agent_id] ?? [], [msg.event]) }));
             break;
+          case "usage": {
+            const u = msg.usage;
+            setUsage((prev) => ({ ...prev, [u.session_id]: newerUsage(prev[u.session_id], u) }));
+            break;
+          }
           case "task":
             setTasks((prev) => upsert(prev, msg.task));
             break;
@@ -175,5 +206,5 @@ export function useWorld(): World {
     };
   }, []);
 
-  return { agents, tasks, events, messages, accessRequests, pullRequests, connection };
+  return { agents, tasks, events, messages, accessRequests, pullRequests, usage, connection };
 }
