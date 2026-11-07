@@ -61,7 +61,7 @@ func workspace(t *testing.T, p Podman) (root, ws string) {
 
 func helper(t *testing.T, img, ws string, cmd ...string) (string, []string) {
 	t.Helper()
-	name, args, err := HelperArgs(HelperSpec{AgentID: "abcdef123456", Image: img, Workspace: ws,
+	name, args, err := HelperArgs(HelperSpec{Instance: "0123456789ab", AgentID: "abcdef123456", Image: img, Workspace: ws,
 		ObjectsDir: ws, Git: GitIdentity{Name: "Test", Email: "t@example.com"}, Command: cmd}) // ObjectsDir: any existing dir
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +182,7 @@ func TestListAndRemoveOrphans(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, c := range list {
-			if c.Name == orphan && c.AgentID == "abcdef123456" && c.Role == "helper" {
+			if c.Name == orphan && c.AgentID == "abcdef123456" && c.Role == "helper" && c.Instance == "0123456789ab" {
 				found = true
 			}
 		}

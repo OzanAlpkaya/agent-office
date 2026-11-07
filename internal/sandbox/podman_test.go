@@ -8,7 +8,7 @@ import (
 
 func workerSpec() WorkerSpec {
 	return WorkerSpec{
-		AgentID: "abcdef123456", Image: "localhost/agent-office-worker:dev",
+		Instance: "0123456789ab", AgentID: "abcdef123456", Image: "localhost/agent-office-worker:dev",
 		Workspace: "/data/workspaces/p/abcdef123456", ObjectsDir: "/home/u/repo/.git/objects",
 		ConfigDir: "/data/agents/abcdef123456/config", HookSocket: "/run/user/1000/ao/a/hook.sock",
 		EgressSocket: "/run/user/1000/ao/a/egress.sock", APISocket: "/run/user/1000/ao/a/api.sock",
@@ -47,6 +47,7 @@ func TestWorkerArgsIsolation(t *testing.T) {
 		{"--network", "none"}, {"--user", ContainerUser}, {"--security-opt", "no-new-privileges"},
 		{"--pids-limit", "256"}, {"--memory", "2g"}, {"--memory-swap", "2g"}, {"--log-driver", "none"},
 		{"--name", "ao-abcdef123456"}, {"--label", LabelAgent + "=abcdef123456"}, {"--label", LabelRole + "=worker"},
+		{"--label", LabelInstance + "=0123456789ab"},
 	} {
 		if !slices.Contains(flagValues(opts, want[0]), want[1]) {
 			t.Errorf("missing %s %s", want[0], want[1])
@@ -101,6 +102,7 @@ func TestWorkerArgsIsolation(t *testing.T) {
 func TestWorkerArgsRejects(t *testing.T) {
 	cases := map[string]func(s *WorkerSpec){
 		"bad agent id":       func(s *WorkerSpec) { s.AgentID = "../x" },
+		"no instance":        func(s *WorkerSpec) { s.Instance = "" },
 		"relative mount":     func(s *WorkerSpec) { s.Workspace = "workspaces/x" },
 		"unclean mount":      func(s *WorkerSpec) { s.Workspace = "/data/../etc" },
 		"colon in path":      func(s *WorkerSpec) { s.ConfigDir = "/data/a:b" },
@@ -136,13 +138,13 @@ func TestWorkerArgsRejects(t *testing.T) {
 }
 
 func TestHelperArgs(t *testing.T) {
-	name, args, err := HelperArgs(HelperSpec{AgentID: "abcdef123456", Image: "img",
+	name, args, err := HelperArgs(HelperSpec{Instance: "0123456789ab", AgentID: "abcdef123456", Image: "img",
 		Workspace: "/data/ws", ObjectsDir: "/repo/.git/objects", Git: GitIdentity{Name: "Ozan", Email: "o@example.com"},
 		Command: []string{"git", "status"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	name2, _, _ := HelperArgs(HelperSpec{AgentID: "abcdef123456", Image: "img",
+	name2, _, _ := HelperArgs(HelperSpec{Instance: "0123456789ab", AgentID: "abcdef123456", Image: "img",
 		Workspace: "/data/ws", ObjectsDir: "/repo/.git/objects", Git: GitIdentity{Name: "Ozan", Email: "o@example.com"},
 		Command: []string{"git", "status"}})
 	if !strings.HasPrefix(name, "ao-helper-abcdef123456-") || name == name2 || !slices.Contains(flagValues(args, "--name"), name) {

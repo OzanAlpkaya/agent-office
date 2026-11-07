@@ -81,7 +81,7 @@ func sandboxFixture(t *testing.T, ignoreTerm bool) *fixture {
 	}
 	allow, _ := sandbox.ParseAllowlist(sandbox.DefaultEgressAllow)
 	s := &SandboxOptions{
-		Podman: p, Image: sandbox.WorkerImage(),
+		Instance: "0123456789ab", Podman: p, Image: sandbox.WorkerImage(),
 		WorkspaceRoot: filepath.Join(dir, "workspaces"), AgentsRoot: filepath.Join(dir, "agents"),
 		GitHooks: hooksDir, AgentOffice: self, Claude: claude, ClaudeVersion: agent.TestedClaudeCodeVersion,
 		TokenFile: filepath.Join(tokenDir, "oauth-token"), Allow: allow,

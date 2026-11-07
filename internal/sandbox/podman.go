@@ -29,6 +29,7 @@ const (
 	APIAddr         = "127.0.0.1:8080"
 	LabelAgent      = "io.agent-office.agent"
 	LabelRole       = "io.agent-office.role"
+	LabelInstance   = "io.agent-office.instance" // which daemon (data dir) owns the container
 	DefaultMemory   = "2g"
 	DefaultPids     = 256
 	helperMemory    = "512m"
@@ -36,12 +37,16 @@ const (
 	containerPrefix = "ao-"
 )
 
+// InstancePattern is what daemon instance ids look like (a data dir hash).
+var InstancePattern = regexp.MustCompile(`^[a-f0-9]{8,64}$`)
+
 // AgentIDPattern is what agent ids look like (hex from the engine); it keeps
 // them safe in container names, labels and paths.
 var AgentIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // WorkerSpec describes one worker container. Host paths must be absolute.
 type WorkerSpec struct {
+	Instance     string // daemon instance; scopes startup reconciliation
 	AgentID      string
 	Image        string
 	Workspace    string // the agent's shared clone
@@ -64,6 +69,7 @@ type WorkerSpec struct {
 // HelperSpec describes a short-lived git helper container (status, bundle,
 // "save uncommitted work") with the agent's repository and nothing else.
 type HelperSpec struct {
+	Instance   string
 	AgentID    string
 	Image      string
 	Workspace  string
@@ -110,8 +116,8 @@ var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // as a child of `agent-office sandbox-init`, which bridges the loopback
 // addresses to the sockets.
 func WorkerArgs(s WorkerSpec) ([]string, error) {
-	if !AgentIDPattern.MatchString(s.AgentID) {
-		return nil, fmt.Errorf("sandbox: invalid agent id %q", s.AgentID)
+	if !AgentIDPattern.MatchString(s.AgentID) || !InstancePattern.MatchString(s.Instance) {
+		return nil, fmt.Errorf("sandbox: invalid agent id %q or instance %q", s.AgentID, s.Instance)
 	}
 	if s.Image == "" || len(s.Command) == 0 {
 		return nil, fmt.Errorf("sandbox: worker needs an image and a command")
@@ -144,7 +150,7 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 		{s.Settings, SettingsFile, true},
 		{s.GitHooks, GitHooksDir, true},
 	}
-	args := append(baseArgs(s.AgentID, "worker", mem, pids),
+	args := append(baseArgs(s.Instance, s.AgentID, "worker", mem, pids),
 		"--name", ContainerName(s.AgentID),
 		"-it", "--detach-keys=", // detach keys would swallow Ctrl-P/Ctrl-Q typed into the agent
 		"--stop-timeout", "5")
@@ -199,8 +205,8 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 // helper container. Run it with Podman.RunContainer, which removes it by
 // name if the run fails or is cancelled.
 func HelperArgs(s HelperSpec) (name string, args []string, err error) {
-	if !AgentIDPattern.MatchString(s.AgentID) {
-		return "", nil, fmt.Errorf("sandbox: invalid agent id %q", s.AgentID)
+	if !AgentIDPattern.MatchString(s.AgentID) || !InstancePattern.MatchString(s.Instance) {
+		return "", nil, fmt.Errorf("sandbox: invalid agent id %q or instance %q", s.AgentID, s.Instance)
 	}
 	if s.Image == "" || len(s.Command) == 0 {
 		return "", nil, fmt.Errorf("sandbox: helper needs an image and a command")
@@ -209,7 +215,7 @@ func HelperArgs(s HelperSpec) (name string, args []string, err error) {
 		return "", nil, err
 	}
 	name = helperName(s.AgentID)
-	args = append(baseArgs(s.AgentID, "helper", helperMemory, helperPids), "--name", name)
+	args = append(baseArgs(s.Instance, s.AgentID, "helper", helperMemory, helperPids), "--name", name)
 	for _, m := range []struct {
 		src, dst string
 		ro       bool
@@ -236,8 +242,9 @@ func HelperArgs(s HelperSpec) (name string, args []string, err error) {
 }
 
 // baseArgs are the isolation flags every agent-office container gets.
-func baseArgs(agentID, role, mem string, pids int) []string {
+func baseArgs(instance, agentID, role, mem string, pids int) []string {
 	return []string{"run", "--rm", "--init", "--pull=never",
+		"--label", LabelInstance + "=" + instance,
 		"--label", LabelAgent + "=" + agentID, "--label", LabelRole + "=" + role,
 		"--network", "none",
 		"--userns=host", // explicit: a containers.conf default of keep-id would undo ADR 0014

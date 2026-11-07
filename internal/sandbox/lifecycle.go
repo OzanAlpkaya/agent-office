@@ -150,9 +150,10 @@ func (p Podman) ImageExists(ctx context.Context, ref string) (bool, error) {
 
 // Container is an agent-office container found by its labels.
 type Container struct {
-	Name    string
-	AgentID string
-	Role    string // worker | helper
+	Name     string
+	Instance string
+	AgentID  string
+	Role     string // worker | helper
 }
 
 // ListAgentContainers lists every container (running or not) that carries
@@ -176,7 +177,8 @@ func (p Podman) ListAgentContainers(ctx context.Context) ([]Container, error) {
 		if len(r.Names) == 0 {
 			continue
 		}
-		list = append(list, Container{Name: r.Names[0], AgentID: r.Labels[LabelAgent], Role: r.Labels[LabelRole]})
+		list = append(list, Container{Name: r.Names[0], Instance: r.Labels[LabelInstance],
+			AgentID: r.Labels[LabelAgent], Role: r.Labels[LabelRole]})
 	}
 	return list, nil
 }

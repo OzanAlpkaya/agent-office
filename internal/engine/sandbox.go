@@ -20,6 +20,7 @@ import (
 // SandboxOptions turns on sandboxed workers (ADR 0007, 0014–0016). With nil
 // Options.Sandbox the engine runs agents on the host with permission prompts.
 type SandboxOptions struct {
+	Instance      string // daemon instance (a data dir hash); labels its containers
 	Podman        sandbox.Podman
 	Image         string            // worker image (sandbox.WorkerImage)
 	WorkspaceRoot string            // agent repositories; untrusted (ADR 0014)
@@ -75,8 +76,8 @@ func (o *SandboxOptions) validate() error {
 			return fmt.Errorf("engine: Sandbox.%s must be an absolute path, got %q", name, p)
 		}
 	}
-	if o.Image == "" || o.ClaudeVersion == "" {
-		return errors.New("engine: Sandbox.Image and Sandbox.ClaudeVersion are required")
+	if o.Image == "" || o.ClaudeVersion == "" || !sandbox.InstancePattern.MatchString(o.Instance) {
+		return errors.New("engine: Sandbox.Image, Sandbox.ClaudeVersion and a valid Sandbox.Instance are required")
 	}
 	return nil
 }
@@ -231,7 +232,7 @@ func (e *Engine) launchSandboxed(id, sid, branch, wsPath, base, taskID string, s
 		return fail(err)
 	}
 	args, err := sandbox.WorkerArgs(sandbox.WorkerSpec{
-		AgentID: id, Image: s.Image, Workspace: wsPath, ObjectsDir: prep.objects, ConfigDir: cfgDir,
+		Instance: s.Instance, AgentID: id, Image: s.Image, Workspace: wsPath, ObjectsDir: prep.objects, ConfigDir: cfgDir,
 		HookSocket: ln.Path(), EgressSocket: egressPath, APISocket: apiPath,
 		AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
 		Git: prep.ident, Memory: s.Memory, Pids: s.Pids, Command: command,

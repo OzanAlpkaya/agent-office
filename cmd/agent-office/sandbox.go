@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"debug/elf"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -97,8 +99,9 @@ func sandboxOptions(ctx context.Context, cfg serveConfig, self string, ci claude
 	log.Info("sandbox ready", "podman", pv, "image", image, "egress_allow",
 		strings.Join(append(append([]string{}, sandbox.DefaultEgressAllow...), cfg.egressAllow...), ","),
 		"token_file", tokenFile, "memory", cfg.sandboxMemory, "pids", cfg.sandboxPids)
+	sum := sha256.Sum256([]byte(cfg.dataDir))
 	return &engine.SandboxOptions{
-		Podman: p, Image: image,
+		Instance: hex.EncodeToString(sum[:6]), Podman: p, Image: image,
 		WorkspaceRoot: filepath.Join(cfg.dataDir, "workspaces"), AgentsRoot: filepath.Join(cfg.dataDir, "agents"),
 		GitHooks: hooksDir, AgentOffice: self, Claude: ci.path, ClaudeVersion: ci.version,
 		TokenFile: tokenFile, Allow: allow, Memory: cfg.sandboxMemory, Pids: cfg.sandboxPids,
