@@ -1,10 +1,12 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -21,7 +23,7 @@ const (
 	MaxMessageLen    = 4000
 	maxSentPerWindow = 30
 	sendWindow       = 10 * time.Minute
-	maxPending       = 50
+	maxPending       = 50 // undelivered messages from one sender to one recipient
 	maxListed        = 100
 )
 
@@ -83,12 +85,17 @@ func (e *Engine) sendMessage(ctx context.Context, from, to, body string, limited
 				maxSentPerWindow, sendWindow)
 		}
 	}
-	pending, err := e.q.CountPendingMessages(ctx, to)
-	if err != nil {
-		return Message{}, err
-	}
-	if pending >= maxPending {
-		return Message{}, fmt.Errorf("%w: agent %s has %d undelivered messages", ErrLimit, to, pending)
+	if limited {
+		// Per sender, so one agent flooding a recipient cannot block the others'
+		// messages, reports and agent-office's own notices.
+		pending, err := e.q.CountPendingMessagesFrom(ctx, db.CountPendingMessagesFromParams{ToAgentID: to,
+			FromAgentID: nullString(from)})
+		if err != nil {
+			return Message{}, err
+		}
+		if pending >= maxPending {
+			return Message{}, fmt.Errorf("%w: %d of your messages to agent %s are not delivered yet", ErrLimit, pending, to)
+		}
 	}
 	row, err := e.q.InsertMessage(ctx, db.InsertMessageParams{ProjectID: e.project.ID, FromAgentID: nullString(from),
 		ToAgentID: to, Body: body, CreatedAt: now()})
@@ -154,6 +161,7 @@ func (e *Engine) claimLocked(ctx context.Context, a *agentProc, via string, log 
 		log.Error("claim messages", "err", err)
 		return nil
 	}
+	slices.SortFunc(rows, func(a, b db.Message) int { return cmp.Compare(a.ID, b.ID) }) // RETURNING has no order
 	out := make([]Message, 0, len(rows))
 	for _, r := range rows {
 		m := messageFromRow(r)
@@ -224,12 +232,22 @@ func (e *Engine) deliverIdle(id string) {
 		time.Sleep(e.opts.enterDelay) // a TUI reads a fast "text\r" as a paste, not as Enter
 		_, err = term.Write([]byte("\r"))
 	}
-	if err != nil {
-		log.Warn("pty delivery failed", "err", err)
-	}
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	a.delivering = false
-	e.mu.Unlock()
+	if err != nil {
+		// Nothing reached the agent: put the messages back, so a later Stop or
+		// idle period delivers them.
+		log.Warn("pty delivery failed; messages returned to the queue", "err", err)
+		for _, m := range msgs {
+			if uerr := e.q.UnclaimMessage(ctx, m.ID); uerr != nil {
+				log.Error("unclaim message", "message_id", m.ID, "err", uerr)
+				continue
+			}
+			m.DeliveredAt, m.Delivery = nil, ""
+			e.publishLocked(Update{Type: "message", Message: &m})
+		}
+	}
 }
 
 // agentLabel describes an agent in a delivered message.
@@ -255,7 +273,9 @@ func formatMessages(msgs []Message, names map[string]agentLabel) string {
 		} else if m.From != "" {
 			from = "agent " + m.From
 		}
-		fmt.Fprintf(&b, "\n\nFrom %s:\n%s", from, m.Body)
+		// Every body line is quoted, so agent-written text cannot pass for a
+		// header such as "From agent-office:".
+		fmt.Fprintf(&b, "\n\nFrom %s:\n> %s", from, strings.ReplaceAll(m.Body, "\n", "\n> "))
 	}
 	return b.String()
 }

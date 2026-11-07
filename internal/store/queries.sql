@@ -157,3 +157,10 @@ SELECT access_requests.* FROM access_requests JOIN agents ON agents.id = access_
 WHERE agents.project_id = ?
 ORDER BY (access_requests.status = 'pending') DESC, access_requests.id DESC
 LIMIT ?;
+
+-- name: UnclaimMessage :exec
+-- Returns a message to the queue when typing it into the terminal failed (ADR 0018).
+UPDATE messages SET delivered_at = NULL, delivery = '' WHERE id = ?;
+
+-- name: CountPendingMessagesFrom :one
+SELECT count(*) FROM messages WHERE to_agent_id = ? AND from_agent_id = ? AND delivered_at IS NULL;

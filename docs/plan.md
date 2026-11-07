@@ -113,12 +113,15 @@ derived from Claude Code hooks.
 
 **Goal:** Agents coordinate through a team MCP server; a lead agent plans and delegates.
 
-**Scope**
+**Scope** (see ADRs 0006, 0017–0019 and `docs/plans/phase-4.md`)
 - MCP server (`modelcontextprotocol/go-sdk`) with tools: `create_task`, `assign_task`,
-  `send_message`, `report_done`, `request_access`.
-- Lead agent role that breaks a goal into tasks and assigns them.
-- Message delivery to an agent on its Stop hook (when it is idle).
-- `request_access` goes to a human approval queue in the UI.
+  `list_tasks`, `send_message`, `report_done`, `request_access`, served per agent on its own socket
+  through the `agent-office mcp` stdio bridge.
+- Lead agent role that breaks a goal into tasks and assigns them; each assignment starts a worker.
+- Message delivery on the recipient's Stop hook while it works, typed into its terminal when it is
+  idle; claimed once in SQLite.
+- `request_access` (network domains) goes to a human approval queue in the UI; an approval grants
+  the host to that agent only, until it exits.
 
 **Definition of Done**
 - [ ] Given a goal, the lead creates and assigns tasks that workers complete end-to-end.

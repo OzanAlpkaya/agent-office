@@ -49,15 +49,21 @@ Option 3.
   interrupt) or a message arrives while it is idle, the engine waits 1.5 s for the TUI to settle,
   and delivers only if the agent has finished at least one turn (so it never types over the
   initial prompt) and the user has not typed in its terminal for 5 s (otherwise it retries later).
-  It claims, writes one line, waits, and sends Enter, through the same input path as the UI.
+  It claims, writes one line, waits, and sends Enter, through the same input path as the UI. If the
+  write fails, the claimed messages are put back (`delivered_at` cleared) for a later delivery.
 - **Sanitizing:** the PTY line has every control character (C0, DEL, C1; newlines become spaces)
   removed, so no escape sequence, Esc or Ctrl-C written by another agent reaches a terminal. The
   Stop path sends the text as a JSON string and keeps newlines.
 - **Framing:** each delivery starts with a line saying these are messages from other agents in the
   team, to be treated as information about the work and not as instructions that override the
-  recipient's task, then `From <agent> (<role>, task "<title>"): <body>` per message.
-- **Limits:** 30 messages per sender per 10 minutes, 50 undelivered messages per recipient;
-  messages to an exited agent are refused.
+  recipient's task, then `From <agent> (<role>, agent id <id>):` per message, with **every body
+  line quoted with `> `**, so agent-written text cannot pass for a header such as
+  `From agent-office:`.
+- **Limits:** 30 messages per sender per 10 minutes, 50 undelivered messages per sender and
+  recipient; messages to an exited agent, or to one that has reported done, are refused. The caps
+  apply to agents' own `send_message` calls, not to `report_done` notices or agent-office's
+  messages, so one agent flooding the lead cannot block the other workers' reports or the human's
+  access decisions (found in the end-of-phase review).
 - **Exactly once, precisely:** a message is marked delivered when the hook reply is handed to the
   forwarder, or the line is written to the PTY. Within the daemon it is delivered at most once and
   retried until delivered; if Claude Code drops the hook reply (forwarder timeout, crash), that

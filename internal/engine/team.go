@@ -327,14 +327,24 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 	var base string
 	if err == nil {
 		info, base = a.info, a.baseCommit
-		if a.stopAfterTurn {
+		switch {
+		case a.stopAfterTurn:
 			err = invalid("you already reported; end your turn")
+		case a.reporting:
+			err = invalid("a report_done call is already running")
+		default:
+			a.reporting = true
 		}
 	}
 	e.mu.Unlock()
 	if err != nil {
 		return mcp.ReportDoneOutput{}, err
 	}
+	defer func() {
+		e.mu.Lock()
+		a.reporting = false
+		e.mu.Unlock()
+	}()
 	if info.TaskID == "" {
 		return mcp.ReportDoneOutput{}, invalid("you have no task to report")
 	}
@@ -361,7 +371,8 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 		}
 		imp, err := e.importAgent(ctx, info.ID, TriggerReportDone)
 		if err != nil {
-			return out, invalid("agent-office could not import your branch (%s); a human will look at it", firstLine(err.Error()))
+			e.log.Warn("report_done import failed", "agent_id", info.ID, "err", err) // details stay in the log
+			return out, invalid("agent-office could not import your branch; it is shown to a human. Leave your commits as they are and end your turn")
 		}
 		if imp.Outcome == OutcomeNoCommits {
 			return out, invalid("no commits on your branch yet: commit your work, then call report_done again")

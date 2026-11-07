@@ -201,5 +201,14 @@ arrives on, never from tool arguments.
 - **Tests added beyond the plan:** `TestSandboxedTeamWorker` (real Podman, no tokens): a worker
   calls `list_tasks` and `report_done` through `agent-office mcp` inside its container, which
   proves the socket mount, the bridge and identity end to end.
+- **End-of-phase review fixes** (an independent reviewer read the diff; no authorization hole was
+  found): PTY delivery puts messages back if the write fails; the undelivered-message cap is per
+  sender and recipient and does not apply to report notices or agent-office's own messages; body
+  lines are quoted with `> ` so they cannot forge a header; an Esc during the `report_done` turn
+  ends the agent; a second concurrent `report_done` is refused; the import error behind a failed
+  report stays in the log; claimed messages are ordered by id. ADR 0017 states that identity by
+  socket holds in sandbox mode only.
+- **The Phase 3 sandbox e2e** now accepts `up_to_date` for "Import now": the agent, following the
+  new worker prompt, calls `report_done` first, which already imports its branch.
 - **Shared engine test helpers** (`updateLog`, `screen`) moved from the sandbox-tagged file into
   `helpers_test.go`.

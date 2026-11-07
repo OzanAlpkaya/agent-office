@@ -109,6 +109,22 @@ func (q *Queries) CountPendingMessages(ctx context.Context, toAgentID string) (i
 	return count, err
 }
 
+const countPendingMessagesFrom = `-- name: CountPendingMessagesFrom :one
+SELECT count(*) FROM messages WHERE to_agent_id = ? AND from_agent_id = ? AND delivered_at IS NULL
+`
+
+type CountPendingMessagesFromParams struct {
+	ToAgentID   string
+	FromAgentID sql.NullString
+}
+
+func (q *Queries) CountPendingMessagesFrom(ctx context.Context, arg CountPendingMessagesFromParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPendingMessagesFrom, arg.ToAgentID, arg.FromAgentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAgent = `-- name: CreateAgent :exec
 INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, role)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1078,6 +1094,16 @@ type SetWorktreeStatusParams struct {
 
 func (q *Queries) SetWorktreeStatus(ctx context.Context, arg SetWorktreeStatusParams) error {
 	_, err := q.db.ExecContext(ctx, setWorktreeStatus, arg.Status, arg.RemovedAt, arg.AgentID)
+	return err
+}
+
+const unclaimMessage = `-- name: UnclaimMessage :exec
+UPDATE messages SET delivered_at = NULL, delivery = '' WHERE id = ?
+`
+
+// Returns a message to the queue when typing it into the terminal failed (ADR 0018).
+func (q *Queries) UnclaimMessage(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, unclaimMessage, id)
 	return err
 }
 

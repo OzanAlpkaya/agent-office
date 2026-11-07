@@ -85,5 +85,10 @@ Option 1 in each group.
   budgets (Phase 8) can tighten this without changing the model.
 - Workers that reported are gone, so follow-up work is a new sub-task, which matches one branch
   per task for Phase 5.
+- **Identity by socket holds in sandbox mode only.** A host-mode agent runs as the user's uid, so it
+  could connect to another agent's socket (mode 0600, same user) or call the loopback API, as any
+  local process of the user can (threat model). Host mode is the explicit, unsandboxed option.
+- If an agent is interrupted (Esc) during its `report_done` turn, no Stop arrives (ADR 0008); the
+  interrupt ends it instead, so it never keeps its slot.
 - One lead at a time is a simplification; several goals in parallel need lead-scoped addressing,
   which the schema already supports (authority is derived from the goal, not from a global flag).

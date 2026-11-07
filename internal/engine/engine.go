@@ -173,6 +173,7 @@ type agentProc struct {
 	deliverTimer  *time.Timer // pending idle delivery
 	delivering    bool        // a message is being typed into the PTY
 	stopAfterTurn bool        // report_done: end the session when the turn ends
+	reporting     bool        // a report_done call is running
 }
 
 // Engine owns agent and task lifecycles. All state changes go through it.
@@ -716,8 +717,12 @@ func (e *Engine) Input(id string, data []byte) error {
 		e.applyLocked(ctx, a, agent.Event{Kind: agent.UserInterrupted, SessionID: a.info.SessionID, Hook: "input"},
 			e.log.With("agent_id", id))
 		if a.status.State == hooks.Idle {
-			a.turns++                        // the interrupt ended the turn, which sends no Stop (ADR 0008)
-			e.scheduleDeliveryLocked(ctx, a) // ADR 0018: an interrupted agent can take messages again
+			a.turns++ // the interrupt ended the turn, which sends no Stop (ADR 0008)
+			if a.stopAfterTurn {
+				e.stopAfterReportLocked(a) // the report_done turn ended without a Stop
+			} else {
+				e.scheduleDeliveryLocked(ctx, a) // ADR 0018: an interrupted agent can take messages again
+			}
 		}
 	}
 	return nil
