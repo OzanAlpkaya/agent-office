@@ -348,17 +348,6 @@ func (e *Engine) reconcileSandbox(ctx context.Context, interrupted []string) {
 	}
 }
 
-// importOnExit imports in the background once a sandboxed agent has exited.
-func (e *Engine) importOnExit(id string) {
-	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		_, _ = e.importAgent(ctx, id, TriggerExit)
-	}()
-}
-
 func importFromRow(r db.Import) *ImportInfo {
 	imp := &ImportInfo{Trigger: r.Trigger, Outcome: r.Outcome, Branch: r.Branch, Head: r.Head, Previous: r.Previous,
 		Commits: int(r.Commits), At: r.At, Flagged: []FlaggedCommit{}}

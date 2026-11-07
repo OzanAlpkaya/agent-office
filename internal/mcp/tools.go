@@ -18,8 +18,9 @@ const SocketEnv = "AGENT_OFFICE_MCP_SOCKET"
 
 // Roles as the engine records them (ADR 0017).
 const (
-	RoleLead   = "lead"
-	RoleWorker = "worker"
+	RoleLead     = "lead"
+	RoleWorker   = "worker"
+	RoleReviewer = "reviewer" // reviews one pull request (ADR 0021)
 )
 
 // Tool names.
@@ -30,6 +31,7 @@ const (
 	ToolSendMessage   = "send_message"
 	ToolReportDone    = "report_done"
 	ToolRequestAccess = "request_access"
+	ToolSubmitReview  = "submit_review"
 )
 
 // Team is what the tools call. The engine implements it; caller is the agent
@@ -42,6 +44,7 @@ type Team interface {
 	SendMessage(ctx context.Context, caller string, in SendMessageInput) (SendMessageOutput, error)
 	ReportDone(ctx context.Context, caller string, in ReportDoneInput) (ReportDoneOutput, error)
 	RequestAccess(ctx context.Context, caller string, in RequestAccessInput) (RequestAccessOutput, error)
+	SubmitReview(ctx context.Context, caller string, in SubmitReviewInput) (SubmitReviewOutput, error)
 }
 
 // CreateTaskInput is create_task's input.
@@ -131,6 +134,28 @@ type RequestAccessOutput struct {
 	Next      string `json:"next"`
 }
 
+// SubmitReviewInput is submit_review's input (reviewers only, ADR 0021).
+type SubmitReviewInput struct {
+	Verdict  string          `json:"verdict" jsonschema:"approve (ready for a human to merge), changes_requested (the author must change something before merging) or comment (remarks that need no change)."`
+	Summary  string          `json:"summary" jsonschema:"The review: what you checked, what is good, what must change and why (1-4000 characters)."`
+	Comments []ReviewComment `json:"comments,omitempty" jsonschema:"Inline comments on lines of the pull request's changed files (at most 20)."`
+}
+
+// ReviewComment is one inline review comment.
+type ReviewComment struct {
+	Path string `json:"path" jsonschema:"File path relative to the repository root, e.g. internal/store/store.go."`
+	Line int    `json:"line" jsonschema:"Line number in the file at the reviewed commit (1-based)."`
+	Body string `json:"body" jsonschema:"The comment (1-2000 characters)."`
+}
+
+// SubmitReviewOutput is submit_review's result.
+type SubmitReviewOutput struct {
+	ReviewID int64  `json:"review_id"`
+	Posted   bool   `json:"posted"` // posted to GitHub
+	URL      string `json:"url,omitempty"`
+	Next     string `json:"next"`
+}
+
 // UserError marks an error whose message is safe and useful to show the
 // calling agent (a refusal or invalid input). Other errors are reported to the
 // agent as an internal error and only logged.
@@ -143,8 +168,8 @@ func (e UserError) Unwrap() error { return e.Err }
 const internalError = "internal error in agent-office; the details are in the daemon log"
 
 // NewServer returns the MCP server for one agent. Tools are bound to caller;
-// lead-only tools are not even listed for workers (the engine refuses them
-// anyway).
+// tools a role may not use are not even listed for it (the engine refuses
+// them anyway): leads plan, workers report, reviewers review (ADR 0017, 0021).
 func NewServer(team Team, caller, role, version string, log *slog.Logger) *sdk.Server {
 	if log == nil {
 		log = slog.Default()
@@ -173,6 +198,16 @@ func NewServer(team Team, caller, role, version string, log *slog.Logger) *sdk.S
 		"its sub-tasks, their status and their agents. For a worker: its own task and its lead.",
 		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true}},
 		func(ctx context.Context, _ struct{}) (ListTasksOutput, error) { return team.ListTasks(ctx, caller) })
+	if role == RoleReviewer {
+		add(s, t, &sdk.Tool{Name: ToolSubmitReview, Description: "Submit your review of the pull request, once. " +
+			"agent-office posts it on GitHub as a comment review (it never approves or merges) and ends your " +
+			"session after this turn. Use changes_requested only for problems the author must fix; the author is " +
+			"then given your review as follow-up work."},
+			func(ctx context.Context, in SubmitReviewInput) (SubmitReviewOutput, error) {
+				return team.SubmitReview(ctx, caller, in)
+			})
+		return s
+	}
 	add(s, t, &sdk.Tool{Name: ToolSendMessage, Description: "Send a message to the lead (workers: to=\"lead\") " +
 		"or to one of your goal's workers (lead: to=<agent id>). It is delivered when the recipient finishes " +
 		"its current turn, or right away if it is idle. Do not wait or poll for an answer: end your turn; " +

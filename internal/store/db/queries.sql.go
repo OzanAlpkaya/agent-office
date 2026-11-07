@@ -12,10 +12,10 @@ import (
 )
 
 const claimMessages = `-- name: ClaimMessages :many
-UPDATE messages SET delivered_at = ?, delivery = ?
+UPDATE messages SET delivered_at = ?1, delivery = ?2
 WHERE id IN (
     SELECT m.id FROM messages m
-    WHERE m.to_agent_id = ? AND m.delivered_at IS NULL
+    WHERE m.to_agent_id = ?3 AND m.delivered_at IS NULL AND m.created_at >= ?4
     ORDER BY m.id LIMIT 10
 )
 RETURNING id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery
@@ -25,11 +25,19 @@ type ClaimMessagesParams struct {
 	DeliveredAt sql.NullTime
 	Delivery    string
 	ToAgentID   string
+	Since       time.Time
 }
 
-// Hands out a recipient's oldest undelivered messages exactly once (ADR 0018).
+// Hands out a recipient's oldest undelivered messages exactly once (ADR 0018), only those
+// queued during its current session: a relaunched agent (ADR 0022) never gets messages
+// meant for its previous session.
 func (q *Queries) ClaimMessages(ctx context.Context, arg ClaimMessagesParams) ([]Message, error) {
-	rows, err := q.db.QueryContext(ctx, claimMessages, arg.DeliveredAt, arg.Delivery, arg.ToAgentID)
+	rows, err := q.db.QueryContext(ctx, claimMessages,
+		arg.DeliveredAt,
+		arg.Delivery,
+		arg.ToAgentID,
+		arg.Since,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -58,6 +66,42 @@ func (q *Queries) ClaimMessages(ctx context.Context, arg ClaimMessagesParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const claimReviewFollowup = `-- name: ClaimReviewFollowup :one
+UPDATE reviews SET followup = ?, updated_at = ? WHERE id = ? AND followup = ''
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at
+`
+
+type ClaimReviewFollowupParams struct {
+	Followup  string
+	UpdatedAt time.Time
+	ID        int64
+}
+
+// Decides a review's follow-up once (ADR 0022).
+func (q *Queries) ClaimReviewFollowup(ctx context.Context, arg ClaimReviewFollowupParams) (Review, error) {
+	row := q.db.QueryRowContext(ctx, claimReviewFollowup, arg.Followup, arg.UpdatedAt, arg.ID)
+	var i Review
+	err := row.Scan(
+		&i.ID,
+		&i.PrID,
+		&i.Reviewer,
+		&i.Head,
+		&i.Status,
+		&i.Verdict,
+		&i.Summary,
+		&i.Comments,
+		&i.AgentID,
+		&i.GithubReviewID,
+		&i.Url,
+		&i.Followup,
+		&i.Error,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const countChildTasks = `-- name: CountChildTasks :one
@@ -99,11 +143,16 @@ func (q *Queries) CountPendingAccessRequests(ctx context.Context, agentID string
 }
 
 const countPendingMessages = `-- name: CountPendingMessages :one
-SELECT count(*) FROM messages WHERE to_agent_id = ? AND delivered_at IS NULL
+SELECT count(*) FROM messages WHERE to_agent_id = ? AND delivered_at IS NULL AND created_at >= ?
 `
 
-func (q *Queries) CountPendingMessages(ctx context.Context, toAgentID string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countPendingMessages, toAgentID)
+type CountPendingMessagesParams struct {
+	ToAgentID string
+	CreatedAt time.Time
+}
+
+func (q *Queries) CountPendingMessages(ctx context.Context, arg CountPendingMessagesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPendingMessages, arg.ToAgentID, arg.CreatedAt)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -407,6 +456,64 @@ func (q *Queries) GetAccessRequest(ctx context.Context, id int64) (AccessRequest
 	return i, err
 }
 
+const getPullRequest = `-- name: GetPullRequest :one
+SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at FROM pull_requests WHERE id = ?
+`
+
+func (q *Queries) GetPullRequest(ctx context.Context, id int64) (PullRequest, error) {
+	row := q.db.QueryRowContext(ctx, getPullRequest, id)
+	var i PullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Branch,
+		&i.Base,
+		&i.Number,
+		&i.Url,
+		&i.State,
+		&i.Head,
+		&i.Checks,
+		&i.FailedChecks,
+		&i.PendingFlagged,
+		&i.AcceptedFlagged,
+		&i.Rounds,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getReview = `-- name: GetReview :one
+SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at FROM reviews WHERE id = ?
+`
+
+func (q *Queries) GetReview(ctx context.Context, id int64) (Review, error) {
+	row := q.db.QueryRowContext(ctx, getReview, id)
+	var i Review
+	err := row.Scan(
+		&i.ID,
+		&i.PrID,
+		&i.Reviewer,
+		&i.Head,
+		&i.Status,
+		&i.Verdict,
+		&i.Summary,
+		&i.Comments,
+		&i.AgentID,
+		&i.GithubReviewID,
+		&i.Url,
+		&i.Followup,
+		&i.Error,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getTask = `-- name: GetTask :one
 SELECT id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by FROM tasks WHERE id = ?
 `
@@ -594,6 +701,62 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (M
 		&i.CreatedAt,
 		&i.DeliveredAt,
 		&i.Delivery,
+	)
+	return i, err
+}
+
+const insertReview = `-- name: InsertReview :one
+INSERT INTO reviews (pr_id, reviewer, head, status, verdict, summary, comments, github_review_id, url, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at
+`
+
+type InsertReviewParams struct {
+	PrID           int64
+	Reviewer       string
+	Head           string
+	Status         string
+	Verdict        string
+	Summary        string
+	Comments       string
+	GithubReviewID int64
+	Url            string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+func (q *Queries) InsertReview(ctx context.Context, arg InsertReviewParams) (Review, error) {
+	row := q.db.QueryRowContext(ctx, insertReview,
+		arg.PrID,
+		arg.Reviewer,
+		arg.Head,
+		arg.Status,
+		arg.Verdict,
+		arg.Summary,
+		arg.Comments,
+		arg.GithubReviewID,
+		arg.Url,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i Review
+	err := row.Scan(
+		&i.ID,
+		&i.PrID,
+		&i.Reviewer,
+		&i.Head,
+		&i.Status,
+		&i.Verdict,
+		&i.Summary,
+		&i.Comments,
+		&i.AgentID,
+		&i.GithubReviewID,
+		&i.Url,
+		&i.Followup,
+		&i.Error,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -815,6 +978,152 @@ func (q *Queries) ListImports(ctx context.Context, arg ListImportsParams) ([]Imp
 			&i.Commits,
 			&i.Flagged,
 			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPullRequests = `-- name: ListPullRequests :many
+SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at FROM pull_requests WHERE project_id = ? ORDER BY id
+`
+
+func (q *Queries) ListPullRequests(ctx context.Context, projectID string) ([]PullRequest, error) {
+	rows, err := q.db.QueryContext(ctx, listPullRequests, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PullRequest{}
+	for rows.Next() {
+		var i PullRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.TaskID,
+			&i.AgentID,
+			&i.Branch,
+			&i.Base,
+			&i.Number,
+			&i.Url,
+			&i.State,
+			&i.Head,
+			&i.Checks,
+			&i.FailedChecks,
+			&i.PendingFlagged,
+			&i.AcceptedFlagged,
+			&i.Rounds,
+			&i.Error,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReviews = `-- name: ListReviews :many
+SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at FROM reviews WHERE pr_id = ? ORDER BY id DESC LIMIT ?
+`
+
+type ListReviewsParams struct {
+	PrID  int64
+	Limit int64
+}
+
+func (q *Queries) ListReviews(ctx context.Context, arg ListReviewsParams) ([]Review, error) {
+	rows, err := q.db.QueryContext(ctx, listReviews, arg.PrID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Review{}
+	for rows.Next() {
+		var i Review
+		if err := rows.Scan(
+			&i.ID,
+			&i.PrID,
+			&i.Reviewer,
+			&i.Head,
+			&i.Status,
+			&i.Verdict,
+			&i.Summary,
+			&i.Comments,
+			&i.AgentID,
+			&i.GithubReviewID,
+			&i.Url,
+			&i.Followup,
+			&i.Error,
+			&i.Attempts,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReviewsByStatus = `-- name: ListReviewsByStatus :many
+SELECT reviews.id, reviews.pr_id, reviews.reviewer, reviews.head, reviews.status, reviews.verdict, reviews.summary, reviews.comments, reviews.agent_id, reviews.github_review_id, reviews.url, reviews.followup, reviews.error, reviews.attempts, reviews.created_at, reviews.updated_at FROM reviews JOIN pull_requests ON pull_requests.id = reviews.pr_id
+WHERE pull_requests.project_id = ? AND reviews.status = ?
+ORDER BY reviews.id
+`
+
+type ListReviewsByStatusParams struct {
+	ProjectID string
+	Status    string
+}
+
+func (q *Queries) ListReviewsByStatus(ctx context.Context, arg ListReviewsByStatusParams) ([]Review, error) {
+	rows, err := q.db.QueryContext(ctx, listReviewsByStatus, arg.ProjectID, arg.Status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Review{}
+	for rows.Next() {
+		var i Review
+		if err := rows.Scan(
+			&i.ID,
+			&i.PrID,
+			&i.Reviewer,
+			&i.Head,
+			&i.Status,
+			&i.Verdict,
+			&i.Summary,
+			&i.Comments,
+			&i.AgentID,
+			&i.GithubReviewID,
+			&i.Url,
+			&i.Followup,
+			&i.Error,
+			&i.Attempts,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1082,6 +1391,192 @@ func (q *Queries) RemoveTask(ctx context.Context, id string) (int64, error) {
 	return result.RowsAffected()
 }
 
+const reopenAgent = `-- name: ReopenAgent :exec
+UPDATE agents SET state = 'starting', activity = '', exited_at = NULL, exit_code = NULL, exit_reason = ''
+WHERE id = ? AND state = 'exited'
+`
+
+// A follow-up relaunches an exited agent in its workspace (ADR 0022).
+func (q *Queries) ReopenAgent(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, reopenAgent, id)
+	return err
+}
+
+const reviewByAgent = `-- name: ReviewByAgent :one
+SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at FROM reviews WHERE agent_id = ? ORDER BY id DESC LIMIT 1
+`
+
+func (q *Queries) ReviewByAgent(ctx context.Context, agentID sql.NullString) (Review, error) {
+	row := q.db.QueryRowContext(ctx, reviewByAgent, agentID)
+	var i Review
+	err := row.Scan(
+		&i.ID,
+		&i.PrID,
+		&i.Reviewer,
+		&i.Head,
+		&i.Status,
+		&i.Verdict,
+		&i.Summary,
+		&i.Comments,
+		&i.AgentID,
+		&i.GithubReviewID,
+		&i.Url,
+		&i.Followup,
+		&i.Error,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const reviewByGitHubID = `-- name: ReviewByGitHubID :one
+SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at FROM reviews WHERE pr_id = ? AND github_review_id = ?
+`
+
+type ReviewByGitHubIDParams struct {
+	PrID           int64
+	GithubReviewID int64
+}
+
+func (q *Queries) ReviewByGitHubID(ctx context.Context, arg ReviewByGitHubIDParams) (Review, error) {
+	row := q.db.QueryRowContext(ctx, reviewByGitHubID, arg.PrID, arg.GithubReviewID)
+	var i Review
+	err := row.Scan(
+		&i.ID,
+		&i.PrID,
+		&i.Reviewer,
+		&i.Head,
+		&i.Status,
+		&i.Verdict,
+		&i.Summary,
+		&i.Comments,
+		&i.AgentID,
+		&i.GithubReviewID,
+		&i.Url,
+		&i.Followup,
+		&i.Error,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const reviewForHead = `-- name: ReviewForHead :one
+SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at FROM reviews WHERE pr_id = ? AND reviewer = ? AND head = ? ORDER BY id DESC LIMIT 1
+`
+
+type ReviewForHeadParams struct {
+	PrID     int64
+	Reviewer string
+	Head     string
+}
+
+func (q *Queries) ReviewForHead(ctx context.Context, arg ReviewForHeadParams) (Review, error) {
+	row := q.db.QueryRowContext(ctx, reviewForHead, arg.PrID, arg.Reviewer, arg.Head)
+	var i Review
+	err := row.Scan(
+		&i.ID,
+		&i.PrID,
+		&i.Reviewer,
+		&i.Head,
+		&i.Status,
+		&i.Verdict,
+		&i.Summary,
+		&i.Comments,
+		&i.AgentID,
+		&i.GithubReviewID,
+		&i.Url,
+		&i.Followup,
+		&i.Error,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const setPullRequestFlagged = `-- name: SetPullRequestFlagged :one
+UPDATE pull_requests SET pending_flagged = ?, accepted_flagged = ?, error = ?, updated_at = ? WHERE id = ?
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
+`
+
+type SetPullRequestFlaggedParams struct {
+	PendingFlagged  string
+	AcceptedFlagged string
+	Error           string
+	UpdatedAt       time.Time
+	ID              int64
+}
+
+func (q *Queries) SetPullRequestFlagged(ctx context.Context, arg SetPullRequestFlaggedParams) (PullRequest, error) {
+	row := q.db.QueryRowContext(ctx, setPullRequestFlagged,
+		arg.PendingFlagged,
+		arg.AcceptedFlagged,
+		arg.Error,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i PullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Branch,
+		&i.Base,
+		&i.Number,
+		&i.Url,
+		&i.State,
+		&i.Head,
+		&i.Checks,
+		&i.FailedChecks,
+		&i.PendingFlagged,
+		&i.AcceptedFlagged,
+		&i.Rounds,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const setReviewFollowup = `-- name: SetReviewFollowup :one
+UPDATE reviews SET followup = ?, updated_at = ? WHERE id = ?
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at
+`
+
+type SetReviewFollowupParams struct {
+	Followup  string
+	UpdatedAt time.Time
+	ID        int64
+}
+
+func (q *Queries) SetReviewFollowup(ctx context.Context, arg SetReviewFollowupParams) (Review, error) {
+	row := q.db.QueryRowContext(ctx, setReviewFollowup, arg.Followup, arg.UpdatedAt, arg.ID)
+	var i Review
+	err := row.Scan(
+		&i.ID,
+		&i.PrID,
+		&i.Reviewer,
+		&i.Head,
+		&i.Status,
+		&i.Verdict,
+		&i.Summary,
+		&i.Comments,
+		&i.AgentID,
+		&i.GithubReviewID,
+		&i.Url,
+		&i.Followup,
+		&i.Error,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const setWorktreeStatus = `-- name: SetWorktreeStatus :exec
 UPDATE worktrees SET status = ?, removed_at = ? WHERE agent_id = ?
 `
@@ -1095,6 +1590,82 @@ type SetWorktreeStatusParams struct {
 func (q *Queries) SetWorktreeStatus(ctx context.Context, arg SetWorktreeStatusParams) error {
 	_, err := q.db.ExecContext(ctx, setWorktreeStatus, arg.Status, arg.RemovedAt, arg.AgentID)
 	return err
+}
+
+const startReview = `-- name: StartReview :one
+UPDATE reviews SET status = 'running', agent_id = ?, attempts = attempts + 1, updated_at = ?
+WHERE id = ? AND status = 'queued'
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at
+`
+
+type StartReviewParams struct {
+	AgentID   sql.NullString
+	UpdatedAt time.Time
+	ID        int64
+}
+
+// Hands a queued review to its reviewer agent, once (ADR 0021).
+func (q *Queries) StartReview(ctx context.Context, arg StartReviewParams) (Review, error) {
+	row := q.db.QueryRowContext(ctx, startReview, arg.AgentID, arg.UpdatedAt, arg.ID)
+	var i Review
+	err := row.Scan(
+		&i.ID,
+		&i.PrID,
+		&i.Reviewer,
+		&i.Head,
+		&i.Status,
+		&i.Verdict,
+		&i.Summary,
+		&i.Comments,
+		&i.AgentID,
+		&i.GithubReviewID,
+		&i.Url,
+		&i.Followup,
+		&i.Error,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const takePullRequestRound = `-- name: TakePullRequestRound :one
+UPDATE pull_requests SET rounds = rounds + 1, updated_at = ?1
+WHERE id = ?2 AND rounds < ?3
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
+`
+
+type TakePullRequestRoundParams struct {
+	UpdatedAt time.Time
+	ID        int64
+	MaxRounds int64
+}
+
+// Counts one automatic follow-up, only while below the limit (ADR 0022).
+func (q *Queries) TakePullRequestRound(ctx context.Context, arg TakePullRequestRoundParams) (PullRequest, error) {
+	row := q.db.QueryRowContext(ctx, takePullRequestRound, arg.UpdatedAt, arg.ID, arg.MaxRounds)
+	var i PullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Branch,
+		&i.Base,
+		&i.Number,
+		&i.Url,
+		&i.State,
+		&i.Head,
+		&i.Checks,
+		&i.FailedChecks,
+		&i.PendingFlagged,
+		&i.AcceptedFlagged,
+		&i.Rounds,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const unclaimMessage = `-- name: UnclaimMessage :exec
@@ -1120,6 +1691,121 @@ type UpdateAgentStateParams struct {
 func (q *Queries) UpdateAgentState(ctx context.Context, arg UpdateAgentStateParams) error {
 	_, err := q.db.ExecContext(ctx, updateAgentState, arg.State, arg.Activity, arg.ID)
 	return err
+}
+
+const updatePullRequest = `-- name: UpdatePullRequest :one
+UPDATE pull_requests
+SET base = ?, number = ?, url = ?, state = ?, head = ?, checks = ?, failed_checks = ?, error = ?, updated_at = ?
+WHERE id = ?
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
+`
+
+type UpdatePullRequestParams struct {
+	Base         string
+	Number       int64
+	Url          string
+	State        string
+	Head         string
+	Checks       string
+	FailedChecks string
+	Error        string
+	UpdatedAt    time.Time
+	ID           int64
+}
+
+func (q *Queries) UpdatePullRequest(ctx context.Context, arg UpdatePullRequestParams) (PullRequest, error) {
+	row := q.db.QueryRowContext(ctx, updatePullRequest,
+		arg.Base,
+		arg.Number,
+		arg.Url,
+		arg.State,
+		arg.Head,
+		arg.Checks,
+		arg.FailedChecks,
+		arg.Error,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i PullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Branch,
+		&i.Base,
+		&i.Number,
+		&i.Url,
+		&i.State,
+		&i.Head,
+		&i.Checks,
+		&i.FailedChecks,
+		&i.PendingFlagged,
+		&i.AcceptedFlagged,
+		&i.Rounds,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateReview = `-- name: UpdateReview :one
+UPDATE reviews
+SET status = ?, verdict = ?, summary = ?, comments = ?, agent_id = ?, github_review_id = ?, url = ?, error = ?,
+    attempts = ?, updated_at = ?
+WHERE id = ?
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at
+`
+
+type UpdateReviewParams struct {
+	Status         string
+	Verdict        string
+	Summary        string
+	Comments       string
+	AgentID        sql.NullString
+	GithubReviewID int64
+	Url            string
+	Error          string
+	Attempts       int64
+	UpdatedAt      time.Time
+	ID             int64
+}
+
+func (q *Queries) UpdateReview(ctx context.Context, arg UpdateReviewParams) (Review, error) {
+	row := q.db.QueryRowContext(ctx, updateReview,
+		arg.Status,
+		arg.Verdict,
+		arg.Summary,
+		arg.Comments,
+		arg.AgentID,
+		arg.GithubReviewID,
+		arg.Url,
+		arg.Error,
+		arg.Attempts,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i Review
+	err := row.Scan(
+		&i.ID,
+		&i.PrID,
+		&i.Reviewer,
+		&i.Head,
+		&i.Status,
+		&i.Verdict,
+		&i.Summary,
+		&i.Comments,
+		&i.AgentID,
+		&i.GithubReviewID,
+		&i.Url,
+		&i.Followup,
+		&i.Error,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const updateTask = `-- name: UpdateTask :one
@@ -1191,6 +1877,56 @@ func (q *Queries) UpsertProject(ctx context.Context, arg UpsertProjectParams) (P
 		&i.RepoPath,
 		&i.Slug,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const upsertPullRequest = `-- name: UpsertPullRequest :one
+INSERT INTO pull_requests (project_id, task_id, agent_id, branch, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (project_id, branch) DO UPDATE SET updated_at = excluded.updated_at
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
+`
+
+type UpsertPullRequestParams struct {
+	ProjectID string
+	TaskID    sql.NullString
+	AgentID   string
+	Branch    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Get-or-create the row for a branch; an existing row keeps its state and number.
+func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestParams) (PullRequest, error) {
+	row := q.db.QueryRowContext(ctx, upsertPullRequest,
+		arg.ProjectID,
+		arg.TaskID,
+		arg.AgentID,
+		arg.Branch,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i PullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Branch,
+		&i.Base,
+		&i.Number,
+		&i.Url,
+		&i.State,
+		&i.Head,
+		&i.Checks,
+		&i.FailedChecks,
+		&i.PendingFlagged,
+		&i.AcceptedFlagged,
+		&i.Rounds,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

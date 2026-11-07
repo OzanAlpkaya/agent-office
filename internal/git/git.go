@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -79,9 +81,18 @@ func (g Git) run(ctx context.Context, dir string, args ...string) (string, error
 // exec runs git without the untrusted-path check. Only run and the setup
 // steps of CreateSharedClone call it.
 func (g Git) exec(ctx context.Context, dir string, args ...string) (string, error) {
-	bin, timeout := g.Bin, g.Timeout
+	return g.execWith(ctx, dir, 0, false, args...)
+}
+
+// execWith runs git with an optional timeout override; detach runs it in a new
+// session without a controlling terminal, so ssh cannot prompt on one.
+func (g Git) execWith(ctx context.Context, dir string, timeout time.Duration, detach bool, args ...string) (string, error) {
+	bin := g.Bin
 	if bin == "" {
 		bin = "git"
+	}
+	if timeout <= 0 {
+		timeout = g.Timeout
 	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -91,6 +102,9 @@ func (g Git) exec(ctx context.Context, dir string, args ...string) (string, erro
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
 	cmd.Env = env()
+	if detach {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -273,4 +287,64 @@ func (g Git) ListWorktrees(ctx context.Context, repo string) ([]Worktree, error)
 		}
 	}
 	return list, nil
+}
+
+// remoteName is what agent-office accepts as a git remote name.
+var remoteName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+
+// RemoteURL returns the push URL of remote in repo.
+func (g Git) RemoteURL(ctx context.Context, repo, remote string) (string, error) {
+	if !remoteName.MatchString(remote) {
+		return "", fmt.Errorf("git: invalid remote name %q", remote)
+	}
+	return g.run(ctx, repo, "remote", "get-url", "--push", remote)
+}
+
+// PushTimeout bounds a push.
+const PushTimeout = 2 * time.Minute
+
+// Push pushes one agent branch from repo to remote (ADR 0020): never forced,
+// no tags, and without a controlling terminal, so an SSH passphrase prompt
+// fails instead of hanging. A non-fast-forward update is refused by git.
+func (g Git) Push(ctx context.Context, repo, remote, branch string) error {
+	if !remoteName.MatchString(remote) {
+		return fmt.Errorf("git: invalid remote name %q", remote)
+	}
+	if !strings.HasPrefix(branch, BranchPrefix) || !g.ValidBranch(ctx, branch) {
+		return fmt.Errorf("git: refusing to push branch %q (only %s branches are pushed)", branch, BranchPrefix)
+	}
+	if err := g.checkTrusted(repo, nil); err != nil {
+		return err
+	}
+	ref := "refs/heads/" + branch
+	_, err := g.execWith(ctx, repo, PushTimeout, true, "push", "--no-follow-tags", "--quiet", remote, ref+":"+ref)
+	return err
+}
+
+// RevParse resolves rev to a commit in repo.
+func (g Git) RevParse(ctx context.Context, repo, rev string) (string, error) {
+	if strings.HasPrefix(rev, "-") {
+		return "", fmt.Errorf("git: invalid revision %q", rev)
+	}
+	return g.run(ctx, repo, "rev-parse", "--verify", "--end-of-options", rev+"^{commit}")
+}
+
+// ChangedFiles lists the paths that differ between base and head in repo.
+func (g Git) ChangedFiles(ctx context.Context, repo, base, head string) ([]string, error) {
+	for _, r := range []string{base, head} {
+		if strings.HasPrefix(r, "-") {
+			return nil, fmt.Errorf("git: invalid revision %q", r)
+		}
+	}
+	out, err := g.run(ctx, repo, "diff", "--name-only", "-z", "--no-renames", base, head, "--")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, f := range strings.Split(out, "\x00") {
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return files, nil
 }

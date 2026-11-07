@@ -102,17 +102,19 @@ VALUES (?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: ClaimMessages :many
--- Hands out a recipient's oldest undelivered messages exactly once (ADR 0018).
-UPDATE messages SET delivered_at = ?, delivery = ?
+-- Hands out a recipient's oldest undelivered messages exactly once (ADR 0018), only those
+-- queued during its current session: a relaunched agent (ADR 0022) never gets messages
+-- meant for its previous session.
+UPDATE messages SET delivered_at = sqlc.arg(delivered_at), delivery = sqlc.arg(delivery)
 WHERE id IN (
     SELECT m.id FROM messages m
-    WHERE m.to_agent_id = ? AND m.delivered_at IS NULL
+    WHERE m.to_agent_id = sqlc.arg(to_agent_id) AND m.delivered_at IS NULL AND m.created_at >= sqlc.arg(since)
     ORDER BY m.id LIMIT 10
 )
 RETURNING *;
 
 -- name: CountPendingMessages :one
-SELECT count(*) FROM messages WHERE to_agent_id = ? AND delivered_at IS NULL;
+SELECT count(*) FROM messages WHERE to_agent_id = ? AND delivered_at IS NULL AND created_at >= ?;
 
 -- name: CountMessagesSentSince :one
 SELECT count(*) FROM messages WHERE from_agent_id = ? AND created_at >= ?;
@@ -164,3 +166,84 @@ UPDATE messages SET delivered_at = NULL, delivery = '' WHERE id = ?;
 
 -- name: CountPendingMessagesFrom :one
 SELECT count(*) FROM messages WHERE to_agent_id = ? AND from_agent_id = ? AND delivered_at IS NULL;
+
+-- name: ReopenAgent :exec
+-- A follow-up relaunches an exited agent in its workspace (ADR 0022).
+UPDATE agents SET state = 'starting', activity = '', exited_at = NULL, exit_code = NULL, exit_reason = ''
+WHERE id = ? AND state = 'exited';
+
+-- name: UpsertPullRequest :one
+-- Get-or-create the row for a branch; an existing row keeps its state and number.
+INSERT INTO pull_requests (project_id, task_id, agent_id, branch, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (project_id, branch) DO UPDATE SET updated_at = excluded.updated_at
+RETURNING *;
+
+-- name: GetPullRequest :one
+SELECT * FROM pull_requests WHERE id = ?;
+
+-- name: ListPullRequests :many
+SELECT * FROM pull_requests WHERE project_id = ? ORDER BY id;
+
+-- name: UpdatePullRequest :one
+UPDATE pull_requests
+SET base = ?, number = ?, url = ?, state = ?, head = ?, checks = ?, failed_checks = ?, error = ?, updated_at = ?
+WHERE id = ?
+RETURNING *;
+
+-- name: SetPullRequestFlagged :one
+UPDATE pull_requests SET pending_flagged = ?, accepted_flagged = ?, error = ?, updated_at = ? WHERE id = ?
+RETURNING *;
+
+-- name: TakePullRequestRound :one
+-- Counts one automatic follow-up, only while below the limit (ADR 0022).
+UPDATE pull_requests SET rounds = rounds + 1, updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND rounds < sqlc.arg(max_rounds)
+RETURNING *;
+
+-- name: InsertReview :one
+INSERT INTO reviews (pr_id, reviewer, head, status, verdict, summary, comments, github_review_id, url, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetReview :one
+SELECT * FROM reviews WHERE id = ?;
+
+-- name: ListReviews :many
+SELECT * FROM reviews WHERE pr_id = ? ORDER BY id DESC LIMIT ?;
+
+-- name: ListReviewsByStatus :many
+SELECT reviews.* FROM reviews JOIN pull_requests ON pull_requests.id = reviews.pr_id
+WHERE pull_requests.project_id = ? AND reviews.status = ?
+ORDER BY reviews.id;
+
+-- name: ReviewForHead :one
+SELECT * FROM reviews WHERE pr_id = ? AND reviewer = ? AND head = ? ORDER BY id DESC LIMIT 1;
+
+-- name: ReviewByGitHubID :one
+SELECT * FROM reviews WHERE pr_id = ? AND github_review_id = ?;
+
+-- name: ReviewByAgent :one
+SELECT * FROM reviews WHERE agent_id = ? ORDER BY id DESC LIMIT 1;
+
+-- name: UpdateReview :one
+UPDATE reviews
+SET status = ?, verdict = ?, summary = ?, comments = ?, agent_id = ?, github_review_id = ?, url = ?, error = ?,
+    attempts = ?, updated_at = ?
+WHERE id = ?
+RETURNING *;
+
+-- name: ClaimReviewFollowup :one
+-- Decides a review's follow-up once (ADR 0022).
+UPDATE reviews SET followup = ?, updated_at = ? WHERE id = ? AND followup = ''
+RETURNING *;
+
+-- name: SetReviewFollowup :one
+UPDATE reviews SET followup = ?, updated_at = ? WHERE id = ?
+RETURNING *;
+
+-- name: StartReview :one
+-- Hands a queued review to its reviewer agent, once (ADR 0021).
+UPDATE reviews SET status = 'running', agent_id = ?, attempts = attempts + 1, updated_at = ?
+WHERE id = ? AND status = 'queued'
+RETURNING *;

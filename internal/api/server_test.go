@@ -339,6 +339,7 @@ func TestEventsSnapshotAndUpdates(t *testing.T) {
 		Tasks  []engine.Task          `json:"tasks"`
 		Agent  engine.AgentInfo       `json:"agent"`
 		Access []engine.AccessRequest `json:"access_requests"`
+		PRs    []engine.PullRequest   `json:"pull_requests"`
 	}
 	read := func() msg {
 		_, data, err := c.Read(ctx)
@@ -349,7 +350,7 @@ func TestEventsSnapshotAndUpdates(t *testing.T) {
 		_ = json.Unmarshal(data, &m)
 		return m
 	}
-	if m := read(); m.Type != "snapshot" || len(m.Agents) != 1 || m.Agents[0].ID != a.ID || m.Tasks == nil || m.Access == nil {
+	if m := read(); m.Type != "snapshot" || len(m.Agents) != 1 || m.Agents[0].ID != a.ID || m.Tasks == nil || m.Access == nil || m.PRs == nil {
 		t.Fatalf("snapshot %+v", m)
 	}
 	f.do(t, "POST", "/api/agents/"+a.ID+"/stop", nil)
@@ -427,5 +428,39 @@ func TestAccessRequestsAPI(t *testing.T) {
 	// A GET never reaches the decision handler; it falls through to the UI.
 	if r := f.do(t, "GET", "/api/access-requests/1/approve", nil); strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		t.Error("GET reached the decision handler")
+	}
+}
+
+// Without --github the pull request endpoints refuse clearly; the list is
+// empty; the origin guard applies to every POST.
+func TestPullRequestsAPIWithoutGitHub(t *testing.T) {
+	f := newFixture(t)
+	resp := f.do(t, "GET", "/api/pull-requests", nil)
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || strings.TrimSpace(string(b)) != "[]" {
+		t.Fatalf("list %d %s", resp.StatusCode, b)
+	}
+	ct := map[string]string{"Content-Type": "application/json"}
+	r := f.doBody(t, "POST", "/api/tasks", ct, `{"title":"Add tags"}`)
+	var task engine.Task
+	_ = json.NewDecoder(r.Body).Decode(&task)
+	for _, c := range []struct {
+		path, body string
+		want       int
+	}{
+		{"/api/tasks/" + task.ID + "/pull-request", "", http.StatusConflict},
+		{"/api/pull-requests/1/review", "", http.StatusConflict},
+		{"/api/pull-requests/1/follow-up", `{"review_id":1}`, http.StatusConflict},
+		{"/api/pull-requests/1/follow-up", `{}`, http.StatusBadRequest},
+		{"/api/pull-requests/1/accept", `{"commits":["abc"]}`, http.StatusConflict},
+		{"/api/pull-requests/x/review", "", http.StatusBadRequest},
+		{"/api/pull-requests/1/accept", `{"commits":["a"],"force":true}`, http.StatusBadRequest},
+	} {
+		if r := f.doBody(t, "POST", c.path, ct, c.body); r.StatusCode != c.want {
+			t.Errorf("POST %s: %d, want %d", c.path, r.StatusCode, c.want)
+		}
+	}
+	if r := f.do(t, "POST", "/api/tasks/"+task.ID+"/pull-request", map[string]string{"Origin": "https://evil.example"}); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin POST: %d", r.StatusCode)
 	}
 }

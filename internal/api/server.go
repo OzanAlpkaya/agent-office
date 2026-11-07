@@ -74,6 +74,11 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("GET /api/access-requests", s.listAccess)
 	mux.HandleFunc("POST /api/access-requests/{id}/approve", s.decideAccess(true))
 	mux.HandleFunc("POST /api/access-requests/{id}/deny", s.decideAccess(false))
+	mux.HandleFunc("GET /api/pull-requests", s.listPullRequests)
+	mux.HandleFunc("POST /api/tasks/{id}/pull-request", s.openPullRequest)
+	mux.HandleFunc("POST /api/pull-requests/{id}/review", s.prAction(s.requestReview))
+	mux.HandleFunc("POST /api/pull-requests/{id}/follow-up", s.prAction(s.followUp))
+	mux.HandleFunc("POST /api/pull-requests/{id}/accept", s.prAction(s.acceptFlagged))
 	mux.HandleFunc("GET /api/events", s.eventsWS)
 	if ui != nil {
 		mux.HandleFunc("GET /", s.serveUI)
@@ -226,6 +231,102 @@ func (s *server) decideAccess(approve bool) http.HandlerFunc {
 	}
 }
 
+// listPullRequests lists the project's pull requests with their reviews
+// (ADR 0020, 0021). Review text comes from agents, bots or people: the UI
+// renders it as text.
+func (s *server) listPullRequests(w http.ResponseWriter, r *http.Request) {
+	list, err := s.eng.PullRequests(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// openPullRequest pushes the task's branch and opens or updates its pull
+// request ("Open PR"). POST, so the origin guard applies.
+func (s *server) openPullRequest(w http.ResponseWriter, r *http.Request) {
+	pr, err := s.eng.OpenPullRequest(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.prError(w, pr, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pr)
+}
+
+// prError reports a refused or failed pull request operation together with
+// the pull request's state, so the UI can show what blocks it.
+func (s *server) prError(w http.ResponseWriter, pr engine.PullRequest, err error) {
+	if pr.ID != 0 && (errors.Is(err, engine.ErrFlagged) || errors.Is(err, engine.ErrUpstream)) {
+		status := http.StatusConflict
+		if errors.Is(err, engine.ErrUpstream) {
+			status = http.StatusBadGateway
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error(), "pull_request": pr})
+		return
+	}
+	s.engineError(w, err)
+}
+
+// prAction parses the pull request id of a POST /api/pull-requests/{id}/...
+func (s *server) prAction(fn func(w http.ResponseWriter, r *http.Request, id int64)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id < 1 {
+			writeError(w, http.StatusBadRequest, "invalid pull request id")
+			return
+		}
+		fn(w, r, id)
+	}
+}
+
+// requestReview asks the reviewer for another review of the current head.
+func (s *server) requestReview(w http.ResponseWriter, r *http.Request, id int64) {
+	pr, err := s.eng.RequestReview(r.Context(), id)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pr)
+}
+
+// followUp sends a review to the pull request's original worker ("Send to
+// worker", ADR 0022).
+func (s *server) followUp(w http.ResponseWriter, r *http.Request, id int64) {
+	var req struct {
+		ReviewID int64 `json:"review_id"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.ReviewID < 1 {
+		writeError(w, http.StatusBadRequest, "review_id is required")
+		return
+	}
+	pr, err := s.eng.SendToWorker(r.Context(), id, req.ReviewID)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pr)
+}
+
+// acceptFlagged accepts the listed flagged commits and pushes (ADR 0014).
+func (s *server) acceptFlagged(w http.ResponseWriter, r *http.Request, id int64) {
+	var req struct {
+		Commits []string `json:"commits"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	pr, err := s.eng.AcceptFlagged(r.Context(), id, req.Commits)
+	if err != nil {
+		s.prError(w, pr, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pr)
+}
+
 // removeAgent cleans up the worktree (keeping uncommitted work, ADR 0010).
 func (s *server) removeAgent(w http.ResponseWriter, r *http.Request) {
 	res, err := s.eng.Remove(r.Context(), r.PathValue("id"))
@@ -339,8 +440,10 @@ func (s *server) engineError(w http.ResponseWriter, err error) {
 	case errors.Is(err, engine.ErrStillRunning), errors.Is(err, engine.ErrTooManyAgents),
 		errors.Is(err, engine.ErrWorktreeDirty), errors.Is(err, engine.ErrTaskHasRunning),
 		errors.Is(err, engine.ErrLeadRunning), errors.Is(err, engine.ErrDecided),
-		errors.Is(err, git.ErrBranchCheckedOut):
+		errors.Is(err, git.ErrBranchCheckedOut), errors.Is(err, engine.ErrFlagged), errors.Is(err, engine.ErrNoGitHub):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, engine.ErrUpstream):
+		writeError(w, http.StatusBadGateway, err.Error())
 	default:
 		s.log.Error("engine", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -475,6 +578,11 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusInternalError, "could not load access requests")
 		return
 	}
+	prs, err := s.eng.PullRequests(r.Context())
+	if err != nil {
+		c.Close(websocket.StatusInternalError, "could not load pull requests")
+		return
+	}
 	ctx := c.CloseRead(r.Context())
 
 	write := func(v any) error {
@@ -484,7 +592,7 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		return c.Write(wctx, websocket.MessageText, b)
 	}
 	if err := write(map[string]any{"type": "snapshot", "agents": s.eng.List(), "tasks": tasks,
-		"access_requests": access}); err != nil {
+		"access_requests": access, "pull_requests": prs}); err != nil {
 		return
 	}
 	for {

@@ -314,3 +314,85 @@ func TestMigration0004KeepsPhase3Rows(t *testing.T) {
 		t.Fatalf("imports index %d %v", idx, err)
 	}
 }
+
+// Migration 0005 (Phase 5) on a database with Phase 4 rows: agents keep their
+// roles and every row that references them (the role column is replaced, not
+// the table, so no foreign-key cascade runs); 'reviewer' becomes a valid role.
+func TestMigration0005KeepsPhase4Rows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agent-office.db")
+	v4, err := openWith(ctx, path, sourcesUpTo(t, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)
+	for _, q := range []string{
+		`INSERT INTO projects (id, name, repo_path, slug, created_at) VALUES ('p1', 'linkshelf', '/repo', 'linkshelf-1', ?)`,
+		`INSERT INTO tasks (id, project_id, title, status, created_at, updated_at) VALUES ('g1', 'p1', 'Goal', 'review', ?, ?1)`,
+		`INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, role) VALUES ('l1', 'p1', 'g1', 'haiku', 0, 'exited', ?, 'podman', 'lead')`,
+		`INSERT INTO agents (id, project_id, model, inherit_user_settings, state, started_at, sandbox, role) VALUES ('w1', 'p1', 'haiku', 0, 'idle', ?, 'host', 'worker')`,
+		`INSERT INTO sessions (id, agent_id, started_at) VALUES ('s1', 'l1', ?)`,
+		`INSERT INTO worktrees (agent_id, project_id, path, branch, base_commit, status, created_at, kind) VALUES ('l1', 'p1', '/ws/l1', 'agent-office/g', 'abc', 'active', ?, 'clone')`,
+		`INSERT INTO events (agent_id, session_id, kind, state, at) VALUES ('l1', 's1', 'Stop', 'idle', ?)`,
+		`INSERT INTO imports (agent_id, trigger, outcome, at) VALUES ('l1', 'report_done', 'no_commits', ?)`,
+		`INSERT INTO messages (project_id, from_agent_id, to_agent_id, body, created_at) VALUES ('p1', 'w1', 'l1', 'hi', ?)`,
+		`INSERT INTO access_requests (agent_id, kind, value, reason, created_at) VALUES ('w1', 'domain', 'example.com', 'docs', ?)`,
+	} {
+		if _, err := v4.DB.ExecContext(ctx, q, ts); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	v4.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Migration.From != 4 || s.Migration.To < 5 || s.Migration.Backup == "" {
+		t.Fatalf("migration %+v", s.Migration)
+	}
+	rows, err := s.Q.ListVisibleAgents(ctx, "p1")
+	if err != nil || len(rows) != 1 || rows[0].ID != "l1" || rows[0].Role != "lead" || rows[0].Model != "haiku" ||
+		rows[0].Sandbox != "podman" || !rows[0].StartedAt.Equal(ts) {
+		t.Fatalf("agents with worktrees %+v %v", rows, err)
+	}
+	var role string
+	if err := s.DB.QueryRow(`SELECT role FROM agents WHERE id = 'w1'`).Scan(&role); err != nil || role != "worker" {
+		t.Fatalf("worker role %q %v", role, err)
+	}
+	for table, want := range map[string]int{"sessions": 1, "worktrees": 1, "events": 1, "imports": 1, "messages": 1,
+		"access_requests": 1, "agents": 2} {
+		var n int
+		if err := s.DB.QueryRow(`SELECT count(*) FROM ` + table).Scan(&n); err != nil || n != want {
+			t.Errorf("%s: %d rows (%v), want %d", table, n, err, want)
+		}
+	}
+	var fk int
+	if err := s.DB.QueryRow(`SELECT count(*) FROM pragma_foreign_key_check`).Scan(&fk); err != nil || fk != 0 {
+		t.Fatalf("foreign key violations %d %v", fk, err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE agents SET role = 'reviewer' WHERE id = 'w1'`); err != nil {
+		t.Fatalf("reviewer role refused: %v", err)
+	}
+	pr, err := s.Q.UpsertPullRequest(ctx, db.UpsertPullRequestParams{ProjectID: "p1", AgentID: "l1",
+		Branch: "agent-office/g", CreatedAt: ts, UpdatedAt: ts})
+	if err != nil || pr.State != "pending" || pr.AcceptedFlagged != "[]" {
+		t.Fatalf("pull request %+v %v", pr, err)
+	}
+	again, err := s.Q.UpsertPullRequest(ctx, db.UpsertPullRequestParams{ProjectID: "p1", AgentID: "l1",
+		Branch: "agent-office/g", CreatedAt: ts, UpdatedAt: ts.Add(time.Hour)})
+	if err != nil || again.ID != pr.ID {
+		t.Fatalf("upsert is not get-or-create: %+v %v", again, err)
+	}
+	for _, q := range []string{
+		`UPDATE agents SET role = 'boss' WHERE id = 'w1'`,
+		`UPDATE pull_requests SET state = 'approved'`,
+		`INSERT INTO reviews (pr_id, reviewer, head, status, created_at, updated_at) VALUES (1, 'bot', 'h', 'queued', '2026-01-01', '2026-01-01')`,
+		`INSERT INTO reviews (pr_id, reviewer, head, status, verdict, created_at, updated_at) VALUES (1, 'internal', 'h', 'done', 'lgtm', '2026-01-01', '2026-01-01')`,
+	} {
+		if _, err := s.DB.ExecContext(ctx, q); err == nil {
+			t.Errorf("CHECK constraint missing: %s", q)
+		}
+	}
+}

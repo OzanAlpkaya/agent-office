@@ -1,5 +1,5 @@
 // Types mirror internal/engine (AgentInfo, Task, Update, RemoveResult,
-// ImportInfo, Status, Message, AccessRequest), internal/sandbox (Event) and
+// ImportInfo, Status, Message, AccessRequest, PullRequest, Review), internal/sandbox (Event) and
 // the API in internal/api.
 // Written by hand for now (ADR 0005); keep them in sync.
 
@@ -7,7 +7,7 @@ export type AgentState = "starting" | "idle" | "working" | "waiting_permission" 
 export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "blocked";
 export type WorktreeStatus = "active" | "kept" | "removed";
 export type SandboxMode = "host" | "podman";
-export type Role = "lead" | "worker";
+export type Role = "lead" | "worker" | "reviewer";
 
 export const taskStatuses: readonly TaskStatus[] = ["todo", "in_progress", "review", "done", "blocked"];
 const agentStates: readonly string[] = ["starting", "idle", "working", "waiting_permission", "exited"];
@@ -58,6 +58,47 @@ export interface Status {
   sandbox: SandboxMode;
   image?: string;
   warnings: string[];
+  github?: { repo: string; base: string; remote: string; reviewer: string; rounds: number };
+}
+
+// Review of a pull request (ADR 0021). Summary and comments are written by a
+// reviewer agent, CodeRabbit or a person: render them as text only.
+export interface Review {
+  id: number;
+  pr_id: number;
+  reviewer: "internal" | "coderabbit" | "human";
+  head: string;
+  status: "queued" | "running" | "done" | "failed" | "timed_out";
+  verdict?: "approve" | "changes_requested" | "comment";
+  summary?: string;
+  comments: { path: string; line: number; body: string }[];
+  agent_id?: string;
+  url?: string;
+  followup?: "started" | "messaged" | "skipped" | "refused";
+  error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// PullRequest opened by the daemon for a worker's branch (ADR 0020).
+export interface PullRequest {
+  id: number;
+  task_id?: string;
+  agent_id: string;
+  branch: string;
+  base?: string;
+  number?: number;
+  url?: string;
+  state: "pending" | "open" | "merged" | "closed";
+  head?: string;
+  checks?: "none" | "pending" | "success" | "failure" | "unavailable";
+  failed_checks: string[];
+  flagged: { commit: string; problem: string }[];
+  rounds: number;
+  error?: string;
+  reviews: Review[];
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Task {
@@ -115,14 +156,15 @@ export interface RemoveResult {
 }
 
 export type EventMessage =
-  | { type: "snapshot"; agents: Agent[]; tasks: Task[]; accessRequests: AccessRequest[] }
+  | { type: "snapshot"; agents: Agent[]; tasks: Task[]; accessRequests: AccessRequest[]; pullRequests: PullRequest[] }
   | { type: "agent"; agent: Agent }
   | { type: "agent_removed"; id: string }
   | { type: "task"; task: Task }
   | { type: "task_deleted"; id: string }
   | { type: "sandbox_event"; agent_id: string; event: SandboxEvent }
   | { type: "message"; message: Message }
-  | { type: "access_request"; request: AccessRequest };
+  | { type: "access_request"; request: AccessRequest }
+  | { type: "pull_request"; pullRequest: PullRequest };
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null;
@@ -134,7 +176,7 @@ function isImport(v: unknown): v is ImportInfo {
 
 function isAgent(v: unknown): v is Agent {
   return isObj(v) && typeof v.id === "string" && typeof v.state === "string" && agentStates.includes(v.state) &&
-    (v.sandbox === "host" || v.sandbox === "podman") && (v.role === "lead" || v.role === "worker") &&
+    (v.sandbox === "host" || v.sandbox === "podman") && (v.role === "lead" || v.role === "worker" || v.role === "reviewer") &&
     typeof v.branch === "string" && typeof v.worktree_path === "string" && typeof v.has_terminal === "boolean" &&
     typeof v.started_at === "string" && (v.last_import === undefined || isImport(v.last_import));
 }
@@ -154,6 +196,20 @@ function isAccessRequest(v: unknown): v is AccessRequest {
   return isObj(v) && typeof v.id === "number" && typeof v.agent_id === "string" && typeof v.kind === "string" &&
     typeof v.value === "string" && typeof v.reason === "string" && typeof v.status === "string" &&
     accessStatuses.includes(v.status) && typeof v.created_at === "string";
+}
+
+function isReview(v: unknown): v is Review {
+  return isObj(v) && typeof v.id === "number" && typeof v.reviewer === "string" && typeof v.status === "string" &&
+    typeof v.head === "string" && Array.isArray(v.comments) &&
+    v.comments.every((c) => isObj(c) && typeof c.path === "string" && typeof c.line === "number" && typeof c.body === "string");
+}
+
+const prStates: readonly string[] = ["pending", "open", "merged", "closed"];
+
+export function isPullRequest(v: unknown): v is PullRequest {
+  return isObj(v) && typeof v.id === "number" && typeof v.agent_id === "string" && typeof v.branch === "string" &&
+    typeof v.state === "string" && prStates.includes(v.state) && Array.isArray(v.failed_checks) &&
+    Array.isArray(v.flagged) && typeof v.rounds === "number" && Array.isArray(v.reviews) && v.reviews.every(isReview);
 }
 
 function isTask(v: unknown): v is Task {
@@ -176,8 +232,9 @@ export function parseEventMessage(raw: string): EventMessage | undefined {
   switch (m.type) {
     case "snapshot":
       return Array.isArray(m.agents) && m.agents.every(isAgent) && Array.isArray(m.tasks) && m.tasks.every(isTask) &&
-        Array.isArray(m.access_requests) && m.access_requests.every(isAccessRequest)
-        ? { type: "snapshot", agents: m.agents, tasks: m.tasks, accessRequests: m.access_requests }
+        Array.isArray(m.access_requests) && m.access_requests.every(isAccessRequest) &&
+        Array.isArray(m.pull_requests) && m.pull_requests.every(isPullRequest)
+        ? { type: "snapshot", agents: m.agents, tasks: m.tasks, accessRequests: m.access_requests, pullRequests: m.pull_requests }
         : undefined;
     case "agent":
       return isAgent(m.agent) ? { type: "agent", agent: m.agent } : undefined;
@@ -196,6 +253,8 @@ export function parseEventMessage(raw: string): EventMessage | undefined {
       return isMessage(m.message) ? { type: "message", message: m.message } : undefined;
     case "access_request":
       return isAccessRequest(m.access_request) ? { type: "access_request", request: m.access_request } : undefined;
+    case "pull_request":
+      return isPullRequest(m.pull_request) ? { type: "pull_request", pullRequest: m.pull_request } : undefined;
     default:
       return undefined;
   }
@@ -249,6 +308,12 @@ export const api = {
   updateTask: (id: string, patch: Partial<Pick<Task, "title" | "description" | "status">>): Promise<Task> =>
     request("PATCH", `/api/tasks/${id}`, patch),
   deleteTask: (id: string): Promise<void> => request("DELETE", `/api/tasks/${id}`),
+  openPullRequest: (taskId: string): Promise<PullRequest> => request("POST", `/api/tasks/${taskId}/pull-request`),
+  requestReview: (prId: number): Promise<PullRequest> => request("POST", `/api/pull-requests/${prId}/review`),
+  sendToWorker: (prId: number, reviewId: number): Promise<PullRequest> =>
+    request("POST", `/api/pull-requests/${prId}/follow-up`, { review_id: reviewId }),
+  acceptFlagged: (prId: number, commits: string[]): Promise<PullRequest> =>
+    request("POST", `/api/pull-requests/${prId}/accept`, { commits }),
 };
 
 export function wsURL(path: string): string {

@@ -55,6 +55,10 @@ func fakeClaude() int {
 		sid = "00000000-0000-4000-8000-000000000000"
 	}
 	fmt.Println("fake claude ready")
+	if n := len(os.Args); os.Getenv("AO_FAKE_PROMPT") == "1" && n >= 2 && os.Args[n-2] == "--" {
+		// The initial prompt, on one line, so tests can look for it on screen.
+		fmt.Println("PROMPT:" + strings.ReplaceAll(os.Args[n-1], "\n", " | "))
+	}
 	send("SessionStart", `,"source":"startup"`)
 	in := bufio.NewScanner(os.Stdin)
 	for in.Scan() {
@@ -99,6 +103,17 @@ func fakeClaude() int {
 				}
 			}
 			fmt.Println("committed")
+		case "commit-more": // another commit on top
+			f, _ := os.OpenFile("work.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			fmt.Fprintf(f, "more %d\n", time.Now().UnixNano())
+			f.Close()
+			for _, args := range [][]string{{"add", "work.txt"}, {"-c", "user.name=t", "-c", "user.email=t@example.com",
+				"commit", "-q", "-m", "fix: review feedback"}} {
+				if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+					fmt.Printf("git failed: %v %s\n", err, out)
+				}
+			}
+			fmt.Println("committed more")
 		default:
 			if l := strings.TrimSpace(in.Text()); l != "" {
 				fmt.Println("INPUT:" + l) // what the agent read, e.g. a message typed by the daemon

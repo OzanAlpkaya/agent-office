@@ -39,6 +39,10 @@ var (
 	ErrLimit          = errors.New("limit reached")
 	ErrLeadRunning    = errors.New("a lead agent is already running; stop it first")
 	ErrDecided        = errors.New("access request was already decided")
+	ErrFlagged        = errors.New("the branch has flagged commits; accept them before pushing")
+	ErrNoGitHub       = errors.New("GitHub is not enabled; start the daemon with --github")
+	ErrUpstream       = errors.New("git or GitHub failed") // push or GitHub API errors (ADR 0020)
+	ErrShuttingDown   = errors.New("the daemon is shutting down")
 )
 
 // Exit reasons recorded for agents.
@@ -48,7 +52,9 @@ const (
 	ExitShutdown      = "daemon_shutdown"
 	ExitDaemonRestart = "daemon_restart"
 	ExitStartFailed   = "start_failed"
-	ExitReported      = "reported_done" // the agent called report_done and its turn ended (ADR 0017)
+	ExitReported      = "reported_done"    // the agent called report_done and its turn ended (ADR 0017)
+	ExitReviewed      = "review_submitted" // a reviewer called submit_review and its turn ended (ADR 0021)
+	ExitFollowUp      = "follow_up"        // ended to be relaunched with review feedback (ADR 0022)
 )
 
 // Worktree statuses (ADR 0010).
@@ -68,8 +74,9 @@ const (
 
 // Agent roles (agents.role, ADR 0017).
 const (
-	RoleLead   = "lead"
-	RoleWorker = "worker"
+	RoleLead     = "lead"
+	RoleWorker   = "worker"
+	RoleReviewer = "reviewer" // reviews one pull request (ADR 0021)
 )
 
 // Options configures the engine. All paths must be absolute.
@@ -92,6 +99,7 @@ type Options struct {
 	Warnings            []string        // shown in the UI (e.g. an untested Claude Code version)
 	AgentOfficeBin      string          // this binary (absolute); host agents run `<bin> mcp` (ADR 0006)
 	Version             string          // reported by the team MCP server
+	GitHub              *GitHubOptions  // nil: no pushes or pull requests (ADR 0020)
 
 	// Message delivery timing (ADR 0018); zero values get the defaults. Tests
 	// shorten them.
@@ -102,9 +110,10 @@ type Options struct {
 
 // Status is the daemon-wide state the UI shows next to the board.
 type Status struct {
-	Sandbox  string   `json:"sandbox"` // SandboxHost | SandboxPodman
-	Image    string   `json:"image,omitempty"`
-	Warnings []string `json:"warnings"`
+	Sandbox  string        `json:"sandbox"` // SandboxHost | SandboxPodman
+	Image    string        `json:"image,omitempty"`
+	Warnings []string      `json:"warnings"`
+	GitHub   *GitHubStatus `json:"github,omitempty"`
 }
 
 // Project is the repository the engine works on.
@@ -140,7 +149,8 @@ type AgentInfo struct {
 
 // Update is one change broadcast to subscribers.
 type Update struct {
-	// "agent" | "agent_removed" | "task" | "task_deleted" | "sandbox_event" | "message" | "access_request"
+	// "agent" | "agent_removed" | "task" | "task_deleted" | "sandbox_event" | "message" | "access_request" |
+	// "pull_request"
 	Type          string         `json:"type"`
 	Agent         *AgentInfo     `json:"agent,omitempty"`
 	Task          *Task          `json:"task,omitempty"`
@@ -148,6 +158,7 @@ type Update struct {
 	SandboxEvent  *SandboxEvent  `json:"sandbox_event,omitempty"`
 	Message       *Message       `json:"message,omitempty"`
 	AccessRequest *AccessRequest `json:"access_request,omitempty"`
+	PullRequest   *PullRequest   `json:"pull_request,omitempty"`
 }
 
 type agentProc struct {
@@ -158,6 +169,7 @@ type agentProc struct {
 	listener   *hooks.Listener
 	settings   string
 	exited     chan struct{} // closed by watch after the exit is recorded
+	afterExit  chan struct{} // closed by watch after the exit import (sandbox); nil for agents of a previous run
 	exitReason string        // set before stopping on purpose
 	busy       bool          // a remove/discard is in progress
 	sandbox    *sandboxRes   // nil in host mode and once the worker is gone
@@ -165,6 +177,8 @@ type agentProc struct {
 	importMu   sync.Mutex    // serializes imports and removal of a sandboxed agent
 	mcp        *mcp.Listener // team MCP socket; nil once the agent exited
 	mcpConfig  string        // host mode: the --mcp-config file
+	reviewID   int64         // reviewers: the review they were started for (ADR 0021)
+	since      time.Time     // this session's start: older messages are not delivered to it (ADR 0022)
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
 	hasPrompt     bool        // started with an initial prompt
@@ -194,6 +208,10 @@ type Engine struct {
 	assigning    map[string]bool // task ids an assign_task is starting a worker for
 	subs         map[chan Update]struct{}
 	wg           sync.WaitGroup
+
+	gh       *ghState // GitHub integration; nil when off (ADR 0020)
+	stopPoll context.CancelFunc
+	closing  bool // Shutdown began: no agent starts any more; guarded by mu
 }
 
 // New validates opts, registers the repository as a project, reconciles state
@@ -277,6 +295,11 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	if err := e.reconcile(ctx); err != nil {
 		return nil, err
 	}
+	if opts.GitHub != nil {
+		if err := e.startGitHub(ctx); err != nil {
+			return nil, err
+		}
+	}
 	return e, nil
 }
 
@@ -349,6 +372,10 @@ func (e *Engine) Status() Status {
 	if e.opts.Sandbox != nil {
 		st.Sandbox, st.Image = SandboxPodman, e.opts.Sandbox.Image
 	}
+	if g := e.opts.GitHub; g != nil {
+		st.GitHub = &GitHubStatus{Repo: g.Client.Repo().String(), Base: g.Base, Remote: g.Remote, Reviewer: e.gh.reviewer.Name(),
+			Rounds: g.Rounds}
+	}
 	return st
 }
 
@@ -359,6 +386,12 @@ func agentName(id string) string { return "agent-" + id[:6] }
 type StartRequest struct {
 	TaskID string // optional for workers; a lead's goal (ADR 0017)
 	Role   string // RoleWorker (default) or RoleLead
+
+	// Set by the engine for reviewers (ADR 0021); never from the API.
+	base     string // start from this commit instead of HEAD
+	reviewPR int    // reviewers: the pull request number, for the branch name
+	reviewID int64  // reviewers: the review row
+	prompt   string // initial prompt instead of the task prompt
 }
 
 // Start creates a worktree and launches a new agent in it.
@@ -367,12 +400,17 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	switch {
 	case role == "":
 		role = RoleWorker
+	case role == RoleReviewer && req.reviewID != 0:
 	case role != RoleWorker && role != RoleLead:
 		return AgentInfo{}, fmt.Errorf("%w: role must be %s or %s", ErrInvalid, RoleWorker, RoleLead)
 	case role == RoleLead && req.TaskID == "":
 		return AgentInfo{}, fmt.Errorf("%w: a lead needs a goal: start it on a task", ErrInvalid)
 	}
 	e.mu.Lock()
+	if e.closing {
+		e.mu.Unlock()
+		return AgentInfo{}, ErrShuttingDown
+	}
 	if e.runningLocked()+e.starting >= e.opts.MaxAgents {
 		e.mu.Unlock()
 		return AgentInfo{}, ErrTooManyAgents
@@ -416,7 +454,16 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		title = task.Title
 	}
 	branch := git.BranchName(title, id)
-	base, err := e.git.HeadCommit(ctx, e.project.RepoPath)
+	if role == RoleReviewer {
+		branch = fmt.Sprintf("%sreview-pr%d-%s", git.BranchPrefix, req.reviewPR, id[:6])
+	}
+	var base string
+	var err error
+	if req.base != "" {
+		base, err = e.git.RevParse(ctx, e.project.RepoPath, req.base)
+	} else {
+		base, err = e.git.HeadCommit(ctx, e.project.RepoPath)
+	}
 	if err != nil {
 		return AgentInfo{}, err
 	}
@@ -466,7 +513,14 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		if err := q.CreateSession(ctx, db.CreateSessionParams{ID: sid, AgentID: id, StartedAt: started}); err != nil {
 			return err
 		}
-		if task != nil && task.Status != StatusInProgress {
+		if req.reviewID != 0 {
+			// Recorded before the reviewer starts, so its submit_review finds the review.
+			if _, err := q.StartReview(ctx, db.StartReviewParams{AgentID: nullString(id), UpdatedAt: started,
+				ID: req.reviewID}); err != nil {
+				return fmt.Errorf("review %d is not queued: %w", req.reviewID, err)
+			}
+		}
+		if task != nil && task.Status != StatusInProgress && role != RoleReviewer {
 			// ADR 0011: starting an agent for a task moves it to in_progress.
 			t, err := q.UpdateTask(ctx, db.UpdateTaskParams{Title: task.Title, Description: task.Description,
 				Status: StatusInProgress, UpdatedAt: started, ID: task.ID})
@@ -483,8 +537,12 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	}
 
 	var a AgentInfo
+	prompt := req.prompt
+	if prompt == "" {
+		prompt = e.initialPrompt(ctx, role, task, branch)
+	}
 	l := launchInfo{id: id, sid: sid, role: role, branch: branch, path: wtPath, base: base, taskID: req.TaskID,
-		started: started, prompt: e.initialPrompt(ctx, role, task, branch)}
+		started: started, prompt: prompt, reviewID: req.reviewID}
 	if e.opts.Sandbox != nil {
 		a, err = e.launchSandboxed(l, prep)
 	} else {
@@ -498,18 +556,35 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		_ = e.q.MarkAgentRemoved(context.Background(), db.MarkAgentRemovedParams{RemovedAt: nullTime(now()), ID: id})
 		return AgentInfo{}, err
 	}
-	if task != nil {
+	if task != nil && role != RoleReviewer {
 		tv := taskFromRow(*task)
 		e.publish(Update{Type: "task", Task: &tv})
 	}
 	return a, nil
 }
 
-// launchInfo is what Start hands to the launch paths.
+// launchInfo is what Start (and a relaunch) hands to the launch paths.
 type launchInfo struct {
 	id, sid, role, branch, path, base, taskID string
 	started                                   time.Time
-	prompt                                    string // initial prompt; empty for none
+	prompt                                    string     // initial prompt; empty for none
+	reviewID                                  int64      // reviewers (ADR 0021)
+	prev                                      *agentProc // a relaunch: the exited agent it replaces (ADR 0022)
+}
+
+// registerLocked adds a freshly launched agent, or replaces the exited one a
+// relaunch started again (keeping its place, start time and last import).
+func (e *Engine) registerLocked(a *agentProc, l launchInfo) {
+	a.reviewID, a.since = l.reviewID, l.started
+	if l.prev != nil {
+		a.info.StartedAt, a.info.LastImport = l.prev.info.StartedAt, l.prev.info.LastImport
+		a.info.WorktreeStatus = l.prev.info.WorktreeStatus
+	}
+	if _, ok := e.agents[a.info.ID]; !ok {
+		e.order = append(e.order, a.info.ID)
+	}
+	e.agents[a.info.ID] = a
+	e.publishAgentLocked(a)
 }
 
 // launch writes the agent's settings, opens its hook and MCP sockets and
@@ -574,16 +649,15 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 		listener:   ln,
 		settings:   settingsPath,
 		exited:     make(chan struct{}),
+		afterExit:  make(chan struct{}),
 		mcp:        mln,
 		mcpConfig:  mcpConfig,
 		hasPrompt:  l.prompt != "",
 	}
 	e.mu.Lock()
-	e.agents[id] = a
-	e.order = append(e.order, id)
-	e.publishAgentLocked(a)
+	e.registerLocked(a, l)
 	e.mu.Unlock()
-	e.log.Info("agent started", "agent_id", id, "role", l.role, "session_id", sid, "pid", term.Pid(), "task_id", taskID,
+	e.log.Info("agent started", "agent_id", id, "role", l.role, "relaunch", l.prev != nil, "session_id", sid, "pid", term.Pid(), "task_id", taskID,
 		"branch", branch, "worktree", wtPath, "model", e.opts.Model, "inherit_user_settings", e.opts.InheritUserSettings)
 	e.wg.Add(1)
 	go e.watch(a)
@@ -646,8 +720,16 @@ func (e *Engine) watch(a *agentProc) {
 	e.mu.Unlock()
 	close(a.exited)
 	e.log.Info("agent exited", "agent_id", a.info.ID, "exit_code", code, "reason", reason)
-	if a.info.Sandbox == SandboxPodman {
-		e.importOnExit(a.info.ID) // ADR 0014: the work reaches the main repository on exit
+	if a.info.Sandbox == SandboxPodman && a.info.Role != RoleReviewer {
+		// ADR 0014: the work reaches the main repository on exit, before a
+		// relaunch (ADR 0022) may start a new session in the workspace.
+		ictx, icancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		_, _ = e.importAgent(ictx, a.info.ID, TriggerExit)
+		icancel()
+	}
+	close(a.afterExit)
+	if a.reviewID != 0 {
+		e.reviewerExited(a.reviewID, a.info.ID)
 	}
 }
 
@@ -974,7 +1056,16 @@ func (e *Engine) runningLocked() int {
 
 // Shutdown stops all running agents and waits for them.
 func (e *Engine) Shutdown() {
+	if e.stopPoll != nil {
+		e.stopPoll() // first, so no reviewer or follow-up starts while agents stop
+	}
 	e.mu.Lock()
+	e.closing = true
+	for e.starting > 0 { // a start that passed the check registers its agent first
+		e.mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		e.mu.Lock()
+	}
 	ids := slices.Clone(e.order)
 	e.mu.Unlock()
 	var wg sync.WaitGroup

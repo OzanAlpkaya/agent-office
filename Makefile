@@ -36,11 +36,14 @@ check: lint test build
 # Opt-in end-to-end test with real Claude Code sessions (haiku; costs a few cents).
 # The test passes --data-dir with a temp dir to every daemon it starts. TestEndToEnd runs host
 # mode in AO_E2E_REPO; TestSandboxEndToEnd runs a sandboxed agent on a throwaway clone of it and
-# needs podman, `make worker-image` and the OAuth token file (ADR 0015).
+# needs podman, `make worker-image` and the OAuth token file (ADR 0015). TestGitHubEndToEnd also
+# pushes to GitHub and opens a PR there, only when AO_E2E_GITHUB_REPO (owner/name, the push remote
+# of AO_E2E_REPO) is set; it needs the GitHub token file (ADR 0020). AO_E2E_KEEP=1 keeps its PR.
 #   AO_E2E_REPO=~/projects/agent-office-playground make e2e
+#   AO_E2E_REPO=... AO_E2E_GITHUB_REPO=OzanAlpkaya/agent-office-playground make e2e
 e2e:
 	@test -n "$(AO_E2E_REPO)" || (echo "set AO_E2E_REPO to a trusted git repository"; exit 1)
-	AO_E2E_REPO="$(AO_E2E_REPO)" go test -tags e2e -count=1 -v -timeout 15m ./test/e2e/
+	AO_E2E_REPO="$(AO_E2E_REPO)" AO_E2E_GITHUB_REPO="$(AO_E2E_GITHUB_REPO)" go test -tags e2e -count=1 -v -timeout 40m ./test/e2e/
 
 # Build the worker image (podman; needs network). The tag comes from internal/sandbox/Containerfile.
 worker-image: build

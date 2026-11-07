@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 0 design, updated through Phase 4 (team MCP server and lead agent), based on the spikes in `spikes/` and
+Status: Phase 0 design, updated through Phase 5 (GitHub loop and pluggable review), based on the spikes in `spikes/` and
 the ADRs in `docs/adr/`. Parts marked *(later)* belong to later phases and will be detailed then.
 
 ## Overview
@@ -62,7 +62,9 @@ flowchart LR
 | `store` | SQLite via modernc + sqlc, forward-only goose migrations; refuses schemas newer than the binary and backs up before migrating (ADR 0004, 0011, 0012, 0013). |
 | `git` | git CLI wrapper: worktrees, branches, branch-name slugs (ADR 0009, 0010). |
 | `sandbox` | Starts workers in rootless Podman (`--network none`); per-agent egress proxy and credential-injecting API proxy; token file reader (ADR 0007, 0014–0016). |
-| `github` | PRs and reviews through go-github; never the `gh` CLI. *(Phase 5)* |
+| `github` | go-github v93 client for one repository: find-or-create PR, reviews, COMMENT reviews, checks; token file read per operation; no merge operation; `githubtest` fake for tests (ADR 0020). Never the `gh` CLI. |
+| `review` | Pluggable `Reviewer` interface (`Request`, `Poll`) with the internal reviewer agent and CodeRabbit behind it; one `Feedback` shape (ADR 0021). |
+| `secret` | Redacting `Secret` type and the user-only token-file reader (OAuth and GitHub tokens, ADR 0015, 0020). |
 | `api` | HTTP + WebSocket for the UI; serves the embedded UI build. |
 
 ## Key flows
@@ -169,6 +171,42 @@ adds the host to that running agent's egress grant set, checked by its egress pr
 allowlist, until it exits. The agent gets a message with the decision. Pending requests expire when
 their agent exits and at daemon start.
 
+**GitHub loop (Phase 5, ADR 0020–0022).** Opt-in with `--github`. The repository comes from the
+main repository's push remote; PRs target its default branch.
+
+```mermaid
+sequenceDiagram
+  participant W as Worker
+  participant D as Daemon
+  participant G as GitHub
+  participant R as Reviewer agent
+  W->>D: report_done (branch imported, task to review)
+  D->>D: identity check of the commits (flagged → wait for the user)
+  D->>G: git push over SSH (main repository, never forced)
+  D->>G: find-or-create PR (task title, neutralized body)
+  D->>R: start on the PR head (own review branch, own slot)
+  R->>D: submit_review(verdict, summary, comments)
+  D->>G: COMMENT review on the reviewed commit
+  D->>W: changes requested: relaunch in its workspace with the review in its prompt
+  W->>D: commit, report_done → push (fast-forward) → same PR, next review
+  Note over D,G: poll loop: PR state, checks, CodeRabbit and people's reviews; a human merge → task done
+```
+
+- The daemon is the only GitHub client: agents hold no GitHub token and cannot reach github.com.
+  The token is read from a user-only file for every operation (ADR 0020).
+- Reviewers (role `reviewer`) have only `list_tasks` and `submit_review`; the daemon validates the
+  review and posts it as a `COMMENT` review. CodeRabbit is read by bot login and reviewed commit
+  (ADR 0021).
+- Actionable feedback (`changes_requested`) from the configured reviewer relaunches the original
+  worker (a still-running one is ended first, once idle): same agent, workspace and branch, new
+  session, the review quoted in its prompt; at most
+  `--review-rounds` (default 2) automatic rounds per PR, then "Send to worker" by hand (ADR 0022).
+  Messages are only delivered to the session they were queued for.
+- Polling: every 30 s while a review or checks are pending, every 2 minutes otherwise; no webhooks
+  (the daemon is loopback-only).
+- `--github` needs sandboxed agents. Pushes wait for the user's acceptance of flagged commits and of
+  any change under `.github/`. At most 10 automatic reviews per PR.
+
 **Isolation (Phase 3).** Each sandboxed worker is a rootless Podman container with
 `--network none`, a read-only rootfs and no capabilities (ADR 0007). It mounts its own shared
 clone (the main repository's objects read-only), its per-agent sockets and the read-only
@@ -199,13 +237,15 @@ events: logged, stored (rate-limited), pushed to the UI live and listed by
 
 | Entity | Key fields | Notes |
 |---|---|---|
-| **Agent** | id, role (lead / worker; reviewer later), sandbox, state, task_id, current_session_id | One live session at a time; at most one running lead (ADR 0017). |
+| **Agent** | id, role (lead / worker / reviewer), sandbox, state, task_id, current_session_id | One live session at a time; at most one running lead (ADR 0017); a worker can be relaunched in its workspace with a new session (ADR 0022). |
 | **Session** | id (= CLI session UUID), agent_id, started_at, ended_at, end_reason, transcript_path, cost_usd, tokens | One per CLI process; cost comes from the transcript (Phase 8). |
 | **Task** | id, title, description, status (todo / in_progress / review / done / blocked), parent_task_id, created_by | A goal is a top-level task; the lead creates its sub-tasks through MCP. Agents point to their task (`agents.task_id`). |
 | **Worktree** | id, repo_path, path, branch, base_ref, kind (worktree / clone), created_at, removed_at | One per worker agent; sandboxed agents get a shared clone (ADR 0014). |
 | **Import** | id, agent_id, trigger, outcome, branch, head, previous, commits, flagged, at | One per import of a sandboxed agent's branch (migration 0003). |
 | **Message** | id, from_agent_id (empty: agent-office), to_agent_id, body, created_at, delivered_at, delivery (stop_hook / pty) | Claimed once, then delivered (ADR 0018). |
 | **AccessRequest** | id, agent_id, kind (domain; secret / path reserved), value, reason, status (pending / approved / denied / expired), decided_at, decided_by | A human decides in the UI; a grant lasts for that agent's run (ADR 0019). |
+| **PullRequest** | id, task_id, agent_id (the worker), branch, base, number, url, state (pending / open / merged / closed), head, checks, pending / accepted flagged commits, rounds, error | One per pushed branch (migration 0005, ADR 0020). |
+| **Review** | id, pr_id, reviewer (internal / coderabbit / human), head, status (queued / running / done / failed / timed_out), verdict, summary, comments, agent_id, github_review_id, followup | One per reviewed head; people's reviews are recorded, never acted on automatically (ADR 0021, 0022). |
 | **Event** | id, agent_id, session_id, kind, at, summary | Hook events, reduced to non-sensitive fields. |
 
 ## Threat model (first draft, updated in Phases 3 and 4)
@@ -240,5 +280,9 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Terminal injection through message delivery (escape sequences, Esc / Ctrl-C typed into another agent's PTY) | Stored bodies lose control characters except newline and tab; the PTY line loses all of them; delivery goes through the engine's input path (ADR 0008, 0018). Tested: `TestIdleDeliveryOverPTY`, `TestPTYLine` | 4 |
 | Agent-written text in the UI (messages, access reasons, task titles) | Rendered as text by React, never as HTML; message lists and the approval queue label it as the agent's words | 4 |
 | Malicious repo content runs on the host | Phases 1–2 run agents on the host with normal permission prompts (no bypass); full permissions only inside the sandbox | 1–3 |
-| Agent pushes or merges unreviewed code | No git credentials or route to a remote in the sandbox (tested in Spike F); the daemon pushes from the main repository; imported commits are checked for author and trailer; merging stays human | 3, 5 |
+| Agent pushes or merges unreviewed code | No git credentials or route to a remote in the sandbox (tested in Spike F); the daemon pushes from the main repository, agent branches only, never forced (`TestPush`); imported commits are checked for author and trailer and flagged ones are not pushed until the user accepts them (`TestFlaggedCommitsBlockPush`); the GitHub client has no merge operation and the fake fails any unknown request (`TestClientCannotMerge`, `TestGitHubLoop`); the internal reviewer only ever posts `COMMENT` reviews; recommended token without Contents write. Merging stays human | 3, 5 |
+| Agent-written workflows run with the repository's secrets | A change under `.github/` blocks the push until the user accepts that head (`TestWorkflowChangesBlockPush`) | 5 |
+| GitHub token leaks or is misused by an agent | `--github` refuses host-mode agents (they run as the user); token in a user-only file, read per operation, held as a redacting `Secret`; sent only to the API origin (`TestTokenOnlyToAPIOrigin`); never in agent env, sandbox or logs; agents reach GitHub only through the daemon's fixed operations | 5 |
+| Agent-written text on GitHub notifies people or closes issues | Summaries, sub-task descriptions and review comments are neutralized (`@mentions`, closing keywords) before posting (`TestNeutralize`, `TestGitHubLoop`) | 5 |
+| A reviewer or review text steers the worker or spends sessions without limit | Only the configured reviewer's feedback acts automatically, framed and quoted as information; at most `--review-rounds` automatic follow-ups per PR (`TestFollowupRoundLimitAndHumanReviews`); people's GitHub reviews never act by themselves; a reviewer may only submit once, for its own review (`TestSubmitReviewAuthorization`). Residual: within the limit a persuasive review can still steer the worker inside its own permissions | 5 |
 | Sensitive data in captured payloads | Store reduced events only; raw hook payloads and transcripts are never persisted or sent to the UI in full | 1, 8 |

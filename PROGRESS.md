@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 5 (GitHub loop + pluggable code review), not started; Phase 4 merged
+**Current phase:** Phase 6 (Stack packs), not started; Phase 5 merged
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
@@ -11,7 +11,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 2: Multi-agent + task board (SQLite, worktrees)
 - [x] Phase 3: Isolation & security (rootless Podman, egress allowlist, secrets)
 - [x] Phase 4: Team MCP server + lead agent
-- [ ] Phase 5: GitHub loop + pluggable code review
+- [x] Phase 5: GitHub loop + pluggable code review
 - [ ] Phase 6: Stack packs
 - [ ] Phase 7: Pixel office UI
 - [ ] Phase 8: Observability & cost
@@ -64,3 +64,17 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   `make sandbox-test` and `make e2e` (host, sandbox and the new team run) pass. An independent
   review found no authorization hole; its six delivery/report fixes are in.
 - 2026-11-07: Phase 4 review: all decisions approved. Merged into `main` (`--no-ff`).
+- 2026-11-07: Phase 5 done on `phase-5/github-review`; plan written with the recommended options and
+  executed without a separate approval, as Ozan asked (`docs/plans/phase-5.md`). ADRs 0020 (GitHub
+  integration: token file, daemon pushes over SSH, polling), 0021 (pluggable review: `Reviewer`
+  interface, internal reviewer agent, CodeRabbit), 0022 (follow-ups relaunch the original worker).
+  Migration 0005 (reviewer role, `pull_requests`, `reviews`). New packages `github` (+ `githubtest`
+  fake), `review`, `secret`. New dependency: `google/go-github/v93` v93.0.0. `--github` (opt-in,
+  sandboxed agents only): a worker's `report_done` pushes its branch and opens or updates its PR;
+  the internal reviewer posts a COMMENT review; changes requested relaunch the original worker,
+  whose new commit updates the same PR; a human merge moves the task to done. An independent review
+  of the diff led to 14 fixes (host mode refused, `.github/` gate, review cap, superseded reviews,
+  races). The real e2e run changed the follow-up path from a team message to a relaunch.
+- 2026-11-07: Phase 5 review: all decisions approved. Ozan narrowed the GitHub token to Contents
+  read-only. Closing keywords in agents' commit messages added to Phase 11 as a later item. Merged
+  into `main` (`--no-ff`).

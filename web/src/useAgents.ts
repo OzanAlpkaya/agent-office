@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  type AccessRequest, type Agent, type Message, type SandboxEvent, type Task, api, parseEventMessage, wsURL,
+  type AccessRequest, type Agent, type Message, type PullRequest, type SandboxEvent, type Task, api, parseEventMessage,
+  wsURL,
 } from "./api";
 
 export type Connection = "connecting" | "open" | "closed";
@@ -11,6 +12,7 @@ export interface World {
   events: Record<string, SandboxEvent[]>; // sandbox events per agent id, newest first
   messages: Record<string, Message[]>; // messages sent or received per agent id, newest first
   accessRequests: AccessRequest[]; // pending first, then the most recent
+  pullRequests: PullRequest[]; // in creation order (ADR 0020)
   connection: Connection;
 }
 
@@ -61,6 +63,7 @@ export function useWorld(): World {
   const [events, setEvents] = useState<Record<string, SandboxEvent[]>>({});
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
+  const [pullRequests, setPullRequests] = useState<PullRequest[]>([]);
   const [connection, setConnection] = useState<Connection>("connecting");
 
   useEffect(() => {
@@ -89,6 +92,7 @@ export function useWorld(): World {
             setEvents({});
             setMessages({});
             setAccessRequests(sortAccess(msg.accessRequests));
+            setPullRequests(msg.pullRequests);
             for (const a of msg.agents) {
               // Fire-and-forget like the events below; a failure only loses history.
               void api.agentMessages(a.id).then(
@@ -134,6 +138,17 @@ export function useWorld(): World {
             setAccessRequests((prev) => sortAccess([...prev.filter((x) => x.id !== r.id), r]));
             break;
           }
+          case "pull_request": {
+            const pr = msg.pullRequest;
+            setPullRequests((prev) => {
+              const i = prev.findIndex((x) => x.id === pr.id);
+              if (i === -1) return [...prev, pr];
+              const next = prev.slice();
+              next[i] = pr;
+              return next;
+            });
+            break;
+          }
           case "sandbox_event":
             setEvents((prev) => ({ ...prev, [msg.agent_id]: mergeEvents(prev[msg.agent_id] ?? [], [msg.event]) }));
             break;
@@ -160,5 +175,5 @@ export function useWorld(): World {
     };
   }, []);
 
-  return { agents, tasks, events, messages, accessRequests, connection };
+  return { agents, tasks, events, messages, accessRequests, pullRequests, connection };
 }

@@ -1,5 +1,5 @@
 import { type FormEvent, type JSX, useState } from "react";
-import { type Agent, type Task, type TaskStatus, taskStatuses } from "./api";
+import { type Agent, type PullRequest, type Review, type Task, type TaskStatus, taskStatuses } from "./api";
 
 const columnTitle: Record<TaskStatus, string> = {
   todo: "To do",
@@ -20,6 +20,12 @@ interface Props {
   onStart: (task: Task) => void;
   onDelete: (task: Task) => void;
   onOpenAgent: (id: string) => void;
+  pullRequests: PullRequest[];
+  github: boolean; // the daemon runs with --github
+  onOpenPR: (task: Task) => void;
+  onRequestReview: (pr: PullRequest) => void;
+  onSendToWorker: (pr: PullRequest, review: Review) => void;
+  onAcceptFlagged: (pr: PullRequest) => void;
 }
 
 export function Board(p: Props): JSX.Element {
@@ -35,7 +41,8 @@ export function Board(p: Props): JSX.Element {
             .filter((t) => t.status === status)
             .map((t) => (
               <TaskCard {...p} key={t.id} task={t} agents={p.agents.filter((a) => a.task_id === t.id)}
-                goal={p.tasks.find((g) => g.id === t.parent_task_id)} />
+                goal={p.tasks.find((g) => g.id === t.parent_task_id)}
+                prs={p.pullRequests.filter((pr) => pr.task_id === t.id)} />
             ))}
         </section>
       ))}
@@ -77,12 +84,14 @@ interface CardProps extends Props {
   task: Task;
   agents: Agent[];
   goal?: Task;
+  prs: PullRequest[];
 }
 
-function TaskCard({
-  task, agents, goal, canStart, leadRunning, onStatus, onStart, onStartLead, onDelete, onOpenAgent,
-}: CardProps): JSX.Element {
-  const running = agents.some((a) => a.state !== "exited");
+function TaskCard(p: CardProps): JSX.Element {
+  const { task, agents, goal, canStart, leadRunning, onStatus, onStart, onStartLead, onDelete, onOpenAgent, prs } = p;
+  const running = agents.some((a) => a.state !== "exited" && a.role !== "reviewer");
+  const canOpenPR = p.github && task.status === "review" && agents.some((a) => a.role === "worker") &&
+    !prs.some((pr) => pr.state === "open");
   const isGoal = !task.parent_task_id;
   return (
     <article className="task">
@@ -99,11 +108,12 @@ function TaskCard({
           {agents.map((a) => (
             <button key={a.id} className={`chip state-${a.state}`} title={`${a.role} · ${a.branch}`}
               onClick={() => onOpenAgent(a.id)}>
-              {a.role === "lead" ? "lead " : ""}{a.id.slice(0, 6)}
+              {a.role !== "worker" ? `${a.role} ` : ""}{a.id.slice(0, 6)}
             </button>
           ))}
         </div>
       )}
+      {prs.map((pr) => <PRPanel key={pr.id} pr={pr} {...p} />)}
       <div className="row">
         <select value={task.status} onChange={(e) => onStatus(task, e.target.value as TaskStatus)}>
           {taskStatuses.map((s) => <option key={s} value={s}>{columnTitle[s]}</option>)}
@@ -119,8 +129,98 @@ function TaskCard({
             Start lead
           </button>
         )}
+        {canOpenPR && (
+          <button onClick={() => p.onOpenPR(task)} title="Push the worker's branch and open a pull request">Open PR</button>
+        )}
         <button className="link" disabled={running} onClick={() => onDelete(task)} title="Delete task">✕</button>
       </div>
     </article>
   );
+}
+
+const prStateLabel: Record<PullRequest["state"], string> = {
+  pending: "not opened", open: "open", merged: "merged", closed: "closed",
+};
+const checksLabel: Record<string, string> = {
+  none: "no checks", pending: "checks running", success: "checks passed", failure: "checks failed",
+  unavailable: "checks unavailable",
+};
+const reviewerLabel: Record<Review["reviewer"], string> = {
+  internal: "reviewer agent", coderabbit: "CodeRabbit", human: "person",
+};
+const verdictLabel: Record<string, string> = {
+  approve: "approves", changes_requested: "requests changes", comment: "comments",
+};
+const followupLabel: Record<string, string> = {
+  started: "sent to the worker (relaunched)",
+  skipped: "not sent: round limit", refused: "could not be sent",
+};
+
+// PRPanel shows a task's pull request, its checks and reviews (ADR 0020-0022).
+// Review text is written by agents, bots or people: rendered as text only.
+function PRPanel({ pr, onRequestReview, onSendToWorker, onAcceptFlagged, onOpenAgent }: CardProps & { pr: PullRequest }): JSX.Element {
+  const busy = pr.reviews.some((r) => r.status === "queued" || r.status === "running");
+  return (
+    <div className="pr small">
+      <div className="row">
+        {pr.url && pr.number
+          ? <a href={pr.url} target="_blank" rel="noreferrer noopener">PR #{pr.number}</a>
+          : <span>Pull request</span>}
+        <span className={`chip pr-${pr.state}`}>{prStateLabel[pr.state]}</span>
+        {pr.checks && <span className={`chip checks-${pr.checks}`} title={pr.failed_checks.join(", ")}>{checksLabel[pr.checks]}</span>}
+        {pr.rounds > 0 && <span className="muted">{pr.rounds} follow-up round{pr.rounds === 1 ? "" : "s"}</span>}
+      </div>
+      {pr.error && <div className="hint">{pr.error}</div>}
+      {pr.flagged.length > 0 && (
+        <div className="hint">
+          {pr.flagged.map((f) => <div key={f.commit} className="mono" title={f.problem}>{f.commit.slice(0, 8)}: {f.problem}</div>)}
+          <button className="danger" onClick={() => onAcceptFlagged(pr)}
+            title="Push these commits even though they lack your identity or the agent trailer">
+            Accept and push
+          </button>
+        </div>
+      )}
+      {pr.reviews.length > 0 && (
+        <details className="events">
+          <summary>{reviewSummary(pr.reviews[0])}</summary>
+          <ul>
+            {pr.reviews.map((r) => (
+              <li key={r.id}>
+                <div className="muted">
+                  {reviewerLabel[r.reviewer]}
+                  {r.agent_id && <> <button className="link" onClick={() => onOpenAgent(r.agent_id ?? "")}>{r.agent_id.slice(0, 6)}</button></>}
+                  {" · "}{r.status === "done" ? verdictLabel[r.verdict ?? ""] ?? r.verdict : r.status.replace("_", " ")}
+                  {" · "}<span className="mono">{r.head.slice(0, 8)}</span>
+                  {r.url && <> · <a href={r.url} target="_blank" rel="noreferrer noopener">on GitHub</a></>}
+                  {r.followup && <> · {followupLabel[r.followup]}</>}
+                </div>
+                {r.error && <div className="hint">{r.error}</div>}
+                {r.summary && <div className="quote">{r.summary}</div>}
+                {r.comments.map((c, i) => (
+                  <div key={i} className="quote"><span className="mono">{c.path}:{c.line}</span> {c.body}</div>
+                ))}
+                {r.status === "done" && pr.state === "open" && r.followup !== "started" && r.followup !== "messaged" &&
+                  r.head === pr.head && (r.verdict !== "approve" || r.comments.length > 0) && (
+                  <button onClick={() => onSendToWorker(pr, r)} title="Give this review to the worker as follow-up work">
+                    Send to worker
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {pr.state === "open" && !busy && (
+        <button onClick={() => onRequestReview(pr)}>Request review</button>
+      )}
+    </div>
+  );
+}
+
+function reviewSummary(r: Review): string {
+  const who = reviewerLabel[r.reviewer];
+  if (r.status === "queued") return `Review queued (${who}, waiting for a free slot)`;
+  if (r.status === "running") return `Review running (${who})`;
+  if (r.status !== "done") return `Review ${r.status.replace("_", " ")} (${who})`;
+  return `${who} ${verdictLabel[r.verdict ?? ""] ?? "reviewed"}`;
 }

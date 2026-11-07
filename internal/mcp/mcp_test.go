@@ -68,6 +68,11 @@ func (f *fakeTeam) RequestAccess(_ context.Context, caller string, in RequestAcc
 	return RequestAccessOutput{RequestID: 3, Status: "pending"}, f.err
 }
 
+func (f *fakeTeam) SubmitReview(_ context.Context, caller string, in SubmitReviewInput) (SubmitReviewOutput, error) {
+	f.record(caller, ToolSubmitReview, in)
+	return SubmitReviewOutput{ReviewID: 5, Posted: true, Next: "end your turn"}, f.err
+}
+
 var quiet = slog.New(slog.DiscardHandler)
 
 // connect serves NewServer(team, caller, role) in memory and returns a client.
@@ -131,11 +136,49 @@ func TestToolsPerRole(t *testing.T) {
 	if !slices.Equal(worker, want) {
 		t.Fatalf("worker tools %v", worker)
 	}
+	reviewer := toolNames(t, connect(t, &fakeTeam{}, "r1", RoleReviewer))
+	want = []string{ToolListTasks, ToolSubmitReview}
+	if !slices.Equal(reviewer, want) {
+		t.Fatalf("reviewer tools %v", reviewer)
+	}
 	// Not listed means not callable: the SDK refuses an unknown tool.
 	cs := connect(t, &fakeTeam{}, "w1", RoleWorker)
 	if _, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: ToolCreateTask,
 		Arguments: map[string]any{"title": "x"}}); err == nil {
 		t.Fatal("worker could call create_task")
+	}
+	if _, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: ToolSubmitReview,
+		Arguments: map[string]any{"verdict": "approve", "summary": "x"}}); err == nil {
+		t.Fatal("worker could call submit_review")
+	}
+}
+
+func TestSubmitReview(t *testing.T) {
+	team := &fakeTeam{}
+	cs := connect(t, team, "rev-1", RoleReviewer)
+	res := call(t, cs, ToolSubmitReview, map[string]any{"verdict": "changes_requested", "summary": "needs a test",
+		"comments": []map[string]any{{"path": "a.go", "line": 3, "body": "nil"}}})
+	if res.IsError {
+		t.Fatalf("tool error %s", text(res))
+	}
+	want := `rev-1 submit_review {"verdict":"changes_requested","summary":"needs a test","comments":[{"path":"a.go","line":3,"body":"nil"}]}`
+	if calls := team.all(); len(calls) != 1 || calls[0] != want {
+		t.Fatalf("calls %v", calls)
+	}
+	for _, args := range []map[string]any{
+		{"summary": "x"},
+		{"verdict": "approve"},
+		{"verdict": "approve", "summary": "x", "comments": []map[string]any{{"path": "a.go", "line": "3", "body": "b"}}},
+		{"verdict": "approve", "summary": "x", "comments": []map[string]any{{"path": "a.go", "line": 3}}},
+		{"verdict": "approve", "summary": "x", "comments": []map[string]any{{"path": "a.go", "line": 3, "body": "b", "side": "LEFT"}}},
+		{"verdict": "approve", "summary": "x", "event": "APPROVE"},
+	} {
+		if res := call(t, cs, ToolSubmitReview, args); !res.IsError {
+			t.Errorf("accepted %v", args)
+		}
+	}
+	if calls := team.all(); len(calls) != 1 {
+		t.Fatalf("Team called with invalid input: %v", calls)
 	}
 }
 
