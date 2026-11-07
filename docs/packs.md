@@ -77,8 +77,9 @@ as `<file>: <field>: <problem>; <fix>`, for example:
 ### Toolchain
 
 The Containerfile builds **on top of agent-office's base image**, whose tag the daemon passes in
-`BASE_IMAGE`. The final stage must start with `FROM ${BASE_IMAGE}`: workers rely on its git,
-certificates and glibc. Earlier build stages may use any image.
+`BASE_IMAGE`. The final stage must start with `FROM ${BASE_IMAGE}` (workers rely on its git,
+certificates and glibc) and must not set an `ENTRYPOINT` (agent-office starts its own init).
+Earlier build stages may use any image.
 
 ```dockerfile
 ARG BASE_IMAGE
@@ -87,8 +88,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends postgresql-clie
  && rm -rf /var/lib/apt/lists/*
 ```
 
-Every file in the pack directory except `pack.yaml` and `skills/` is the build context, and the
-image tag (`localhost/agent-office-pack-<name>:<hash>`) is a hash of all of them plus the base
+Every file in the pack directory except `pack.yaml`, `skills/` and `.git/` is the build context
+(exec bits are kept), and the image tag (`localhost/agent-office-pack-<name>:<hash>`) is a hash of all of them plus the base
 Containerfile. Any change means a new tag; the daemon refuses to start until it is built with
 `agent-office worker-image --pack <name>` (or `make worker-image PACK=<name>`). The daemon never
 builds images by itself. Workers run as uid 1000 with a read-only root filesystem and `HOME` on a
@@ -113,7 +114,9 @@ install -d -m 0700 ~/.config/agent-office/secrets
 ```
 
 - Files are read at every agent launch, so replacing one takes effect for the next agent.
-- **Workers and reviewers** get the secrets; **leads do not** (they plan and do not run code).
+- **Only workers** get the secrets: leads plan and run no code, and reviewers read the
+  agent-written diff, the most injectable input there is. A reviewer's tests that need a secret
+  fail; it can still review the code.
 - The daemon serves the values once, over a per-agent socket, to the container's init, which puts
   them into the agent's environment only: not into argv, `podman inspect`, files, logs or the
   database. The UI shows names and whether each file exists, never values.
@@ -128,9 +131,9 @@ proxy). Give agents test, throwaway or read-only credentials only.
 ### Skills
 
 Each entry names `skills/<name>/` with a `SKILL.md` whose frontmatter has a `description` (and,
-if it has a `name`, the same name). The directory is copied into the agent's own Claude Code
-config directory (`$CLAUDE_CONFIG_DIR/skills/<name>`), where Claude Code finds personal skills.
-At most 1 MiB and 200 files per skill.
+if it has a `name`, the same name). The files are read and checked when the pack loads, written for
+each launch and mounted read-only at the agent's `$CLAUDE_CONFIG_DIR/skills/<name>`, where Claude
+Code finds personal skills; the agent cannot change them. At most 1 MiB and 200 files per skill.
 
 ### MCP servers
 
@@ -138,6 +141,8 @@ Added to the agent's MCP config next to agent-office's team server (`agent-offic
 Code's built-in names are reserved). Exactly one of:
 
 - `command` (+ `args`): a stdio server started inside the worker; an absolute path in the image.
+  Whether Claude Code passes it the agent's full environment (the pack's secrets, the proxy
+  variables) is not documented and not yet checked live.
 - `url`: an `https://` URL on port 443 whose host is in the pack's `egress.allow`. No credentials
   in the URL; headers and OAuth are not supported yet. HTTP servers through the egress proxy are
   covered by unit tests only, not yet by a live run.

@@ -218,9 +218,10 @@ for every sandboxed agent:
   --pack <name>` from the pack's Containerfile `FROM` the base image; without a pack, the base
   image (no toolchain). The tag hashes every build input.
 - **Egress:** the pack's hosts replace the default allowlist; `--egress-allow` adds to both.
-- **Skills:** copied into the agent's `CLAUDE_CONFIG_DIR/skills` before its first session.
+- **Skills:** checked at load, written for each launch and mounted read-only at the agent's
+  `CLAUDE_CONFIG_DIR/skills`.
 - **MCP servers:** added to its `--mcp-config` next to `agent-office` (`--strict-mcp-config`).
-- **Secrets** (workers and reviewers, not leads): read from user-only files at every launch and
+- **Secrets** (workers only): read from user-only files at every launch and
   served **once** on a per-agent `secrets.sock`; `sandbox-init` puts them into the agent CLI's
   environment before starting it, so they never appear in argv or the container's config.
 
@@ -230,7 +231,7 @@ sequenceDiagram
   participant P as podman
   participant I as sandbox-init (container)
   participant C as Claude Code
-  D->>D: read secret files (pack env names), copy skills, write MCP config
+  D->>D: read secret files (pack env names), write skills and MCP config
   D->>D: listen secrets.sock (one connection, then closed)
   D->>P: run pack image, mount secrets.sock (no secret in args or env)
   P->>I: start
@@ -318,6 +319,6 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Agent-written text on GitHub notifies people or closes issues | Summaries, sub-task descriptions and review comments are neutralized (`@mentions`, closing keywords) before posting (`TestNeutralize`, `TestGitHubLoop`) | 5 |
 | A reviewer or review text steers the worker or spends sessions without limit | Only the configured reviewer's feedback acts automatically, framed and quoted as information; at most `--review-rounds` automatic follow-ups per PR (`TestFollowupRoundLimitAndHumanReviews`); people's GitHub reviews never act by themselves; a reviewer may only submit once, for its own review (`TestSubmitReviewAuthorization`). Residual: within the limit a persuasive review can still steer the worker inside its own permissions | 5 |
 | Repository content or an agent widens the sandbox (hosts, secrets, image) | Stack packs come only from the binary or a user-owned directory with no group/other write and no symlinks, never from the repository; one pack per run, chosen with `--pack`, never auto-detected; validated strictly at startup (`TestLoadInvalid`, `TestLoadDirChecksTheTree`, `TestFindAndList`). A pack image must build `FROM ${BASE_IMAGE}`. Residual: whoever can write the user's config directory controls the pack (same as the token files) | 6 |
-| Pack secrets leak to places other than the agent | Values only in user-only files, read at each launch; served once on a per-agent socket to `sandbox-init`, which sets them in the agent CLI's environment only; never argv, `-e`, container config, files, logs, DB or UI; leads get none; reserved names cannot override the sandbox's variables or hand agents a GitHub token. Tested: `TestSandboxedPackLaunch` (canary absent from sandbox-init, `podman inspect`, runtime dir, logs, DB; a second fetch is refused), `TestSecretsServedOnceToInit`, `TestFetchSecretsRefusesBadReplies`, `TestReservedEnv` | 6 |
+| Pack secrets leak to places other than the agent | Values only in user-only files, read at each launch; served once on a per-agent socket to `sandbox-init`, which sets them in the agent CLI's environment only; never argv, `-e`, container config, files, logs, DB or UI; only workers get them (not leads or reviewers); reserved names cannot override the sandbox's variables or hand agents a GitHub token. Tested: `TestSandboxedPackLaunch` (canary absent from sandbox-init, `podman inspect`, runtime dir, logs, DB; a second fetch is refused), `TestSecretsServedOnceToInit`, `TestFetchSecretsRefusesBadReplies`, `TestReservedEnv` | 6 |
 | Agent exfiltrates a pack secret | Residual by design: an agent can send a secret it holds to any allowed host (TLS hides contents from the proxy). Packs should hold test or read-only credentials; the UI and `docs/packs.md` say so | 6 |
 | Sensitive data in captured payloads | Store reduced events only; raw hook payloads and transcripts are never persisted or sent to the UI in full | 1, 8 |

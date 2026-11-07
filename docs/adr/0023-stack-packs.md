@@ -83,8 +83,9 @@ Option 2 in each group.
 - **Images:** the Phase 3 Containerfile, minus Go, is the **base image**
   (`localhost/agent-office-worker:<hash>`) and the **default image**. A pack image is
   `localhost/agent-office-pack-<name>:<hash>` over the base Containerfile and every file in the
-  pack directory except `pack.yaml` and `skills/`. The pack's Containerfile must start its final
-  stage with `FROM ${BASE_IMAGE}`. `agent-office worker-image [--pack <name>]` builds them; the
+  pack directory except `pack.yaml`, `skills/` and `.git/` (with their exec bits) plus the name of
+  the Containerfile. The pack's Containerfile must start its final stage with `FROM
+  ${BASE_IMAGE}` and must not set an `ENTRYPOINT` there (it would replace `sandbox-init`). `agent-office worker-image [--pack <name>]` builds them; the
   daemon never builds on its own. The go pack adds gcc and libc6-dev with `CGO_ENABLED=1`, so
   `go test -race` works in workers; the node pack installs Debian's `nodejs` and `npm`.
 - **Egress:** allowlist = pack hosts (or the Phase 3 default without a pack) plus
@@ -96,13 +97,16 @@ Option 2 in each group.
   `HOME`, `PATH`, `LD_*`, ...). The daemon serves the values on the agent's `secrets.sock`
   exactly once, then closes the listener; `sandbox-init` reads them before starting the agent CLI
   and sets them in its environment only. If the socket is missing or the answer is malformed,
-  `sandbox-init` fails and the agent does not start. Workers and reviewers get secrets; leads do
-  not. A missing required secret fails startup and launch with the command that creates the
+  `sandbox-init` fails and the agent does not start. **Only workers get secrets**: leads plan and
+  run no code, and reviewers read the agent-written diff, the most injectable input there is
+  (changed from "workers and reviewers" after the end-of-phase review). A missing required secret fails startup and launch with the command that creates the
   file; a missing optional one is skipped and shown as a warning. Logs and the UI show names
   only.
-- **Skills** are copied into the agent's `CLAUDE_CONFIG_DIR/skills/<name>` (Claude Code reads
-  personal skills there when `CLAUDE_CONFIG_DIR` is set: code.claude.com/docs/en/claude-directory).
-  A `SKILL.md` needs a `description` in its frontmatter.
+- **Skills** are read and checked when the pack loads, written fresh for every launch into the
+  agent's daemon-owned runtime dir and mounted **read-only** at `CLAUDE_CONFIG_DIR/skills` (Claude
+  Code reads personal skills there when `CLAUDE_CONFIG_DIR` is set:
+  code.claude.com/docs/en/claude-directory). The agent cannot change them, and a relaunch (ADR
+  0022) gets the current pack's. A `SKILL.md` needs a `description` in its frontmatter.
 - **MCP servers** are added to the agent's generated `--mcp-config` next to `agent-office` (a
   reserved name, as are Claude Code's built-in server names); `--strict-mcp-config` stays.
 - **Status:** `GET /api/status` shows the pack, its image, hosts, secrets (names and whether the
