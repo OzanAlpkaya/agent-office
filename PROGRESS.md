@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 4 (Team MCP server + lead agent), not started; Phase 3 merged
+**Current phase:** Phase 4 (Team MCP server + lead agent), done on `phase-4/team-mcp`, waiting for review (not merged)
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
@@ -10,7 +10,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 1: Single agent (PTY, live terminal, Claude Code hooks)
 - [x] Phase 2: Multi-agent + task board (SQLite, worktrees)
 - [x] Phase 3: Isolation & security (rootless Podman, egress allowlist, secrets)
-- [ ] Phase 4: Team MCP server + lead agent
+- [x] Phase 4: Team MCP server + lead agent (review pending)
 - [ ] Phase 5: GitHub loop + pluggable code review
 - [ ] Phase 6: Stack packs
 - [ ] Phase 7: Pixel office UI
@@ -53,3 +53,13 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   mode, including a daemon SIGKILL. CLAUDE.md: approved phase plans run without per-step check-ins.
 - 2026-11-07: Phase 3 review: all decisions approved, including the plan.md scope update. Approved
   phase plans are now saved under `docs/plans/` (`phase-3.md` first). Merged into `main` (`--no-ff`).
+- 2026-11-07: Phase 4 done on `phase-4/team-mcp`; plan written with the recommended options and
+  executed without a separate approval, as Ozan asked (`docs/plans/phase-4.md`). ADR 0006
+  accepted (go-sdk `IOTransport` over a per-agent `mcp.sock`; `agent-office mcp` stdio bridge);
+  ADRs 0017 (roles and authority), 0018 (message delivery), 0019 (access requests). Migration
+  0004 (roles, sub-tasks, messages, access requests, `imports` rebuilt for `report_done`). New
+  dependency: `modelcontextprotocol/go-sdk` v1.8.0. A lead plans a goal through six team tools;
+  workers report with committed, imported work and end; messages go by Stop hook or typed into an
+  idle terminal; access requests wait in a UI approval queue and grant per agent. `make check`,
+  `make sandbox-test` and `make e2e` (host, sandbox and the new team run) pass. An independent
+  review found no authorization hole; its six delivery/report fixes are in.

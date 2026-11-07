@@ -124,10 +124,13 @@ derived from Claude Code hooks.
   the host to that agent only, until it exits.
 
 **Definition of Done**
-- [ ] Given a goal, the lead creates and assigns tasks that workers complete end-to-end.
-- [ ] Messages reach the recipient after its next Stop event, exactly once.
-- [ ] Access requests need human approval in the UI; nothing is granted automatically.
-- [ ] Tests for every MCP tool (input validation, authorization by agent role).
+- [x] Given a goal, the lead creates and assigns tasks that workers complete end-to-end
+      (`TestTeamEndToEnd`, real Claude Code in sandbox mode).
+- [x] Messages reach the recipient after its next Stop event, exactly once; an idle recipient gets
+      them typed into its terminal (claimed once in SQLite; "exactly once" ends at the hook
+      forwarder, ADR 0018).
+- [x] Access requests need human approval in the UI; nothing is granted automatically.
+- [x] Tests for every MCP tool (input validation, authorization by agent role).
 
 ---
 
