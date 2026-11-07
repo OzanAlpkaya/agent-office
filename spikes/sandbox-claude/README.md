@@ -75,12 +75,49 @@ base `docker.io/library/debian:trixie-slim@sha256:7378260c0a098d27ac206225db5e7d
   read-only at the same path. This reveals one host path name to the agent. Acceptable, and it
   avoids hardlinks (a writable hardlinked object file would let the agent corrupt the origin).
 
-## Pending (need the OAuth token file, ADR 0015)
+## Authenticated runs (OAuth token from `claude setup-token`, ADR 0015)
 
-- `auth`: an authenticated `claude -p` run: required Anthropic domains, the hook sequence,
-  one-shot credential delivery.
-- `inject`: whether Claude Code works with a placeholder token while a daemon-side proxy adds the
-  real one (`ANTHROPIC_BASE_URL`), so the token never enters the container.
-- `interactive`: onboarding, workspace trust and `--dangerously-skip-permissions` dialogs in a
-  fresh `CLAUDE_CONFIG_DIR`. Which config keys pre-seed them (key names only). Memory use.
-- Nested Claude Code sandbox inside the container: record only if cheap.
+| Check | Result |
+|---|---|
+| `auth`: token over the agent socket, `claude -p` (haiku) | works; identical fingerprint on both sides; hooks `SessionStart → UserPromptSubmit → Stop → SessionEnd` |
+| Egress of `auth` | `api.anthropic.com` only; one denied `http-intake.logs.us5.datadoghq.com` (log shipping) |
+| Egress of `auth` with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` | 3 tunnels, all `api.anthropic.com` |
+| `inject`: container holds a placeholder, `ANTHROPIC_BASE_URL` → daemon proxy adds the real token | **works**; Claude Code sends `Authorization: Bearer <placeholder>`, no `x-api-key` |
+| Egress of `inject` with the non-essential flag | **no CONNECT tunnels at all**; the only API path is `POST /v1/messages` |
+| Egress of `inject` without the flag | background calls go direct via CONNECT to `api.anthropic.com` with the placeholder only |
+| First interactive start, fresh config | connectivity check to **`platform.claude.com`**; exits ("Unable to connect to Anthropic services") if denied |
+| Dialogs on a fresh config (interactive, bypass mode) | 1. theme 2. security notes 3. workspace trust (`/workspace`, "No, exit" preselected) 4. bypass-permissions warning ("No, exit" preselected). No login screen with a token in the env |
+| Where the answers are stored | `.claude.json`: `hasCompletedOnboarding`, `lastOnboardingVersion`, `projects["/workspace"].hasTrustDialogAccepted`; settings: `theme`, `skipDangerousModePermissionPrompt` |
+| Pre-seeded config (those 3 keys) + the 2 settings keys in the daemon's `--settings` file | **no dialogs**, straight to the prompt; no `platform.claude.com` check; `SessionStart` after ~0.4 s |
+| Remaining denied egress, interactive | `downloads.claude.ai`, `github.com` (official plugin marketplace auto-install); harmless |
+| Tool use in bypass mode | no prompts; `PreToolUse/PostToolUse(Bash)` hooks; files owned by the host user |
+| Memory / processes during a session | ~162 MB, 29 PIDs |
+| Nested user namespaces (prerequisite for Claude Code's own bubblewrap sandbox) | allowed even with `--cap-drop=all`; the sandbox itself not tested (needs bubblewrap + socat in the image) |
+
+## Findings (authenticated)
+
+- **The token does not have to enter the container.** With a placeholder token, `ANTHROPIC_BASE_URL`
+  pointing at a loopback bridge to a per-agent API socket, and the non-essential traffic flag, the
+  daemon adds the credential to `POST /v1/messages` and nothing else leaves the container for
+  Anthropic. A prompt-injected agent can still spend inference through that proxy (as it does
+  anyway), but it cannot read or exfiltrate the token. `api.anthropic.com` then does not need to be
+  on the CONNECT allowlist at all. Needs `NO_PROXY=127.0.0.1,localhost`, otherwise Claude Code
+  sends the plain-HTTP API request into the CONNECT proxy (405).
+- **Socket delivery (ADR 0015 as written) also works**, as a fallback if injection breaks with a
+  future Claude Code version.
+- **Pre-seeding is required for interactive workers.** Without it the trust and bypass dialogs
+  block with "No, exit" preselected, and a fresh config needs `platform.claude.com`. Keys are
+  undocumented and version-dependent (`lastOnboardingVersion` is the CLI version), so the
+  daemon keeps the stuck-in-`starting` detection.
+- `setup-token` tokens have only the `user:inference` scope: bootstrap is skipped ("403 for OAuth
+  token without profile scope"); nothing in a session needed more.
+- A pasted token picked up a stray ESC byte once. It showed up only as API 401s and a misleading
+  `400 (no body)`. The daemon's reader now rejects anything outside printable ASCII and names the
+  offset.
+- Resource limits of 2 GB memory and 256 PIDs leave ample headroom for one session. Builds and
+  test runs inside the worker will need more; make them configurable.
+
+## Not done
+
+- Claude Code's built-in sandbox nested inside the worker (prerequisite met, test deferred).
+- Long sessions: token refresh behaviour, many tool calls, subagents. Covered by the Phase 3 e2e run.

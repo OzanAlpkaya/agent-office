@@ -13,6 +13,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -116,7 +117,7 @@ func host(args []string) {
 				}
 				_, _ = c.Write([]byte(tok))
 				sent = true
-				log.Printf("credential: delivered (%d bytes)", len(tok))
+				log.Printf("credential: delivered (%d bytes) %s", len(tok), fingerprint(tok))
 			})
 			if !sent {
 				log.Printf("credential: refused (already delivered or unreadable)")
@@ -223,10 +224,28 @@ func readToken(path string) (string, error) {
 		return "", err
 	}
 	t := strings.TrimSpace(string(b))
-	if t == "" || strings.ContainsAny(t, " \t\r\n") {
-		return "", errors.New("token file must contain exactly one token")
+	for i := 0; i < len(t); i++ {
+		if c := t[i]; c < 0x21 || c > 0x7e {
+			return "", fmt.Errorf("token file: byte %#02x at offset %d is not printable ASCII", c, i)
+		}
+	}
+	if t == "" {
+		return "", errors.New("token file is empty")
 	}
 	return t, nil
+}
+
+// fingerprint describes a credential without revealing it: printable ASCII,
+// the "sk-ant-" prefix (boolean), and the first 8 hex digits of its SHA-256.
+func fingerprint(t string) string {
+	ascii := true
+	for _, r := range t {
+		if r < 0x21 || r > 0x7e {
+			ascii = false
+		}
+	}
+	sum := sha256.Sum256([]byte(t))
+	return fmt.Sprintf("[ascii=%v sk-ant-prefix=%v sha256=%x…]", ascii, strings.HasPrefix(t, "sk-ant-"), sum[:4])
 }
 
 func listen(path string) net.Listener {
@@ -308,6 +327,7 @@ func initCmd(args []string) int {
 			fmt.Fprintln(os.Stderr, "init: credential:", err)
 			return 1
 		}
+		fmt.Fprintln(os.Stderr, "init: credential received", fingerprint(tok))
 		env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+tok)
 	case "inject":
 		bridge("127.0.0.1:8080", os.Getenv("AO_API_SOCK"))
@@ -487,10 +507,10 @@ func screen(args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if len(b) > 12000 {
-		b = b[len(b)-12000:]
+	if len(b) > 6000 {
+		b = b[len(b)-6000:]
 	}
-	text := ansi.ReplaceAllString(string(b), "\n")
+	text := regexp.MustCompile(`[ \t]+`).ReplaceAllString(ansi.ReplaceAllString(string(b), " "), " ")
 	var lines []string
 	for _, l := range strings.Split(strings.ReplaceAll(text, "\r", "\n"), "\n") {
 		if l = strings.TrimRight(l, " "); strings.TrimSpace(l) != "" {

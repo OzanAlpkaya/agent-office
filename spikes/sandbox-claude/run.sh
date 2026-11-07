@@ -31,11 +31,14 @@ trap 'stop_host; podman rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
 
 hook_settings() { # Claude Code settings: every event -> agent-office hook
   python3 - "$1" <<'PY'
-import json, sys
+import json, os, sys
 ev = ["SessionStart","UserPromptSubmit","PreToolUse","PostToolUse","PostToolUseFailure",
       "PermissionRequest","Notification","Stop","SubagentStop","SessionEnd"]
 h = {e: [{"hooks": [{"type": "command", "command": "/opt/ao/agent-office hook", "timeout": 10}]}] for e in ev}
-json.dump({"hooks": h}, open(sys.argv[1], "w"), indent=1)
+doc = {"hooks": h}
+if os.environ.get("FLAG_SETTINGS"):  # pre-seed via the daemon's --settings file
+    doc.update({"theme": "dark", "skipDangerousModePermissionPrompt": True})
+json.dump(doc, open(sys.argv[1], "w"), indent=1)
 PY
 }
 
@@ -82,17 +85,18 @@ noauth)
 auth|inject)
   [ -f "$TOKEN_FILE" ] || { echo "no token file at $TOKEN_FILE"; exit 1; }
   if [ "$1" = auth ]; then start_host -allow "${ALLOW:-api.anthropic.com}" -token-file "$TOKEN_FILE"; cred=socket
-  else start_host -allow "${ALLOW:-api.anthropic.com}" -token-file "$TOKEN_FILE" -inject; cred=inject; extra=(-v "$RUN/api.sock:/run/ao/api.sock"); fi
+  else start_host -allow "${ALLOW:-api.anthropic.com}" -token-file "$TOKEN_FILE" -inject; cred=inject; extra=(-v "$RUN/api.sock:/run/ao/api.sock" -e NO_PROXY=127.0.0.1,localhost -e no_proxy=127.0.0.1,localhost); fi
   rm -rf "$OUT/config"; worker -e AO_CREDENTIAL=$cred "${extra[@]}" ${NONESSENTIAL:+-e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1} -- \
-    timeout 120 /opt/claude/claude -p --model haiku --settings /opt/ao/settings.json "Reply with the single word OK." || echo "exit=$?"
+    timeout 120 /opt/claude/claude -p ${DEBUG:+--debug} ${MODEL:+--model $MODEL} --settings /opt/ao/settings.json "Reply with the single word OK." || echo "exit=$?"
   echo "--- host log"; cat "$OUT/host.log" ;;
 interactive)
   [ -f "$TOKEN_FILE" ] || { echo "no token file at $TOKEN_FILE"; exit 1; }
-  start_host -allow "${ALLOW:-api.anthropic.com}" -token-file "$TOKEN_FILE"
+  start_host -allow "${ALLOW:-api.anthropic.com}" -token-file "$TOKEN_FILE" -inject
   rm -rf "$OUT/config" && mkdir -p "$OUT/config"
   [ -n "${PRESEED:-}" ] && install -m 0600 "$PRESEED" "$OUT/config/.claude.json"
   rm -f "$OUT/pty.in" && mkfifo -m 0600 "$OUT/pty.in"
-  WRAP="$OUT/spike pty -in $OUT/pty.in -out $OUT/pty.log --" worker -it -e AO_CREDENTIAL=socket \
+  WRAP="$OUT/spike pty -in $OUT/pty.in -out $OUT/pty.log --" worker -it -e AO_CREDENTIAL=inject \
+    -v "$RUN/api.sock:/run/ao/api.sock" -e NO_PROXY=127.0.0.1,localhost -e no_proxy=127.0.0.1,localhost \
     ${NONESSENTIAL:+-e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1} -- \
     /opt/claude/claude --model haiku --settings /opt/ao/settings.json --dangerously-skip-permissions || echo "exit=$?"
   echo "--- host log"; cat "$OUT/host.log" ;;
