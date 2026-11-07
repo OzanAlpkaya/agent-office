@@ -1,6 +1,7 @@
 # 0006. Team MCP server: stdio bridge to the daemon over the per-agent socket
 
-- **Status:** Proposed (go-sdk transport over a socket to be confirmed at the start of Phase 4)
+- **Status:** Accepted (2026-11-07, Phase 4: go-sdk v1.8.0 serves a session over any reader/writer
+  with `mcp.IOTransport`; MCP gets its own per-agent socket, see Decision)
 - **Date:** 2026-11-06
 
 ## Context
@@ -24,9 +25,18 @@ containers with no network path to the host (Spike E), but they can reach a moun
 
 ## Decision
 
-Option 2, provided the go-sdk can serve a session over an arbitrary `net.Conn`/`io.ReadWriteCloser`
-(to be verified in Phase 4; otherwise the bridge speaks streamable HTTP over the unix socket, which
-the SDK's handler supports as a plain `http.Handler`). Tool handlers receive the agent identity
+Option 2. Verified at the start of Phase 4 by reading go-sdk v1.8.0: `mcp.IOTransport{Reader,
+Writer}` runs newline-delimited JSON-RPC over any `io.ReadCloser`/`io.WriteCloser`, so the daemon
+calls `Server.Connect(ctx, &mcp.IOTransport{Reader: conn, Writer: conn}, nil)` for each accepted
+unix-socket connection. Streamable HTTP over the socket was not needed.
+
+**MCP gets its own socket** (`mcp.sock`, mode 0600, next to the agent's hook socket; bind-mounted
+into sandboxed workers at `/run/agent-office/mcp.sock`), not the hook socket: a hook is one request
+per connection (read to EOF, reply, close), while an MCP session is one long-lived stream. Mixing
+both on one socket would need a protocol prefix for no gain. Claude Code starts the bridge from a
+daemon-generated `--mcp-config` file (server name `agent-office`, so tools are
+`mcp__agent-office__<tool>`); the socket path is passed in the server's `env`. One `mcp.Server` per
+agent; at most 4 concurrent connections per agent; frames are limited to 1 MiB. Tool handlers receive the agent identity
 from the connection, never from tool arguments. Role checks (e.g. only the lead may `assign_task`)
 and input validation happen in deterministic Go code.
 
