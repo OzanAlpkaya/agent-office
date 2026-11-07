@@ -1,7 +1,7 @@
 # Phase 4 plan: Team MCP server + lead agent
 
-- **Status:** Done on `phase-4/team-mcp` (2026-11-07), not merged: waiting for Ozan's review.
-  Written 2026-11-07 with the recommended option for every open question and executed
+- **Status:** Done on `phase-4/team-mcp`; all decisions approved by Ozan and merged into `main`
+  (2026-11-07). Written 2026-11-07 with the recommended option for every open question and executed
   straight away, as Ozan asked ("write the plan using your recommended options, then execute it
   without waiting for approval"). Every decision is listed in the end-of-phase summary for review;
   nothing is merged until Ozan has read it.
