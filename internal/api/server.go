@@ -53,11 +53,17 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	s := &server{eng: eng, opts: opts, log: opts.Logger, ui: ui}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/project", s.getProject)
 	mux.HandleFunc("GET /api/agents", s.listAgents)
 	mux.HandleFunc("POST /api/agents", s.startAgent)
 	mux.HandleFunc("POST /api/agents/{id}/stop", s.stopAgent)
+	mux.HandleFunc("POST /api/agents/{id}/discard", s.discardAgent)
 	mux.HandleFunc("DELETE /api/agents/{id}", s.removeAgent)
 	mux.HandleFunc("GET /api/agents/{id}/terminal", s.terminalWS)
+	mux.HandleFunc("GET /api/tasks", s.listTasks)
+	mux.HandleFunc("POST /api/tasks", s.createTask)
+	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTask)
+	mux.HandleFunc("DELETE /api/tasks/{id}", s.deleteTask)
 	mux.HandleFunc("GET /api/events", s.eventsWS)
 	if ui != nil {
 		mux.HandleFunc("GET /", s.serveUI)
@@ -111,17 +117,22 @@ func (s *server) listAgents(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.eng.List())
 }
 
-func (s *server) startAgent(w http.ResponseWriter, _ *http.Request) {
-	a, err := s.eng.Start()
-	switch {
-	case errors.Is(err, engine.ErrAgentRunning):
-		writeError(w, http.StatusConflict, err.Error())
-	case err != nil:
-		s.log.Error("start agent", "err", err)
-		writeError(w, http.StatusInternalServerError, "could not start agent")
-	default:
-		writeJSON(w, http.StatusCreated, a)
+// startRequest is the optional JSON body of POST /api/agents.
+type startRequest struct {
+	TaskID string `json:"task_id"`
+}
+
+func (s *server) startAgent(w http.ResponseWriter, r *http.Request) {
+	var req startRequest
+	if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
+		return
 	}
+	a, err := s.eng.Start(r.Context(), engine.StartRequest{TaskID: req.TaskID})
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, a)
 }
 
 func (s *server) stopAgent(w http.ResponseWriter, r *http.Request) {
@@ -134,19 +145,108 @@ func (s *server) stopAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a)
 }
 
+// removeAgent cleans up the worktree (keeping uncommitted work, ADR 0010).
 func (s *server) removeAgent(w http.ResponseWriter, r *http.Request) {
-	if err := s.eng.Remove(r.PathValue("id")); err != nil {
+	res, err := s.eng.Remove(r.Context(), r.PathValue("id"))
+	if errors.Is(err, engine.ErrWorktreeDirty) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "result": res})
+		return
+	}
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// discardAgent force-removes the worktree, dropping uncommitted changes. The
+// UI asks for confirmation before calling it.
+func (s *server) discardAgent(w http.ResponseWriter, r *http.Request) {
+	res, err := s.eng.Discard(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *server) getProject(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.eng.Project())
+}
+
+func (s *server) listTasks(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.eng.ListTasks(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tasks)
+}
+
+func (s *server) createTask(w http.ResponseWriter, r *http.Request) {
+	var in engine.TaskInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	t, err := s.eng.CreateTask(r.Context(), in)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, t)
+}
+
+func (s *server) updateTask(w http.ResponseWriter, r *http.Request) {
+	var p engine.TaskPatch
+	if !decodeJSON(w, r, &p) {
+		return
+	}
+	t, err := s.eng.UpdateTask(r.Context(), r.PathValue("id"), p)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *server) deleteTask(w http.ResponseWriter, r *http.Request) {
+	if err := s.eng.DeleteTask(r.Context(), r.PathValue("id")); err != nil {
 		s.engineError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// maxBody bounds JSON request bodies: a 20 000-character description can take
+// up to ~80 KB in UTF-8, more with JSON escaping.
+const maxBody = 256 << 10
+
+// decodeJSON requires a JSON content type (a cross-site form post cannot set
+// it without a CORS preflight), bounds the body and rejects unknown fields.
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return false
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return false
+	}
+	return true
+}
+
 func (s *server) engineError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, engine.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, engine.ErrStillRunning), errors.Is(err, engine.ErrAgentRunning):
+	case errors.Is(err, engine.ErrInvalid):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, engine.ErrNoTerminal):
+		writeError(w, http.StatusGone, err.Error())
+	case errors.Is(err, engine.ErrStillRunning), errors.Is(err, engine.ErrTooManyAgents),
+		errors.Is(err, engine.ErrWorktreeDirty), errors.Is(err, engine.ErrTaskHasRunning):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		s.log.Error("engine", "err", err)
@@ -272,6 +372,11 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	updates, unsubscribe := s.eng.Subscribe() // before the snapshot, so no update is missed
 	defer unsubscribe()
+	tasks, err := s.eng.ListTasks(r.Context())
+	if err != nil {
+		c.Close(websocket.StatusInternalError, "could not load tasks")
+		return
+	}
 	ctx := c.CloseRead(r.Context())
 
 	write := func(v any) error {
@@ -280,19 +385,19 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		return c.Write(wctx, websocket.MessageText, b)
 	}
-	if err := write(map[string]any{"type": "snapshot", "agents": s.eng.List()}); err != nil {
+	if err := write(map[string]any{"type": "snapshot", "agents": s.eng.List(), "tasks": tasks}); err != nil {
 		return
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case a, ok := <-updates:
+		case u, ok := <-updates:
 			if !ok {
 				c.Close(websocket.StatusTryAgainLater, "resync")
 				return
 			}
-			if err := write(map[string]any{"type": "agent", "agent": a}); err != nil {
+			if err := write(u); err != nil {
 				return
 			}
 		}

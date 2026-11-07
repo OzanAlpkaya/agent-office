@@ -36,9 +36,11 @@ Option 5. `engine.Input` raises a CLI-agnostic `UserInterrupted` event when the 
 is exactly `\x1b` or `\x03`. The state machine maps it to `idle` from `working` or
 `waiting_permission`, and ignores it in every other state. Escape *sequences* (arrow keys
 `\x1b[A`, function keys) arrive as one multi-byte chunk and are not interrupts. The engine test
-checks that `\x1b[A` is ignored. The end-to-end deny/interrupt steps sent a lone `\x1b`
-themselves. **Not yet verified:** that xterm.js in the browser sends the Esc key as a lone `\x1b`
-chunk. It is expected (it does not batch keys), but Phase 2's browser check must confirm it.
+checks that `\x1b[A` is ignored. The end-to-end deny/interrupt steps send a lone `\x1b`
+themselves. In the browser, xterm.js 6.0.0 maps the Esc key to a lone `\x1b`
+(`src/common/input/Keyboard.ts`, key code 27), so the UI produces exactly what the inference
+expects. **Alt+Esc** produces `\x1b\x1b` and is deliberately not treated as an interrupt.
+(Verified from the xterm.js source; a live browser check was not possible from here.)
 
 ## Limits
 

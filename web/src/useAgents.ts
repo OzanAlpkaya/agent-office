@@ -1,13 +1,28 @@
 import { useEffect, useState } from "react";
-import { type Agent, parseEventMessage, wsURL } from "./api";
+import { type Agent, type Task, parseEventMessage, wsURL } from "./api";
 
 export type Connection = "connecting" | "open" | "closed";
 
-// useAgents keeps the agent list in sync with /api/events: a snapshot on
+export interface World {
+  agents: Agent[];
+  tasks: Task[];
+  connection: Connection;
+}
+
+function upsert<T extends { id: string }>(list: T[], item: T): T[] {
+  const i = list.findIndex((x) => x.id === item.id);
+  if (i === -1) return [...list, item];
+  const next = list.slice();
+  next[i] = item;
+  return next;
+}
+
+// useWorld keeps agents and tasks in sync with /api/events: a snapshot on
 // connect, then one message per change. It reconnects with backoff, and every
 // reconnect starts with a fresh snapshot, so missed updates cannot accumulate.
-export function useAgents(): { agents: Agent[]; connection: Connection } {
+export function useWorld(): World {
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [connection, setConnection] = useState<Connection>("connecting");
 
   useEffect(() => {
@@ -16,7 +31,7 @@ export function useAgents(): { agents: Agent[]; connection: Connection } {
     let timer: number | undefined;
     let disposed = false;
 
-    const connect = () => {
+    const connect = (): void => {
       setConnection("connecting");
       ws = new WebSocket(wsURL("/api/events"));
       ws.onopen = () => {
@@ -29,16 +44,23 @@ export function useAgents(): { agents: Agent[]; connection: Connection } {
           console.warn("agent-office: ignoring malformed event message");
           return;
         }
-        if (msg.type === "snapshot") {
-          setAgents(msg.agents);
-        } else {
-          setAgents((prev) => {
-            const i = prev.findIndex((a) => a.id === msg.agent.id);
-            if (i === -1) return [...prev, msg.agent];
-            const next = prev.slice();
-            next[i] = msg.agent;
-            return next;
-          });
+        switch (msg.type) {
+          case "snapshot":
+            setAgents(msg.agents);
+            setTasks(msg.tasks);
+            break;
+          case "agent":
+            setAgents((prev) => upsert(prev, msg.agent));
+            break;
+          case "agent_removed":
+            setAgents((prev) => prev.filter((a) => a.id !== msg.id));
+            break;
+          case "task":
+            setTasks((prev) => upsert(prev, msg.task));
+            break;
+          case "task_deleted":
+            setTasks((prev) => prev.filter((t) => t.id !== msg.id));
+            break;
         }
       };
       ws.onclose = () => {
@@ -56,5 +78,5 @@ export function useAgents(): { agents: Agent[]; connection: Connection } {
     };
   }, []);
 
-  return { agents, connection };
+  return { agents, tasks, connection };
 }

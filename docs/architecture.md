@@ -59,18 +59,28 @@ flowchart LR
 | `engine` | Owns the lifecycle of agents, tasks, worktrees and messages. All state changes go through it. |
 | `hooks` | Accepts forwarded hook events from the per-agent sockets and runs the agent state machine. |
 | `mcp` | Team MCP server (go-sdk): `create_task`, `assign_task`, `send_message`, `report_done`, `request_access`. *(Phase 4)* |
-| `store` | SQLite via modernc + sqlc, migrations via goose. *(Phase 2)* |
+| `store` | SQLite via modernc + sqlc, forward-only goose migrations (ADR 0004, 0011, 0012). |
+| `git` | git CLI wrapper: worktrees, branches, branch-name slugs (ADR 0009, 0010). |
 | `sandbox` | Starts workers in rootless Podman with the egress proxy and secrets. *(Phase 3)* |
 | `github` | PRs and reviews through go-github; never the `gh` CLI. *(Phase 5)* |
 | `api` | HTTP + WebSocket for the UI; serves the embedded UI build. |
 
 ## Key flows
 
-**Start an agent (Phase 1).** The UI asks the API to start an agent. The engine generates a session
-UUID, creates the agent's socket `$XDG_RUNTIME_DIR/agent-office/agents/<agent-id>.sock` (mode 0600)
-and a settings file whose hooks call `agent-office hook`. It then spawns
-`claude --session-id <uuid> --settings <file> --model <m>` in a PTY. The child env is scrubbed of
-the daemon's own `CLAUDE*` variables, and `AGENT_OFFICE_SOCKET` points at the agent's socket.
+**Start an agent (Phase 2).** The UI asks the API to start an agent, optionally for a task. The
+engine reserves a slot (`--max-agents`), creates a git worktree on a new branch
+(`agent-office/<task-slug>-<id>`) under `$XDG_DATA_HOME/agent-office/worktrees/<project>/<id>`
+(ADR 0010), records agent, worktree and session in SQLite (ADR 0011), and moves the task to
+`in_progress`. It then creates the agent's socket `$XDG_RUNTIME_DIR/agent-office/agents/<id>.sock`
+(mode 0600) and a settings file whose hooks call `agent-office hook`, and spawns
+`claude --session-id <uuid> --settings <file> --model <m> -- "<task prompt>"` in a PTY inside the
+worktree. The child env is scrubbed of the daemon's own `CLAUDE*` variables, and
+`AGENT_OFFICE_SOCKET` points at the agent's socket.
+
+**Remove an agent.** Only exited agents can be removed. A clean worktree is removed, and its
+branch is deleted unless it has commits. A dirty worktree is kept until the user explicitly
+discards it. On startup the daemon marks unfinished agents `daemon_restart`, runs
+`git worktree prune` and reconciles worktree records with the disk.
 
 **Terminal.** The PTY reader goroutine appends output to a scrollback ring and fans it out to every
 attached WebSocket (binary frames). Input and resize come back as JSON text frames. Sessions

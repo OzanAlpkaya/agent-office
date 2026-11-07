@@ -37,6 +37,7 @@ type LaunchSpec struct {
 	InheritUserSettings bool     // false: --setting-sources project,local
 	SocketPath          string   // per-agent hook socket
 	BaseEnv             []string // usually os.Environ(); scrubbed before use
+	InitialPrompt       string   // optional first prompt of the interactive session
 }
 
 // Command builds the claude command for spec. It does not start it.
@@ -50,6 +51,10 @@ func (c ClaudeCode) Command(spec LaunchSpec) (*exec.Cmd, error) {
 	}
 	if !spec.InheritUserSettings {
 		args = append(args, "--setting-sources", "project,local")
+	}
+	if spec.InitialPrompt != "" {
+		// After "--", so a prompt starting with "-" is never parsed as a flag.
+		args = append(args, "--", spec.InitialPrompt)
 	}
 	cmd := exec.Command(c.Bin, args...)
 	cmd.Dir = spec.WorkDir

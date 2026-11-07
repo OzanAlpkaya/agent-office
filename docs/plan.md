@@ -77,10 +77,10 @@ derived from Claude Code hooks.
 - Task board UI (columns by status); multiple terminals.
 
 **Definition of Done**
-- [ ] At least 3 agents run concurrently on one repo, each in its own worktree.
-- [ ] Tasks can be created, assigned and moved through statuses; state survives a daemon restart.
-- [ ] Worktrees are cleaned up when an agent is removed.
-- [ ] Integration tests for the store and the worktree manager.
+- [x] At least 3 agents run concurrently on one repo, each in its own worktree.
+- [x] Tasks can be created, assigned and moved through statuses; state survives a daemon restart.
+- [x] Worktrees are cleaned up when an agent is removed.
+- [x] Integration tests for the store and the worktree manager.
 
 ---
 

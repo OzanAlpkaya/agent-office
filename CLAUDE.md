@@ -20,7 +20,9 @@ These rules apply to every session in this repo.
 | `internal/sandbox/` | Agent isolation (rootless Podman, egress allowlist) |
 | `internal/api/` | HTTP + WebSocket API for the web UI |
 | `internal/terminal/` | PTY sessions: scrollback, fan-out to viewers, input/resize |
+| `internal/git/` | git CLI wrapper: worktrees, branches, branch-name slugs |
 | `web/` | React + Vite + TypeScript UI, embedded into the binary |
+| `test/e2e/` | Opt-in end-to-end test (`e2e` build tag, real Claude Code, costs tokens) |
 | `docs/plan.md` | Phased roadmap with Definitions of Done |
 | `docs/adr/` | Architecture Decision Records |
 | `docs/architecture.md` | Components, flows, domain model, threat model |
@@ -83,8 +85,12 @@ Phase 5. Keep it small and realistic; its backlog is in its `TODO.md`.
 ## Quality
 
 - Tests for core logic (engine, hooks parsing, store, MCP tools). Integration tests at DB/API boundaries.
-- Before committing: `gofmt -l .` is empty, `go vet ./...` and `go test ./...` pass (plus the web
-  typecheck/lint/build once `web/` exists). Report real output; never claim untested results.
+- Before committing: `make check` passes (gofmt, vet, web typecheck, `go test -race`, build).
+  Report real output; never claim untested results.
+- `make e2e` (needs `AO_E2E_REPO`) spends real tokens: run it at the end of a phase or when hooks,
+  engine or worktree behaviour change, not on every commit.
+- SQL changes go into a new numbered migration plus `queries.sql`, then `make generate`.
+  Migrations are forward-only.
 
 ## Security
 

@@ -25,7 +25,7 @@ and stay simple to operate. Evidence: `docs/research/library-apis.md`.
 
 Option 1. Queries are written in SQL and turned into typed Go code by **sqlc** (`engine: sqlite`,
 `database/sql`), pinned as a dev tool. Schema changes are numbered **goose** migrations embedded
-with `go:embed` and applied at startup.
+with `go:embed` and applied at startup. They are forward-only (ADR 0012).
 
 DSN: `file:<path>?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=1&_txlock=immediate`. These
 shorthand keys apply to every pooled connection; a `PRAGMA` sent via `Exec` would not.

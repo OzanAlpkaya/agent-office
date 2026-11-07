@@ -31,7 +31,12 @@ Conclusions:
    in the same temp directory still showed the dialog, so this is not path-based. Claude Code
    evidently resolves a worktree to its main repository.
 
-## Consequence for Phase 2 (to be decided in its plan)
+**Phase 2 confirmation (2026-11-07):** with the worktree layout of ADR 0010, an agent in
+`~/.local/share/agent-office/worktrees/agent-office-playground-<hash>/<agent-id>` started without
+the dialog. The opt-in end-to-end test (`make e2e`) also starts three agents in worktrees under a
+temporary data dir without any dialog.
+
+## Consequence for Phase 2 (decided in ADR 0010)
 
 The user trusts each **repository** once (by opening it in Claude Code, or via the first agent's
 terminal). After that, worktrees for that repo can be created anywhere without new dialogs: under

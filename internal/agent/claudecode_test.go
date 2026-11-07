@@ -106,6 +106,12 @@ func TestCommand(t *testing.T) {
 		t.Fatalf("inherit=true must not restrict setting sources: %v", cmd.Args)
 	}
 
+	spec.InitialPrompt = "--not-a-flag: do the task"
+	cmd, _ = ClaudeCode{Bin: "claude"}.Command(spec)
+	if n := len(cmd.Args); cmd.Args[n-2] != "--" || cmd.Args[n-1] != spec.InitialPrompt {
+		t.Fatalf("initial prompt must follow --: %v", cmd.Args)
+	}
+
 	if _, err := (ClaudeCode{Bin: "claude"}).Command(LaunchSpec{}); err == nil {
 		t.Fatal("empty spec accepted")
 	}

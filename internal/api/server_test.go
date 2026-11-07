@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
+	"github.com/OzanAlpkaya/agent-office/internal/store"
 )
 
 // fakeAgent ignores the claude flags and behaves like a line-echoing program.
@@ -42,8 +44,24 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eng, err := engine.New(engine.Options{
-		Repo: t.TempDir(), ClaudeBin: bin, HookCommand: "true", RuntimeDir: filepath.Join(dir, "rt"),
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"commit", "-q", "--allow-empty", "-m", "init"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	st, err := store.Open(context.Background(), filepath.Join(dir, "ao.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	eng, err := engine.New(context.Background(), engine.Options{
+		Repo: repo, WorktreeRoot: filepath.Join(dir, "wt"), Store: st, MaxAgents: 1,
+		ClaudeBin: bin, HookCommand: "true", RuntimeDir: filepath.Join(dir, "rt"),
 		BaseEnv: []string{"PATH=" + os.Getenv("PATH")}, StopTimeout: time.Second, Logger: log,
 	})
 	if err != nil {
@@ -67,7 +85,16 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) do(t *testing.T, method, path string, hdr map[string]string) *http.Response {
 	t.Helper()
-	req, _ := http.NewRequest(method, f.srv.URL+path, nil)
+	return f.doBody(t, method, path, hdr, "")
+}
+
+func (f *fixture) doBody(t *testing.T, method, path string, hdr map[string]string, body string) *http.Response {
+	t.Helper()
+	var rd io.Reader
+	if body != "" {
+		rd = strings.NewReader(body)
+	}
+	req, _ := http.NewRequest(method, f.srv.URL+path, rd)
 	for k, v := range hdr {
 		if k == "Host" {
 			req.Host = v
@@ -135,6 +162,70 @@ func TestRejectsCrossOriginWrites(t *testing.T) {
 	if r := f.do(t, "DELETE", "/api/agents/"+a.ID, nil); r.StatusCode != http.StatusConflict {
 		t.Fatalf("delete running: %d", r.StatusCode)
 	}
+	if r := f.do(t, "POST", "/api/agents/"+a.ID+"/discard", map[string]string{"Origin": "https://evil.example"}); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin discard: %d", r.StatusCode)
+	}
+}
+
+func TestTasksAPI(t *testing.T) {
+	f := newFixture(t)
+	json415 := f.doBody(t, "POST", "/api/tasks", nil, `{"title":"x"}`) // no Content-Type
+	if json415.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("missing content type: %d", json415.StatusCode)
+	}
+	ct := map[string]string{"Content-Type": "application/json"}
+	if r := f.doBody(t, "POST", "/api/tasks", ct, `{"title":"x","owner":"me"}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown field: %d", r.StatusCode)
+	}
+	if r := f.doBody(t, "POST", "/api/tasks", ct, `{"title":"   "}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty title: %d", r.StatusCode)
+	}
+	r := f.doBody(t, "POST", "/api/tasks", ct, `{"title":"Sayfalama ekle","description":"limit/offset"}`)
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d", r.StatusCode)
+	}
+	var task engine.Task
+	_ = json.NewDecoder(r.Body).Decode(&task)
+
+	r = f.doBody(t, "PATCH", "/api/tasks/"+task.ID, ct, `{"status":"review"}`)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("patch: %d", r.StatusCode)
+	}
+	if r := f.doBody(t, "PATCH", "/api/tasks/"+task.ID, ct, `{"status":"doing"}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad status: %d", r.StatusCode)
+	}
+
+	// Start an agent for the task; its branch carries the task slug.
+	r = f.doBody(t, "POST", "/api/agents", ct, `{"task_id":"`+task.ID+`"}`)
+	if r.StatusCode != http.StatusCreated {
+		t.Fatalf("start for task: %d", r.StatusCode)
+	}
+	var a engine.AgentInfo
+	_ = json.NewDecoder(r.Body).Decode(&a)
+	if !strings.HasPrefix(a.Branch, "agent-office/sayfalama-ekle-") || a.TaskID != task.ID {
+		t.Fatalf("agent %+v", a)
+	}
+	if r := f.do(t, "POST", "/api/agents", nil); r.StatusCode != http.StatusConflict {
+		t.Fatalf("max agents: %d", r.StatusCode)
+	}
+	if r := f.doBody(t, "POST", "/api/agents", ct, `{"task_id":"missing"}`); r.StatusCode != http.StatusConflict && r.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown task: %d", r.StatusCode)
+	}
+
+	// A dirty worktree is kept on DELETE and only removed by discard.
+	f.do(t, "POST", "/api/agents/"+a.ID+"/stop", nil)
+	if err := os.WriteFile(filepath.Join(a.WorktreePath, "wip.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.do(t, "DELETE", "/api/agents/"+a.ID, nil); r.StatusCode != http.StatusConflict {
+		t.Fatalf("delete dirty: %d", r.StatusCode)
+	}
+	if r := f.do(t, "POST", "/api/agents/"+a.ID+"/discard", nil); r.StatusCode != http.StatusOK {
+		t.Fatalf("discard: %d", r.StatusCode)
+	}
+	if r := f.do(t, "DELETE", "/api/tasks/"+task.ID, nil); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete task: %d", r.StatusCode)
+	}
 }
 
 func TestTerminalRoundTripAndExit(t *testing.T) {
@@ -171,7 +262,7 @@ func TestTerminalRoundTripAndExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	readUntil(t, ctx, c2, "ping-123")
-	if r := f.do(t, "DELETE", "/api/agents/"+a.ID, nil); r.StatusCode != http.StatusNoContent {
+	if r := f.do(t, "DELETE", "/api/agents/"+a.ID, nil); r.StatusCode != http.StatusOK {
 		t.Fatalf("delete exited: %d", r.StatusCode)
 	}
 }
@@ -200,6 +291,7 @@ func TestEventsSnapshotAndUpdates(t *testing.T) {
 	type msg struct {
 		Type   string             `json:"type"`
 		Agents []engine.AgentInfo `json:"agents"`
+		Tasks  []engine.Task      `json:"tasks"`
 		Agent  engine.AgentInfo   `json:"agent"`
 	}
 	read := func() msg {
@@ -211,7 +303,7 @@ func TestEventsSnapshotAndUpdates(t *testing.T) {
 		_ = json.Unmarshal(data, &m)
 		return m
 	}
-	if m := read(); m.Type != "snapshot" || len(m.Agents) != 1 || m.Agents[0].ID != a.ID {
+	if m := read(); m.Type != "snapshot" || len(m.Agents) != 1 || m.Agents[0].ID != a.ID || m.Tasks == nil {
 		t.Fatalf("snapshot %+v", m)
 	}
 	f.do(t, "POST", "/api/agents/"+a.ID+"/stop", nil)
