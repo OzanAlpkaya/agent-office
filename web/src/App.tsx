@@ -230,7 +230,12 @@ function AgentCard({
           Answer it there; agent-office never accepts it for you.
         </div>
       )}
-      <div className="small muted mono" title={a.worktree_path}>{a.branch}</div>
+      <div className="small muted mono"
+        title={sandboxed
+          ? `Agent repository: ${a.worktree_path}\nDo not cd into or open it; use the branch in your repository.`
+          : a.worktree_path}>
+        {a.branch}
+      </div>
       <div className="small muted">
         {a.model ? `model ${a.model}` : "default model"} · user settings {a.inherit_user_settings ? "on" : "off"}
       </div>
