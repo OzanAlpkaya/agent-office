@@ -62,7 +62,7 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string) (AgentInfo, er
 	}
 	var prep sandboxPrep
 	if info.Sandbox == SandboxPodman {
-		if prep, err = e.prepareSandboxStart(ctx, agentName(id)); err != nil {
+		if prep, err = e.prepareSandboxStart(ctx, agentName(id), info.Role); err != nil {
 			return AgentInfo{}, err
 		}
 	}

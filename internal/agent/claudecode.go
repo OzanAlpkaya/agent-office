@@ -170,23 +170,46 @@ func ContainerArgs(s ContainerSpec) ([]string, error) {
 	return args, nil
 }
 
-// MCPConfig returns a --mcp-config document with one stdio server: command
+// MCPServer is an extra MCP server from a stack pack (ADR 0023): a stdio
+// command or an HTTP URL. The pack loader has validated it.
+type MCPServer struct {
+	Command string
+	Args    []string
+	URL     string
+}
+
+// MCPConfig returns a --mcp-config document with the team server, command
 // (the agent-office binary, as a path, not a shell string) run as
-// `<command> mcp`, bridged to socket (ADR 0006).
-func MCPConfig(command, socket string) ([]byte, error) {
+// `<command> mcp` and bridged to socket (ADR 0006), plus extra servers.
+func MCPConfig(command, socket string, extra map[string]MCPServer) ([]byte, error) {
 	if !strings.HasPrefix(command, "/") || !strings.HasPrefix(socket, "/") {
 		return nil, errors.New("agent: MCPConfig needs absolute command and socket paths")
 	}
-	return json.MarshalIndent(map[string]any{
-		"mcpServers": map[string]any{
-			mcp.ServerName: map[string]any{
-				"type":    "stdio",
-				"command": command,
-				"args":    []string{"mcp"},
-				"env":     map[string]string{mcp.SocketEnv: socket},
-			},
+	servers := map[string]any{
+		mcp.ServerName: map[string]any{
+			"type":    "stdio",
+			"command": command,
+			"args":    []string{"mcp"},
+			"env":     map[string]string{mcp.SocketEnv: socket},
 		},
-	}, "", "  ")
+	}
+	for name, s := range extra {
+		switch {
+		case name == mcp.ServerName:
+			return nil, fmt.Errorf("agent: MCP server name %q is reserved", name)
+		case (s.Command == "") == (s.URL == ""):
+			return nil, fmt.Errorf("agent: MCP server %q needs a command or a URL", name)
+		case s.Command != "":
+			args := s.Args
+			if args == nil {
+				args = []string{}
+			}
+			servers[name] = map[string]any{"type": "stdio", "command": s.Command, "args": args}
+		default:
+			servers[name] = map[string]any{"type": "http", "url": s.URL}
+		}
+	}
+	return json.MarshalIndent(map[string]any{"mcpServers": servers}, "", "  ")
 }
 
 func settings(hookCommand string, extra map[string]any) ([]byte, error) {

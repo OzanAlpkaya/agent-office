@@ -20,6 +20,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
+	"github.com/OzanAlpkaya/agent-office/internal/pack"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -112,8 +113,22 @@ type Options struct {
 type Status struct {
 	Sandbox  string        `json:"sandbox"` // SandboxHost | SandboxPodman
 	Image    string        `json:"image,omitempty"`
+	Egress   []string      `json:"egress,omitempty"` // sandboxed agents' allowlist
+	Pack     *PackStatus   `json:"pack,omitempty"`   // stack pack (ADR 0023)
 	Warnings []string      `json:"warnings"`
 	GitHub   *GitHubStatus `json:"github,omitempty"`
+}
+
+// PackStatus is what the daemon's stack pack gives sandboxed agents. Secrets
+// are names and whether their file exists, never values.
+type PackStatus struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Source      string            `json:"source"` // "builtin" or the pack directory
+	Egress      []string          `json:"egress"`
+	Secrets     []pack.SecretInfo `json:"secrets"`
+	Skills      []string          `json:"skills"`
+	MCPServers  []string          `json:"mcp_servers"`
 }
 
 // Project is the repository the engine works on.
@@ -369,8 +384,13 @@ func (e *Engine) Project() Project { return e.project }
 // Status returns the daemon-wide sandbox mode and warnings.
 func (e *Engine) Status() Status {
 	st := Status{Sandbox: SandboxHost, Warnings: append([]string{}, e.opts.Warnings...)}
-	if e.opts.Sandbox != nil {
-		st.Sandbox, st.Image = SandboxPodman, e.opts.Sandbox.Image
+	if sb := e.opts.Sandbox; sb != nil {
+		st.Sandbox, st.Image, st.Egress = SandboxPodman, sb.Image, append([]string{}, sb.AllowNames...)
+		if p := sb.Pack; p != nil {
+			st.Pack = &PackStatus{Name: p.Name, Description: p.Description, Source: p.Source,
+				Egress: append([]string{}, p.Egress...), Secrets: p.SecretStatus(sb.SecretsDir),
+				Skills: append([]string{}, p.Skills...), MCPServers: p.ServerNames()}
+		}
 	}
 	if g := e.opts.GitHub; g != nil {
 		st.GitHub = &GitHubStatus{Repo: g.Client.Repo().String(), Base: g.Base, Remote: g.Remote, Reviewer: e.gh.reviewer.Name(),
@@ -473,7 +493,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	var undoWorktree func()
 	if e.opts.Sandbox != nil {
 		// Everything that can be checked is checked before state is created.
-		if prep, err = e.prepareSandboxStart(ctx, agentName(id)); err != nil {
+		if prep, err = e.prepareSandboxStart(ctx, agentName(id), role); err != nil {
 			return AgentInfo{}, err
 		}
 		mode, kind = SandboxPodman, KindClone
@@ -610,7 +630,7 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 	}
 	mcpPath, mcpConfig := filepath.Join(dir, id+".mcp.sock"), filepath.Join(dir, id+".mcp.json")
 	var mln *mcp.Listener
-	cfg, err := agent.MCPConfig(e.opts.AgentOfficeBin, mcpPath)
+	cfg, err := agent.MCPConfig(e.opts.AgentOfficeBin, mcpPath, nil)
 	if err == nil {
 		err = os.WriteFile(mcpConfig, cfg, 0o600)
 	}
