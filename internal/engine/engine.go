@@ -97,23 +97,24 @@ type Project struct {
 
 // AgentInfo is the public, JSON-serializable view of an agent.
 type AgentInfo struct {
-	ID                  string     `json:"id"`
-	SessionID           string     `json:"session_id,omitempty"`
-	TaskID              string     `json:"task_id,omitempty"`
-	State               string     `json:"state"`
-	Activity            string     `json:"activity,omitempty"`
-	Model               string     `json:"model,omitempty"`
-	InheritUserSettings bool       `json:"inherit_user_settings"`
-	Sandbox             string     `json:"sandbox"` // SandboxHost | SandboxPodman
-	Branch              string     `json:"branch"`
-	WorktreePath        string     `json:"worktree_path"`
-	WorkspaceKind       string     `json:"workspace_kind"` // KindWorktree | KindClone
-	WorktreeStatus      string     `json:"worktree_status"`
-	HasTerminal         bool       `json:"has_terminal"`
-	StartedAt           time.Time  `json:"started_at"`
-	ExitedAt            *time.Time `json:"exited_at,omitempty"`
-	ExitCode            *int       `json:"exit_code,omitempty"`
-	ExitReason          string     `json:"exit_reason,omitempty"`
+	ID                  string      `json:"id"`
+	SessionID           string      `json:"session_id,omitempty"`
+	TaskID              string      `json:"task_id,omitempty"`
+	State               string      `json:"state"`
+	Activity            string      `json:"activity,omitempty"`
+	Model               string      `json:"model,omitempty"`
+	InheritUserSettings bool        `json:"inherit_user_settings"`
+	Sandbox             string      `json:"sandbox"` // SandboxHost | SandboxPodman
+	Branch              string      `json:"branch"`
+	WorktreePath        string      `json:"worktree_path"`
+	WorkspaceKind       string      `json:"workspace_kind"` // KindWorktree | KindClone
+	WorktreeStatus      string      `json:"worktree_status"`
+	HasTerminal         bool        `json:"has_terminal"`
+	StartedAt           time.Time   `json:"started_at"`
+	ExitedAt            *time.Time  `json:"exited_at,omitempty"`
+	ExitCode            *int        `json:"exit_code,omitempty"`
+	ExitReason          string      `json:"exit_reason,omitempty"`
+	LastImport          *ImportInfo `json:"last_import,omitempty"` // sandboxed agents (ADR 0014)
 }
 
 // Update is one change broadcast to subscribers.
@@ -135,7 +136,9 @@ type agentProc struct {
 	exited     chan struct{} // closed by watch after the exit is recorded
 	exitReason string        // set before stopping on purpose
 	busy       bool          // a remove/discard is in progress
-	sandbox    *sandboxRes   // nil in host mode
+	sandbox    *sandboxRes   // nil in host mode and once the worker is gone
+	events     eventLimit    // sandbox event rate limit
+	importMu   sync.Mutex    // serializes imports and removal of a sandboxed agent
 }
 
 // Engine owns agent and task lifecycles. All state changes go through it.
@@ -229,6 +232,16 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 
 // reconcile applies restart semantics (ADR 0011) and worktree cleanup (ADR 0010).
 func (e *Engine) reconcile(ctx context.Context) error {
+	before, err := e.q.ListVisibleAgents(ctx, e.project.ID)
+	if err != nil {
+		return fmt.Errorf("engine: load agents: %w", err)
+	}
+	var interrupted []string // sandboxed agents whose workers died with the daemon
+	for _, r := range before {
+		if r.State != string(hooks.Exited) && r.Sandbox == SandboxPodman && r.WorktreeStatus != WorktreeRemoved {
+			interrupted = append(interrupted, r.ID)
+		}
+	}
 	n, err := e.q.MarkUnfinishedAgentsExited(ctx, nullTime(now()))
 	if err != nil {
 		return fmt.Errorf("engine: reconcile agents: %w", err)
@@ -256,12 +269,16 @@ func (e *Engine) reconcile(ctx context.Context) error {
 		if wt, err := e.q.GetWorktree(ctx, r.ID); err == nil {
 			a.baseCommit = wt.BaseCommit
 		}
+		a.info.LastImport = e.loadLastImport(ctx, r.ID)
 		close(a.exited)
 		e.agents[r.ID] = a
 		e.order = append(e.order, r.ID)
 	}
 	if n > 0 {
 		e.log.Info("agents from the previous run marked exited", "count", n, "reason", ExitDaemonRestart)
+	}
+	if e.opts.Sandbox != nil {
+		e.reconcileSandbox(ctx, interrupted)
 	}
 	return nil
 }
@@ -483,6 +500,9 @@ func (e *Engine) watch(a *agentProc) {
 	_ = a.listener.Close()
 	if a.sandbox != nil {
 		e.closeSandbox(a.sandbox, e.log.With("agent_id", a.info.ID))
+		e.mu.Lock()
+		a.sandbox = nil
+		e.mu.Unlock()
 	} else {
 		_ = os.Remove(a.settings)
 	}
@@ -506,6 +526,9 @@ func (e *Engine) watch(a *agentProc) {
 	e.mu.Unlock()
 	close(a.exited)
 	e.log.Info("agent exited", "agent_id", a.info.ID, "exit_code", code, "reason", reason)
+	if a.info.Sandbox == SandboxPodman {
+		e.importOnExit(a.info.ID) // ADR 0014: the work reaches the main repository on exit
+	}
 }
 
 func (e *Engine) hookHandler(id string) hooks.Handler {
@@ -642,7 +665,13 @@ func (e *Engine) removeAgent(ctx context.Context, id string, force bool) (Remove
 		<-a.exited // SessionEnd can arrive before the process is gone
 	}
 
-	res, err := e.cleanWorktree(ctx, info, base, force)
+	var res RemoveResult
+	var err error
+	if info.Sandbox == SandboxPodman {
+		res, err = e.cleanClone(ctx, a, info, base, force)
+	} else {
+		res, err = e.cleanWorktree(ctx, info, base, force)
+	}
 	if err != nil {
 		if errors.Is(err, ErrWorktreeDirty) {
 			_ = e.q.SetWorktreeStatus(ctx, db.SetWorktreeStatusParams{Status: WorktreeKept, AgentID: id})
@@ -672,7 +701,6 @@ func (e *Engine) removeAgent(ctx context.Context, id string, force bool) (Remove
 
 func (e *Engine) cleanWorktree(ctx context.Context, info AgentInfo, base string, force bool) (RemoveResult, error) {
 	repo := e.project.RepoPath
-	res := RemoveResult{Worktree: "removed", Branch: "kept"}
 	if _, err := os.Stat(info.WorktreePath); err == nil && info.WorktreeStatus != WorktreeRemoved {
 		if !force {
 			dirty, err := e.git.IsDirty(ctx, info.WorktreePath)
@@ -687,6 +715,14 @@ func (e *Engine) cleanWorktree(ctx context.Context, info AgentInfo, base string,
 			return RemoveResult{}, err
 		}
 	}
+	return e.cleanBranch(ctx, info, base)
+}
+
+// cleanBranch deletes the agent's branch in the main repository if it has no
+// commits; otherwise it is kept (ADR 0010).
+func (e *Engine) cleanBranch(ctx context.Context, info AgentInfo, base string) (RemoveResult, error) {
+	repo := e.project.RepoPath
+	res := RemoveResult{Worktree: "removed", Branch: "kept"}
 	exists, err := e.git.BranchExists(ctx, repo, info.Branch)
 	if err != nil {
 		return res, err

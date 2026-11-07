@@ -17,6 +17,11 @@ const (
 	APIRejected  EventKind = "api_rejected"  // method/path not forwarded by the API socket
 	APIAuth      EventKind = "api_auth"      // unexpected credentials on the API socket
 	APIError     EventKind = "api_error"     // upstream error while proxying
+
+	// Import of the agent's branch into the main repository (ADR 0014).
+	ImportDiverged EventKind = "import_diverged" // rewritten history went to a new -rewrite-N branch
+	CommitFlagged  EventKind = "commit_flagged"  // an imported commit lacks the expected author or trailer
+	ImportFailed   EventKind = "import_failed"
 )
 
 // Event is one refusal or failure. Detail holds only the target (host:port or

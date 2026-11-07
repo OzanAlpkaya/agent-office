@@ -64,9 +64,13 @@ type sandboxRes struct {
 	container string
 	egress    net.Listener
 	api       *http.Server
-	windowAt  time.Time // event rate limit window
-	windowN   int
-	dropped   int
+}
+
+// eventLimit is the per-agent rate limit for sandbox events.
+type eventLimit struct {
+	windowAt time.Time
+	n        int
+	dropped  int
 }
 
 func (o *SandboxOptions) validate() error {
@@ -294,21 +298,21 @@ func (e *Engine) sandboxEvent(id string, ev sandbox.Event) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	a, ok := e.agents[id]
-	if !ok || a.sandbox == nil {
+	if !ok || a.info.Sandbox != SandboxPodman {
 		return
 	}
-	r := a.sandbox
+	r := &a.events
 	if time.Since(r.windowAt) > time.Minute {
 		if r.dropped > 0 {
 			e.log.Warn("sandbox events dropped", "agent_id", id, "count", r.dropped)
 		}
-		r.windowAt, r.windowN, r.dropped = time.Now(), 0, 0
+		r.windowAt, r.n, r.dropped = time.Now(), 0, 0
 	}
-	if r.windowN >= maxSandboxEvents {
+	if r.n >= maxSandboxEvents {
 		r.dropped++
 		return
 	}
-	r.windowN++
+	r.n++
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := e.q.InsertEvent(ctx, db.InsertEventParams{AgentID: id, SessionID: a.info.SessionID,

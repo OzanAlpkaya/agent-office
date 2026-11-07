@@ -25,7 +25,7 @@ import (
 // what it sees, sends hooks through the real in-container forwarder and
 // commits on request.
 const fakeClaudeScript = `#!/bin/sh
-sid=; prev=; last=; bypass=off
+sid=; prev=; last=; bypass=off; n=0
 for a in "$@"; do
   [ "$prev" = --session-id ] && sid=$a
   [ "$a" = --dangerously-skip-permissions ] && bypass=on
@@ -41,8 +41,13 @@ echo "api=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/mode
 send SessionStart
 while IFS= read -r line; do
   case "$line" in
-    commit*) cd /workspace && echo hi > agent.txt && git add agent.txt && git commit -qm "feat: agent work" \
-      && git log -1 --format='log=%an|%(trailers:key=Co-authored-by,valueonly)' | sed '/^$/d' ;;
+    commit*) cd /workspace && n=$((n+1)) && echo "$n" > "agent-$n.txt" && git add "agent-$n.txt" \
+      && git commit -qm "feat: agent work $n" \
+      && git log -1 --format='log=%an|%(trailers:key=Co-authored-by,valueonly)' | sed '/^$/d' \
+      && echo "committed $n" ;;
+    amend*) cd /workspace && git commit -q --amend -m "feat: agent work (amended)" && echo amended ;;
+    nohook*) cd /workspace && git -c core.hooksPath=/dev/null commit -q --allow-empty -m "chore: no trailer" && echo nohook ;;
+    dirty*) echo wip > /workspace/uncommitted.txt && echo dirty ;;
     exit*) send SessionEnd; exit 0 ;;
   esac
 done
@@ -298,5 +303,236 @@ func TestSandboxedStartRefusesBeforeCreatingState(t *testing.T) {
 	}
 	if len(e.List()) != 0 {
 		t.Fatal("agents recorded for refused starts")
+	}
+}
+
+func startIdle(t *testing.T, e *Engine, log *updateLog) AgentInfo {
+	t.Helper()
+	a, err := e.Start(context.Background(), StartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 30*time.Second, agentState(a.ID, hooks.Idle))
+	return a
+}
+
+func exitAgent(t *testing.T, e *Engine, log *updateLog, id string) {
+	t.Helper()
+	typeLine(t, e, id, "exit")
+	log.wait(t, 30*time.Second, func(u Update) bool { return u.Type == "agent" && u.Agent.ID == id && u.Agent.ExitedAt != nil })
+}
+
+func waitImport(t *testing.T, log *updateLog, id, trigger string) ImportInfo {
+	t.Helper()
+	u := log.wait(t, 60*time.Second, func(u Update) bool {
+		return u.Type == "agent" && u.Agent.ID == id && u.Agent.LastImport != nil && u.Agent.LastImport.Trigger == trigger
+	})
+	return *u.Agent.LastImport
+}
+
+func TestSandboxedImportNowWhileRunning(t *testing.T) {
+	f := sandboxFixture(t, false)
+	e := f.engine(t)
+	log := record(t, e)
+	ctx := context.Background()
+	a := startIdle(t, e, log)
+
+	if imp, err := e.Import(ctx, a.ID); err != nil || imp.Outcome != OutcomeNoCommits {
+		t.Fatalf("no commits yet: %+v %v", imp, err)
+	}
+	typeLine(t, e, a.ID, "commit")
+	screen(t, e, a.ID, "log=Ozan Test|")
+	imp, err := e.Import(ctx, a.ID)
+	if err != nil || imp.Outcome != string(git.ImportCreated) || imp.Branch != a.Branch || imp.Commits != 1 || len(imp.Flagged) != 0 {
+		t.Fatalf("first import: %+v %v", imp, err)
+	}
+	typeLine(t, e, a.ID, "commit")
+	screen(t, e, a.ID, "committed 2\n")
+	if imp, err := e.Import(ctx, a.ID); err != nil || imp.Outcome != string(git.ImportFastForward) || imp.Commits != 2 {
+		t.Fatalf("fast-forward: %+v %v", imp, err)
+	}
+	second := gitIn(t, f.repo, "rev-parse", a.Branch)
+
+	typeLine(t, e, a.ID, "amend")
+	screen(t, e, a.ID, "amended\n")
+	imp, err = e.Import(ctx, a.ID)
+	if err != nil || imp.Outcome != string(git.ImportDiverged) || imp.Branch != a.Branch+"-rewrite-2" || imp.Previous != second {
+		t.Fatalf("rewrite: %+v %v", imp, err)
+	}
+	if gitIn(t, f.repo, "rev-parse", a.Branch) != second {
+		t.Fatal("the imported branch moved on a rewrite")
+	}
+	log.wait(t, 10*time.Second, func(u Update) bool {
+		return u.Type == "sandbox_event" && u.SandboxEvent.Event.Kind == sandbox.ImportDiverged &&
+			strings.Contains(u.SandboxEvent.Event.Detail, a.Branch+"-rewrite-2")
+	})
+
+	typeLine(t, e, a.ID, "nohook")
+	screen(t, e, a.ID, "nohook\n")
+	imp, err = e.Import(ctx, a.ID)
+	if err != nil || imp.Outcome != string(git.ImportFastForward) || len(imp.Flagged) != 1 ||
+		!strings.Contains(imp.Flagged[0].Problem, "no Co-Authored-By") {
+		t.Fatalf("flagged commit: %+v %v", imp, err)
+	}
+	log.wait(t, 10*time.Second, func(u Update) bool {
+		return u.Type == "sandbox_event" && u.SandboxEvent.Event.Kind == sandbox.CommitFlagged
+	})
+	var n int
+	_ = f.store.DB.QueryRow("SELECT count(*) FROM imports WHERE agent_id = ? AND trigger = 'manual'", a.ID).Scan(&n)
+	if n != 5 {
+		t.Fatalf("manual imports recorded: %d", n)
+	}
+}
+
+func TestSandboxedImportOnExit(t *testing.T) {
+	f := sandboxFixture(t, false)
+	e := f.engine(t)
+	log := record(t, e)
+	a := startIdle(t, e, log)
+	typeLine(t, e, a.ID, "commit")
+	screen(t, e, a.ID, "log=Ozan Test|")
+	exitAgent(t, e, log, a.ID)
+	imp := waitImport(t, log, a.ID, TriggerExit)
+	if imp.Outcome != string(git.ImportCreated) || imp.Commits != 1 || len(imp.Flagged) != 0 {
+		t.Fatalf("import on exit %+v", imp)
+	}
+	if trailer := gitIn(t, f.repo, "log", "-1", "--format=%(trailers:key=Co-authored-by,valueonly)", a.Branch); trailer != sandbox.CoAuthor(agentName(a.ID)) {
+		t.Fatalf("trailer in the main repository: %q", trailer)
+	}
+}
+
+func TestSandboxedRemoveKeepsDirtyAndSavesWork(t *testing.T) {
+	f := sandboxFixture(t, false)
+	e := f.engine(t)
+	log := record(t, e)
+	ctx := context.Background()
+	a := startIdle(t, e, log)
+	typeLine(t, e, a.ID, "dirty")
+	screen(t, e, a.ID, "dirty\n")
+	if _, err := e.SaveWork(ctx, a.ID); !errors.Is(err, ErrStillRunning) {
+		t.Fatalf("save work while running: %v", err)
+	}
+	exitAgent(t, e, log, a.ID)
+	waitImport(t, log, a.ID, TriggerExit) // no commits yet
+
+	if _, err := e.Remove(ctx, a.ID); !errors.Is(err, ErrWorktreeDirty) {
+		t.Fatalf("dirty clone removed: %v", err)
+	}
+	if _, err := os.Stat(a.WorktreePath); err != nil {
+		t.Fatal("dirty clone is gone")
+	}
+	imp, err := e.SaveWork(ctx, a.ID)
+	if err != nil || imp.Trigger != TriggerSaveWork || imp.Outcome != string(git.ImportCreated) || len(imp.Flagged) != 0 {
+		t.Fatalf("save work %+v %v", imp, err)
+	}
+	if files := gitIn(t, f.repo, "show", "--name-only", "--format=", a.Branch); files != "uncommitted.txt" {
+		t.Fatalf("saved files %q", files)
+	}
+	if _, err := e.SaveWork(ctx, a.ID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("save work with nothing to save: %v", err)
+	}
+	res, err := e.Remove(ctx, a.ID)
+	if err != nil || res.Worktree != "removed" || res.Branch != "kept" {
+		t.Fatalf("remove %+v %v", res, err)
+	}
+	if _, err := os.Stat(a.WorktreePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("clone still on disk")
+	}
+	if got := gitIn(t, f.repo, "for-each-ref", git.BaseRefPrefix+a.ID); got != "" {
+		t.Fatal("base ref not removed")
+	}
+	if _, err := os.Stat(filepath.Join(f.opts.Sandbox.AgentsRoot, a.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("agent config dir not removed")
+	}
+}
+
+func TestSandboxedRemoveWithoutCommitsDeletesBranch(t *testing.T) {
+	f := sandboxFixture(t, false)
+	e := f.engine(t)
+	log := record(t, e)
+	a := startIdle(t, e, log)
+	exitAgent(t, e, log, a.ID)
+	waitImport(t, log, a.ID, TriggerExit)
+	res, err := e.Remove(context.Background(), a.ID)
+	if err != nil || res.Branch != "deleted" {
+		t.Fatalf("remove %+v %v", res, err)
+	}
+}
+
+// Removal imports first; if that fails, nothing is removed.
+func TestSandboxedRemoveRefusesWhenImportFails(t *testing.T) {
+	f := sandboxFixture(t, false)
+	e := f.engine(t)
+	log := record(t, e)
+	ctx := context.Background()
+	a := startIdle(t, e, log)
+	typeLine(t, e, a.ID, "commit")
+	screen(t, e, a.ID, "log=Ozan Test|")
+	if _, err := e.Import(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.repo, "switch", "-q", a.Branch) // the user looks at the agent's branch
+	typeLine(t, e, a.ID, "commit")
+	screen(t, e, a.ID, "committed 2\n")
+	exitAgent(t, e, log, a.ID)
+	log.wait(t, 30*time.Second, func(u Update) bool {
+		return u.Type == "sandbox_event" && u.SandboxEvent.Event.Kind == sandbox.ImportFailed
+	})
+	if _, err := e.Remove(ctx, a.ID); !errors.Is(err, git.ErrBranchCheckedOut) {
+		t.Fatalf("remove with a failing import: %v", err)
+	}
+	if _, err := os.Stat(a.WorktreePath); err != nil {
+		t.Fatal("clone removed although its commit was not imported")
+	}
+	gitIn(t, f.repo, "switch", "-q", "main")
+	if res, err := e.Remove(ctx, a.ID); err != nil || res.Worktree != "removed" {
+		t.Fatalf("remove after switching away: %+v %v", res, err)
+	}
+	if n := gitIn(t, f.repo, "rev-list", "--count", "main.."+a.Branch); n != "2" {
+		t.Fatalf("commits on the branch: %s", n)
+	}
+}
+
+// A daemon that died leaves its container running under conmon. The next
+// daemon on the same data removes it and imports the agent's work.
+func TestSandboxedRestartRemovesOrphanAndImports(t *testing.T) {
+	f := sandboxFixture(t, false)
+	e1, err := New(context.Background(), f.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log1 := record(t, e1)
+	a := startIdle(t, e1, log1)
+	typeLine(t, e1, a.ID, "commit")
+	screen(t, e1, a.ID, "log=Ozan Test|")
+
+	// The "next daemon" starts while the old one's worker still runs.
+	e2, err := New(context.Background(), f.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e2.Shutdown)
+	t.Cleanup(e1.Shutdown)
+	if containerExists(t, sandbox.ContainerName(a.ID)) {
+		t.Fatal("orphan container not removed by the next daemon")
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		var trigger string
+		err := f.store.DB.QueryRow("SELECT trigger FROM imports WHERE agent_id = ? AND trigger = 'restart'", a.ID).Scan(&trigger)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no import after restart")
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if n := gitIn(t, f.repo, "rev-list", "--count", "main.."+a.Branch); n != "1" {
+		t.Fatalf("commits imported after restart: %s", n)
+	}
+	got, _ := e2.Get(a.ID)
+	if got.ExitReason != ExitDaemonRestart {
+		t.Fatalf("exit reason %q", got.ExitReason)
 	}
 }
