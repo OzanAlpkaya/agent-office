@@ -172,7 +172,9 @@ func TestGitHubEndToEnd(t *testing.T) {
 	file := "e2e-greeting-" + hex.EncodeToString(b[:]) + ".txt"
 	var task taskInfo
 	d.json("POST", "/api/tasks", map[string]string{"title": "E2E GitHub: add " + file,
-		"description": "Create a file named " + file + " containing the single line hello. Commit it, then call report_done."},
+		// Not "a single line": the follow-up review below asks for a second line, which must not
+		// contradict the task (a worker rightly answered such a review with report_no_change).
+		"description": "Create a file named " + file + " whose first line is hello. Commit it, then call report_done."},
 		201, &task)
 	var w teamAgent
 	d.json("POST", "/api/agents", map[string]string{"task_id": task.ID}, 201, &w)
