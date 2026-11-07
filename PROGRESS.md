@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 7 (Pixel office UI), not started; Phase 6 merged
+**Current phase:** Phase 7 (Pixel office UI), done on `phase-7/pixel-office`, waiting for review
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
@@ -13,7 +13,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 4: Team MCP server + lead agent
 - [x] Phase 5: GitHub loop + pluggable code review
 - [x] Phase 6: Stack packs
-- [ ] Phase 7: Pixel office UI
+- [x] Phase 7: Pixel office UI (branch `phase-7/pixel-office`, not merged)
 - [ ] Phase 8: Observability & cost
 - [ ] Phase 9: Memory & persistence
 - [ ] Phase 10: Remote access (PWA over Tailscale)
@@ -96,3 +96,13 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   without one, posting the reason on the PR (ADR 0022 amended, migration 0006); the sandbox e2e
   checks with `/skills` that Claude Code lists the pack's skill. `make check`, `make sandbox-test`
   and the sandbox and GitHub e2e runs pass. Merged into `main` (`--no-ff`).
+- 2026-11-08: Phase 7 done on `phase-7/pixel-office`; plan written with the recommended options and
+  executed without a separate approval, as Ozan asked (`docs/plans/phase-7.md`). ADRs 0024
+  (office view: lazy-loaded PixiJS scene, art drawn in code, HTML nameplates) and 0025 (UI tests:
+  Vitest in `make check`, Playwright against a mocked daemon in the opt-in `make ui-test`). An
+  Office tab shows every agent at a desk with a pose for its state and role, the lead's
+  whiteboard with its sub-tasks, and messages flying between desks; a click opens the agent's
+  terminal. No daemon changes. New dependencies: `pixi.js` 8.22.0; dev: `vitest` 5.1.0,
+  `@playwright/test` 1.65.0, `@types/node` 26.6.6. An independent review led to render-on-demand,
+  scene-side frame statistics, desks kept across tab switches and stronger tests, which found a
+  lost first click (fixed). Live check with a real haiku team in sandbox mode.

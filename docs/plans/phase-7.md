@@ -1,6 +1,6 @@
 # Phase 7 plan: Pixel office UI
 
-- **Status:** In progress on `phase-7/pixel-office`. Written 2026-11-08 with the recommended option
+- **Status:** Done on `phase-7/pixel-office`, waiting for Ozan's review (not merged). Written 2026-11-08 with the recommended option
   for every open question and executed straight away, as Ozan asked ("write the Phase 7 plan using
   your recommended options, then execute it immediately without asking me anything"). Every
   decision is listed in the end-of-phase summary; nothing is merged until Ozan has read it.
@@ -159,4 +159,50 @@ needed: the daemon, hooks, engine and worktrees do not change.
 
 ## Changes during the phase
 
-(none yet)
+- **ADRs as planned:** 0024 (office view), 0025 (UI test tooling).
+- **Columns fit the pane** (not fixed rows of four): the first screenshots showed the office at
+  2× in a wide pane, with nameplates crowding the desks. `fitGrid` picks 3 to 6 columns and the
+  largest whole device-pixel scale (capped at 4 CSS pixels); the margins shrank to 16 px and the
+  wall decor is laid out from the world width. Desk *indices* stay stable; only their screen
+  positions reflow when the window changes.
+- **No legend row:** the nameplates are buttons (keyboard and screen readers reach every agent),
+  so a second list of the same agents was dropped; a bar above the scene counts agents per state.
+- **Visual iteration from screenshots:** the chair was redrawn (it read as a second monitor), the
+  floor planks lengthened (they read as bricks), the raised hand got a real hand and outline, the
+  alert bubble moved clear of it, the reviewer's magnifier bubble was dropped (unreadable, and
+  the magnifier prop already says "reviewing"), and the whiteboard got a scribbled title line.
+- **Whiteboard holds 20 notes**, as many as the sub-tasks a lead may create (ADR 0017); the plan's
+  27 did not fit the board legibly. `maxNotes` is derived from the note grid.
+- **New dev dependency `@types/node` 26.6.6:** Playwright's types use `Buffer` (binary terminal
+  frames in the mocked daemon). The app's own typecheck still excludes Node types.
+- **Bundle:** the board's main chunk went from 582.4 kB to 584.8 kB; Pixi and the office are in
+  lazy chunks (the office chunk is 284 kB, 85 kB gzip).
+- **End-of-phase review fixes** (an independent reviewer read the diff; no blockers, the
+  lifecycle, StrictMode race, text-only rendering and desk assignment held up):
+  - **Render on demand:** Pixi's own render is off the ticker; the scene renders only when a
+    frame changed. An office where nothing moves no longer redraws 30 times a second.
+  - **The frame-rate test measured the page, not the scene:** the scene now records its own cost
+    per drawn frame (`data-stats`) and the test checks that; page fps stays as a smoke check.
+  - **The leak test could not see WebGL context leaks:** it now does 20 round trips, fails on
+    Chrome's context warnings and clicks the canvas afterwards. That click **found a real bug**:
+    a click right after the office mounted was lost, because Pixi hit-tests from the last
+    rendered root and the scene had not rendered yet. The scene renders once when built.
+  - **Desks reset when leaving the tab:** the assignment now lives for the page.
+  - Device pixel ratio re-read on every layout; scene and nameplates updated in layout effects
+    (no frame on the old grid); at most 20 envelopes in flight; notes redrawn only on change;
+    maps built only on a texture-cache miss; a no-op child sort removed.
+  - New tests: desks stay put across a tab round trip; clicks hit the right agent after a
+    resize and a new row of desks; an office where nothing moves does not redraw.
+  - Not changed: a message that arrives before its recipient has a desk is not animated (it is
+    still delivered and listed; only the envelope is skipped).
+- **Tests run:** `make check` (Go tests, 136 Vitest tests, typecheck including the UI tests,
+  build); `make ui-test` (14 Playwright tests) three times in a row, all passing. Measured in
+  headless Chromium with WebGL: a drawn frame costs the scene 0.7 ms at p95 and at most 3.4 ms
+  with 10 and 20 agents; the page stays at 60 fps. `make e2e` was not run: the daemon, hooks,
+  engine and worktrees did not change.
+- **Live check** against a real daemon (`--sandbox podman --pack go --model haiku`, scratch data
+  dir, throwaway clone of the playground): a lead planned a two-task goal and assigned two
+  workers. The office followed typing → idle → exited, showed both sub-tasks on the whiteboard,
+  logged no console errors, and a click on a character opened that worker's real terminal. After
+  the review fixes, a restarted daemon showed the finished team at their desks and a new
+  no-task agent idle at the next free desk.

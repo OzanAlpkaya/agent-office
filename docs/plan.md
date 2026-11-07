@@ -193,14 +193,27 @@ derived from Claude Code hooks.
 
 **Goal:** A pixel-art office view where agents are characters whose activity reflects their state.
 
-**Scope**
-- PixiJS scene alongside the task board; original art assets only.
-- Agent state (working, waiting, idle, reviewing) shown through animations; click to open a terminal.
+**Scope** (see ADRs 0024, 0025 and `docs/plans/phase-7.md`)
+- PixiJS scene in an Office tab next to the task board, lazy-loaded; original art drawn in code.
+- Agent state (working, waiting, idle, reviewing, starting, exited) shown through poses and
+  animations; the lead's whiteboard shows its sub-tasks; messages fly between desks; click to open
+  a terminal. No daemon changes.
 
 **Definition of Done**
-- [ ] The office shows every running agent with live state.
-- [ ] Clicking an agent opens its terminal/task.
-- [ ] Runs smoothly with 10 agents; all assets are original or properly licensed.
+- [x] The office shows every running agent with live state: every agent the daemon knows gets a
+      desk and a pose that follows its state and role (`pose.test.ts`; Playwright "shows every
+      agent at a desk with its pose", "follows live state changes, new and removed agents"); live
+      check against a real daemon with a haiku lead and two workers in sandbox mode.
+- [x] Clicking an agent opens its terminal/task: a click on the character in the canvas, or its
+      nameplate (also by keyboard), opens the agent's terminal (Playwright "clicking a character
+      opens its terminal", "nameplates open agents from the keyboard"; live check).
+- [x] Runs smoothly with 10 agents; all assets are original or properly licensed: in headless
+      Chromium (WebGL) a drawn frame costs the scene 0.7 ms at p95 and at most 3.4 ms with 10 and
+      20 agents, the page stays at 60 fps, the scene draws only frames that changed (at most
+      30 fps; none when nothing moves), and 20 tab round trips leak no WebGL context (Playwright
+      "stays smooth with 10/20 agents", "an office where nothing moves does not redraw",
+      "switching tabs does not leak…"); all art drawn in code (`web/src/office/ART.md`), checked
+      by `art.test.ts`.
 
 ---
 

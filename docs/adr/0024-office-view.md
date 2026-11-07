@@ -41,18 +41,26 @@ Agent-written text (task titles, tool names) must stay text, never markup.
 
 ## Decision
 
-PixiJS 8.22 with `preference: ["webgl", "canvas"]`, nearest scaling, whole-number world scale and
-`ticker.maxFPS = 30`; the office module is loaded with `import()` only when its tab opens and its
-application is destroyed when the tab closes. Art is pixel maps in `web/src/office/art.ts`,
+PixiJS 8.22 with `preference: ["webgl", "canvas"]`, nearest scaling and a whole number of device
+pixels per world pixel (re-read on every layout, so zoom and other screens stay sharp). The scene
+ticks at most 30 times a second and **renders only when something changed** (Pixi's own render is
+taken off the ticker); it renders once when built, because Pixi hit-tests from the last rendered
+root. The office module is loaded with `import()` only when its tab opens and its application is
+destroyed when the tab closes. The desk assignment lives for the page, not the component, so
+leaving the tab moves nobody; a reload seats agents again in start order. The office picks 3 to
+6 desk columns, whichever shows it largest in the pane. Art is pixel maps in `web/src/office/art.ts`,
 original to this repository (`web/src/office/ART.md`). Names, titles and tooltips are HTML
-nameplates positioned from the same layout as the scene, plus a legend of buttons for keyboard
-use. Poses and desk assignment are pure functions, unit-tested; the scene only draws them.
+nameplates positioned from the same layout as the scene; they are buttons, so the office works
+from the keyboard, and a bar above the scene counts agents per state. Poses and desk assignment are pure functions, unit-tested; the scene only draws them.
 
 ## Consequences
 
 - The board's bundle does not grow; the office chunk carries Pixi.
 - No third-party art, so no licence file per asset. Adding art means editing pixel maps; a
   contributor who wants a CC0 pack later must record its source and licence next to it.
-- A 30 fps cap halves the work of an always-open tab; animations are designed for 2 to 8 fps.
+- An open office where nothing moves costs a few cheap ticks per second and no renders; while
+  agents animate it draws at most 30 frames a second (animations run at 2 to 8 fps). The scene
+  publishes its own frame statistics (`data-stats`), which the UI tests check.
 - The scene has no authority: it only calls the same "open agent" action as the agent list.
-- Accessibility rests on the HTML nameplates and legend; the canvas is decorative.
+- Accessibility rests on the HTML nameplates (buttons with tooltips) and the state bar; the
+  canvas is decorative.
