@@ -4,6 +4,9 @@ Each phase has a goal, a scope and a Definition of Done (DoD). Every phase start
 approved plan and ends with an updated `PROGRESS.md` and a plain-language summary. Later phases are
 intentionally coarser; their DoD is refined at the start of the phase.
 
+**Order** (decided 2026-11-08): phases run 0–8, then 12, 9, 10, 11, 13. Numbers are kept, so
+references in ADRs and plans stay valid.
+
 ---
 
 ## Phase 0: Research & design

@@ -1,6 +1,9 @@
 # Progress
 
-**Current phase:** Phase 8 (Observability & cost), not started; Phase 7 merged
+**Current phase:** Phase 8 (Observability & cost), in progress on `phase-8/observability-cost`
+
+**Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
+as they are, so ADRs and plans that refer to them stay valid.
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
@@ -117,3 +120,5 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   Team workflow (the lead stays until the goal is done, conflict detection and sequential
   sub-tasks, messages to the user) and Phase 13 Office v2 (walking characters, rooms). Merged into
   `main` (`--no-ff`).
+- 2026-11-08: Phase order from here on set by Ozan: 8, 12, 9, 10, 11, 13. Phase 8 plan written with
+  the recommended options and started on `phase-8/observability-cost` (`docs/plans/phase-8.md`).
