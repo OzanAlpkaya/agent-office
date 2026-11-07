@@ -184,6 +184,9 @@ func serve(args []string) error {
 		return err
 	}
 	defer st.Close()
+	if m := st.Migration; m.From != m.To {
+		log.Info("database migrated", "from", m.From, "to", m.To, "backup", m.Backup)
+	}
 
 	eng, err := engine.New(context.Background(), engine.Options{
 		Repo: cfg.repo, WorktreeRoot: filepath.Join(cfg.dataDir, "worktrees"), Store: st, Git: g,

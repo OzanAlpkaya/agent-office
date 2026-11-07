@@ -24,12 +24,50 @@ var migrations embed.FS
 
 // Store is an open database with migrations applied.
 type Store struct {
-	DB *sql.DB
-	Q  *db.Queries
+	DB        *sql.DB
+	Q         *db.Queries
+	Migration Migration // what Open did to the schema, for the caller to log
 }
 
+// Migration describes the schema change made by Open.
+type Migration struct {
+	From, To int64  // schema versions before and after; equal if nothing was pending
+	Backup   string // copy of the database taken before migrating; empty if none was needed
+}
+
+// ErrSchemaTooNew means the database was migrated by a newer agent-office
+// than this binary (ADR 0013). Use errors.As with *SchemaTooNewError for details.
+var ErrSchemaTooNew = errors.New("store: database schema is newer than this binary")
+
+// SchemaTooNewError reports a database whose schema version is ahead of the
+// newest migration embedded in this binary. Opening it is refused: this
+// binary's queries do not know the newer schema's columns and rules.
+type SchemaTooNewError struct {
+	Path     string
+	DB       int64 // schema version recorded in the database
+	Supports int64 // newest version this binary knows
+}
+
+func (e *SchemaTooNewError) Error() string {
+	return fmt.Sprintf("store: %s has schema version %d, but this agent-office supports up to %d: "+
+		"run a newer agent-office, or restore a backup taken before the upgrade (%s.pre-v*)",
+		e.Path, e.DB, e.Supports, e.Path)
+}
+
+func (e *SchemaTooNewError) Unwrap() error { return ErrSchemaTooNew }
+
 // Open opens (or creates) the database at path and applies pending migrations.
+// It refuses a database whose schema is newer than this binary, and copies the
+// database to <path>.pre-v<N> before migrating an existing database to version N.
 func Open(ctx context.Context, path string) (*Store, error) {
+	sub, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		return nil, err
+	}
+	return openWith(ctx, path, sub)
+}
+
+func openWith(ctx context.Context, path string, sources fs.FS) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("store: data dir: %w", err)
 	}
@@ -53,26 +91,73 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		conn.Close()
 		return nil, fmt.Errorf("store: chmod: %w", err)
 	}
-	if err := migrate(ctx, conn); err != nil {
+	m, err := migrate(ctx, conn, path, sources)
+	if err != nil {
 		conn.Close()
 		return nil, err
 	}
-	return &Store{DB: conn, Q: db.New(conn)}, nil
+	return &Store{DB: conn, Q: db.New(conn), Migration: m}, nil
 }
 
-func migrate(ctx context.Context, conn *sql.DB) error {
-	sub, err := fs.Sub(migrations, "migrations")
+// migrate applies pending migrations (ADR 0012, ADR 0013). goose on its own
+// treats a database that is ahead of the embedded migrations as up to date, so
+// the version check happens here, before anything is written.
+func migrate(ctx context.Context, conn *sql.DB, path string, sources fs.FS) (Migration, error) {
+	p, err := goose.NewProvider(goose.DialectSQLite3, conn, sources)
 	if err != nil {
-		return err
+		return Migration{}, fmt.Errorf("store: migrations: %w", err)
 	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, conn, sub)
+	srcs := p.ListSources()
+	if len(srcs) == 0 {
+		return Migration{}, errors.New("store: no migrations embedded")
+	}
+	latest := srcs[len(srcs)-1].Version
+	current, err := p.GetDBVersion(ctx)
 	if err != nil {
-		return fmt.Errorf("store: migrations: %w", err)
+		return Migration{}, fmt.Errorf("store: schema version: %w", err)
+	}
+	if current > latest {
+		return Migration{}, &SchemaTooNewError{Path: path, DB: current, Supports: latest}
+	}
+	m := Migration{From: current, To: current}
+	if current == latest {
+		return m, nil
+	}
+	if current > 0 { // a new database has nothing worth keeping yet
+		if m.Backup, err = backup(ctx, conn, fmt.Sprintf("%s.pre-v%d", path, latest)); err != nil {
+			return Migration{}, err
+		}
 	}
 	if _, err := p.Up(ctx); err != nil {
-		return fmt.Errorf("store: migrate: %w", err)
+		return Migration{}, fmt.Errorf("store: migrate: %w", err)
 	}
-	return nil
+	m.To = latest
+	return m, nil
+}
+
+// backup writes a consistent copy of the database to dst with VACUUM INTO. The
+// copy goes to a fresh 0600 temp file in the same directory (VACUUM INTO
+// accepts an empty file) and is then renamed over dst, so dst is either the
+// previous backup or a complete new one, never a partial file.
+func backup(ctx context.Context, conn *sql.DB, dst string) (string, error) {
+	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".tmp-*")
+	if err != nil {
+		return "", fmt.Errorf("store: backup: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("store: backup: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "VACUUM INTO ?", tmpPath); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("store: backup to %s: %w", dst, err)
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("store: backup: %w", err)
+	}
+	return dst, nil
 }
 
 // Tx runs fn in a transaction and commits if it returns nil.
