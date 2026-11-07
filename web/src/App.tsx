@@ -463,8 +463,9 @@ function PackPanel({ status }: { status: Status }) {
                 ? "none"
                 : p.secrets.map((s) => (
                     <span key={s.name} className={`secret ${s.present ? "present" : "missing"}`}
-                      title={s.description ?? undefined}>
-                      <span className="mono">{s.name}</span> {s.present ? "set" : s.required ? "missing (required)" : "not set"}
+                      title={s.problem ?? s.description ?? undefined}>
+                      <span className="mono">{s.name}</span>{" "}
+                      {s.present ? "set" : s.problem ? "file not usable" : s.required ? "missing (required)" : "not set"}
                     </span>
                   ))}
             </dd>

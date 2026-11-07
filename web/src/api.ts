@@ -61,7 +61,8 @@ export interface PackStatus {
   description: string;
   source: string; // "builtin" or the pack directory
   egress: string[];
-  secrets: { name: string; description?: string; required: boolean; present: boolean }[];
+  // present: the file exists and passes the checks; problem: why an existing file is unusable.
+  secrets: { name: string; description?: string; required: boolean; present: boolean; problem?: string }[];
   skills: string[];
   mcp_servers: string[];
 }
