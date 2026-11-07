@@ -1,7 +1,7 @@
 import { type JSX, useEffect, useState } from "react";
 import {
-  type Agent, type AgentState, ApiError, type ImportInfo, type Project, type SandboxEvent, type Status, type Task,
-  type TaskStatus, api,
+  type AccessRequest, type Agent, type AgentState, ApiError, type ImportInfo, type Message, type Project, type Role,
+  type SandboxEvent, type Status, type Task, type TaskStatus, api,
 } from "./api";
 import { Board } from "./Board";
 import { TerminalView } from "./TerminalView";
@@ -21,6 +21,7 @@ const exitLabel: Record<string, string> = {
   daemon_shutdown: "daemon shut down",
   daemon_restart: "daemon restarted",
   start_failed: "start failed",
+  reported_done: "reported done",
 };
 
 const importOutcome: Record<string, string> = {
@@ -37,6 +38,7 @@ const importTrigger: Record<string, string> = {
   restart: "after restart",
   remove: "before removal",
   save_work: "save work",
+  report_done: "report_done",
 };
 
 const eventLabel: Record<string, string> = {
@@ -58,7 +60,7 @@ const stuckAfterMs = 20_000;
 type View = { kind: "board" } | { kind: "agent"; id: string };
 
 export function App(): JSX.Element {
-  const { agents, tasks, events, connection } = useWorld();
+  const { agents, tasks, events, messages, accessRequests, connection } = useWorld();
   const [view, setView] = useState<View>({ kind: "board" });
   const [project, setProject] = useState<Project>();
   const [version, setVersion] = useState("");
@@ -97,8 +99,8 @@ export function App(): JSX.Element {
     }
   };
 
-  const startAgent = async (taskId?: string): Promise<void> => {
-    const a = await run(() => api.startAgent(taskId));
+  const startAgent = async (taskId?: string, role: Role = "worker"): Promise<void> => {
+    const a = await run(() => api.startAgent(taskId, role));
     if (a) setView({ kind: "agent", id: a.id });
   };
 
@@ -113,6 +115,8 @@ export function App(): JSX.Element {
     );
 
   const running = agents.filter((a) => a.state !== "exited").length;
+  const leadRunning = agents.some((a) => a.role === "lead" && a.state !== "exited");
+  const pending = accessRequests.filter((r) => r.status === "pending");
   const current = view.kind === "agent" ? agents.find((a) => a.id === view.id) : undefined;
   const taskTitle = (id?: string): string | undefined => tasks.find((t) => t.id === id)?.title;
 
@@ -137,6 +141,12 @@ export function App(): JSX.Element {
         </div>
       )}
       {status?.warnings.map((w) => <div key={w} className="banner warn">{w}</div>)}
+      {pending.length > 0 && (
+        <Approvals requests={pending} agents={agents} taskTitle={taskTitle}
+          onApprove={(r) => void run(() => api.approveAccess(r.id))}
+          onDeny={(r) => void run(() => api.denyAccess(r.id))}
+        />
+      )}
       <main>
         <aside>
           <button className="primary" onClick={() => void startAgent()}>Start agent (no task)</button>
@@ -153,6 +163,7 @@ export function App(): JSX.Element {
                 onImport={() => void run(() => api.importAgent(a.id))}
                 onSaveWork={() => void run(() => api.saveWork(a.id))}
                 events={events[a.id] ?? []}
+                messages={messages[a.id] ?? []}
               />
             ))}
           </ul>
@@ -171,7 +182,8 @@ export function App(): JSX.Element {
             ))}
           </nav>
           {view.kind === "board" || !current ? (
-            <Board tasks={tasks} agents={agents} canStart={true}
+            <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning}
+              onStartLead={(t) => void startAgent(t.id, "lead")}
               onCreate={async (title, description) => (await run(() => api.createTask(title, description))) !== undefined}
               onStatus={(t: Task, status: TaskStatus) => void run(() => api.updateTask(t.id, { status }))}
               onStart={(t) => void startAgent(t.id)}
@@ -201,10 +213,11 @@ interface CardProps {
   onImport: () => void;
   onSaveWork: () => void;
   events: SandboxEvent[];
+  messages: Message[];
 }
 
 function AgentCard({
-  agent: a, taskTitle, nowMs, selected, onSelect, onStop, onRemove, onDiscard, onImport, onSaveWork, events,
+  agent: a, taskTitle, nowMs, selected, onSelect, onStop, onRemove, onDiscard, onImport, onSaveWork, events, messages,
 }: CardProps): JSX.Element {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const stuck = a.state === "starting" && nowMs - Date.parse(a.started_at) > stuckAfterMs;
@@ -217,6 +230,9 @@ function AgentCard({
         <span className={`badge state-${a.state}`}>{stateLabel[a.state]}</span>
       </div>
       <div className="row">
+        <span className={`chip role-${a.role}`} title={a.role === "lead"
+          ? "Plans the goal and assigns sub-tasks to workers"
+          : "Works on one task on its own branch"}>{a.role}</span>
         {sandboxed
           ? <span className="chip sandboxed" title="Rootless Podman worker; permission prompts off inside it">sandboxed</span>
           : <span className="chip unsandboxed" title="Runs on the host with permission prompts on">unsandboxed</span>}
@@ -253,6 +269,7 @@ function AgentCard({
         </div>
       )}
       {events.length > 0 && <EventList events={events} />}
+      {messages.length > 0 && <MessageList agentId={a.id} messages={messages} />}
       <div className="card-actions row" onClick={(e) => e.stopPropagation()}>
         {a.state !== "exited" && <button onClick={onStop}>Stop</button>}
         {sandboxed && a.worktree_status !== "removed" && (
@@ -319,6 +336,73 @@ function EventList({ events }: { events: SandboxEvent[] }): JSX.Element {
           <li key={`${e.at}|${e.kind}|${e.detail}`}>
             <span className="muted">{timeOf(e.at)}</span> {eventLabel[e.kind] ?? e.kind}
             {e.detail && <>: <span className="mono">{e.detail}</span></>}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+// Approvals is the human approval queue for access requests (ADR 0019).
+// Nothing is granted until a button here is pressed; the reason is the
+// agent's own text.
+function Approvals({ requests, agents, taskTitle, onApprove, onDeny }: {
+  requests: AccessRequest[];
+  agents: Agent[];
+  taskTitle: (id?: string) => string | undefined;
+  onApprove: (r: AccessRequest) => void;
+  onDeny: (r: AccessRequest) => void;
+}): JSX.Element {
+  return (
+    <section className="approvals">
+      <h2>Waiting for your approval</h2>
+      <ul>
+        {requests.map((r) => {
+          const a = agents.find((x) => x.id === r.agent_id);
+          return (
+            <li key={r.id}>
+              <div>
+                Agent <span className="mono">{r.agent_id.slice(0, 6)}</span>
+                {a && <> ({a.role}{taskTitle(a.task_id) ? `, “${taskTitle(a.task_id)}”` : ""})</>} asks for{" "}
+                {r.kind === "domain" ? <>network access to <span className="mono strong">{r.value}</span></> : `${r.kind} ${r.value}`}
+              </div>
+              <div className="small muted">Agent&apos;s reason: <span className="quote">{r.reason}</span></div>
+              <div className="row">
+                <button onClick={() => onApprove(r)} title="Adds the host to this agent's allowlist until it exits">
+                  Allow for this agent
+                </button>
+                <button className="danger" onClick={() => onDeny(r)}>Deny</button>
+                <span className="small muted">Requested {timeOf(r.created_at)} · applies to this agent only</span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+const deliveryLabel: Record<string, string> = { stop_hook: "at end of turn", pty: "typed while idle" };
+
+// MessageList shows messages an agent sent or received, newest first. Bodies
+// are agent-written text.
+function MessageList({ agentId, messages }: { agentId: string; messages: Message[] }): JSX.Element {
+  const waiting = messages.filter((m) => m.to === agentId && !m.delivered_at).length;
+  return (
+    <details className="events small" onClick={(e) => e.stopPropagation()}>
+      <summary className="muted">
+        {messages.length === 1 ? "1 message" : `${messages.length} messages`}
+        {waiting > 0 && ` · ${waiting} waiting for delivery`}
+      </summary>
+      <ul>
+        {messages.map((m) => (
+          <li key={m.id}>
+            <span className="muted">
+              {timeOf(m.created_at)} {m.to === agentId ? `from ${m.from ? m.from.slice(0, 6) : "agent-office"}` : `to ${m.to.slice(0, 6)}`}
+              {" · "}
+              {m.delivered_at ? `delivered ${deliveryLabel[m.delivery ?? ""] ?? ""}` : "not delivered yet"}
+            </span>
+            <div className="quote">{m.body}</div>
           </li>
         ))}
       </ul>

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { type Agent, type SandboxEvent, type Task, api, parseEventMessage, wsURL } from "./api";
+import {
+  type AccessRequest, type Agent, type Message, type SandboxEvent, type Task, api, parseEventMessage, wsURL,
+} from "./api";
 
 export type Connection = "connecting" | "open" | "closed";
 
@@ -7,7 +9,25 @@ export interface World {
   agents: Agent[];
   tasks: Task[];
   events: Record<string, SandboxEvent[]>; // sandbox events per agent id, newest first
+  messages: Record<string, Message[]>; // messages sent or received per agent id, newest first
+  accessRequests: AccessRequest[]; // pending first, then the most recent
   connection: Connection;
+}
+
+// Messages kept per agent in the UI; the API returns at most this many too.
+const maxMessages = 100;
+
+// mergeMessages combines fetched and live messages by id (a later copy, e.g.
+// with delivered_at set, wins), newest first.
+function mergeMessages(a: Message[], b: Message[]): Message[] {
+  const byId = new Map<number, Message>();
+  for (const m of [...a, ...b]) byId.set(m.id, m);
+  return [...byId.values()].sort((x, y) => y.id - x.id).slice(0, maxMessages);
+}
+
+function sortAccess(list: AccessRequest[]): AccessRequest[] {
+  return list.slice().sort((x, y) =>
+    Number(y.status === "pending") - Number(x.status === "pending") || y.id - x.id);
 }
 
 // Events kept per agent in the UI; the API returns at most this many too.
@@ -39,6 +59,8 @@ export function useWorld(): World {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [events, setEvents] = useState<Record<string, SandboxEvent[]>>({});
+  const [messages, setMessages] = useState<Record<string, Message[]>>({});
+  const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
   const [connection, setConnection] = useState<Connection>("connecting");
 
   useEffect(() => {
@@ -65,6 +87,15 @@ export function useWorld(): World {
             setAgents(msg.agents);
             setTasks(msg.tasks);
             setEvents({});
+            setMessages({});
+            setAccessRequests(sortAccess(msg.accessRequests));
+            for (const a of msg.agents) {
+              // Fire-and-forget like the events below; a failure only loses history.
+              void api.agentMessages(a.id).then(
+                (ms) => setMessages((prev) => ({ ...prev, [a.id]: mergeMessages(prev[a.id] ?? [], ms) })),
+                () => console.warn(`agent-office: could not load messages for ${a.id}`),
+              );
+            }
             // Recorded events, so a reload still shows earlier refusals. Live
             // events that arrive meanwhile are merged, not overwritten.
             for (const a of msg.agents.filter((x) => x.sandbox === "podman")) {
@@ -84,7 +115,25 @@ export function useWorld(): World {
               const { [msg.id]: _removed, ...rest } = prev;
               return rest;
             });
+            setMessages((prev) => {
+              const { [msg.id]: _removed, ...rest } = prev;
+              return rest;
+            });
             break;
+          case "message": {
+            const m = msg.message;
+            setMessages((prev) => {
+              const next = { ...prev, [m.to]: mergeMessages(prev[m.to] ?? [], [m]) };
+              if (m.from) next[m.from] = mergeMessages(prev[m.from] ?? [], [m]);
+              return next;
+            });
+            break;
+          }
+          case "access_request": {
+            const r = msg.request;
+            setAccessRequests((prev) => sortAccess([...prev.filter((x) => x.id !== r.id), r]));
+            break;
+          }
           case "sandbox_event":
             setEvents((prev) => ({ ...prev, [msg.agent_id]: mergeEvents(prev[msg.agent_id] ?? [], [msg.event]) }));
             break;
@@ -111,5 +160,5 @@ export function useWorld(): World {
     };
   }, []);
 
-  return { agents, tasks, events, connection };
+  return { agents, tasks, events, messages, accessRequests, connection };
 }

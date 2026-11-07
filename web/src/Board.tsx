@@ -13,6 +13,8 @@ interface Props {
   tasks: Task[];
   agents: Agent[];
   canStart: boolean;
+  leadRunning: boolean;
+  onStartLead: (task: Task) => void;
   onCreate: (title: string, description: string) => Promise<boolean>;
   onStatus: (task: Task, status: TaskStatus) => void;
   onStart: (task: Task) => void;
@@ -32,7 +34,8 @@ export function Board(p: Props): JSX.Element {
           {p.tasks
             .filter((t) => t.status === status)
             .map((t) => (
-              <TaskCard {...p} key={t.id} task={t} agents={p.agents.filter((a) => a.task_id === t.id)} />
+              <TaskCard {...p} key={t.id} task={t} agents={p.agents.filter((a) => a.task_id === t.id)}
+                goal={p.tasks.find((g) => g.id === t.parent_task_id)} />
             ))}
         </section>
       ))}
@@ -73,19 +76,30 @@ function NewTask({ onCreate }: Pick<Props, "onCreate">): JSX.Element {
 interface CardProps extends Props {
   task: Task;
   agents: Agent[];
+  goal?: Task;
 }
 
-function TaskCard({ task, agents, canStart, onStatus, onStart, onDelete, onOpenAgent }: CardProps): JSX.Element {
+function TaskCard({
+  task, agents, goal, canStart, leadRunning, onStatus, onStart, onStartLead, onDelete, onOpenAgent,
+}: CardProps): JSX.Element {
   const running = agents.some((a) => a.state !== "exited");
+  const isGoal = !task.parent_task_id;
   return (
     <article className="task">
+      {(goal || task.created_by) && (
+        <div className="row small muted">
+          {goal && <span title={goal.title}>sub-task of “{goal.title}”</span>}
+          {task.created_by && <span className="chip role-lead" title={`Created by agent ${task.created_by}`}>by lead</span>}
+        </div>
+      )}
       <div className="task-title">{task.title}</div>
       {task.description && <div className="task-desc small muted">{task.description}</div>}
       {agents.length > 0 && (
         <div className="task-agents">
           {agents.map((a) => (
-            <button key={a.id} className={`chip state-${a.state}`} title={a.branch} onClick={() => onOpenAgent(a.id)}>
-              {a.id.slice(0, 6)}
+            <button key={a.id} className={`chip state-${a.state}`} title={`${a.role} · ${a.branch}`}
+              onClick={() => onOpenAgent(a.id)}>
+              {a.role === "lead" ? "lead " : ""}{a.id.slice(0, 6)}
             </button>
           ))}
         </div>
@@ -98,6 +112,13 @@ function TaskCard({ task, agents, canStart, onStatus, onStart, onDelete, onOpenA
           onClick={() => onStart(task)}>
           Start agent
         </button>
+        {isGoal && (
+          <button disabled={!canStart || running || leadRunning}
+            title={leadRunning ? "A lead is already running" : "A lead agent plans this goal and assigns sub-tasks to workers"}
+            onClick={() => onStartLead(task)}>
+            Start lead
+          </button>
+        )}
         <button className="link" disabled={running} onClick={() => onDelete(task)} title="Delete task">✕</button>
       </div>
     </article>
