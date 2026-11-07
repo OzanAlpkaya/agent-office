@@ -12,6 +12,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
@@ -31,8 +34,9 @@ type Store struct {
 
 // Migration describes the schema change made by Open.
 type Migration struct {
-	From, To int64  // schema versions before and after; equal if nothing was pending
-	Backup   string // copy of the database taken before migrating; empty if none was needed
+	From, To int64    // schema versions before and after; equal if nothing was pending
+	Backup   string   // copy of the database taken before migrating; empty if none was needed
+	Pruned   []string // older backups removed after migrating (ADR 0028)
 }
 
 // ErrSchemaTooNew means the database was migrated by a newer agent-office
@@ -132,7 +136,51 @@ func migrate(ctx context.Context, conn *sql.DB, path string, sources fs.FS) (Mig
 		return Migration{}, fmt.Errorf("store: migrate: %w", err)
 	}
 	m.To = latest
+	if m.Backup != "" {
+		m.Pruned = pruneBackups(path, KeepBackups)
+	}
 	return m, nil
+}
+
+// KeepBackups is how many pre-migration backups stay next to the database
+// (ADR 0028).
+const KeepBackups = 3
+
+// pruneBackups removes all but the keep newest <path>.pre-v<N> backups (by
+// N) and returns what it removed. Only regular files with exactly that name
+// shape are touched; errors leave a file in place.
+func pruneBackups(path string, keep int) []string {
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		return nil
+	}
+	prefix := filepath.Base(path) + ".pre-v"
+	type bk struct {
+		v    int
+		name string
+	}
+	var all []bk
+	for _, e := range entries {
+		n := e.Name()
+		rest, ok := strings.CutPrefix(n, prefix)
+		if !ok || !e.Type().IsRegular() {
+			continue
+		}
+		v, err := strconv.Atoi(rest)
+		if err != nil || v <= 0 || strconv.Itoa(v) != rest {
+			continue
+		}
+		all = append(all, bk{v, n})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].v > all[j].v })
+	var removed []string
+	for _, b := range all[min(keep, len(all)):] {
+		p := filepath.Join(filepath.Dir(path), b.name)
+		if os.Remove(p) == nil {
+			removed = append(removed, p)
+		}
+	}
+	return removed
 }
 
 // backup writes a consistent copy of the database to dst with VACUUM INTO. The

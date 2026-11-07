@@ -252,3 +252,48 @@ RETURNING *;
 UPDATE reviews SET status = 'running', agent_id = ?, attempts = attempts + 1, updated_at = ?
 WHERE id = ? AND status = 'queued'
 RETURNING *;
+
+-- Token usage (migration 0007, ADR 0026).
+
+-- name: UpsertUsage :exec
+INSERT INTO usage_messages (session_id, agent_id, task_id, source, message_id, request_id, model, speed,
+    inference_geo, input_tokens, output_tokens, cache_read, cache_write_5m, cache_write_1h, at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (session_id, message_id) DO UPDATE SET
+    request_id = CASE WHEN excluded.request_id != '' THEN excluded.request_id ELSE usage_messages.request_id END,
+    model = excluded.model, speed = excluded.speed, inference_geo = excluded.inference_geo,
+    input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
+    cache_read = excluded.cache_read, cache_write_5m = excluded.cache_write_5m,
+    cache_write_1h = excluded.cache_write_1h, updated_at = excluded.updated_at;
+
+-- name: ListSessionUsage :many
+SELECT * FROM usage_messages WHERE session_id = ? ORDER BY id;
+
+-- name: ListGoalUsage :many
+-- Everything recorded under a goal: its own agents (the lead), its sub-tasks' workers and
+-- their reviewers (ADR 0027).
+SELECT u.* FROM usage_messages u LEFT JOIN tasks t ON t.id = u.task_id
+WHERE u.task_id = sqlc.arg(goal_id) OR t.parent_task_id = sqlc.arg(goal_id)
+ORDER BY u.id;
+
+-- name: ListProjectUsage :many
+SELECT u.* FROM usage_messages u JOIN agents a ON a.id = u.agent_id
+WHERE a.project_id = ? ORDER BY u.id;
+
+-- name: ListProjectSessions :many
+SELECT s.id, s.agent_id, s.started_at, s.ended_at, s.turns, s.tool_calls, s.cli_cost_usd,
+       a.role, a.sandbox, a.task_id, a.model, a.removed_at
+FROM sessions s JOIN agents a ON a.id = s.agent_id
+WHERE a.project_id = ? ORDER BY s.started_at;
+
+-- name: AddSessionCounts :exec
+UPDATE sessions SET turns = turns + sqlc.arg(turns), tool_calls = tool_calls + sqlc.arg(tool_calls)
+WHERE id = sqlc.arg(id);
+
+-- name: SetSessionCLICost :exec
+UPDATE sessions SET cli_cost_usd = ? WHERE id = ?;
+
+-- Retention (ADR 0028).
+
+-- name: DeleteEventsBefore :execrows
+DELETE FROM events WHERE at < ?;

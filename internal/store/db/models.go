@@ -125,10 +125,13 @@ type Review struct {
 }
 
 type Session struct {
-	ID        string
-	AgentID   string
-	StartedAt time.Time
-	EndedAt   sql.NullTime
+	ID         string
+	AgentID    string
+	StartedAt  time.Time
+	EndedAt    sql.NullTime
+	Turns      int64
+	ToolCalls  int64
+	CliCostUsd sql.NullFloat64
 }
 
 type Task struct {
@@ -141,6 +144,26 @@ type Task struct {
 	UpdatedAt    time.Time
 	ParentTaskID sql.NullString
 	CreatedBy    string
+}
+
+type UsageMessage struct {
+	ID           int64
+	SessionID    string
+	AgentID      string
+	TaskID       sql.NullString
+	Source       string
+	MessageID    string
+	RequestID    string
+	Model        string
+	Speed        string
+	InferenceGeo string
+	InputTokens  int64
+	OutputTokens int64
+	CacheRead    int64
+	CacheWrite5m int64
+	CacheWrite1h int64
+	At           time.Time
+	UpdatedAt    time.Time
 }
 
 type Worktree struct {

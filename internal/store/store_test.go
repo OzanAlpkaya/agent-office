@@ -199,3 +199,111 @@ func TestImportsConstraints(t *testing.T) {
 		}
 	}
 }
+
+// Migration 0007: usage rows are upserted per session and message, and a
+// goal's usage includes its sub-tasks' rows.
+func TestUsageUpsertAndGoal(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	p := seedProject(t, s)
+	ts := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	for _, q := range []string{
+		`INSERT INTO tasks (id, project_id, title, created_at, updated_at) VALUES ('goal', 'p1', 'g', ?, ?)`,
+		`INSERT INTO tasks (id, project_id, title, parent_task_id, created_at, updated_at) VALUES ('sub', 'p1', 's', 'goal', ?, ?)`,
+		`INSERT INTO tasks (id, project_id, title, created_at, updated_at) VALUES ('other', 'p1', 'o', ?, ?)`,
+	} {
+		if _, err := s.DB.Exec(q, ts, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, a := range []struct{ id, task string }{{"lead", "goal"}, {"w1", "sub"}, {"w2", "other"}} {
+		if _, err := s.DB.Exec(`INSERT INTO agents (id, project_id, task_id, inherit_user_settings, state, started_at) VALUES (?, ?, ?, 1, 'idle', ?)`,
+			a.id, p.ID, a.task, ts); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Q.CreateSession(ctx, db.CreateSessionParams{ID: "s-" + a.id, AgentID: a.id, StartedAt: ts}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	up := func(sess, agent, task, msg string, out int64, req string) {
+		t.Helper()
+		if err := s.Q.UpsertUsage(ctx, db.UpsertUsageParams{SessionID: sess, AgentID: agent, TaskID: sql.NullString{String: task, Valid: true},
+			Source: "api", MessageID: msg, RequestID: req, Model: "claude-haiku-5-5", OutputTokens: out, At: ts, UpdatedAt: ts}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	up("s-lead", "lead", "goal", "m1", 1, "req_1")
+	up("s-lead", "lead", "goal", "m1", 9, "") // message_delta: same row, request id kept
+	up("s-w1", "w1", "sub", "m2", 5, "")
+	up("s-w2", "w2", "other", "m3", 7, "")
+	rows, err := s.Q.ListSessionUsage(ctx, "s-lead")
+	if err != nil || len(rows) != 1 || rows[0].OutputTokens != 9 || rows[0].RequestID != "req_1" {
+		t.Fatalf("session rows %+v, %v", rows, err)
+	}
+	goal, err := s.Q.ListGoalUsage(ctx, sql.NullString{String: "goal", Valid: true})
+	if err != nil || len(goal) != 2 {
+		t.Fatalf("goal rows %+v, %v", goal, err)
+	}
+	all, err := s.Q.ListProjectUsage(ctx, p.ID)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("project rows %d, %v", len(all), err)
+	}
+	if err := s.Q.AddSessionCounts(ctx, db.AddSessionCountsParams{Turns: 2, ToolCalls: 3, ID: "s-w1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Q.SetSessionCLICost(ctx, db.SetSessionCLICostParams{CliCostUsd: sql.NullFloat64{Float64: 0.5, Valid: true}, ID: "s-w1"}); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := s.Q.ListProjectSessions(ctx, p.ID)
+	if err != nil || len(sess) != 3 {
+		t.Fatalf("sessions %+v, %v", sess, err)
+	}
+	for _, r := range sess {
+		if r.ID == "s-w1" && (r.Turns != 2 || r.ToolCalls != 3 || r.CliCostUsd.Float64 != 0.5) {
+			t.Errorf("counters %+v", r)
+		}
+	}
+}
+
+func TestDeleteEventsBefore(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	p := seedProject(t, s)
+	old, recent := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)
+	if _, err := s.DB.Exec(`INSERT INTO agents (id, project_id, inherit_user_settings, state, started_at) VALUES ('a1', ?, 1, 'idle', ?)`, p.ID, old); err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []time.Time{old, old, recent} {
+		if err := s.Q.InsertEvent(ctx, db.InsertEventParams{AgentID: "a1", SessionID: "s", Kind: "k", State: "idle", At: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.Q.DeleteEventsBefore(ctx, recent.Add(-30*24*time.Hour))
+	if err != nil || n != 2 {
+		t.Fatalf("deleted %d, %v", n, err)
+	}
+}
+
+func TestPruneBackups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-office.db")
+	for _, n := range []string{"pre-v2", "pre-v4", "pre-v10", "pre-v6", "pre-v7", "pre-v07", "pre-v8.tmp-1", "pre-vx"} {
+		if err := os.WriteFile(path+"."+n, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removed := pruneBackups(path, 3)
+	if len(removed) != 2 {
+		t.Fatalf("removed %v", removed)
+	}
+	for _, n := range []string{"pre-v10", "pre-v7", "pre-v6", "pre-v07", "pre-v8.tmp-1", "pre-vx"} {
+		if _, err := os.Stat(path + "." + n); err != nil {
+			t.Errorf("%s removed", n)
+		}
+	}
+	for _, n := range []string{"pre-v2", "pre-v4"} {
+		if _, err := os.Stat(path + "." + n); err == nil {
+			t.Errorf("%s kept", n)
+		}
+	}
+}
