@@ -60,6 +60,12 @@ const (
 	KindClone     = "clone"
 )
 
+// Agent roles (agents.role, ADR 0017).
+const (
+	RoleLead   = "lead"
+	RoleWorker = "worker"
+)
+
 // Options configures the engine. All paths must be absolute.
 type Options struct {
 	Repo                string        // any path inside the repository
@@ -376,7 +382,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		if err := q.CreateAgent(ctx, db.CreateAgentParams{
 			ID: id, ProjectID: e.project.ID, TaskID: nullString(req.TaskID), Model: e.opts.Model,
 			InheritUserSettings: e.opts.InheritUserSettings, State: string(hooks.Starting), StartedAt: started,
-			Sandbox: mode,
+			Sandbox: mode, Role: RoleWorker,
 		}); err != nil {
 			return err
 		}
