@@ -1,6 +1,6 @@
 # Phase 7 plan: Pixel office UI
 
-- **Status:** Done on `phase-7/pixel-office`, waiting for Ozan's review (not merged). Written 2026-11-08 with the recommended option
+- **Status:** Done on `phase-7/pixel-office`; approved by Ozan and merged into `main` (2026-11-08). Written 2026-11-08 with the recommended option
   for every open question and executed straight away, as Ozan asked ("write the Phase 7 plan using
   your recommended options, then execute it immediately without asking me anything"). Every
   decision is listed in the end-of-phase summary; nothing is merged until Ozan has read it.
@@ -206,3 +206,6 @@ needed: the daemon, hooks, engine and worktrees do not change.
   logged no console errors, and a click on a character opened that worker's real terminal. After
   the review fixes, a restarted daemon showed the finished team at their desks and a new
   no-task agent idle at the next free desk.
+- **After the review (Ozan):** approved. The best screenshots moved from the session scratchpad to
+  `docs/screenshots/` (two in the README). Findings from Ozan's manual end-to-end test went into
+  the roadmap's backlog (Phases 8 to 11) and two new phases (12 Team workflow, 13 Office v2).

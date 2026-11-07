@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 7 (Pixel office UI), done on `phase-7/pixel-office`, waiting for review
+**Current phase:** Phase 8 (Observability & cost), not started; Phase 7 merged
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
@@ -13,11 +13,13 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 4: Team MCP server + lead agent
 - [x] Phase 5: GitHub loop + pluggable code review
 - [x] Phase 6: Stack packs
-- [x] Phase 7: Pixel office UI (branch `phase-7/pixel-office`, not merged)
+- [x] Phase 7: Pixel office UI
 - [ ] Phase 8: Observability & cost
 - [ ] Phase 9: Memory & persistence
 - [ ] Phase 10: Remote access (PWA over Tailscale)
 - [ ] Phase 11: Portfolio polish
+- [ ] Phase 12: Team workflow
+- [ ] Phase 13: Office v2
 
 ## Log
 
@@ -106,3 +108,12 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   `@playwright/test` 1.65.0, `@types/node` 26.6.6. An independent review led to render-on-demand,
   scene-side frame statistics, desks kept across tab switches and stronger tests, which found a
   lost first click (fixed). Live check with a real haiku team in sandbox mode.
+- 2026-11-08: Phase 7 review: approved. Screenshots kept in `docs/screenshots/` (two in the README,
+  whose status line was still at Phase 2). Ozan tested the system end to end by hand (single agent,
+  team run, access request deny/approve, interrupt, Import now, Save work, remove): everything
+  worked. His findings are backlog items in `docs/plan.md`: hide or explain Claude Code's resume
+  line (Phase 8, real fix in Phase 9), terminal copy/paste (Phase 10), `python3` in the worker
+  image (Phase 11), and two new phases appended so existing phase numbers stay valid: Phase 12
+  Team workflow (the lead stays until the goal is done, conflict detection and sequential
+  sub-tasks, messages to the user) and Phase 13 Office v2 (walking characters, rooms). Merged into
+  `main` (`--no-ff`).
