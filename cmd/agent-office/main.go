@@ -266,6 +266,12 @@ func parseServe(args []string) (serveConfig, error) {
 	if c.sandboxPids < 16 || c.sandboxPids > 65536 {
 		return c, fmt.Errorf("--sandbox-pids must be between 16 and 65536, got %d", c.sandboxPids)
 	}
+	if c.github && c.sandbox == modeHost {
+		// Host-mode agents run as you: they could read the GitHub token file or
+		// change .git hooks that the daemon's push would then run (ADR 0020).
+		return c, errors.New("--github needs sandboxed agents (--sandbox podman): host-mode agents run as you and " +
+			"could read the GitHub token or change the git hooks the daemon's push runs")
+	}
 	switch c.reviewer {
 	case review.NameInternal, review.NameCodeRabbit, engine.ReviewerNone:
 	default:

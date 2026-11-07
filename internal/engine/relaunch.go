@@ -51,7 +51,9 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string) (AgentInfo, er
 	if a.term != nil {
 		<-a.exited
 	}
-	// The exit import (sandbox) has finished before the branch moves on.
+	if a.afterExit != nil {
+		<-a.afterExit // the exit import (sandbox) has finished before the branch moves on
+	}
 	a.importMu.Lock()
 	defer a.importMu.Unlock()
 	info := a.info
@@ -67,6 +69,7 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string) (AgentInfo, er
 
 	sid, started := newUUID(), now()
 	var task *Task
+	prevStatus := ""
 	err = e.st.Tx(ctx, func(q *db.Queries) error {
 		if err := q.ReopenAgent(ctx, id); err != nil {
 			return err
@@ -81,6 +84,7 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string) (AgentInfo, er
 		if err != nil {
 			return err
 		}
+		prevStatus = t.Status
 		if t.Status != StatusInProgress {
 			if t, err = q.UpdateTask(ctx, db.UpdateTaskParams{Title: t.Title, Description: t.Description,
 				Status: StatusInProgress, UpdatedAt: started, ID: t.ID}); err != nil {
@@ -107,6 +111,11 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string) (AgentInfo, er
 		bg := context.Background()
 		_ = e.q.MarkAgentExited(bg, db.MarkAgentExitedParams{ExitedAt: nullTime(now()), ExitReason: ExitStartFailed, ID: id})
 		_ = e.q.EndSessions(bg, db.EndSessionsParams{EndedAt: nullTime(now()), AgentID: id})
+		if task != nil && prevStatus != "" && prevStatus != StatusInProgress {
+			if t, gerr := e.getTask(bg, task.ID); gerr == nil {
+				_, _ = e.setTaskStatus(bg, t, prevStatus) // no agent works on it after all
+			}
+		}
 		return AgentInfo{}, fmt.Errorf("relaunch agent %s: %w", id, err)
 	}
 	if task != nil {

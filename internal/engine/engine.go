@@ -168,6 +168,7 @@ type agentProc struct {
 	listener   *hooks.Listener
 	settings   string
 	exited     chan struct{} // closed by watch after the exit is recorded
+	afterExit  chan struct{} // closed by watch after the exit import (sandbox); nil for agents of a previous run
 	exitReason string        // set before stopping on purpose
 	busy       bool          // a remove/discard is in progress
 	sandbox    *sandboxRes   // nil in host mode and once the worker is gone
@@ -647,6 +648,7 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 		listener:   ln,
 		settings:   settingsPath,
 		exited:     make(chan struct{}),
+		afterExit:  make(chan struct{}),
 		mcp:        mln,
 		mcpConfig:  mcpConfig,
 		hasPrompt:  l.prompt != "",
@@ -718,8 +720,13 @@ func (e *Engine) watch(a *agentProc) {
 	close(a.exited)
 	e.log.Info("agent exited", "agent_id", a.info.ID, "exit_code", code, "reason", reason)
 	if a.info.Sandbox == SandboxPodman && a.info.Role != RoleReviewer {
-		e.importOnExit(a.info.ID) // ADR 0014: the work reaches the main repository on exit
+		// ADR 0014: the work reaches the main repository on exit, before a
+		// relaunch (ADR 0022) may start a new session in the workspace.
+		ictx, icancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		_, _ = e.importAgent(ictx, a.info.ID, TriggerExit)
+		icancel()
 	}
+	close(a.afterExit)
 	if a.reviewID != 0 {
 		e.reviewerExited(a.reviewID, a.info.ID)
 	}
@@ -1056,6 +1063,11 @@ func (e *Engine) Shutdown() {
 	}
 	e.mu.Lock()
 	e.closing = true
+	for e.starting > 0 { // a start that passed the check registers its agent first
+		e.mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		e.mu.Lock()
+	}
 	ids := slices.Clone(e.order)
 	e.mu.Unlock()
 	var wg sync.WaitGroup

@@ -281,6 +281,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		settings:   settingsPath,
 		sandbox:    res,
 		exited:     make(chan struct{}),
+		afterExit:  make(chan struct{}),
 		mcp:        mln,
 		hasPrompt:  l.prompt != "",
 	}

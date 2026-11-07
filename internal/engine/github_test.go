@@ -576,3 +576,113 @@ func TestReviewMessageMissedOnExitRelaunches(t *testing.T) {
 	}
 	screen(t, gf.e, w.ID, "hello again")
 }
+
+// ADR 0020: a branch that changes .github/ (workflows run with the
+// repository's secrets on push) is not pushed until the user accepts it.
+func TestWorkflowChangesBlockPush(t *testing.T) {
+	gf := newGHFixture(t, nil)
+	ctx := context.Background()
+	task, _ := gf.e.CreateTask(ctx, TaskInput{Title: "Add CI"})
+	w, err := gf.e.Start(ctx, StartRequest{TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gf.log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
+	if err := os.MkdirAll(filepath.Join(w.WorktreePath, ".github", "workflows"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.WorktreePath, ".github", "workflows", "ci.yml"), []byte("on: push\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, w.WorktreePath, "add", ".")
+	gitIn(t, w.WorktreePath, "commit", "-q", "-m", "ci: add workflow")
+	_, err = gf.e.OpenPullRequest(ctx, task.ID)
+	if !errors.Is(err, ErrFlagged) {
+		t.Fatalf("want ErrFlagged, got %v", err)
+	}
+	p := gf.waitPR(t, 5*time.Second, func(p *PullRequest) bool { return len(p.Flagged) == 1 })
+	if !strings.Contains(p.Flagged[0].Problem, ".github/workflows/ci.yml") || len(gf.srv.PRs) != 0 {
+		t.Fatalf("pull request %+v", p)
+	}
+	if p, err := gf.e.AcceptFlagged(ctx, p.ID, []string{p.Flagged[0].Commit}); err != nil || p.State != PROpen {
+		t.Fatalf("after accepting: %+v %v", p, err)
+	}
+}
+
+func TestReviewsOfOldHeadsAreSuperseded(t *testing.T) {
+	gf := newGHFixture(t, nil)
+	gf.e.opts.MaxAgents = 1 // the worker keeps the only slot: the review stays queued
+	ctx := context.Background()
+	_, w := gf.reportedWorker(t, "Add tags", "done")
+	p := gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return len(p.Reviews) == 1 })
+	typeLine(t, gf.e, w.ID, "commit-more")
+	screen(t, gf.e, w.ID, "\ncommitted more\n")
+	if _, err := gf.e.OpenPullRequest(ctx, p.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	p = gf.waitPR(t, 5*time.Second, func(p *PullRequest) bool { return len(p.Reviews) == 2 })
+	if old := p.Reviews[1]; old.Status != ReviewFailed || !strings.Contains(old.Error, "superseded") {
+		t.Fatalf("old review %+v", old)
+	}
+	if p.Reviews[0].Head != p.Head || p.Reviews[0].Status != ReviewQueued {
+		t.Fatalf("new review %+v", p.Reviews[0])
+	}
+}
+
+func TestReviewCapAndReviewerTimeout(t *testing.T) {
+	gf := newGHFixture(t, func(o *GitHubOptions) { o.ReviewTimeout = 300 * time.Millisecond })
+	ctx := context.Background()
+	_, w := gf.reportedWorker(t, "Add tags", "done")
+	p := gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return p.State == PROpen })
+	_ = gf.e.Stop(w.ID)
+	// A reviewer that never submits is ended and its review fails.
+	r := gf.reviewer(t, 1)
+	gf.log.wait(t, 5*time.Second, agentState(r.ID, hooks.Exited))
+	p = gf.waitPR(t, 5*time.Second, func(p *PullRequest) bool {
+		return len(p.Reviews) == 1 && p.Reviews[0].Status == ReviewFailed
+	})
+	if !strings.Contains(p.Reviews[0].Error, "no review submitted") && !strings.Contains(p.Reviews[0].Error, "without submitting") {
+		t.Fatalf("review %+v", p.Reviews[0])
+	}
+
+	// At most MaxReviewsPerPR automatic reviews per pull request.
+	for i := 0; i < MaxReviewsPerPR; i++ {
+		if _, err := gf.e.q.InsertReview(ctx, db.InsertReviewParams{PrID: p.ID, Reviewer: review.NameInternal,
+			Head: jsonID(int64(i)), Status: ReviewFailed, Comments: "[]", CreatedAt: now(), UpdatedAt: now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	row, _ := gf.e.getPR(ctx, p.ID)
+	row.Head = "another-head"
+	lock := gf.e.branchLock(row.Branch)
+	lock.Lock()
+	gf.e.requestReviewLocked(ctx, row, false)
+	lock.Unlock()
+	row, _ = gf.e.getPR(ctx, p.ID)
+	if _, err := gf.e.q.ReviewForHead(ctx, db.ReviewForHeadParams{PrID: p.ID, Reviewer: review.NameInternal,
+		Head: "another-head"}); err == nil || !strings.Contains(row.Error, "automatic reviews reached") {
+		t.Fatalf("review beyond the cap requested: %q %v", row.Error, err)
+	}
+}
+
+// Restart: a follow-up whose worker died with the daemon before pushing is
+// offered again (Send to worker).
+func TestRestartReoffersFollowup(t *testing.T) {
+	gf := newGHFixture(t, nil)
+	_, w := gf.reportedWorker(t, "Add tags", "done")
+	gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return p.State == PROpen })
+	_ = gf.e.Stop(w.ID)
+	r := gf.reviewer(t, 1)
+	gf.submit(t, r, mcp.SubmitReviewInput{Verdict: review.VerdictChangesRequested, Summary: "fix"})
+	gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return len(p.Reviews) == 1 && p.Reviews[0].Followup == FollowupStarted })
+	gf.e.Shutdown()
+	g := *gf.f.opts.GitHub
+	g.PollFast = time.Hour
+	gf.f.opts.GitHub = &g
+	e2 := gf.f.engine(t)
+	prs, err := e2.PullRequests(context.Background())
+	if err != nil || len(prs) != 1 || prs[0].Reviews[0].Followup != FollowupRefused ||
+		!strings.Contains(prs[0].Reviews[0].Error, "restarted") {
+		t.Fatalf("after restart %+v %v", prs, err)
+	}
+}

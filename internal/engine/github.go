@@ -83,6 +83,9 @@ const (
 	MaxCommentLen     = 2000
 	maxStoredSummary  = 8000
 	maxErrorLen       = 1000
+	// MaxReviewsPerPR bounds the automatic reviews of one pull request, so a
+	// worker that keeps reporting cannot start reviewer sessions without end.
+	MaxReviewsPerPR = 10
 )
 
 // PullRequest is the public view of a pull request.
@@ -208,6 +211,28 @@ func (e *Engine) startGitHub(ctx context.Context) error {
 		}
 	}
 
+	// Follow-ups of the previous run: their worker is gone, and nothing pushed
+	// a new head yet. Offer them to the user again (Send to worker).
+	for _, status := range []string{ReviewDone} {
+		done, err := e.q.ListReviewsByStatus(ctx, db.ListReviewsByStatusParams{ProjectID: e.project.ID, Status: status})
+		if err != nil {
+			return fmt.Errorf("engine: load reviews: %w", err)
+		}
+		for _, rv := range done {
+			if rv.Followup != FollowupStarted && rv.Followup != FollowupMessaged {
+				continue
+			}
+			row, err := e.getPR(ctx, rv.PrID)
+			if err != nil || row.State != PROpen || row.Head != rv.Head {
+				continue
+			}
+			if _, err := e.q.SetReviewFollowup(ctx, db.SetReviewFollowupParams{Followup: FollowupRefused, UpdatedAt: now(),
+				ID: rv.ID}); err == nil {
+				_, _ = e.updateReview(ctx, rv, rv.Status, "the daemon restarted before the worker pushed a fix; use Send to worker")
+			}
+		}
+	}
+
 	pctx, cancel := context.WithCancel(context.Background())
 	e.stopPoll = cancel
 	e.wg.Add(1)
@@ -303,68 +328,97 @@ func (e *Engine) submitPR(ctx context.Context, agentID, summary string, manual b
 		return PullRequest{}, invalid("only a worker's branch becomes a pull request")
 	}
 	branch := info.Branch
+	var imp *ImportInfo
 	if info.Sandbox == SandboxPodman {
-		imp := info.LastImport
+		imp = info.LastImport
 		if imp == nil || imp.Outcome == OutcomeNoCommits {
 			return PullRequest{}, invalid("agent %s's branch has not been imported with commits yet", agentID)
 		}
 		if imp.Branch != "" {
 			branch = imp.Branch
 		}
-		if imp.Outcome == "diverged" && !manual {
-			return PullRequest{}, invalid("agent %s rewrote its history (imported as %s); open its pull request by hand",
-				agentID, branch)
-		}
 	}
 	lock := e.branchLock(branch)
 	lock.Lock()
 	defer lock.Unlock()
 
-	repo := e.project.RepoPath
-	head, err := e.git.RevParse(ctx, repo, "refs/heads/"+branch)
-	if err != nil {
-		return PullRequest{}, fmt.Errorf("branch %s: %w", branch, err)
-	}
-	commits, err := e.git.BranchCommits(ctx, repo, base, branch)
-	if err != nil {
-		return PullRequest{}, err
-	}
-	if len(commits) == 0 {
-		return PullRequest{}, invalid("branch %s has no commits", branch)
-	}
 	t := now()
 	row, err := e.q.UpsertPullRequest(ctx, db.UpsertPullRequestParams{ProjectID: e.project.ID,
 		TaskID: nullString(info.TaskID), AgentID: agentID, Branch: branch, CreatedAt: t, UpdatedAt: t})
 	if err != nil {
 		return PullRequest{}, err
 	}
+	// refuse records why nothing was pushed, so the UI shows it (not only the log).
+	refuse := func(err error) (PullRequest, error) {
+		row.Error = truncateRunes(firstLine(err.Error()), maxErrorLen)
+		if r, uerr := e.saveRow(ctx, row); uerr == nil {
+			row = r
+		}
+		e.publishPR(ctx, row)
+		return e.prView(ctx, row), err
+	}
 	if row.State == PRMerged {
-		return PullRequest{}, invalid("the pull request for %s was merged; new work needs a new task", branch)
+		return refuse(invalid("the pull request for %s was merged; new work needs a new task", branch))
+	}
+	if imp != nil && imp.Outcome == "diverged" && !manual {
+		return refuse(invalid("the agent rewrote its history (imported as %s); open its pull request by hand", branch))
+	}
+	repo := e.project.RepoPath
+	head, err := e.git.RevParse(ctx, repo, "refs/heads/"+branch)
+	if err != nil {
+		return refuse(fmt.Errorf("branch %s: %w", branch, err))
+	}
+	commits, err := e.git.BranchCommits(ctx, repo, base, branch)
+	if err != nil {
+		return refuse(err)
+	}
+	if len(commits) == 0 {
+		return refuse(invalid("branch %s has no commits", branch))
 	}
 
 	// ADR 0014: commits failing the identity check are not pushed until the
-	// user accepted exactly those commits.
-	if info.Sandbox == SandboxPodman {
-		name, email, err := e.git.UserIdentity(ctx, repo)
-		if err != nil {
-			return PullRequest{}, err
-		}
+	// user accepted exactly those commits. ADR 0020: neither is a change under
+	// .github/ (workflows run with the repository's secrets on push), until
+	// the user accepted that head.
+	{
 		var accepted []string
 		_ = json.Unmarshal([]byte(row.AcceptedFlagged), &accepted)
+		var found []FlaggedCommit
+		if info.Sandbox == SandboxPodman {
+			name, email, err := e.git.UserIdentity(ctx, repo)
+			if err != nil {
+				return refuse(err)
+			}
+			found = checkCommits(commits, name, email, sandbox.CoAuthor(agentName(agentID)))
+		}
+		files, err := e.git.ChangedFiles(ctx, repo, base, head)
+		if err != nil {
+			return refuse(err)
+		}
+		var gh []string
+		for _, f := range files {
+			if strings.HasPrefix(f, ".github/") {
+				gh = append(gh, f)
+			}
+		}
+		if len(gh) > 0 {
+			found = append(found, FlaggedCommit{Commit: head, Problem: "changes files under .github/ (workflows run " +
+				"with the repository's secrets when pushed): " + truncateRunes(strings.Join(gh, ", "), 300)})
+		}
 		var blocking []FlaggedCommit
-		for _, f := range checkCommits(commits, name, email, sandbox.CoAuthor(agentName(agentID))) {
+		for _, f := range found {
 			if !slices.Contains(accepted, f.Commit) {
 				blocking = append(blocking, f)
 			}
 		}
 		msg := ""
 		if len(blocking) > 0 {
-			msg = fmt.Sprintf("%d commit(s) failed the identity check; accept them to push", len(blocking))
+			msg = fmt.Sprintf("%d flagged item(s) block the push; review and accept them to push", len(blocking))
 		}
 		pending, _ := json.Marshal(nonNil(blocking))
 		if row, err = e.q.SetPullRequestFlagged(ctx, db.SetPullRequestFlaggedParams{PendingFlagged: string(pending),
 			AcceptedFlagged: row.AcceptedFlagged, Error: msg, UpdatedAt: now(), ID: row.ID}); err != nil {
-			return PullRequest{}, err
+			return refuse(err)
 		}
 		if len(blocking) > 0 {
 			e.publishPR(ctx, row)
@@ -388,7 +442,7 @@ func (e *Engine) submitPR(ctx context.Context, agentID, summary string, manual b
 		task, _ = e.getTask(ctx, info.TaskID)
 	}
 	p, created, err := g.Client.EnsurePR(ctx, github.NewPR{Branch: branch, Base: g.Base,
-		Title: prTitle(task, branch), Body: prBody(task, info, branch, len(commits), summary, e.gh.reviewer.Name())})
+		Title: github.Neutralize(prTitle(task, branch)), Body: prBody(task, info, branch, len(commits), summary, e.gh.reviewer.Name())})
 	if err != nil {
 		return fail("open pull request", err)
 	}
@@ -398,6 +452,7 @@ func (e *Engine) submitPR(ctx context.Context, agentID, summary string, manual b
 	}
 	e.log.Info("pull request ready", "agent_id", agentID, "task_id", info.TaskID, "pr", p.Number, "created", created,
 		"branch", branch, "head", short(head))
+	e.supersedeReviews(ctx, row)
 	e.requestReviewLocked(ctx, row, false)
 	e.publishPR(ctx, row)
 	return e.prView(ctx, row), nil
@@ -492,6 +547,21 @@ func (e *Engine) requestReviewLocked(ctx context.Context, row db.PullRequest, ag
 	}
 	if !again {
 		if _, err := e.q.ReviewForHead(ctx, db.ReviewForHeadParams{PrID: row.ID, Reviewer: rv.Name(), Head: row.Head}); err == nil {
+			return
+		}
+		all, err := e.q.ListReviews(ctx, db.ListReviewsParams{PrID: row.ID, Limit: MaxReviewsPerPR + 50})
+		if err != nil {
+			return
+		}
+		n := 0
+		for _, r := range all {
+			if r.Reviewer != review.NameHuman {
+				n++
+			}
+		}
+		if n >= MaxReviewsPerPR {
+			row.Error = fmt.Sprintf("%d automatic reviews reached; use Request review to ask for another", MaxReviewsPerPR)
+			_, _ = e.saveRow(ctx, row)
 			return
 		}
 	}
@@ -717,12 +787,12 @@ func (e *Engine) submitReview(ctx context.Context, caller string, in mcp.SubmitR
 	}
 	rv, err = e.updateReview(ctx, rv, ReviewDone, msg)
 	lock.Unlock()
+	e.mu.Lock()
+	a.stopAfterTurn = true // even if recording failed: never post a second review
+	e.mu.Unlock()
 	if err != nil {
 		return mcp.SubmitReviewOutput{}, err
 	}
-	e.mu.Lock()
-	a.stopAfterTurn = true
-	e.mu.Unlock()
 	e.log.Info("review submitted", "agent_id", caller, "pr", row.Number, "review_id", rv.ID, "verdict", verdict,
 		"comments", len(comments), "posted", perr == nil)
 	e.publishPRByID(ctx, row.ID)
@@ -876,7 +946,7 @@ func (e *Engine) SendToWorker(ctx context.Context, prID, reviewID int64) (PullRe
 func (e *Engine) followUp(ctx context.Context, row db.PullRequest, rv db.Review) (string, error) {
 	e.mu.Lock()
 	a, ok := e.agents[row.AgentID]
-	running := ok && a.running()
+	running := ok && a.running() && !a.stopAfterTurn // an ending worker is relaunched once it is gone
 	e.mu.Unlock()
 	if !ok {
 		return "", invalid("agent %s was removed; start a new agent on the task", row.AgentID)
@@ -900,6 +970,12 @@ func (e *Engine) followUp(ctx context.Context, row db.PullRequest, rv db.Review)
 		e.gh.mu.Lock()
 		e.gh.messaged[row.AgentID] = append(e.gh.messaged[row.AgentID], messagedReview{msgID: m.ID, prID: row.ID, reviewID: rv.ID})
 		e.gh.mu.Unlock()
+		e.mu.Lock()
+		gone := e.agents[row.AgentID] != a || !a.running()
+		e.mu.Unlock()
+		if gone { // it exited in between: its exit handler may have run already
+			defer e.followupAfterExit(row.AgentID)
+		}
 		e.log.Info("review sent to the running worker", "agent_id", row.AgentID, "pr", row.Number, "review_id", rv.ID)
 		return FollowupMessaged, nil
 	}
@@ -924,6 +1000,28 @@ func (e *Engine) followUp(ctx context.Context, row db.PullRequest, rv db.Review)
 	}
 }
 
+// supersedeReviews ends the pending reviews of older heads when a new head
+// was pushed: they would never finish, and a running reviewer agent of an
+// old head is stopped.
+func (e *Engine) supersedeReviews(ctx context.Context, row db.PullRequest) {
+	reviews, err := e.q.ListReviews(ctx, db.ListReviewsParams{PrID: row.ID, Limit: 50})
+	if err != nil {
+		return
+	}
+	for _, rv := range reviews {
+		if rv.Head == row.Head || (rv.Status != ReviewQueued && rv.Status != ReviewRunning) {
+			continue
+		}
+		if _, err := e.updateReview(ctx, rv, ReviewFailed, "superseded by a newer push"); err != nil {
+			continue
+		}
+		if id := rv.AgentID.String; id != "" {
+			e.wg.Add(1)
+			go func() { defer e.wg.Done(); _ = e.stop(id, ExitStopped) }()
+		}
+	}
+}
+
 // followupAfterExit relaunches a worker that exited before a review sent to
 // it as a message was delivered (ADR 0022): the message is never delivered to
 // the next session, so the review goes into its prompt instead.
@@ -943,9 +1041,10 @@ func (e *Engine) followupAfterExit(agentID string) {
 				return
 			}
 			rv, err := e.q.GetReview(ctx, p.reviewID)
-			if err != nil || rv.Head != row.Head || rv.Followup != FollowupMessaged {
+			if err != nil || rv.Head != row.Head {
 				return
 			}
+			// Each entry is taken from gh.messaged once, so only one relaunch runs.
 			e.log.Info("worker exited before the review reached it; relaunching it", "agent_id", agentID, "pr", row.Number)
 			outcome, err := e.followUp(ctx, row, rv)
 			msg := ""
@@ -1123,6 +1222,17 @@ func (e *Engine) pollPR(ctx context.Context, prID int64) {
 			e.tryRequest(ctx, row, rv)
 			changed = true
 		case ReviewRunning:
+			if rv.Reviewer == review.NameInternal && time.Since(rv.UpdatedAt) > g.ReviewTimeout {
+				// A reviewer agent that never submits holds a slot; end it.
+				if _, err := e.updateReview(ctx, rv, ReviewFailed, fmt.Sprintf("no review submitted within %s", g.ReviewTimeout)); err == nil {
+					if id := rv.AgentID.String; id != "" {
+						e.wg.Add(1)
+						go func() { defer e.wg.Done(); _ = e.stop(id, ExitStopped) }()
+					}
+				}
+				changed = true
+				continue
+			}
 			f, err := e.gh.reviewer.Poll(ctx, prFor(row))
 			if err != nil {
 				if !e.rateLimited(err) {

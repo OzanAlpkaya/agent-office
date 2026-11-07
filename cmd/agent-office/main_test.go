@@ -32,6 +32,7 @@ func TestParseServe(t *testing.T) {
 		{"--repo", "/tmp", "--reviewer", "gpt"},
 		{"--repo", "/tmp", "--review-rounds", "6"},
 		{"--repo", "/tmp", "--review-rounds", "-1"},
+		{"--repo", "/tmp", "--github", "--sandbox", "host"},
 	} {
 		if _, err := parseServe(args); err == nil {
 			t.Errorf("parseServe(%v) accepted", args)

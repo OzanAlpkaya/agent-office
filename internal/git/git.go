@@ -328,3 +328,23 @@ func (g Git) RevParse(ctx context.Context, repo, rev string) (string, error) {
 	}
 	return g.run(ctx, repo, "rev-parse", "--verify", "--end-of-options", rev+"^{commit}")
 }
+
+// ChangedFiles lists the paths that differ between base and head in repo.
+func (g Git) ChangedFiles(ctx context.Context, repo, base, head string) ([]string, error) {
+	for _, r := range []string{base, head} {
+		if strings.HasPrefix(r, "-") {
+			return nil, fmt.Errorf("git: invalid revision %q", r)
+		}
+	}
+	out, err := g.run(ctx, repo, "diff", "--name-only", "-z", "--no-renames", base, head, "--")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, f := range strings.Split(out, "\x00") {
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return files, nil
+}

