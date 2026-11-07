@@ -37,6 +37,7 @@ func TestParseClaudeHookFixtures(t *testing.T) {
 				t.Fatal(err)
 			}
 			want.SessionID = "11111111-2222-4333-8444-555555555555"
+			want.TranscriptPath = "/redacted/transcript.jsonl"
 			if got != want {
 				t.Fatalf("got %+v\nwant %+v", got, want)
 			}
@@ -53,6 +54,20 @@ func TestParseClaudeHookRejectsInvalid(t *testing.T) {
 		`{"hook_event_name":"Stop","session_id":"` + strings.Repeat("a", 65) + `"}`} {
 		if _, err := ParseClaudeHook([]byte(raw)); !errors.Is(err, ErrInvalidPayload) {
 			t.Errorf("%s: want ErrInvalidPayload, got %v", raw, err)
+		}
+	}
+}
+
+func TestTranscriptPathIsAPathOnly(t *testing.T) {
+	for in, want := range map[string]string{
+		"/home/u/.claude/projects/-repo/s.jsonl":   "/home/u/.claude/projects/-repo/s.jsonl",
+		"relative/s.jsonl":                         "",
+		"/a/s.json":                                "",
+		"/a/s\n.jsonl":                             "",
+		"/" + strings.Repeat("a", 5000) + ".jsonl": "",
+	} {
+		if got := transcriptPath(in); got != want {
+			t.Errorf("transcriptPath(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

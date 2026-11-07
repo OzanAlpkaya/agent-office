@@ -3,17 +3,22 @@ package sandbox
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/secret"
+	"github.com/OzanAlpkaya/agent-office/internal/usage"
 )
 
 const fakeRealToken = "fake-real-token-for-tests-only"
@@ -219,5 +224,80 @@ func TestAPIProxyUpstreamDown(t *testing.T) {
 	}
 	if ev := rec.all(); len(ev) != 1 || ev[0].Kind != APIError {
 		t.Fatalf("events %+v", ev)
+	}
+}
+
+// ADR 0026/0027: the proxy meters usage from the stream (also when the
+// upstream compresses), logs Anthropic's request id, and refuses requests
+// once Allow says a budget is spent, without contacting the upstream.
+func TestAPIProxyMetersUsageAndBudget(t *testing.T) {
+	stream, err := os.ReadFile(filepath.Join("..", "usage", "testdata", "stream_a.sse"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits int
+	var gotEncoding string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		gotEncoding = r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Request-Id", "req_01AAAA")
+		if strings.Contains(gotEncoding, "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			zw := gzip.NewWriter(w)
+			zw.Write(stream)
+			zw.Close()
+			return
+		}
+		w.Write(stream)
+	}))
+	t.Cleanup(up.Close)
+	u, _ := url.Parse(up.URL)
+	var mu sync.Mutex
+	var got []usage.Message
+	var refuse error
+	rec := &recorder{}
+	logs := &bytes.Buffer{}
+	p := &APIProxy{Token: secret.New(fakeRealToken), Upstream: u, Transport: &http.Transport{},
+		OnEvent: rec.add, Log: slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		OnUsage: func(m usage.Message) { mu.Lock(); got = append(got, m); mu.Unlock() },
+		Allow:   func() error { mu.Lock(); defer mu.Unlock(); return refuse }}
+	srv := httptest.NewServer(p.Handler())
+	t.Cleanup(srv.Close)
+
+	resp := post(t, srv.URL, "/v1/messages", "Bearer "+Placeholder, strings.NewReader("{}"), "Accept-Encoding", "br")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !bytes.Equal(body, stream) {
+		t.Fatalf("status %d, body changed: %v", resp.StatusCode, !bytes.Equal(body, stream))
+	}
+	if gotEncoding != "gzip" {
+		t.Errorf("upstream Accept-Encoding %q, want Go's gzip (the client's br removed)", gotEncoding)
+	}
+	mu.Lock()
+	if len(got) == 0 || got[len(got)-1].ID != "msg_01AAAA" || got[len(got)-1].Output != 480 || got[len(got)-1].RequestID != "req_01AAAA" {
+		t.Errorf("metered %+v", got)
+	}
+	refuse = errors.New("this session's budget of $1.00 is spent")
+	mu.Unlock()
+	if !strings.Contains(logs.String(), `"request_id":"req_01AAAA"`) {
+		t.Errorf("request id not logged: %s", logs)
+	}
+
+	resp = post(t, srv.URL, "/v1/messages", "Bearer "+Placeholder, strings.NewReader("{}"))
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "budget of $1.00 is spent") ||
+		!strings.Contains(string(body), "permission_error") {
+		t.Errorf("refusal %d %s", resp.StatusCode, body)
+	}
+	if hits != 1 {
+		t.Errorf("upstream hits %d, want 1", hits)
+	}
+	if evs := rec.all(); len(evs) != 1 || evs[0].Kind != APIBudget {
+		t.Errorf("events %+v", evs)
+	}
+	if strings.Contains(logs.String(), "SENSITIVE") {
+		t.Errorf("content logged: %s", logs)
 	}
 }

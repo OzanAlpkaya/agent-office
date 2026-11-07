@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -31,8 +32,7 @@ func (e *Engine) Team() mcp.Team { return team{e} }
 type team struct{ e *Engine }
 
 // listenMCP serves the team MCP server for agent id on path (ADR 0006).
-func (e *Engine) listenMCP(path, id, role string) (*mcp.Listener, error) {
-	log := e.log.With("agent_id", id)
+func (e *Engine) listenMCP(path, id, role string, log *slog.Logger) (*mcp.Listener, error) {
 	return mcp.Listen(path, mcp.NewServer(e.Team(), id, role, e.opts.Version, log), log)
 }
 

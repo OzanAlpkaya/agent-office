@@ -41,7 +41,16 @@ func fakeClaude() int {
 	}
 	sock := os.Getenv(agent.SocketEnv)
 	// send forwards a hook and prints a non-empty reply (a Stop-hook block).
+	// AO_FAKE_TRANSCRIPT_DIR: hooks carry transcript_path, as Claude Code's do,
+	// and the "usage" command writes the usage fixture there (ADR 0026).
+	transcript := ""
+	if d := os.Getenv("AO_FAKE_TRANSCRIPT_DIR"); d != "" {
+		transcript = filepath.Join(d, sid+".jsonl")
+	}
 	send := func(event string, extra string) {
+		if transcript != "" {
+			extra += fmt.Sprintf(`,"transcript_path":%q`, transcript)
+		}
 		payload := fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q%s}`, event, sid, extra)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -79,6 +88,19 @@ func fakeClaude() int {
 			return 0
 		case "crash":
 			return 7 // exit without a SessionEnd hook
+		case "usage": // a turn whose transcript and subagent transcript hold the usage fixture
+			src := os.Getenv("AO_FAKE_TRANSCRIPT_SRC")
+			main, _ := os.ReadFile(filepath.Join(src, usageFixtureSession+".jsonl"))
+			sub, _ := os.ReadFile(filepath.Join(src, usageFixtureSession, "subagents", "agent-a1b2c3.jsonl"))
+			subDir := filepath.Join(filepath.Dir(transcript), sid, "subagents")
+			_ = os.MkdirAll(subDir, 0o700)
+			_ = os.WriteFile(filepath.Join(subDir, "agent-a1b2c3.jsonl"), sub, 0o600)
+			_ = os.WriteFile(transcript, main, 0o600)
+			send("UserPromptSubmit", `,"prompt":"SENSITIVE"`)
+			send("PreToolUse", `,"tool_name":"Bash"`)
+			send("PostToolUse", `,"tool_name":"Bash"`)
+			send("SubagentStop", `,"agent_id":"a1b2c3"`)
+			send("Stop", `,"stop_hook_active":false`)
 		case "busy": // a turn that keeps running
 			send("UserPromptSubmit", "")
 		case "turn": // a whole turn

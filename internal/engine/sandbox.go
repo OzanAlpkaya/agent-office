@@ -20,6 +20,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/secret"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
+	"github.com/OzanAlpkaya/agent-office/internal/usage"
 )
 
 // SandboxOptions turns on sandboxed workers (ADR 0007, 0014–0016). With nil
@@ -191,7 +192,8 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	s := e.opts.Sandbox
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	log := e.log.With("agent_id", id)
+	log := e.sessionLogger(l)
+	su := e.newSessionUsage(l, SandboxPodman)
 
 	res := &sandboxRes{dir: filepath.Join(e.opts.RuntimeDir, "agents", id), container: sandbox.ContainerName(id),
 		grants: &sandbox.Grants{}}
@@ -251,7 +253,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		}
 	}
 
-	if ln, err = hooks.Listen(filepath.Join(res.dir, "hook.sock"), e.hookHandler(id), log); err != nil {
+	if ln, err = hooks.Listen(filepath.Join(res.dir, "hook.sock"), e.hookHandler(id, log), log); err != nil {
 		return fail(err)
 	}
 	mcpPath, mcpConfig := filepath.Join(res.dir, "mcp.sock"), filepath.Join(res.dir, "mcp.json")
@@ -262,7 +264,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	if err := os.WriteFile(mcpConfig, cfg, 0o644); err != nil { // read by the container user; dir is 0700
 		return fail(err)
 	}
-	if mln, err = e.listenMCP(mcpPath, id, l.role); err != nil {
+	if mln, err = e.listenMCP(mcpPath, id, l.role, log); err != nil {
 		return fail(err)
 	}
 	onEvent := func(ev sandbox.Event) { e.sandboxEvent(id, ev) }
@@ -280,7 +282,10 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	if err != nil {
 		return fail(err)
 	}
-	api := &sandbox.APIProxy{Token: prep.token, Upstream: s.apiUpstream, OnEvent: onEvent, Log: log.With("proxy", "api")}
+	apiLog := log.With("proxy", "api")
+	api := &sandbox.APIProxy{Token: prep.token, Upstream: s.apiUpstream, OnEvent: onEvent, Log: apiLog,
+		OnUsage: func(m usage.Message) { e.recordUsage(su, []usage.Message{m}, apiLog) },
+		Allow:   func() error { return e.allowRequest(su) }}
 	res.api = &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = res.api.Serve(apiLn) }()
 
@@ -338,11 +343,13 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		afterExit:  make(chan struct{}),
 		mcp:        mln,
 		hasPrompt:  l.prompt != "",
+		usage:      su,
+		log:        log,
 	}
 	e.mu.Lock()
 	e.registerLocked(a, l)
 	e.mu.Unlock()
-	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "sandbox", SandboxPodman, "session_id", sid, "task_id", taskID, "branch", branch,
+	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "sandbox", SandboxPodman, "branch", branch,
 		"workspace", wsPath, "container", res.container, "image", s.Image, "pack", packName(s.Pack),
 		"secrets", secretNames(prep.secrets), "model", e.opts.Model)
 	e.wg.Add(1)

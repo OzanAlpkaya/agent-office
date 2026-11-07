@@ -127,13 +127,13 @@ func (f *FileReader) ReadNew() (Reading, error) {
 	defer fh.Close()
 	fi, err := fh.Stat()
 	if err != nil {
-		return Reading{}, err
+		return Reading{}, errors.New("usage: transcript: stat failed")
 	}
 	if fi.Size() < f.offset { // truncated or replaced: start over (rows are upserts)
 		f.offset, f.skipping = 0, false
 	}
 	if _, err := fh.Seek(f.offset, io.SeekStart); err != nil {
-		return Reading{}, err
+		return Reading{}, errors.New("usage: transcript: seek failed")
 	}
 	r, n, err := f.read(io.LimitReader(fh, MaxRead))
 	f.offset += n
@@ -190,24 +190,30 @@ func (f *FileReader) read(src io.Reader) (Reading, int64, error) {
 }
 
 // openOwned opens a regular file owned by the current user without
-// following a symlink; the checks run on the opened file.
+// following a symlink; the checks run on the opened file. Errors never name
+// the path (it is a local path, ADR 0026); errors.Is still matches the
+// underlying error, e.g. os.ErrNotExist.
 func openOwned(path string) (*os.File, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return nil, fmt.Errorf("usage: %s: not a clean absolute path", path)
+		return nil, errors.New("usage: transcript: not a clean absolute path")
 	}
 	fh, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return nil, fmt.Errorf("usage: %w", err)
+		var pe *os.PathError
+		if errors.As(err, &pe) {
+			err = pe.Err
+		}
+		return nil, fmt.Errorf("usage: transcript: %w", err)
 	}
 	fi, err := fh.Stat()
 	if err != nil {
 		fh.Close()
-		return nil, err
+		return nil, errors.New("usage: transcript: stat failed")
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !fi.Mode().IsRegular() || !ok || st.Uid != uint32(os.Getuid()) {
 		fh.Close()
-		return nil, fmt.Errorf("usage: %s: not a regular file owned by you", path)
+		return nil, errors.New("usage: transcript: not a regular file owned by you")
 	}
 	return fh, nil
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
+	"github.com/OzanAlpkaya/agent-office/internal/usage"
 )
 
 // Errors returned by the engine.
@@ -101,12 +103,16 @@ type Options struct {
 	AgentOfficeBin      string          // this binary (absolute); host agents run `<bin> mcp` (ADR 0006)
 	Version             string          // reported by the team MCP server
 	GitHub              *GitHubOptions  // nil: no pushes or pull requests (ADR 0020)
+	Prices              *usage.Prices   // cost estimates (ADR 0026); nil: the built-in table
+	Budgets             Budgets         // sandboxed agents' spend limits (ADR 0027); zero: off
+	EventRetention      time.Duration   // reduced events older than this are deleted (ADR 0028); 0: kept
 
 	// Message delivery timing (ADR 0018); zero values get the defaults. Tests
 	// shorten them.
 	deliverySettle time.Duration // idle this long before a message is typed
 	typingQuiet    time.Duration // no user input for this long before typing
 	enterDelay     time.Duration // between typing a message and pressing Enter
+	usageThrottle  time.Duration // at most one live usage update per session this often
 }
 
 // Status is the daemon-wide state the UI shows next to the board.
@@ -117,6 +123,8 @@ type Status struct {
 	Pack     *PackStatus   `json:"pack,omitempty"`   // stack pack (ADR 0023)
 	Warnings []string      `json:"warnings"`
 	GitHub   *GitHubStatus `json:"github,omitempty"`
+	Prices   PriceInfo     `json:"prices"`  // cost estimates (ADR 0026)
+	Budgets  Budgets       `json:"budgets"` // enforced for sandboxed agents only (ADR 0027)
 }
 
 // PackStatus is what the daemon's stack pack gives sandboxed agents. Secrets
@@ -165,7 +173,7 @@ type AgentInfo struct {
 // Update is one change broadcast to subscribers.
 type Update struct {
 	// "agent" | "agent_removed" | "task" | "task_deleted" | "sandbox_event" | "message" | "access_request" |
-	// "pull_request"
+	// "pull_request" | "usage"
 	Type          string         `json:"type"`
 	Agent         *AgentInfo     `json:"agent,omitempty"`
 	Task          *Task          `json:"task,omitempty"`
@@ -174,6 +182,7 @@ type Update struct {
 	Message       *Message       `json:"message,omitempty"`
 	AccessRequest *AccessRequest `json:"access_request,omitempty"`
 	PullRequest   *PullRequest   `json:"pull_request,omitempty"`
+	Usage         *SessionUsage  `json:"usage,omitempty"` // a running session's usage (ADR 0026)
 }
 
 type agentProc struct {
@@ -195,6 +204,8 @@ type agentProc struct {
 	reviewID   int64          // reviewers: the review they were started for (ADR 0021)
 	followup   *followupRound // workers relaunched for a review, until they report (ADR 0022); guarded by Engine.mu
 	since      time.Time      // this session's start: older messages are not delivered to it (ADR 0022)
+	usage      *sessionUsage  // this session's token usage (ADR 0026); nil for agents of a previous run
+	log        *slog.Logger   // this session's logger: agent, session and task ids (ADR 0028)
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
 	hasPrompt     bool        // started with an initial prompt
@@ -227,7 +238,9 @@ type Engine struct {
 
 	gh       *ghState // GitHub integration; nil when off (ADR 0020)
 	stopPoll context.CancelFunc
-	closing  bool // Shutdown began: no agent starts any more; guarded by mu
+	stopBG   context.CancelFunc // retention loop (ADR 0028)
+	ids      *sessionIDs        // running agents' sessions, for log lines (ADR 0028)
+	closing  bool               // Shutdown began: no agent starts any more; guarded by mu
 }
 
 // New validates opts, registers the repository as a project, reconciles state
@@ -244,6 +257,8 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	ids := &sessionIDs{}
+	opts.Logger = slog.New(newSessionHandler(opts.Logger.Handler(), ids))
 	if opts.StopTimeout <= 0 {
 		opts.StopTimeout = 5 * time.Second
 	}
@@ -261,6 +276,15 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	}
 	if opts.enterDelay <= 0 {
 		opts.enterDelay = 800 * time.Millisecond
+	}
+	if opts.usageThrottle <= 0 {
+		opts.usageThrottle = 2 * time.Second
+	}
+	if opts.Prices == nil {
+		opts.Prices = usage.Builtin()
+	}
+	if b := opts.Budgets; b.SessionUSD < 0 || b.GoalUSD < 0 || math.IsNaN(b.SessionUSD) || math.IsNaN(b.GoalUSD) {
+		return nil, fmt.Errorf("engine: budgets must not be negative, got %+v", b)
 	}
 	if opts.Sandbox != nil {
 		if err := opts.Sandbox.validate(); err != nil {
@@ -294,6 +318,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	e := &Engine{
 		opts:      opts,
 		log:       opts.Logger,
+		ids:       ids,
 		adapter:   agent.ClaudeCode{Bin: opts.ClaudeBin},
 		git:       opts.Git,
 		q:         opts.Store.Q,
@@ -316,6 +341,10 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 			return nil, err
 		}
 	}
+	bg, cancel := context.WithCancel(context.Background())
+	e.stopBG = cancel
+	e.wg.Add(1)
+	go e.retentionLoop(bg)
 	return e, nil
 }
 
@@ -393,6 +422,8 @@ func (e *Engine) Status() Status {
 				Skills: append([]string{}, p.Skills...), MCPServers: p.ServerNames()}
 		}
 	}
+	p := e.prices()
+	st.Prices, st.Budgets = PriceInfo{AsOf: p.AsOf, Source: p.Source, File: p.File}, e.opts.Budgets
 	if g := e.opts.GitHub; g != nil {
 		st.GitHub = &GitHubStatus{Repo: g.Client.Repo().String(), Base: g.Base, Remote: g.Remote, Reviewer: e.gh.reviewer.Name(),
 			Rounds: g.Rounds}
@@ -606,6 +637,7 @@ func (e *Engine) registerLocked(a *agentProc, l launchInfo) {
 		e.order = append(e.order, a.info.ID)
 	}
 	e.agents[a.info.ID] = a
+	e.ids.set(a.info.ID, a.info.SessionID, a.info.TaskID)
 	e.publishAgentLocked(a)
 }
 
@@ -617,6 +649,7 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return AgentInfo{}, err
 	}
+	log := e.sessionLogger(l)
 	settingsPath := filepath.Join(dir, id+".settings.json")
 	settings, err := agent.HookSettings(e.opts.HookCommand)
 	if err != nil {
@@ -625,7 +658,7 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 	if err := os.WriteFile(settingsPath, settings, 0o600); err != nil {
 		return AgentInfo{}, fmt.Errorf("write settings: %w", err)
 	}
-	ln, err := hooks.Listen(filepath.Join(dir, id+".sock"), e.hookHandler(id), e.log.With("agent_id", id))
+	ln, err := hooks.Listen(filepath.Join(dir, id+".sock"), e.hookHandler(id, log), log)
 	if err != nil {
 		os.Remove(settingsPath)
 		return AgentInfo{}, err
@@ -637,7 +670,7 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 		err = os.WriteFile(mcpConfig, cfg, 0o600)
 	}
 	if err == nil {
-		mln, err = e.listenMCP(mcpPath, id, l.role)
+		mln, err = e.listenMCP(mcpPath, id, l.role, log)
 	}
 	var cmd *exec.Cmd
 	if err == nil {
@@ -675,11 +708,13 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 		mcp:        mln,
 		mcpConfig:  mcpConfig,
 		hasPrompt:  l.prompt != "",
+		usage:      e.newSessionUsage(l, SandboxHost),
+		log:        log,
 	}
 	e.mu.Lock()
 	e.registerLocked(a, l)
 	e.mu.Unlock()
-	e.log.Info("agent started", "agent_id", id, "role", l.role, "relaunch", l.prev != nil, "session_id", sid, "pid", term.Pid(), "task_id", taskID,
+	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "pid", term.Pid(),
 		"branch", branch, "worktree", wtPath, "model", e.opts.Model, "inherit_user_settings", e.opts.InheritUserSettings)
 	e.wg.Add(1)
 	go e.watch(a)
@@ -713,8 +748,9 @@ func (e *Engine) watch(a *agentProc) {
 	if a.mcpConfig != "" {
 		_ = os.Remove(a.mcpConfig)
 	}
+	alog := a.logger(e)
 	if a.sandbox != nil {
-		e.closeSandbox(a.sandbox, e.log.With("agent_id", a.info.ID))
+		e.closeSandbox(a.sandbox, alog)
 		e.mu.Lock()
 		a.sandbox = nil
 		e.mu.Unlock()
@@ -734,14 +770,21 @@ func (e *Engine) watch(a *agentProc) {
 	defer cancel()
 	if err := e.q.MarkAgentExited(ctx, db.MarkAgentExitedParams{ExitedAt: nullTime(t),
 		ExitCode: sql.NullInt64{Int64: int64(code), Valid: true}, ExitReason: reason, ID: a.info.ID}); err != nil {
-		e.log.Error("persist agent exit", "agent_id", a.info.ID, "err", err)
+		alog.Error("persist agent exit", "err", err)
 	}
 	_ = e.q.EndSessions(ctx, db.EndSessionsParams{EndedAt: nullTime(t), AgentID: a.info.ID})
 	e.publishAgentLocked(a)
 	e.expireAccessLocked(ctx, a.info.ID)
 	e.mu.Unlock()
+	if su := a.usage; su != nil {
+		e.readTranscript(su, alog) // host mode: the rest of the transcript, now complete
+		su.mu.Lock()
+		su.view.EndedAt = &t
+		su.mu.Unlock()
+		e.publishUsage(su)
+	}
+	alog.Info("agent exited", "exit_code", code, "reason", reason)
 	close(a.exited)
-	e.log.Info("agent exited", "agent_id", a.info.ID, "exit_code", code, "reason", reason)
 	if a.info.Sandbox == SandboxPodman && a.info.Role != RoleReviewer {
 		// ADR 0014: the work reaches the main repository on exit, before a
 		// relaunch (ADR 0022) may start a new session in the workspace.
@@ -755,8 +798,7 @@ func (e *Engine) watch(a *agentProc) {
 	}
 }
 
-func (e *Engine) hookHandler(id string) hooks.Handler {
-	log := e.log.With("agent_id", id)
+func (e *Engine) hookHandler(id string, log *slog.Logger) hooks.Handler {
 	return func(ctx context.Context, payload []byte) ([]byte, error) {
 		ev, err := agent.ParseClaudeHook(payload)
 		if err != nil {
@@ -771,6 +813,8 @@ func (e *Engine) hookHandler(id string) hooks.Handler {
 		if ev.SessionID != a.info.SessionID {
 			return nil, ErrSession
 		}
+		e.countLocked(ctx, a, ev, log)
+		e.transcriptHookLocked(a, ev, log)
 		return e.onHookLocked(ctx, a, ev, log), nil
 	}
 }
@@ -819,7 +863,7 @@ func (e *Engine) Input(id string, data []byte) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		e.applyLocked(ctx, a, agent.Event{Kind: agent.UserInterrupted, SessionID: a.info.SessionID, Hook: "input"},
-			e.log.With("agent_id", id))
+			a.logger(e))
 		if a.status.State == hooks.Idle {
 			a.turns++ // the interrupt ended the turn, which sends no Stop (ADR 0008)
 			if a.stopAfterTurn {
@@ -1081,6 +1125,9 @@ func (e *Engine) Shutdown() {
 	if e.stopPoll != nil {
 		e.stopPoll() // first, so no reviewer or follow-up starts while agents stop
 	}
+	if e.stopBG != nil {
+		e.stopBG()
+	}
 	e.mu.Lock()
 	e.closing = true
 	for e.starting > 0 { // a start that passed the check registers its agent first
@@ -1097,6 +1144,25 @@ func (e *Engine) Shutdown() {
 	}
 	wg.Wait()
 	e.wg.Wait()
+}
+
+// sessionLogger is the logger of one agent session: every line about it
+// carries the agent, session and task ids (ADR 0028).
+func (e *Engine) sessionLogger(l launchInfo) *slog.Logger {
+	args := []any{"agent_id", l.id, "session_id", l.sid}
+	if l.taskID != "" {
+		args = append(args, "task_id", l.taskID)
+	}
+	return e.log.With(args...)
+}
+
+// logger is the agent's session logger, or one with its id for agents of a
+// previous run.
+func (a *agentProc) logger(e *Engine) *slog.Logger {
+	if a.log != nil {
+		return a.log
+	}
+	return e.log.With("agent_id", a.info.ID)
 }
 
 func (a *agentProc) view() AgentInfo {
