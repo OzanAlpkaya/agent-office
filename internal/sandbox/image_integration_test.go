@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+
+	"github.com/OzanAlpkaya/agent-office/internal/secret"
 )
 
 // workerRun starts a real worker container (WorkerArgs + sandbox-init) in a
@@ -70,7 +72,7 @@ func workerRun(t *testing.T, script string) (string, []Event) {
 	rec := &recorder{}
 	allow, _ := ParseAllowlist(DefaultEgressAllow)
 	egress := &EgressProxy{Allow: allow, OnEvent: rec.add, Log: slog.New(slog.DiscardHandler)}
-	api := &APIProxy{Token: Secret{v: "fake-token-never-sent"}, OnEvent: rec.add, Log: slog.New(slog.DiscardHandler),
+	api := &APIProxy{Token: secret.New("fake-token-never-sent"), OnEvent: rec.add, Log: slog.New(slog.DiscardHandler),
 		Upstream: &urlNowhere}
 	listen := func(name string) string {
 		path := filepath.Join(socks, name)

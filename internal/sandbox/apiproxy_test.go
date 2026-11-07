@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/OzanAlpkaya/agent-office/internal/secret"
 )
 
 const fakeRealToken = "fake-real-token-for-tests-only"
@@ -49,7 +51,7 @@ func newAPITest(t *testing.T, maxBody int64) (proxyURL string, seen *upstreamSee
 	u, _ := url.Parse(up.URL)
 	rec = &recorder{}
 	logs = &bytes.Buffer{}
-	p := &APIProxy{Token: Secret{v: fakeRealToken}, Upstream: u, Transport: up.Client().Transport,
+	p := &APIProxy{Token: secret.New(fakeRealToken), Upstream: u, Transport: up.Client().Transport,
 		OnEvent: rec.add, MaxBody: maxBody,
 		Log: slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 	srv := httptest.NewServer(p.Handler())
@@ -205,7 +207,7 @@ func TestAPIProxyBodyLimit(t *testing.T) {
 
 func TestAPIProxyUpstreamDown(t *testing.T) {
 	rec := &recorder{}
-	p := &APIProxy{Token: Secret{v: fakeRealToken}, Upstream: &url.URL{Scheme: "http", Host: "127.0.0.1:1"},
+	p := &APIProxy{Token: secret.New(fakeRealToken), Upstream: &url.URL{Scheme: "http", Host: "127.0.0.1:1"},
 		OnEvent: rec.add, Log: slog.New(slog.DiscardHandler)}
 	srv := httptest.NewServer(p.Handler())
 	defer srv.Close()
