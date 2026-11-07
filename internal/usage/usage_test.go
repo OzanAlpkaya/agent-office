@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,8 +56,8 @@ func TestTranscriptFixture(t *testing.T) {
 			t.Errorf("message %d = %+v, want %+v", i, r.Messages[i], want[i])
 		}
 	}
-	if r.CLICostUSD == nil || *r.CLICostUSD != 0.068864 {
-		t.Errorf("cli cost = %v", r.CLICostUSD)
+	if r.CLICostMicroUSD == nil || *r.CLICostMicroUSD != 68864 {
+		t.Errorf("cli cost = %v", r.CLICostMicroUSD)
 	}
 	if r.Skipped != 0 {
 		t.Errorf("skipped = %d", r.Skipped)
@@ -88,7 +87,7 @@ func TestTranscriptMatchesAPIResponses(t *testing.T) {
 		metered = append(metered, got[len(got)-1])
 	}
 	var total Tokens
-	cost := 0.0
+	var cost int64 // nano-USD
 	p := Builtin()
 	for _, m := range metered {
 		tm, ok := byID[m.ID]
@@ -107,8 +106,8 @@ func TestTranscriptMatchesAPIResponses(t *testing.T) {
 	if want := (Tokens{Input: 320, Output: 1420, CacheRead: 30000, CacheWrite5m: 3200, CacheWrite1h: 5000}); total != want {
 		t.Errorf("total = %+v, want %+v", total, want)
 	}
-	if math.Abs(cost-*fromTranscript.CLICostUSD) > 1e-9 {
-		t.Errorf("cost = %.9f, transcript cost-state = %.9f", cost, *fromTranscript.CLICostUSD)
+	if cost != 68_864_000 || MicroUSD(cost) != *fromTranscript.CLICostMicroUSD {
+		t.Errorf("cost = %d nano-USD, transcript cost-state = %d micro-USD", cost, *fromTranscript.CLICostMicroUSD)
 	}
 }
 
@@ -310,26 +309,32 @@ func TestPricesBuiltin(t *testing.T) {
 	}
 	cases := []struct {
 		m    Message
-		want float64
+		want int64 // nano-USD
 	}{
-		{msgA, 0.053648},
-		{msgB, 0.0002},
-		{msgC, 0.015016},
+		{msgA, 53_648_000},
+		{msgB, 200_000},
+		{msgC, 15_016_000},
 		// Date suffix matches the base id.
-		{Message{Model: "claude-haiku-4-5-20251001", Tokens: Tokens{Input: 1_000_000}}, 1},
-		// Haiku 5.5 above 100 000 prompt tokens (cache reads count).
-		{Message{Model: "claude-haiku-5-5", Tokens: Tokens{Input: 1000, CacheRead: 100_000, Output: 1000}}, (1000*0.5 + 100_000*0.05 + 1000*2.5) / 1e6},
-		{Message{Model: "claude-haiku-5-5", Tokens: Tokens{Input: 1000, CacheRead: 99_000, Output: 1000}}, (1000*0.1 + 99_000*0.01 + 1000*0.5) / 1e6},
+		{Message{Model: "claude-haiku-4-5-20251001", Tokens: Tokens{Input: 1_000_000}}, 1_000_000_000},
+		// Haiku 5.5 above 100 000 prompt tokens (cache reads count): 1000×500 + 100000×50 + 1000×2500.
+		{Message{Model: "claude-haiku-5-5", Tokens: Tokens{Input: 1000, CacheRead: 100_000, Output: 1000}}, 8_000_000},
+		// At or below: 1000×100 + 99000×10 + 1000×500.
+		{Message{Model: "claude-haiku-5-5", Tokens: Tokens{Input: 1000, CacheRead: 99_000, Output: 1000}}, 1_590_000},
 		// Fast mode and US inference.
-		{Message{Model: "claude-opus-5-5", Speed: "fast", Tokens: Tokens{Output: 1_000_000}}, 40},
-		{Message{Model: "claude-opus-5-5", Geo: "us", Tokens: Tokens{Output: 1_000_000}}, 22},
-		{Message{Model: "claude-opus-4-5", Geo: "us", Tokens: Tokens{Output: 1_000_000}}, 25},
+		{Message{Model: "claude-opus-5-5", Speed: "fast", Tokens: Tokens{Output: 1_000_000}}, 40_000_000_000},
+		{Message{Model: "claude-opus-5-5", Geo: "us", Tokens: Tokens{Output: 1_000_000}}, 22_000_000_000},
+		{Message{Model: "claude-opus-4-5", Geo: "us", Tokens: Tokens{Output: 1_000_000}}, 25_000_000_000},
+		// The largest token counts cannot overflow.
+		{Message{Model: "claude-opus-4-1", Tokens: Tokens{Output: maxCount}}, maxCount * 75_000},
 	}
 	for _, c := range cases {
 		got, ok := p.Cost(c.m)
-		if !ok || math.Abs(got-c.want) > 1e-9 {
-			t.Errorf("Cost(%+v) = %v, %v; want %v", c.m, got, ok, c.want)
+		if !ok || got != c.want {
+			t.Errorf("Cost(%+v) = %d, %v; want %d", c.m, got, ok, c.want)
 		}
+	}
+	if MicroUSD(1499) != 1 || MicroUSD(1500) != 2 || MicroUSD(0) != 0 {
+		t.Error("MicroUSD rounding")
 	}
 	if _, ok := p.Cost(Message{Model: "claude-unknown-9", Tokens: Tokens{Input: 1}}); ok {
 		t.Error("unknown model priced")
@@ -362,7 +367,7 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.AsOf != "2026-12-01" || p.File != path || p.Models["claude-haiku-5-5"].Input != 1 || p.Models["claude-haiku-5-5"].Long != nil {
+	if p.AsOf != "2026-12-01" || p.File != path || p.Models["claude-haiku-5-5"].Input != 1000 || p.Models["claude-haiku-5-5"].Long != nil {
 		t.Errorf("merged = %+v", p.Models["claude-haiku-5-5"])
 	}
 	if _, ok := p.Lookup("my-local-model"); !ok {
@@ -390,6 +395,7 @@ func TestPricesInvalid(t *testing.T) {
 		"bad date":          "as_of: yesterday\nmodels:\n  m: {input: 1, output: 1, cache_read: 1, cache_write_5m: 1, cache_write_1h: 1}\n",
 		"empty":             "",
 		"two documents":     "models:\n  m: {input: 1, output: 1, cache_read: 1, cache_write_5m: 1, cache_write_1h: 1}\n---\nmodels: {}\n",
+		"too precise":       "models:\n  m: {input: 0.0001, output: 1, cache_read: 1, cache_write_5m: 1, cache_write_1h: 1}\n",
 	}
 	for name, body := range cases {
 		if _, err := Load(writePrices(t, body, 0o600), true); err == nil {

@@ -1078,25 +1078,25 @@ func (q *Queries) ListImports(ctx context.Context, arg ListImportsParams) ([]Imp
 }
 
 const listProjectSessions = `-- name: ListProjectSessions :many
-SELECT s.id, s.agent_id, s.started_at, s.ended_at, s.turns, s.tool_calls, s.cli_cost_usd,
+SELECT s.id, s.agent_id, s.started_at, s.ended_at, s.turns, s.tool_calls, s.cli_cost_micro_usd,
        a.role, a.sandbox, a.task_id, a.model, a.removed_at
 FROM sessions s JOIN agents a ON a.id = s.agent_id
 WHERE a.project_id = ? ORDER BY s.started_at
 `
 
 type ListProjectSessionsRow struct {
-	ID         string
-	AgentID    string
-	StartedAt  time.Time
-	EndedAt    sql.NullTime
-	Turns      int64
-	ToolCalls  int64
-	CliCostUsd sql.NullFloat64
-	Role       string
-	Sandbox    string
-	TaskID     sql.NullString
-	Model      string
-	RemovedAt  sql.NullTime
+	ID              string
+	AgentID         string
+	StartedAt       time.Time
+	EndedAt         sql.NullTime
+	Turns           int64
+	ToolCalls       int64
+	CliCostMicroUsd sql.NullInt64
+	Role            string
+	Sandbox         string
+	TaskID          sql.NullString
+	Model           string
+	RemovedAt       sql.NullTime
 }
 
 func (q *Queries) ListProjectSessions(ctx context.Context, projectID string) ([]ListProjectSessionsRow, error) {
@@ -1115,7 +1115,7 @@ func (q *Queries) ListProjectSessions(ctx context.Context, projectID string) ([]
 			&i.EndedAt,
 			&i.Turns,
 			&i.ToolCalls,
-			&i.CliCostUsd,
+			&i.CliCostMicroUsd,
 			&i.Role,
 			&i.Sandbox,
 			&i.TaskID,
@@ -1868,16 +1868,16 @@ func (q *Queries) SetReviewReply(ctx context.Context, arg SetReviewReplyParams) 
 }
 
 const setSessionCLICost = `-- name: SetSessionCLICost :exec
-UPDATE sessions SET cli_cost_usd = ? WHERE id = ?
+UPDATE sessions SET cli_cost_micro_usd = ? WHERE id = ?
 `
 
 type SetSessionCLICostParams struct {
-	CliCostUsd sql.NullFloat64
-	ID         string
+	CliCostMicroUsd sql.NullInt64
+	ID              string
 }
 
 func (q *Queries) SetSessionCLICost(ctx context.Context, arg SetSessionCLICostParams) error {
-	_, err := q.db.ExecContext(ctx, setSessionCLICost, arg.CliCostUsd, arg.ID)
+	_, err := q.db.ExecContext(ctx, setSessionCLICost, arg.CliCostMicroUsd, arg.ID)
 	return err
 }
 

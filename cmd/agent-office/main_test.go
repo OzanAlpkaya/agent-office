@@ -178,7 +178,7 @@ func TestObservabilityFlags(t *testing.T) {
 
 func TestCheckBudgetModel(t *testing.T) {
 	p := pricing.Builtin()
-	on := engine.Budgets{GoalUSD: 1}
+	on := engine.Budgets{GoalMicroUSD: 1_000_000}
 	if err := checkBudgetModel(on, "claude-unknown-9", p); err == nil {
 		t.Error("unpriced full model id accepted with a budget")
 	}

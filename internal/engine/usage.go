@@ -22,13 +22,19 @@ const (
 	SourceTranscript = "transcript" // read from a host-mode agent's transcript
 )
 
-// Budgets are estimated-cost limits for sandboxed agents (ADR 0027); 0 is off.
+// Budgets are estimated-cost limits for sandboxed agents in micro-USD (ADR
+// 0027); 0 is off. Money is integer (ADR 0026).
 type Budgets struct {
-	SessionUSD float64 `json:"session_usd"`
-	GoalUSD    float64 `json:"goal_usd"`
+	SessionMicroUSD int64 `json:"session_micro_usd"`
+	GoalMicroUSD    int64 `json:"goal_micro_usd"`
 }
 
-func (b Budgets) on() bool { return b.SessionUSD > 0 || b.GoalUSD > 0 }
+func (b Budgets) on() bool { return b.SessionMicroUSD > 0 || b.GoalMicroUSD > 0 }
+
+// dollars formats micro-USD for messages.
+func dollars(micro int64) string {
+	return fmt.Sprintf("$%d.%02d", micro/1_000_000, micro%1_000_000/10_000)
+}
 
 // transcriptEvery bounds transcript reads during a turn (host mode).
 const transcriptEvery = 10 * time.Second
@@ -48,21 +54,25 @@ type SessionUsage struct {
 	ToolCalls int64        `json:"tool_calls"`
 	Messages  int          `json:"messages"`
 	Tokens    usage.Tokens `json:"tokens"`
-	CostUSD   float64      `json:"cost_usd"`
+	// CostMicroUSD is the estimated cost of the priced messages in micro-USD.
+	CostMicroUSD int64 `json:"cost_micro_usd"`
 	// UnpricedTokens are tokens of models without a price: their cost is
 	// unknown, never counted as zero.
-	UnpricedTokens int64    `json:"unpriced_tokens"`
-	CLICostUSD     *float64 `json:"cli_cost_usd,omitempty"` // Claude Code's own figure (host mode)
-	Models         []string `json:"models"`
+	UnpricedTokens  int64    `json:"unpriced_tokens"`
+	CLICostMicroUSD *int64   `json:"cli_cost_micro_usd,omitempty"` // Claude Code's own figure (host mode)
+	Models          []string `json:"models"`
+
+	nano int64 // the cost before rounding, for sums
 }
 
 // ModelUsage is the usage of one model across the project.
 type ModelUsage struct {
-	Model    string       `json:"model"`
-	Priced   bool         `json:"priced"`
-	Messages int          `json:"messages"`
-	Tokens   usage.Tokens `json:"tokens"`
-	CostUSD  float64      `json:"cost_usd"`
+	Model        string       `json:"model"`
+	Priced       bool         `json:"priced"`
+	Messages     int          `json:"messages"`
+	Tokens       usage.Tokens `json:"tokens"`
+	CostMicroUSD int64        `json:"cost_micro_usd"`
+	nano         int64
 }
 
 // UsageTotals sums a report.
@@ -70,7 +80,7 @@ type UsageTotals struct {
 	Sessions       int          `json:"sessions"`
 	Messages       int          `json:"messages"`
 	Tokens         usage.Tokens `json:"tokens"`
-	CostUSD        float64      `json:"cost_usd"`
+	CostMicroUSD   int64        `json:"cost_micro_usd"`
 	UnpricedTokens int64        `json:"unpriced_tokens"`
 }
 
@@ -141,19 +151,20 @@ func goalOf(t db.Task) string {
 // snapshot returns the session's usage priced with p. The caller holds su.mu.
 func (su *sessionUsage) snapshotLocked(p *usage.Prices) SessionUsage {
 	v := su.view
-	v.Tokens, v.CostUSD, v.UnpricedTokens, v.Messages = usage.Tokens{}, 0, 0, len(su.order)
+	v.Tokens, v.nano, v.UnpricedTokens, v.Messages = usage.Tokens{}, 0, 0, len(su.order)
 	models := map[string]bool{}
 	for _, id := range su.order {
 		m := su.msgs[id]
 		v.Tokens = v.Tokens.Add(m.Tokens)
 		if c, ok := p.Cost(m); ok {
-			v.CostUSD += c
+			v.nano += c
 		} else {
 			v.UnpricedTokens += m.Total()
 		}
 		models[m.Model] = true
 	}
 	v.Models = sortedKeys(models)
+	v.CostMicroUSD = usage.MicroUSD(v.nano)
 	return v
 }
 
@@ -299,16 +310,16 @@ func (e *Engine) readTranscript(su *sessionUsage, log *slog.Logger) {
 	if r.Skipped > 0 {
 		log.Warn("transcript lines skipped", "count", r.Skipped)
 	}
-	if r.CLICostUSD != nil {
+	if r.CLICostMicroUSD != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := e.q.SetSessionCLICost(ctx, db.SetSessionCLICostParams{CliCostUsd: sql.NullFloat64{Float64: *r.CLICostUSD, Valid: true},
+		if err := e.q.SetSessionCLICost(ctx, db.SetSessionCLICostParams{CliCostMicroUsd: sql.NullInt64{Int64: *r.CLICostMicroUSD, Valid: true},
 			ID: su.view.SessionID}); err != nil {
 			log.Warn("persist cli cost", "err", err)
 		}
 		cancel()
 		su.mu.Lock()
-		v := *r.CLICostUSD
-		su.view.CLICostUSD = &v
+		v := *r.CLICostMicroUSD
+		su.view.CLICostMicroUSD = &v
 		su.mu.Unlock()
 	}
 	e.recordUsage(su, r.Messages, log)
@@ -326,25 +337,25 @@ func (e *Engine) allowRequest(su *sessionUsage) error {
 		return nil
 	}
 	p := e.prices()
-	if b.SessionUSD > 0 {
+	if b.SessionMicroUSD > 0 {
 		su.mu.Lock()
 		v := su.snapshotLocked(p)
 		su.mu.Unlock()
 		if v.UnpricedTokens > 0 {
 			return errUnpriced
 		}
-		if v.CostUSD >= b.SessionUSD {
-			return fmt.Errorf("this session's budget of $%.2f is spent ($%.4f estimated)", b.SessionUSD, v.CostUSD)
+		if v.nano >= b.SessionMicroUSD*1000 {
+			return fmt.Errorf("this session's budget of %s is spent (%s estimated)", dollars(b.SessionMicroUSD), dollars(v.CostMicroUSD))
 		}
 	}
-	if b.GoalUSD > 0 && su.view.GoalID != "" {
+	if b.GoalMicroUSD > 0 && su.view.GoalID != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		rows, err := e.q.ListGoalUsage(ctx, nullString(su.view.GoalID))
 		if err != nil {
 			return fmt.Errorf("the goal's spend cannot be read (%v); refusing while a goal budget is set", err)
 		}
-		total := 0.0
+		var total int64 // nano-USD
 		for _, r := range rows {
 			c, ok := p.Cost(messageFromUsageRow(r))
 			if !ok {
@@ -352,8 +363,8 @@ func (e *Engine) allowRequest(su *sessionUsage) error {
 			}
 			total += c
 		}
-		if total >= b.GoalUSD {
-			return fmt.Errorf("the goal's budget of $%.2f is spent ($%.4f estimated)", b.GoalUSD, total)
+		if total >= b.GoalMicroUSD*1000 {
+			return fmt.Errorf("the goal's budget of %s is spent (%s estimated)", dollars(b.GoalMicroUSD), dollars(usage.MicroUSD(total)))
 		}
 	}
 	return nil
@@ -402,14 +413,15 @@ func (e *Engine) Usage(ctx context.Context) (UsageReport, error) {
 			t := s.EndedAt.Time.UTC()
 			v.EndedAt = &t
 		}
-		if s.CliCostUsd.Valid {
-			c := s.CliCostUsd.Float64
-			v.CLICostUSD = &c
+		if s.CliCostMicroUsd.Valid {
+			c := s.CliCostMicroUsd.Int64
+			v.CLICostMicroUSD = &c
 		}
 		idx[s.ID] = len(rep.Sessions)
 		rep.Sessions = append(rep.Sessions, v)
 	}
 	byModel := map[string]*ModelUsage{}
+	var totalNano int64
 	sessModels := make([]map[string]bool, len(rep.Sessions))
 	for _, r := range rows {
 		m := messageFromUsageRow(r)
@@ -421,11 +433,11 @@ func (e *Engine) Usage(ctx context.Context) (UsageReport, error) {
 		}
 		mu.Messages++
 		mu.Tokens = mu.Tokens.Add(m.Tokens)
-		mu.CostUSD += c
+		mu.nano += c
 		models[m.Model] = true
 		rep.Totals.Messages++
 		rep.Totals.Tokens = rep.Totals.Tokens.Add(m.Tokens)
-		rep.Totals.CostUSD += c
+		totalNano += c
 		if !priced {
 			rep.Totals.UnpricedTokens += m.Total()
 		}
@@ -436,7 +448,7 @@ func (e *Engine) Usage(ctx context.Context) (UsageReport, error) {
 		s := &rep.Sessions[i]
 		s.Messages++
 		s.Tokens = s.Tokens.Add(m.Tokens)
-		s.CostUSD += c
+		s.nano += c
 		if !priced {
 			s.UnpricedTokens += m.Total()
 		}
@@ -449,10 +461,14 @@ func (e *Engine) Usage(ctx context.Context) (UsageReport, error) {
 		if sessModels[i] != nil {
 			rep.Sessions[i].Models = sortedKeys(sessModels[i])
 		}
+		rep.Sessions[i].CostMicroUSD = usage.MicroUSD(rep.Sessions[i].nano)
 	}
 	rep.Totals.Sessions = len(rep.Sessions)
+	rep.Totals.CostMicroUSD = usage.MicroUSD(totalNano)
 	for _, name := range sortedKeys(models) {
-		rep.Models = append(rep.Models, *byModel[name])
+		mu := byModel[name]
+		mu.CostMicroUSD = usage.MicroUSD(mu.nano)
+		rep.Models = append(rep.Models, *mu)
 	}
 	return rep, nil
 }

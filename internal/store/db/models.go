@@ -125,13 +125,13 @@ type Review struct {
 }
 
 type Session struct {
-	ID         string
-	AgentID    string
-	StartedAt  time.Time
-	EndedAt    sql.NullTime
-	Turns      int64
-	ToolCalls  int64
-	CliCostUsd sql.NullFloat64
+	ID              string
+	AgentID         string
+	StartedAt       time.Time
+	EndedAt         sql.NullTime
+	Turns           int64
+	ToolCalls       int64
+	CliCostMicroUsd sql.NullInt64
 }
 
 type Task struct {

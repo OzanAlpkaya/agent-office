@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -25,21 +26,35 @@ const PricesFileEnv = "AGENT_OFFICE_PRICES_FILE"
 
 const maxPricesFile = 64 << 10
 
-// Rates are USD per million tokens.
+// Money is integer, never a float (ADR 0026): prices are nano-USD per token
+// (USD per million tokens × 1000, exact for every published price), costs are
+// nano-USD, and reports round to micro-USD.
+
+// Rates are nano-USD per token.
 type Rates struct {
-	Input        float64 `json:"input"`
-	Output       float64 `json:"output"`
-	CacheRead    float64 `json:"cache_read"`
-	CacheWrite5m float64 `json:"cache_write_5m"`
-	CacheWrite1h float64 `json:"cache_write_1h"`
+	Input        int64 `json:"input"`
+	Output       int64 `json:"output"`
+	CacheRead    int64 `json:"cache_read"`
+	CacheWrite5m int64 `json:"cache_write_5m"`
+	CacheWrite1h int64 `json:"cache_write_1h"`
 }
 
 // Price is one model's entry.
 type Price struct {
 	Rates
 	Long  *LongContext `json:"long_context,omitempty"` // other rates above a prompt length
-	Fast  float64      `json:"fast,omitempty"`         // multiplier for fast mode; 0: none
-	GeoUS float64      `json:"geo_us,omitempty"`       // multiplier for US-only inference; 0: none
+	Fast  int64        `json:"fast,omitempty"`         // multiplier for fast mode, in permille; 0: none
+	GeoUS int64        `json:"geo_us,omitempty"`       // multiplier for US-only inference, in permille; 0: none
+}
+
+// MicroUSD rounds nano-USD to micro-USD (half up).
+func MicroUSD(nano int64) int64 { return (nano + 500) / 1000 }
+
+// fixed converts a decimal from the YAML file to thousandths, refusing values
+// with more than three decimal places.
+func fixed(v float64) (int64, bool) {
+	n := math.Round(v * 1000)
+	return int64(n), math.Abs(v*1000-n) < 1e-6
 }
 
 // LongContext prices prompts longer than Above tokens.
@@ -239,16 +254,17 @@ func parsePrices(b []byte, file string, builtin bool) (*Prices, error) {
 		for _, m := range []struct {
 			v    *float64
 			name string
-			dst  *float64
+			dst  *int64
 		}{{yp.Fast, "fast", &price.Fast}, {yp.GeoUS, "geo_us", &price.GeoUS}} {
 			if m.v == nil {
 				continue
 			}
-			if !finite(*m.v) || *m.v < 1 || *m.v > 100 {
-				add("%s.%s: %v is not a multiplier between 1 and 100", field, m.name, *m.v)
+			pm, ok := fixed(*m.v)
+			if !finite(*m.v) || *m.v < 1 || *m.v > 100 || !ok {
+				add("%s.%s: %v is not a multiplier between 1 and 100 with at most 3 decimals", field, m.name, *m.v)
 				continue
 			}
-			*m.dst = *m.v
+			*m.dst = pm
 		}
 		p.Models[name] = price
 	}
@@ -263,7 +279,7 @@ func rates(y yamlRates, field string, add func(string, ...any)) Rates {
 	for _, f := range []struct {
 		v    *float64
 		name string
-		dst  *float64
+		dst  *int64
 	}{{y.Input, "input", &r.Input}, {y.Output, "output", &r.Output}, {y.CacheRead, "cache_read", &r.CacheRead},
 		{y.CacheWrite5m, "cache_write_5m", &r.CacheWrite5m}, {y.CacheWrite1h, "cache_write_1h", &r.CacheWrite1h}} {
 		switch {
@@ -272,7 +288,12 @@ func rates(y yamlRates, field string, add func(string, ...any)) Rates {
 		case !finite(*f.v) || *f.v > 10000:
 			add("%s.%s: %v is not a price between 0 and 10000 USD per million tokens", field, f.name, *f.v)
 		default:
-			*f.dst = *f.v
+			n, ok := fixed(*f.v)
+			if !ok {
+				add("%s.%s: %v has more than 3 decimal places (USD per million tokens)", field, f.name, *f.v)
+				break
+			}
+			*f.dst = n
 		}
 	}
 	return r
@@ -301,9 +322,9 @@ func (p *Prices) Lookup(model string) (Price, bool) {
 	return Price{}, false
 }
 
-// Cost is the estimated USD cost of one message; false when its model has
-// no price.
-func (p *Prices) Cost(m Message) (float64, bool) {
+// Cost is the estimated cost of one message in nano-USD; false when its model
+// has no price. Token counts are capped (maxCount), so it cannot overflow.
+func (p *Prices) Cost(m Message) (int64, bool) {
 	pr, ok := p.Lookup(m.Model)
 	if !ok {
 		return 0, false
@@ -312,13 +333,13 @@ func (p *Prices) Cost(m Message) (float64, bool) {
 	if pr.Long != nil && m.Prompt() > pr.Long.Above {
 		r = pr.Long.Rates
 	}
-	usd := (float64(m.Input)*r.Input + float64(m.Output)*r.Output + float64(m.CacheRead)*r.CacheRead +
-		float64(m.CacheWrite5m)*r.CacheWrite5m + float64(m.CacheWrite1h)*r.CacheWrite1h) / 1e6
+	nano := m.Input*r.Input + m.Output*r.Output + m.CacheRead*r.CacheRead +
+		m.CacheWrite5m*r.CacheWrite5m + m.CacheWrite1h*r.CacheWrite1h
 	if m.Speed == "fast" && pr.Fast > 0 {
-		usd *= pr.Fast
+		nano = nano * pr.Fast / 1000
 	}
 	if m.Geo == "us" && pr.GeoUS > 0 {
-		usd *= pr.GeoUS
+		nano = nano * pr.GeoUS / 1000
 	}
-	return usd, true
+	return nano, true
 }

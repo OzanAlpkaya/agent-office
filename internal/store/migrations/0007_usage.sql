@@ -30,7 +30,7 @@ CREATE INDEX usage_messages_task ON usage_messages (task_id);
 -- (cost-state in a host-mode transcript), shown next to agent-office's.
 ALTER TABLE sessions ADD COLUMN turns INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN tool_calls INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE sessions ADD COLUMN cli_cost_usd REAL;
+ALTER TABLE sessions ADD COLUMN cli_cost_micro_usd INTEGER; -- money is integer (ADR 0026)
 
 -- Retention (ADR 0028) deletes old events by time.
 CREATE INDEX events_at ON events (at);

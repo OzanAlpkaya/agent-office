@@ -48,7 +48,8 @@ Option 2, option 3, option 3 and option 2.
 - `--budget-session-usd` (`AGENT_OFFICE_BUDGET_SESSION_USD`) limits one agent session;
   `--budget-goal-usd` (`AGENT_OFFICE_BUDGET_GOAL_USD`) limits everything recorded under one goal:
   the goal's own agents (its lead), the workers of its sub-tasks and the reviewers of their pull
-  requests. 0 (default) is off. Decimal values; negative values are refused at startup.
+  requests. 0 (default) is off. Decimal dollars on the command line, negative values refused at
+  startup; inside the daemon they are micro-USD integers, compared with the nano-USD spend.
 - Before forwarding a request, the API proxy asks the engine. A spent budget gets
   `403 {"type":"error","error":{"type":"permission_error","message":"agent-office: ... budget of
   $X is spent ..."}}`: Claude Code shows the message and does not retry a 403. The refusal is a

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +35,7 @@ const usageFixtureSession = "11111111-2222-4333-8444-555555555555"
 // The fixture's totals (internal/usage/testdata/README.md).
 var fixtureTokens = usage.Tokens{Input: 320, Output: 1420, CacheRead: 30000, CacheWrite5m: 3200, CacheWrite1h: 5000}
 
-const fixtureCost = 0.068864
+const fixtureCost = 68864 // micro-USD
 
 // syncBuffer is a log sink the engine's goroutines may write concurrently.
 type syncBuffer struct {
@@ -84,10 +83,10 @@ func TestHostUsageFromTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	u := log.wait(t, 5*time.Second, func(u Update) bool {
-		return u.Type == "usage" && u.Usage.AgentID == a.ID && u.Usage.Messages == 3 && u.Usage.Turns == 1 && u.Usage.CLICostUSD != nil
+		return u.Type == "usage" && u.Usage.AgentID == a.ID && u.Usage.Messages == 3 && u.Usage.Turns == 1 && u.Usage.CLICostMicroUSD != nil
 	}).Usage
-	if u.SessionID != a.SessionID || u.Tokens != fixtureTokens || math.Abs(u.CostUSD-fixtureCost) > 1e-9 ||
-		*u.CLICostUSD != fixtureCost || u.ToolCalls != 1 || u.Source != SourceTranscript || u.UnpricedTokens != 0 {
+	if u.SessionID != a.SessionID || u.Tokens != fixtureTokens || u.CostMicroUSD != fixtureCost ||
+		*u.CLICostMicroUSD != fixtureCost || u.ToolCalls != 1 || u.Source != SourceTranscript || u.UnpricedTokens != 0 {
 		t.Fatalf("live usage %+v", u)
 	}
 	if strings.Join(u.Models, ",") != "claude-haiku-5-5,claude-opus-5-5,claude-sonnet-5-5" {
@@ -106,11 +105,12 @@ func TestHostUsageFromTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(rep.Sessions) != 1 || rep.Totals.Messages != 3 || rep.Totals.Tokens != fixtureTokens ||
-		math.Abs(rep.Totals.CostUSD-fixtureCost) > 1e-9 || len(rep.Models) != 3 {
+		rep.Totals.CostMicroUSD != fixtureCost || len(rep.Models) != 3 {
 		t.Fatalf("report %+v", rep)
 	}
 	s := rep.Sessions[0]
-	if s.Turns != 2 || s.ToolCalls != 1 || s.EndedAt == nil || s.CLICostUSD == nil || s.Messages != 3 || s.Role != RoleWorker {
+	if s.Turns != 2 || s.ToolCalls != 1 || s.EndedAt == nil || s.CLICostMicroUSD == nil || s.Messages != 3 || s.Role != RoleWorker ||
+		s.CostMicroUSD != fixtureCost {
 		t.Errorf("session %+v", s)
 	}
 	if rep.Prices.AsOf == "" || rep.Prices.Source == "" {
@@ -142,11 +142,11 @@ func TestUsageRepricedOnRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := fixtureCost - 0.0002; math.Abs(rep.Totals.CostUSD-want) > 1e-9 || rep.Totals.UnpricedTokens != 1540 {
+	if want := int64(fixtureCost - 200); rep.Totals.CostMicroUSD != want || rep.Totals.UnpricedTokens != 1540 {
 		t.Errorf("totals %+v", rep.Totals)
 	}
 	for _, m := range rep.Models {
-		if m.Model == "claude-haiku-5-5" && (m.Priced || m.CostUSD != 0) {
+		if m.Model == "claude-haiku-5-5" && (m.Priced || m.CostMicroUSD != 0) {
 			t.Errorf("haiku %+v", m)
 		}
 	}
@@ -156,7 +156,7 @@ func TestUsageRepricedOnRead(t *testing.T) {
 // fails closed; no budget, no refusal.
 func TestBudgets(t *testing.T) {
 	f, _, _ := usageFixture(t)
-	f.opts.Budgets = Budgets{SessionUSD: 0.06, GoalUSD: 0.1}
+	f.opts.Budgets = Budgets{SessionMicroUSD: 60_000, GoalMicroUSD: 100_000}
 	e := f.engine(t)
 	ctx := context.Background()
 	goal, err := e.CreateTask(ctx, TaskInput{Title: "Goal"})
@@ -225,7 +225,7 @@ func TestBudgets(t *testing.T) {
 
 func TestNegativeBudgetRefused(t *testing.T) {
 	f := newFixture(t)
-	f.opts.Budgets = Budgets{GoalUSD: -1}
+	f.opts.Budgets = Budgets{GoalMicroUSD: -1}
 	if _, err := New(context.Background(), f.opts); err == nil {
 		t.Fatal("negative budget accepted")
 	}

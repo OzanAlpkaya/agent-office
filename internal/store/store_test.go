@@ -251,7 +251,7 @@ func TestUsageUpsertAndGoal(t *testing.T) {
 	if err := s.Q.AddSessionCounts(ctx, db.AddSessionCountsParams{Turns: 2, ToolCalls: 3, ID: "s-w1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Q.SetSessionCLICost(ctx, db.SetSessionCLICostParams{CliCostUsd: sql.NullFloat64{Float64: 0.5, Valid: true}, ID: "s-w1"}); err != nil {
+	if err := s.Q.SetSessionCLICost(ctx, db.SetSessionCLICostParams{CliCostMicroUsd: sql.NullInt64{Int64: 500000, Valid: true}, ID: "s-w1"}); err != nil {
 		t.Fatal(err)
 	}
 	sess, err := s.Q.ListProjectSessions(ctx, p.ID)
@@ -259,7 +259,7 @@ func TestUsageUpsertAndGoal(t *testing.T) {
 		t.Fatalf("sessions %+v, %v", sess, err)
 	}
 	for _, r := range sess {
-		if r.ID == "s-w1" && (r.Turns != 2 || r.ToolCalls != 3 || r.CliCostUsd.Float64 != 0.5) {
+		if r.ID == "s-w1" && (r.Turns != 2 || r.ToolCalls != 3 || r.CliCostMicroUsd.Int64 != 500000) {
 			t.Errorf("counters %+v", r)
 		}
 	}

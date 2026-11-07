@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,10 +29,11 @@ type Reading struct {
 	// wins (Claude Code repeats the usage on every line of a multi-block
 	// message). Order: first appearance.
 	Messages []Message
-	// CLICostUSD is the last cost-state record's totalCostUSD: Claude Code's
-	// own estimate for the whole session. Nil when the read saw none.
-	CLICostUSD *float64
-	Skipped    int // lines that were too long or not JSON
+	// CLICostMicroUSD is the last cost-state record's totalCostUSD in
+	// micro-USD: Claude Code's own estimate for the whole session. Nil when
+	// the read saw none.
+	CLICostMicroUSD *int64
+	Skipped         int // lines that were too long or not JSON
 }
 
 func (r *Reading) merge(o Reading) {
@@ -47,8 +49,8 @@ func (r *Reading) merge(o Reading) {
 		seen[m.ID] = len(r.Messages)
 		r.Messages = append(r.Messages, m)
 	}
-	if o.CLICostUSD != nil {
-		r.CLICostUSD = o.CLICostUSD
+	if o.CLICostMicroUSD != nil {
+		r.CLICostMicroUSD = o.CLICostMicroUSD
 	}
 	r.Skipped += o.Skipped
 }
@@ -93,9 +95,9 @@ func parseLine(line []byte, r *Reading, seen map[string]int) {
 		seen[m.ID] = len(r.Messages)
 		r.Messages = append(r.Messages, m)
 	case "cost-state":
-		if c := rec.TotalCostUSD; c != nil && finite(*c) {
-			v := *c
-			r.CLICostUSD = &v
+		if c := rec.TotalCostUSD; c != nil && finite(*c) && *c < 1e9 {
+			v := int64(math.Round(*c * 1e6))
+			r.CLICostMicroUSD = &v
 		}
 	}
 }
@@ -271,7 +273,7 @@ func (s *Session) ReadNew() (Reading, error) {
 		if err != nil {
 			continue // a vanished or foreign file costs nothing
 		}
-		sub.CLICostUSD = nil // cost-state of the whole session lives in the main file
+		sub.CLICostMicroUSD = nil // cost-state of the whole session lives in the main file
 		r.merge(sub)
 	}
 	return r, nil

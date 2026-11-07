@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -283,7 +282,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	if opts.Prices == nil {
 		opts.Prices = usage.Builtin()
 	}
-	if b := opts.Budgets; b.SessionUSD < 0 || b.GoalUSD < 0 || math.IsNaN(b.SessionUSD) || math.IsNaN(b.GoalUSD) {
+	if b := opts.Budgets; b.SessionMicroUSD < 0 || b.GoalMicroUSD < 0 {
 		return nil, fmt.Errorf("engine: budgets must not be negative, got %+v", b)
 	}
 	if opts.Sandbox != nil {

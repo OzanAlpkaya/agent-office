@@ -434,7 +434,9 @@ func serve(args []string) error {
 	if err != nil {
 		return fmt.Errorf("price table: %w", err)
 	}
-	budgets := engine.Budgets{SessionUSD: cfg.budgetSessionUSD, GoalUSD: cfg.budgetGoalUSD}
+	// Money is integer from here on (ADR 0026): the flags' dollars become micro-USD.
+	budgets := engine.Budgets{SessionMicroUSD: int64(math.Round(cfg.budgetSessionUSD * 1e6)),
+		GoalMicroUSD: int64(math.Round(cfg.budgetGoalUSD * 1e6))}
 	if err := checkBudgetModel(budgets, cfg.model, prices); err != nil {
 		return err
 	}
@@ -466,7 +468,7 @@ func serve(args []string) error {
 		log.Warn("host mode: agents run unsandboxed on this machine, with permission prompts on")
 	}
 	warnings := append(versionWarnings(ci, cfg.sandbox), packWarnings...)
-	if (budgets.SessionUSD > 0 || budgets.GoalUSD > 0) && cfg.sandbox == modeHost {
+	if (budgets.SessionMicroUSD > 0 || budgets.GoalMicroUSD > 0) && cfg.sandbox == modeHost {
 		warnings = append(warnings, "budgets apply to sandboxed agents only: host-mode agents reach Anthropic directly "+
 			"and are not limited (ADR 0027)")
 	}
@@ -523,8 +525,8 @@ func serve(args []string) error {
 		"data_dir", cfg.dataDir, "max_agents", cfg.maxAgents, "git_version", gitVersion,
 		"claude", ci.path, "claude_version", ci.version, "sandbox", cfg.sandbox, "model", cfg.model,
 		"inherit_user_settings", cfg.inheritUserSettings, "github", cfg.github, "ui_built", built, "dev", cfg.dev,
-		"prices_as_of", prices.AsOf, "prices_file", prices.File, "budget_session_usd", budgets.SessionUSD,
-		"budget_goal_usd", budgets.GoalUSD, "event_retention_days", cfg.eventRetentionDays)
+		"prices_as_of", prices.AsOf, "prices_file", prices.File, "budget_session_usd", cfg.budgetSessionUSD,
+		"budget_goal_usd", cfg.budgetGoalUSD, "event_retention_days", cfg.eventRetentionDays)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -601,7 +603,7 @@ func envFloat(key string, def float64) (float64, error) {
 // 0027). Aliases such as "haiku" resolve inside Claude Code and are checked
 // per request instead (an unpriced model is refused then).
 func checkBudgetModel(b engine.Budgets, model string, p *pricing.Prices) error {
-	if b.SessionUSD <= 0 && b.GoalUSD <= 0 || !strings.HasPrefix(model, "claude-") {
+	if b.SessionMicroUSD <= 0 && b.GoalMicroUSD <= 0 || !strings.HasPrefix(model, "claude-") {
 		return nil
 	}
 	if _, ok := p.Lookup(model); !ok {

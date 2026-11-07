@@ -281,7 +281,7 @@ SELECT u.* FROM usage_messages u JOIN agents a ON a.id = u.agent_id
 WHERE a.project_id = ? ORDER BY u.id;
 
 -- name: ListProjectSessions :many
-SELECT s.id, s.agent_id, s.started_at, s.ended_at, s.turns, s.tool_calls, s.cli_cost_usd,
+SELECT s.id, s.agent_id, s.started_at, s.ended_at, s.turns, s.tool_calls, s.cli_cost_micro_usd,
        a.role, a.sandbox, a.task_id, a.model, a.removed_at
 FROM sessions s JOIN agents a ON a.id = s.agent_id
 WHERE a.project_id = ? ORDER BY s.started_at;
@@ -291,7 +291,7 @@ UPDATE sessions SET turns = turns + sqlc.arg(turns), tool_calls = tool_calls + s
 WHERE id = sqlc.arg(id);
 
 -- name: SetSessionCLICost :exec
-UPDATE sessions SET cli_cost_usd = ? WHERE id = ?;
+UPDATE sessions SET cli_cost_micro_usd = ? WHERE id = ?;
 
 -- Retention (ADR 0028).
 

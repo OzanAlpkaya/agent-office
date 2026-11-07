@@ -85,6 +85,11 @@ Option 3, option 2, option 2 and option 2.
   replaces models; it must belong to the user and not be writable by others, is parsed strictly,
   and every problem is reported at once. A model without a price shows its tokens and "no price",
   never $0.
+- **Money is integer** (the project's TypeScript rule, applied to the whole chain): prices are
+  held as nano-USD per token (USD per million tokens × 1000, exact for every published price; a
+  price file value with more than three decimals is refused), multipliers in permille, message
+  costs in nano-USD, and every API field in micro-USD (`cost_micro_usd`), rounded half up from
+  the nano-USD sum. Claude Code's own `totalCostUSD` is converted to micro-USD when read.
 - Live `usage` updates per agent, throttled to one every 2 s; `GET /api/usage` aggregates by
   goal, task, agent, session and model.
 
