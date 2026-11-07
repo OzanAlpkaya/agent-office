@@ -18,6 +18,15 @@ export interface Transform {
   grid: Grid;
 }
 
+// FrameStats describes the scene's own work: how often it ticked, how often it
+// had something to draw, and what drawing cost (tick plus render).
+export interface FrameStats {
+  ticks: number;
+  renders: number;
+  p95Ms: number;
+  maxMs: number;
+}
+
 export interface SceneOptions {
   reducedMotion: boolean;
   onOpen: (agentId: string) => void;
@@ -50,6 +59,11 @@ export class OfficeScene {
   private hovered?: string;
   private size = { w: 1, h: 1 };
   private destroyed = false;
+  private dirty = true;
+  private notesKey = "";
+  private ticks = 0;
+  private renders = 0;
+  private readonly costs: number[] = []; // ms of the last rendered frames
 
   private constructor(private readonly app: Application, private readonly opts: SceneOptions) {
     const t = this.textures;
@@ -58,8 +72,14 @@ export class OfficeScene {
     this.wall = new TilingSprite({ texture: t.get("wall", art.wallTile, art.wallPalette), width: 1, height: art.wallHeight });
     this.world.addChild(this.floor, this.wall, this.decor, this.desks, this.flying);
     app.stage.addChild(this.world);
+    // Render only frames where something changed: an idle office then costs
+    // a few cheap ticks per second instead of 30 full renders.
+    app.ticker.remove(app.render, app);
     app.ticker.maxFPS = 30;
-    app.ticker.add(() => this.tick(performance.now() / 1000));
+    app.ticker.add(() => this.frame());
+    // Render once now: Pixi hit-tests from the last rendered root, so a click
+    // before the first tick would otherwise find nothing.
+    app.render();
   }
 
   static async create(host: HTMLElement, opts: SceneOptions): Promise<OfficeScene> {
@@ -82,6 +102,28 @@ export class OfficeScene {
     return this.app.renderer.name;
   }
 
+  stats(): FrameStats {
+    const sorted = this.costs.slice().sort((a, b) => a - b);
+    return {
+      ticks: this.ticks,
+      renders: this.renders,
+      p95Ms: sorted.length > 0 ? sorted[Math.floor(sorted.length * 0.95)] : 0,
+      maxMs: sorted.length > 0 ? sorted[sorted.length - 1] : 0,
+    };
+  }
+
+  private frame(): void {
+    const start = performance.now();
+    this.ticks++;
+    const changed = this.tick(start / 1000);
+    if (!changed && !this.dirty) return;
+    this.dirty = false;
+    this.app.render();
+    this.renders++;
+    this.costs.push(performance.now() - start);
+    if (this.costs.length > 300) this.costs.shift();
+  }
+
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
@@ -99,7 +141,9 @@ export class OfficeScene {
   // pixel, so pixels stay square and sharp, and rebuilds what depends on the
   // grid when it changed.
   private layout(): Transform {
-    const dpr = this.app.renderer.resolution;
+    // Read the ratio each time: browser zoom and moving the window to another
+    // screen change it.
+    const dpr = window.devicePixelRatio || 1;
     const { w, h } = this.size;
     const { grid, k } = fitGrid(w, h, dpr, this.model?.desks ?? 0);
     if (grid.columns !== this.grid.columns || grid.rows !== this.grid.rows || this.nodes.length === 0) this.setGrid(grid);
@@ -109,9 +153,10 @@ export class OfficeScene {
     const height = Math.max(h, Math.ceil(H * scale));
     const x = Math.round(((width - W * scale) / 2) * dpr) / dpr;
     const y = Math.round(((height - H * scale) / 2) * dpr) / dpr;
-    this.app.renderer.resize(width, height);
+    this.app.renderer.resize(width, height, dpr);
     this.world.scale.set(scale);
     this.world.position.set(x, y);
+    this.dirty = true;
     return { scale, x, y, width, height, grid };
   }
 
@@ -123,7 +168,13 @@ export class OfficeScene {
     const t = this.layout();
     const bySlot = new Map(model.seats.map((s) => [slotKey(s.slot), s]));
     for (const n of this.nodes) n.setSeat(bySlot.get(slotKey(n.slot)));
-    this.drawNotes(model.goal?.notes ?? []);
+    const notes = model.goal?.notes ?? [];
+    const notesKey = `${model.goal !== undefined}|${notes.map((n) => `${n.id}:${n.status}`).join(",")}`;
+    if (notesKey !== this.notesKey) {
+      this.notesKey = notesKey;
+      this.drawNotes(notes);
+    }
+    this.dirty = true;
     if (this.hovered && !model.seats.some((s) => s.agent.id === this.hovered)) this.hover(undefined);
     return t.grid.columns !== before.columns || t.grid.rows !== before.rows ? t : undefined;
   }
@@ -131,7 +182,7 @@ export class OfficeScene {
   // sendEnvelope flies a letter from one agent's desk to another's; a
   // missing sender (agent-office itself) sends from the door.
   sendEnvelope(fromAgent: string | undefined, toAgent: string): void {
-    if (this.opts.reducedMotion) return;
+    if (this.opts.reducedMotion || this.envelopes.length >= maxEnvelopes) return;
     const to = this.deskPoint(toAgent);
     if (!to) return;
     const door = doorAt(this.grid);
@@ -152,6 +203,7 @@ export class OfficeScene {
     if (this.hovered === agentId) return;
     this.hovered = agentId;
     for (const n of this.nodes) n.setHover(n.agentId !== undefined && n.agentId === agentId);
+    this.dirty = true;
     this.opts.onHover(agentId);
   }
 
@@ -170,9 +222,8 @@ export class OfficeScene {
       this.desks.addChild(node.root);
     }
     while (this.nodes.length > want) this.nodes.pop()?.root.destroy({ children: true });
+    // Nodes are added in desk order, so rows further back are drawn first.
     for (const n of this.nodes) n.place(grid);
-    // Draw rows from back to front so the front desks overlap the back ones.
-    this.desks.children.sort((a, b) => a.y - b.y);
     this.buildDecor(grid);
   }
 
@@ -189,7 +240,7 @@ export class OfficeScene {
     };
     const { w, h } = worldSize(grid);
     const lead = slotOrigin({ kind: "lead" }, grid);
-    put(t.get("rug", art.rug(cell.w + 24, world.leadRowH - 6), art.rugPalette), lead.x - 12, world.leadRowY + 2);
+    put(t.get("rug", () => art.rug(cell.w + 24, world.leadRowH - 6), art.rugPalette), lead.x - 12, world.leadRowY + 2);
     // Windows left of the whiteboard, and right of it where the door leaves room.
     const wb = whiteboardAt(grid);
     const door = doorAt(grid);
@@ -230,9 +281,11 @@ export class OfficeScene {
     });
   }
 
-  private tick(now: number): void {
+  // tick advances the animations; it returns whether anything changed.
+  private tick(now: number): boolean {
     const t = this.opts.reducedMotion ? 0 : now;
-    for (const n of this.nodes) n.tick(t);
+    let changed = this.envelopes.length > 0;
+    for (const n of this.nodes) changed = n.tick(t) || changed;
     for (let i = this.envelopes.length - 1; i >= 0; i--) {
       const e = this.envelopes[i];
       const p = Math.min(1, (now - e.start) / envelopeSeconds);
@@ -247,6 +300,7 @@ export class OfficeScene {
         this.envelopes.splice(i, 1);
       }
     }
+    return changed;
   }
 
   // Called by desks.
@@ -265,6 +319,9 @@ function doorAt(g: Grid): Point {
   return { x: worldSize(g).w - art.door.w - 22, y: art.wallHeight - art.door.h };
 }
 const envelopeSeconds = 1.4;
+// Envelopes in flight at most; more are skipped (e.g. many messages while the
+// tab was in the background).
+const maxEnvelopes = 20;
 
 const slotKey = (s: Slot): string => (s.kind === "lead" ? "lead" : `desk-${s.index}`);
 
@@ -318,14 +375,13 @@ class DeskNode {
       this.mug, this.magnifier, this.bubble);
 
     const sp = art.screenPalette;
-    const off = [t.get("screen-off", art.screenOff(), sp)];
     this.screens = {
-      away: off,
-      booting: art.screenBoot().map((m, i) => t.get(`screen-boot-${i}`, m, sp)),
-      idle: art.screenPrompt().map((m, i) => t.get(`screen-prompt-${i}`, m, sp)),
+      away: t.list("screen-off", () => [art.screenOff()], sp),
+      booting: t.list("screen-boot", art.screenBoot, sp),
+      idle: t.list("screen-prompt", art.screenPrompt, sp),
       typing: t.frames("screen-code", art.codeMap, sp, art.screenRect.h),
-      reviewing: art.screenDiff().map((m, i) => t.get(`screen-diff-${i}`, m, sp)),
-      waiting: art.screenDialog().map((m, i) => t.get(`screen-dialog-${i}`, m, sp)),
+      reviewing: t.list("screen-diff", art.screenDiff, sp),
+      waiting: t.list("screen-dialog", art.screenDialog, sp),
     };
     this.bubbles = {
       dots: art.bubbleDots.map((m, i) => t.get(`bubble-dots-${i}`, m, art.basePalette)),
@@ -381,26 +437,24 @@ class DeskNode {
     this.tick(this.lastT);
   }
 
-  tick(now: number): void {
+  // tick shows the frame for time now; it returns whether anything changed.
+  tick(now: number): boolean {
     this.lastT = now;
     const seat = this.seat;
-    if (!seat) {
-      this.screen.texture = this.screens.away[0];
-      return;
-    }
+    if (!seat) return this.show(this.screen, this.screens.away[0]);
     const t = this.still ? 0 : now + seat.look.phase * 10;
     const pose = seat.pose;
     const frames = this.screens[pose];
     const rate = pose === "typing" ? 6 : pose === "booting" ? 2 : 1.5;
     const screenFrame = Math.floor(t * rate) % frames.length;
-    this.screen.texture = frames[screenFrame];
+    let changed = this.show(this.screen, frames[screenFrame]);
     if (pose === "away") {
       this.mug.position.set(inCell.mug.x, inCell.mug.y);
-      return;
+      return changed;
     }
 
     const blink = !this.still && t % 4 < 0.15 ? 1 : 0;
-    this.body.texture = this.bodyTextures[blink];
+    changed = this.show(this.body, this.bodyTextures[blink]) || changed;
 
     // Pose frame: which arm drawing, mug and prop positions, bubble.
     let frame: string;
@@ -421,7 +475,7 @@ class DeskNode {
         frame = "rest0";
     }
     const key = `${pose}|${frame}`;
-    if (key === this.frameKey) return;
+    if (key === this.frameKey) return changed;
     this.frameKey = key;
 
     this.mug.position.set(frame === "sip" ? inCell.mugRaised.x : inCell.mug.x, frame === "sip" ? inCell.mugRaised.y : inCell.mug.y);
@@ -439,6 +493,13 @@ class DeskNode {
       this.bubble.position.set(inCell.bubble.x, inCell.bubble.y);
     }
     drawArms(this.arms, frame, this.palette);
+    return true;
+  }
+
+  private show(s: Sprite, t: Texture): boolean {
+    if (s.texture === t) return false;
+    s.texture = t;
+    return true;
   }
 }
 

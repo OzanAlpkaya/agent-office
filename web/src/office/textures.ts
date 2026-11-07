@@ -33,17 +33,32 @@ function toCanvas(map: PixelMap, palette: Palette): HTMLCanvasElement {
 // built once and shared by every desk that needs them.
 export class TextureCache {
   private readonly textures = new Map<string, Texture>();
+  private readonly lists = new Map<string, Texture[]>();
   private readonly sources: CanvasSource[] = [];
 
-  get(key: string, map: PixelMap, palette: Palette): Texture {
+  // get returns the texture for key, drawing it on first use. map may be a
+  // function, so maps built by code are only built when needed.
+  get(key: string, map: PixelMap | (() => PixelMap), palette: Palette): Texture {
     let t = this.textures.get(key);
     if (!t) {
-      const source = new CanvasSource({ resource: toCanvas(map, palette), scaleMode: "nearest" });
+      const m = typeof map === "function" ? map() : map;
+      const source = new CanvasSource({ resource: toCanvas(m, palette), scaleMode: "nearest" });
       this.sources.push(source);
       t = new Texture({ source });
       this.textures.set(key, t);
     }
     return t;
+  }
+
+  // list returns one texture per map that maps() builds, building them only
+  // the first time.
+  list(key: string, maps: () => PixelMap[], palette: Palette): Texture[] {
+    let out = this.lists.get(key);
+    if (!out) {
+      out = maps().map((m, i) => this.get(`${key}#${i}`, m, palette));
+      this.lists.set(key, out);
+    }
+    return out;
   }
 
   // frames cuts a tall map into windows of height h, one per row offset, for
@@ -67,6 +82,7 @@ export class TextureCache {
     for (const t of this.textures.values()) t.destroy(false);
     for (const s of this.sources) s.destroy();
     this.textures.clear();
+    this.lists.clear();
     this.sources.length = 0;
   }
 }

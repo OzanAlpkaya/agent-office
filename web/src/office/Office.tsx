@@ -1,14 +1,13 @@
 // The Office tab (ADR 0024): a lazy-loaded Pixi scene of the team, with HTML
 // nameplates over it. It reads the same world as the rest of the UI and has
 // one action: open an agent.
-import { type JSX, useEffect, useMemo, useRef, useState } from "react";
+import { type JSX, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AccessRequest, Agent, Message, Task, TaskStatus } from "../api";
 import { type Assignment, emptyAssignment, inCell, slotOrigin, whiteboardAt } from "./layout";
 import { buildOffice, freshMessages } from "./model";
 import { type Pose, poseLabel } from "./pose";
 import { whiteboardSize } from "./art";
 import { OfficeScene, type Transform } from "./scene";
-
 
 export interface OfficeProps {
   agents: Agent[];
@@ -24,6 +23,11 @@ const statusLabel: Record<TaskStatus, string> = {
   todo: "to do", in_progress: "in progress", review: "in review", done: "done", blocked: "blocked",
 };
 
+// Who sits where, kept for the page's lifetime rather than the component's,
+// so leaving the tab and coming back does not move anyone. A reload starts
+// over (in start order).
+let keptAssignment: Assignment = emptyAssignment;
+
 function reducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
@@ -35,15 +39,15 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
   const [failure, setFailure] = useState<string>();
   const [xf, setXf] = useState<Transform>();
   const [hovered, setHovered] = useState<string>();
-  const assignment = useRef<Assignment>(emptyAssignment);
+  const root = useRef<HTMLDivElement>(null);
   const openedAt = useRef(Date.now());
   const seen = useRef(new Set<number>());
 
   // assignDesks is idempotent, so recomputing with the stored assignment
   // (e.g. in StrictMode) gives the same seats.
   const model = useMemo(() => {
-    const m = buildOffice(assignment.current, agents, tasks, accessRequests);
-    assignment.current = m.assignment;
+    const m = buildOffice(keptAssignment, agents, tasks, accessRequests);
+    keptAssignment = m.assignment;
     return m;
   }, [agents, tasks, accessRequests]);
 
@@ -79,13 +83,14 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
     };
   }, []);
 
-  useEffect(() => {
+  // Layout effects: the scene and the nameplates change in the same paint.
+  useLayoutEffect(() => {
     if (!scene) return;
     const t = scene.update(model);
     if (t) setXf(t);
   }, [scene, model]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = pane.current;
     if (!scene || !el) return;
     const fit = (): void => setXf(scene.resize(el.clientWidth, el.clientHeight));
@@ -93,6 +98,14 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
     const ro = new ResizeObserver(fit);
     ro.observe(el);
     return () => ro.disconnect();
+  }, [scene]);
+
+  // The scene's frame statistics, for diagnostics and the UI tests; written
+  // straight to the DOM once a second, outside React.
+  useEffect(() => {
+    if (!scene) return;
+    const t = window.setInterval(() => root.current?.setAttribute("data-stats", JSON.stringify(scene.stats())), 1000);
+    return () => window.clearInterval(t);
   }, [scene]);
 
   useEffect(() => {
@@ -105,7 +118,7 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
     .filter(([, n]) => n > 0);
 
   return (
-    <div className="office" data-renderer={scene?.renderer ?? ""} data-scale={xf?.scale ?? ""}>
+    <div className="office" ref={root} data-renderer={scene?.renderer ?? ""} data-scale={xf?.scale ?? ""}>
       <div className="office-bar">
         {counts.length === 0
           ? <span className="muted">No agents yet. Start one from the board or the sidebar; it gets a desk here.</span>
