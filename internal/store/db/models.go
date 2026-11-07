@@ -95,6 +95,7 @@ type PullRequest struct {
 	Head            string
 	Checks          string
 	FailedChecks    string
+	PendingFlagged  string
 	AcceptedFlagged string
 	Rounds          int64
 	Error           string

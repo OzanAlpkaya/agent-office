@@ -189,8 +189,8 @@ SET base = ?, number = ?, url = ?, state = ?, head = ?, checks = ?, failed_check
 WHERE id = ?
 RETURNING *;
 
--- name: SetPullRequestAccepted :one
-UPDATE pull_requests SET accepted_flagged = ?, updated_at = ? WHERE id = ?
+-- name: SetPullRequestFlagged :one
+UPDATE pull_requests SET pending_flagged = ?, accepted_flagged = ?, error = ?, updated_at = ? WHERE id = ?
 RETURNING *;
 
 -- name: TakePullRequestRound :one
@@ -238,4 +238,10 @@ RETURNING *;
 
 -- name: SetReviewFollowup :one
 UPDATE reviews SET followup = ?, updated_at = ? WHERE id = ?
+RETURNING *;
+
+-- name: StartReview :one
+-- Hands a queued review to its reviewer agent, once (ADR 0021).
+UPDATE reviews SET status = 'running', agent_id = ?, attempts = attempts + 1, updated_at = ?
+WHERE id = ? AND status = 'queued'
 RETURNING *;

@@ -444,7 +444,7 @@ func (q *Queries) GetAccessRequest(ctx context.Context, id int64) (AccessRequest
 }
 
 const getPullRequest = `-- name: GetPullRequest :one
-SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, accepted_flagged, rounds, error, created_at, updated_at FROM pull_requests WHERE id = ?
+SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at FROM pull_requests WHERE id = ?
 `
 
 func (q *Queries) GetPullRequest(ctx context.Context, id int64) (PullRequest, error) {
@@ -463,6 +463,7 @@ func (q *Queries) GetPullRequest(ctx context.Context, id int64) (PullRequest, er
 		&i.Head,
 		&i.Checks,
 		&i.FailedChecks,
+		&i.PendingFlagged,
 		&i.AcceptedFlagged,
 		&i.Rounds,
 		&i.Error,
@@ -979,7 +980,7 @@ func (q *Queries) ListImports(ctx context.Context, arg ListImportsParams) ([]Imp
 }
 
 const listPullRequests = `-- name: ListPullRequests :many
-SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, accepted_flagged, rounds, error, created_at, updated_at FROM pull_requests WHERE project_id = ? ORDER BY id
+SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at FROM pull_requests WHERE project_id = ? ORDER BY id
 `
 
 func (q *Queries) ListPullRequests(ctx context.Context, projectID string) ([]PullRequest, error) {
@@ -1004,6 +1005,7 @@ func (q *Queries) ListPullRequests(ctx context.Context, projectID string) ([]Pul
 			&i.Head,
 			&i.Checks,
 			&i.FailedChecks,
+			&i.PendingFlagged,
 			&i.AcceptedFlagged,
 			&i.Rounds,
 			&i.Error,
@@ -1482,19 +1484,27 @@ func (q *Queries) ReviewForHead(ctx context.Context, arg ReviewForHeadParams) (R
 	return i, err
 }
 
-const setPullRequestAccepted = `-- name: SetPullRequestAccepted :one
-UPDATE pull_requests SET accepted_flagged = ?, updated_at = ? WHERE id = ?
-RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, accepted_flagged, rounds, error, created_at, updated_at
+const setPullRequestFlagged = `-- name: SetPullRequestFlagged :one
+UPDATE pull_requests SET pending_flagged = ?, accepted_flagged = ?, error = ?, updated_at = ? WHERE id = ?
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
 `
 
-type SetPullRequestAcceptedParams struct {
+type SetPullRequestFlaggedParams struct {
+	PendingFlagged  string
 	AcceptedFlagged string
+	Error           string
 	UpdatedAt       time.Time
 	ID              int64
 }
 
-func (q *Queries) SetPullRequestAccepted(ctx context.Context, arg SetPullRequestAcceptedParams) (PullRequest, error) {
-	row := q.db.QueryRowContext(ctx, setPullRequestAccepted, arg.AcceptedFlagged, arg.UpdatedAt, arg.ID)
+func (q *Queries) SetPullRequestFlagged(ctx context.Context, arg SetPullRequestFlaggedParams) (PullRequest, error) {
+	row := q.db.QueryRowContext(ctx, setPullRequestFlagged,
+		arg.PendingFlagged,
+		arg.AcceptedFlagged,
+		arg.Error,
+		arg.UpdatedAt,
+		arg.ID,
+	)
 	var i PullRequest
 	err := row.Scan(
 		&i.ID,
@@ -1509,6 +1519,7 @@ func (q *Queries) SetPullRequestAccepted(ctx context.Context, arg SetPullRequest
 		&i.Head,
 		&i.Checks,
 		&i.FailedChecks,
+		&i.PendingFlagged,
 		&i.AcceptedFlagged,
 		&i.Rounds,
 		&i.Error,
@@ -1568,10 +1579,47 @@ func (q *Queries) SetWorktreeStatus(ctx context.Context, arg SetWorktreeStatusPa
 	return err
 }
 
+const startReview = `-- name: StartReview :one
+UPDATE reviews SET status = 'running', agent_id = ?, attempts = attempts + 1, updated_at = ?
+WHERE id = ? AND status = 'queued'
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at
+`
+
+type StartReviewParams struct {
+	AgentID   sql.NullString
+	UpdatedAt time.Time
+	ID        int64
+}
+
+// Hands a queued review to its reviewer agent, once (ADR 0021).
+func (q *Queries) StartReview(ctx context.Context, arg StartReviewParams) (Review, error) {
+	row := q.db.QueryRowContext(ctx, startReview, arg.AgentID, arg.UpdatedAt, arg.ID)
+	var i Review
+	err := row.Scan(
+		&i.ID,
+		&i.PrID,
+		&i.Reviewer,
+		&i.Head,
+		&i.Status,
+		&i.Verdict,
+		&i.Summary,
+		&i.Comments,
+		&i.AgentID,
+		&i.GithubReviewID,
+		&i.Url,
+		&i.Followup,
+		&i.Error,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const takePullRequestRound = `-- name: TakePullRequestRound :one
 UPDATE pull_requests SET rounds = rounds + 1, updated_at = ?1
 WHERE id = ?2 AND rounds < ?3
-RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, accepted_flagged, rounds, error, created_at, updated_at
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
 `
 
 type TakePullRequestRoundParams struct {
@@ -1597,6 +1645,7 @@ func (q *Queries) TakePullRequestRound(ctx context.Context, arg TakePullRequestR
 		&i.Head,
 		&i.Checks,
 		&i.FailedChecks,
+		&i.PendingFlagged,
 		&i.AcceptedFlagged,
 		&i.Rounds,
 		&i.Error,
@@ -1635,7 +1684,7 @@ const updatePullRequest = `-- name: UpdatePullRequest :one
 UPDATE pull_requests
 SET base = ?, number = ?, url = ?, state = ?, head = ?, checks = ?, failed_checks = ?, error = ?, updated_at = ?
 WHERE id = ?
-RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, accepted_flagged, rounds, error, created_at, updated_at
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
 `
 
 type UpdatePullRequestParams struct {
@@ -1678,6 +1727,7 @@ func (q *Queries) UpdatePullRequest(ctx context.Context, arg UpdatePullRequestPa
 		&i.Head,
 		&i.Checks,
 		&i.FailedChecks,
+		&i.PendingFlagged,
 		&i.AcceptedFlagged,
 		&i.Rounds,
 		&i.Error,
@@ -1822,7 +1872,7 @@ const upsertPullRequest = `-- name: UpsertPullRequest :one
 INSERT INTO pull_requests (project_id, task_id, agent_id, branch, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT (project_id, branch) DO UPDATE SET updated_at = excluded.updated_at
-RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, accepted_flagged, rounds, error, created_at, updated_at
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
 `
 
 type UpsertPullRequestParams struct {
@@ -1858,6 +1908,7 @@ func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestPa
 		&i.Head,
 		&i.Checks,
 		&i.FailedChecks,
+		&i.PendingFlagged,
 		&i.AcceptedFlagged,
 		&i.Rounds,
 		&i.Error,

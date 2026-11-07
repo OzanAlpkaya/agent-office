@@ -12,8 +12,9 @@ ALTER TABLE agents DROP COLUMN role;
 ALTER TABLE agents RENAME COLUMN role_v5 TO role;
 
 -- One row per branch pushed for review (ADR 0020). agent_id is the worker whose branch it
--- is; follow-ups relaunch that agent (ADR 0022). accepted_flagged lists commit ids the user
--- accepted despite a failed identity check (ADR 0014), as JSON.
+-- is; follow-ups relaunch that agent (ADR 0022). pending_flagged lists the commits whose
+-- identity check failed (ADR 0014) and that block the push; accepted_flagged the ones the
+-- user accepted. Both JSON.
 CREATE TABLE pull_requests (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id       TEXT NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
@@ -29,6 +30,7 @@ CREATE TABLE pull_requests (
     checks           TEXT NOT NULL DEFAULT ''
                      CHECK (checks IN ('', 'none', 'pending', 'success', 'failure', 'unavailable')),
     failed_checks    TEXT NOT NULL DEFAULT '[]',
+    pending_flagged  TEXT NOT NULL DEFAULT '[]',
     accepted_flagged TEXT NOT NULL DEFAULT '[]',
     rounds           INTEGER NOT NULL DEFAULT 0,
     error            TEXT NOT NULL DEFAULT '' CHECK (length(error) <= 1000),
