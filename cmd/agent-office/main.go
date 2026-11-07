@@ -320,7 +320,7 @@ func serve(args []string) error {
 		ClaudeBin: claudeBin, HookCommand: agent.ShellQuote(self) + " hook",
 		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
-		Sandbox: sb, Warnings: warnings,
+		Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version,
 	})
 	if err != nil {
 		return err

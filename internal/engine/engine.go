@@ -19,6 +19,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
 	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -34,6 +35,10 @@ var (
 	ErrWorktreeDirty  = errors.New("worktree has uncommitted changes; commit them or discard the worktree")
 	ErrInvalid        = errors.New("invalid input")
 	ErrTaskHasRunning = errors.New("task has a running agent; stop it first")
+	ErrForbidden      = errors.New("forbidden")
+	ErrLimit          = errors.New("limit reached")
+	ErrLeadRunning    = errors.New("a lead agent is already running; stop it first")
+	ErrDecided        = errors.New("access request was already decided")
 )
 
 // Exit reasons recorded for agents.
@@ -43,6 +48,7 @@ const (
 	ExitShutdown      = "daemon_shutdown"
 	ExitDaemonRestart = "daemon_restart"
 	ExitStartFailed   = "start_failed"
+	ExitReported      = "reported_done" // the agent called report_done and its turn ended (ADR 0017)
 )
 
 // Worktree statuses (ADR 0010).
@@ -84,6 +90,14 @@ type Options struct {
 	Logger              *slog.Logger
 	Sandbox             *SandboxOptions // nil: host mode (permission prompts on)
 	Warnings            []string        // shown in the UI (e.g. an untested Claude Code version)
+	AgentOfficeBin      string          // this binary (absolute); host agents run `<bin> mcp` (ADR 0006)
+	Version             string          // reported by the team MCP server
+
+	// Message delivery timing (ADR 0018); zero values get the defaults. Tests
+	// shorten them.
+	deliverySettle time.Duration // idle this long before a message is typed
+	typingQuiet    time.Duration // no user input for this long before typing
+	enterDelay     time.Duration // between typing a message and pressing Enter
 }
 
 // Status is the daemon-wide state the UI shows next to the board.
@@ -111,6 +125,7 @@ type AgentInfo struct {
 	Model               string      `json:"model,omitempty"`
 	InheritUserSettings bool        `json:"inherit_user_settings"`
 	Sandbox             string      `json:"sandbox"` // SandboxHost | SandboxPodman
+	Role                string      `json:"role"`    // RoleLead | RoleWorker
 	Branch              string      `json:"branch"`
 	WorktreePath        string      `json:"worktree_path"`
 	WorkspaceKind       string      `json:"workspace_kind"` // KindWorktree | KindClone
@@ -125,11 +140,14 @@ type AgentInfo struct {
 
 // Update is one change broadcast to subscribers.
 type Update struct {
-	Type         string        `json:"type"` // "agent" | "agent_removed" | "task" | "task_deleted" | "sandbox_event"
-	Agent        *AgentInfo    `json:"agent,omitempty"`
-	Task         *Task         `json:"task,omitempty"`
-	ID           string        `json:"id,omitempty"`
-	SandboxEvent *SandboxEvent `json:"sandbox_event,omitempty"`
+	// "agent" | "agent_removed" | "task" | "task_deleted" | "sandbox_event" | "message" | "access_request"
+	Type          string         `json:"type"`
+	Agent         *AgentInfo     `json:"agent,omitempty"`
+	Task          *Task          `json:"task,omitempty"`
+	ID            string         `json:"id,omitempty"`
+	SandboxEvent  *SandboxEvent  `json:"sandbox_event,omitempty"`
+	Message       *Message       `json:"message,omitempty"`
+	AccessRequest *AccessRequest `json:"access_request,omitempty"`
 }
 
 type agentProc struct {
@@ -145,6 +163,16 @@ type agentProc struct {
 	sandbox    *sandboxRes   // nil in host mode and once the worker is gone
 	events     eventLimit    // sandbox event rate limit
 	importMu   sync.Mutex    // serializes imports and removal of a sandboxed agent
+	mcp        *mcp.Listener // team MCP socket; nil once the agent exited
+	mcpConfig  string        // host mode: the --mcp-config file
+
+	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
+	hasPrompt     bool        // started with an initial prompt
+	turns         int         // turns finished (Stop or StopFailure of the main agent)
+	lastInput     time.Time   // last terminal input from the user
+	deliverTimer  *time.Timer // pending idle delivery
+	delivering    bool        // a message is being typed into the PTY
+	stopAfterTurn bool        // report_done: end the session when the turn ends
 }
 
 // Engine owns agent and task lifecycles. All state changes go through it.
@@ -157,12 +185,14 @@ type Engine struct {
 	st      *store.Store
 	project Project
 
-	mu       sync.Mutex
-	agents   map[string]*agentProc
-	order    []string
-	starting int // slots reserved by Start while git runs outside the lock
-	subs     map[chan Update]struct{}
-	wg       sync.WaitGroup
+	mu           sync.Mutex
+	agents       map[string]*agentProc
+	order        []string
+	starting     int             // slots reserved by Start while git runs outside the lock
+	startingLead bool            // a lead start is in progress (one lead at a time, ADR 0017)
+	assigning    map[string]bool // task ids an assign_task is starting a worker for
+	subs         map[chan Update]struct{}
+	wg           sync.WaitGroup
 }
 
 // New validates opts, registers the repository as a project, reconciles state
@@ -184,6 +214,18 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	}
 	if opts.MaxAgents <= 0 {
 		opts.MaxAgents = 4
+	}
+	if !filepath.IsAbs(opts.AgentOfficeBin) {
+		return nil, fmt.Errorf("engine: AgentOfficeBin must be an absolute path, got %q", opts.AgentOfficeBin)
+	}
+	if opts.deliverySettle <= 0 {
+		opts.deliverySettle = 1500 * time.Millisecond
+	}
+	if opts.typingQuiet <= 0 {
+		opts.typingQuiet = 5 * time.Second
+	}
+	if opts.enterDelay <= 0 {
+		opts.enterDelay = 800 * time.Millisecond
 	}
 	if opts.Sandbox != nil {
 		if err := opts.Sandbox.validate(); err != nil {
@@ -215,15 +257,16 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		return nil, fmt.Errorf("engine: register project: %w", err)
 	}
 	e := &Engine{
-		opts:    opts,
-		log:     opts.Logger,
-		adapter: agent.ClaudeCode{Bin: opts.ClaudeBin},
-		git:     opts.Git,
-		q:       opts.Store.Q,
-		st:      opts.Store,
-		project: Project{ID: row.ID, Name: row.Name, RepoPath: row.RepoPath, Slug: row.Slug},
-		agents:  map[string]*agentProc{},
-		subs:    map[chan Update]struct{}{},
+		opts:      opts,
+		log:       opts.Logger,
+		adapter:   agent.ClaudeCode{Bin: opts.ClaudeBin},
+		git:       opts.Git,
+		q:         opts.Store.Q,
+		st:        opts.Store,
+		project:   Project{ID: row.ID, Name: row.Name, RepoPath: row.RepoPath, Slug: row.Slug},
+		agents:    map[string]*agentProc{},
+		subs:      map[chan Update]struct{}{},
+		assigning: map[string]bool{},
 	}
 	if opts.Sandbox != nil {
 		if err := e.prepareSandbox(); err != nil {
@@ -251,6 +294,13 @@ func (e *Engine) reconcile(ctx context.Context) error {
 	n, err := e.q.MarkUnfinishedAgentsExited(ctx, nullTime(now()))
 	if err != nil {
 		return fmt.Errorf("engine: reconcile agents: %w", err)
+	}
+	// Every agent of the previous run is gone, so none of its requests can be
+	// granted any more (ADR 0019).
+	if x, err := e.q.ExpireAllAccessRequests(ctx, db.ExpireAllAccessRequestsParams{DecidedAt: nullTime(now()), ProjectID: e.project.ID}); err != nil {
+		return fmt.Errorf("engine: expire access requests: %w", err)
+	} else if x > 0 {
+		e.log.Info("access requests from the previous run expired", "count", x)
 	}
 	if err := e.git.Prune(ctx, e.project.RepoPath); err != nil {
 		e.log.Warn("git worktree prune failed", "err", err)
@@ -301,27 +351,46 @@ func (e *Engine) Status() Status {
 	return st
 }
 
-// agentName is how an agent is named in commit trailers until agents get
-// names of their own (Phase 4).
+// agentName is how an agent is named in commit trailers and messages.
 func agentName(id string) string { return "agent-" + id[:6] }
 
 // StartRequest describes a new agent.
 type StartRequest struct {
-	TaskID string // optional: the agent works on this task
+	TaskID string // optional for workers; a lead's goal (ADR 0017)
+	Role   string // RoleWorker (default) or RoleLead
 }
 
 // Start creates a worktree and launches a new agent in it.
 func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error) {
+	role := req.Role
+	switch {
+	case role == "":
+		role = RoleWorker
+	case role != RoleWorker && role != RoleLead:
+		return AgentInfo{}, fmt.Errorf("%w: role must be %s or %s", ErrInvalid, RoleWorker, RoleLead)
+	case role == RoleLead && req.TaskID == "":
+		return AgentInfo{}, fmt.Errorf("%w: a lead needs a goal: start it on a task", ErrInvalid)
+	}
 	e.mu.Lock()
 	if e.runningLocked()+e.starting >= e.opts.MaxAgents {
 		e.mu.Unlock()
 		return AgentInfo{}, ErrTooManyAgents
+	}
+	if role == RoleLead {
+		if e.startingLead || e.runningLeadLocked() != nil {
+			e.mu.Unlock()
+			return AgentInfo{}, ErrLeadRunning
+		}
+		e.startingLead = true
 	}
 	e.starting++
 	e.mu.Unlock()
 	defer func() {
 		e.mu.Lock()
 		e.starting--
+		if role == RoleLead {
+			e.startingLead = false
+		}
 		e.mu.Unlock()
 	}()
 
@@ -333,6 +402,9 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		}
 		if err != nil {
 			return AgentInfo{}, err
+		}
+		if role == RoleLead && t.ParentTaskID.Valid {
+			return AgentInfo{}, fmt.Errorf("%w: a sub-task cannot be a goal; start the lead on a top-level task", ErrInvalid)
 		}
 		task = &t
 	}
@@ -382,7 +454,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		if err := q.CreateAgent(ctx, db.CreateAgentParams{
 			ID: id, ProjectID: e.project.ID, TaskID: nullString(req.TaskID), Model: e.opts.Model,
 			InheritUserSettings: e.opts.InheritUserSettings, State: string(hooks.Starting), StartedAt: started,
-			Sandbox: mode, Role: RoleWorker,
+			Sandbox: mode, Role: role,
 		}); err != nil {
 			return err
 		}
@@ -410,10 +482,12 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	}
 
 	var a AgentInfo
+	l := launchInfo{id: id, sid: sid, role: role, branch: branch, path: wtPath, base: base, taskID: req.TaskID,
+		started: started, prompt: e.initialPrompt(ctx, role, task, branch)}
 	if e.opts.Sandbox != nil {
-		a, err = e.launchSandboxed(id, sid, branch, wtPath, base, req.TaskID, started, task, prep)
+		a, err = e.launchSandboxed(l, prep)
 	} else {
-		a, err = e.launch(id, sid, branch, wtPath, base, req.TaskID, started, task)
+		a, err = e.launch(l)
 	}
 	if err != nil {
 		undoWorktree()
@@ -430,8 +504,17 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	return a, nil
 }
 
-// launch writes the agent's settings, opens its hook socket and starts the CLI.
-func (e *Engine) launch(id, sid, branch, wtPath, base, taskID string, started time.Time, task *db.Task) (AgentInfo, error) {
+// launchInfo is what Start hands to the launch paths.
+type launchInfo struct {
+	id, sid, role, branch, path, base, taskID string
+	started                                   time.Time
+	prompt                                    string // initial prompt; empty for none
+}
+
+// launch writes the agent's settings, opens its hook and MCP sockets and
+// starts the CLI.
+func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
+	id, sid, branch, wtPath, base, taskID, started := l.id, l.sid, l.branch, l.path, l.base, l.taskID, l.started
 	dir := filepath.Join(e.opts.RuntimeDir, "agents")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return AgentInfo{}, err
@@ -449,27 +532,39 @@ func (e *Engine) launch(id, sid, branch, wtPath, base, taskID string, started ti
 		os.Remove(settingsPath)
 		return AgentInfo{}, err
 	}
-	prompt := ""
-	if task != nil {
-		prompt = taskPrompt(task.Title, task.Description, branch)
+	mcpPath, mcpConfig := filepath.Join(dir, id+".mcp.sock"), filepath.Join(dir, id+".mcp.json")
+	var mln *mcp.Listener
+	cfg, err := agent.MCPConfig(e.opts.AgentOfficeBin, mcpPath)
+	if err == nil {
+		err = os.WriteFile(mcpConfig, cfg, 0o600)
 	}
-	cmd, err := e.adapter.Command(agent.LaunchSpec{
-		SessionID: sid, Model: e.opts.Model, WorkDir: wtPath, SettingsPath: settingsPath,
-		InheritUserSettings: e.opts.InheritUserSettings, SocketPath: ln.Path(), BaseEnv: e.opts.BaseEnv,
-		InitialPrompt: prompt,
-	})
+	if err == nil {
+		mln, err = e.listenMCP(mcpPath, id, l.role)
+	}
+	var cmd *exec.Cmd
+	if err == nil {
+		cmd, err = e.adapter.Command(agent.LaunchSpec{
+			SessionID: sid, Model: e.opts.Model, WorkDir: wtPath, SettingsPath: settingsPath,
+			InheritUserSettings: e.opts.InheritUserSettings, SocketPath: ln.Path(), BaseEnv: e.opts.BaseEnv,
+			InitialPrompt: l.prompt, MCPConfigPath: mcpConfig,
+		})
+	}
 	var term *terminal.Session
 	if err == nil {
 		term, err = terminal.Start(cmd, terminal.Options{Size: e.opts.TermSize})
 	}
 	if err != nil {
 		ln.Close()
+		if mln != nil {
+			mln.Close()
+		}
 		os.Remove(settingsPath)
+		os.Remove(mcpConfig)
 		return AgentInfo{}, fmt.Errorf("start agent: %w", err)
 	}
 
 	a := &agentProc{
-		info: AgentInfo{ID: id, SessionID: sid, TaskID: taskID, Model: e.opts.Model, Sandbox: SandboxHost,
+		info: AgentInfo{ID: id, SessionID: sid, TaskID: taskID, Model: e.opts.Model, Sandbox: SandboxHost, Role: l.role,
 			InheritUserSettings: e.opts.InheritUserSettings, Branch: branch, WorktreePath: wtPath,
 			WorkspaceKind: KindWorktree, WorktreeStatus: WorktreeActive, HasTerminal: true, StartedAt: started},
 		status:     hooks.Status{State: hooks.Starting},
@@ -478,13 +573,16 @@ func (e *Engine) launch(id, sid, branch, wtPath, base, taskID string, started ti
 		listener:   ln,
 		settings:   settingsPath,
 		exited:     make(chan struct{}),
+		mcp:        mln,
+		mcpConfig:  mcpConfig,
+		hasPrompt:  l.prompt != "",
 	}
 	e.mu.Lock()
 	e.agents[id] = a
 	e.order = append(e.order, id)
 	e.publishAgentLocked(a)
 	e.mu.Unlock()
-	e.log.Info("agent started", "agent_id", id, "session_id", sid, "pid", term.Pid(), "task_id", taskID,
+	e.log.Info("agent started", "agent_id", id, "role", l.role, "session_id", sid, "pid", term.Pid(), "task_id", taskID,
 		"branch", branch, "worktree", wtPath, "model", e.opts.Model, "inherit_user_settings", e.opts.InheritUserSettings)
 	e.wg.Add(1)
 	go e.watch(a)
@@ -504,6 +602,20 @@ func (e *Engine) watch(a *agentProc) {
 		code = -1
 	}
 	_ = a.listener.Close()
+	e.mu.Lock()
+	mln := a.mcp
+	a.mcp = nil
+	if a.deliverTimer != nil {
+		a.deliverTimer.Stop()
+		a.deliverTimer = nil
+	}
+	e.mu.Unlock()
+	if mln != nil {
+		_ = mln.Close()
+	}
+	if a.mcpConfig != "" {
+		_ = os.Remove(a.mcpConfig)
+	}
 	if a.sandbox != nil {
 		e.closeSandbox(a.sandbox, e.log.With("agent_id", a.info.ID))
 		e.mu.Lock()
@@ -529,6 +641,7 @@ func (e *Engine) watch(a *agentProc) {
 	}
 	_ = e.q.EndSessions(ctx, db.EndSessionsParams{EndedAt: nullTime(t), AgentID: a.info.ID})
 	e.publishAgentLocked(a)
+	e.expireAccessLocked(ctx, a.info.ID)
 	e.mu.Unlock()
 	close(a.exited)
 	e.log.Info("agent exited", "agent_id", a.info.ID, "exit_code", code, "reason", reason)
@@ -553,8 +666,7 @@ func (e *Engine) hookHandler(id string) hooks.Handler {
 		if ev.SessionID != a.info.SessionID {
 			return nil, ErrSession
 		}
-		e.applyLocked(ctx, a, ev, log)
-		return nil, nil // Phase 4: Stop-hook message injection goes here
+		return e.onHookLocked(ctx, a, ev, log), nil
 	}
 }
 
@@ -583,6 +695,9 @@ func (e *Engine) applyLocked(ctx context.Context, a *agentProc, ev agent.Event, 
 func (e *Engine) Input(id string, data []byte) error {
 	e.mu.Lock()
 	a, ok := e.agents[id]
+	if ok {
+		a.lastInput = time.Now()
+	}
 	e.mu.Unlock()
 	if !ok {
 		return ErrNotFound
@@ -600,6 +715,10 @@ func (e *Engine) Input(id string, data []byte) error {
 		defer cancel()
 		e.applyLocked(ctx, a, agent.Event{Kind: agent.UserInterrupted, SessionID: a.info.SessionID, Hook: "input"},
 			e.log.With("agent_id", id))
+		if a.status.State == hooks.Idle {
+			a.turns++                        // the interrupt ended the turn, which sends no Stop (ADR 0008)
+			e.scheduleDeliveryLocked(ctx, a) // ADR 0018: an interrupted agent can take messages again
+		}
 	}
 	return nil
 }
@@ -825,6 +944,19 @@ func (e *Engine) publishLocked(u Update) {
 	}
 }
 
+// runningLeadLocked returns the running lead, if any.
+func (e *Engine) runningLeadLocked() *agentProc {
+	for _, a := range e.agents {
+		if a.info.Role == RoleLead && a.running() {
+			return a
+		}
+	}
+	return nil
+}
+
+// running reports whether the agent's process runs in this daemon.
+func (a *agentProc) running() bool { return a.term != nil && a.info.ExitedAt == nil }
+
 func (e *Engine) runningLocked() int {
 	n := 0
 	for _, a := range e.agents {
@@ -859,7 +991,7 @@ func (a *agentProc) view() AgentInfo {
 func infoFromRow(r db.ListVisibleAgentsRow) AgentInfo {
 	info := AgentInfo{
 		ID: r.ID, TaskID: r.TaskID.String, State: r.State, Model: r.Model,
-		InheritUserSettings: r.InheritUserSettings, Sandbox: r.Sandbox, Branch: r.Branch, WorktreePath: r.WorktreePath,
+		InheritUserSettings: r.InheritUserSettings, Sandbox: r.Sandbox, Role: r.Role, Branch: r.Branch, WorktreePath: r.WorktreePath,
 		WorkspaceKind: r.WorktreeKind, WorktreeStatus: r.WorktreeStatus, StartedAt: r.StartedAt, ExitReason: r.ExitReason,
 	}
 	if r.ExitedAt.Valid {

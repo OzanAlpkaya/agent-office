@@ -63,6 +63,7 @@ func newFixture(t *testing.T) *fixture {
 		Repo: repo, WorktreeRoot: filepath.Join(dir, "wt"), Store: st, MaxAgents: 1,
 		ClaudeBin: bin, HookCommand: "true", RuntimeDir: filepath.Join(dir, "rt"),
 		BaseEnv: []string{"PATH=" + os.Getenv("PATH")}, StopTimeout: time.Second, Logger: log,
+		AgentOfficeBin: bin,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -40,11 +40,16 @@ func fakeClaude() int {
 		}
 	}
 	sock := os.Getenv(agent.SocketEnv)
+	// send forwards a hook and prints a non-empty reply (a Stop-hook block).
 	send := func(event string, extra string) {
 		payload := fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q%s}`, event, sid, extra)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = hooks.Forward(ctx, sock, strings.NewReader(payload), io.Discard)
+		var reply strings.Builder
+		_ = hooks.Forward(ctx, sock, strings.NewReader(payload), &reply)
+		if reply.Len() > 0 {
+			fmt.Println("STOP-REPLY:" + reply.String())
+		}
 	}
 	if os.Getenv("AO_FAKE_BAD_SESSION") == "1" {
 		sid = "00000000-0000-4000-8000-000000000000"
@@ -70,6 +75,34 @@ func fakeClaude() int {
 			return 0
 		case "crash":
 			return 7 // exit without a SessionEnd hook
+		case "busy": // a turn that keeps running
+			send("UserPromptSubmit", "")
+		case "turn": // a whole turn
+			send("UserPromptSubmit", "")
+			send("Stop", `,"stop_hook_active":false`)
+		case "stop":
+			send("Stop", `,"stop_hook_active":false`)
+		case "stopactive":
+			send("Stop", `,"stop_hook_active":true`)
+		case "substop":
+			send("Stop", `,"agent_id":"sub-1","stop_hook_active":false`)
+		case "stopfailure":
+			send("StopFailure", "")
+		case "idlenote":
+			send("Notification", `,"notification_type":"idle_prompt"`)
+		case "commit":
+			_ = os.WriteFile("work.txt", []byte("done\n"), 0o644)
+			for _, args := range [][]string{{"add", "work.txt"}, {"-c", "user.name=t", "-c", "user.email=t@example.com",
+				"commit", "-q", "-m", "feat: work"}} {
+				if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+					fmt.Printf("git failed: %v %s\n", err, out)
+				}
+			}
+			fmt.Println("committed")
+		default:
+			if l := strings.TrimSpace(in.Text()); l != "" {
+				fmt.Println("INPUT:" + l) // what the agent read, e.g. a message typed by the daemon
+			}
 		}
 	}
 	return 0
@@ -126,6 +159,7 @@ func newFixture(t *testing.T, extraEnv ...string) *fixture {
 		ClaudeBin: os.Args[0], HookCommand: "true", RuntimeDir: runtime,
 		BaseEnv:     append([]string{"AO_FAKE_CLAUDE=1", "PATH=" + os.Getenv("PATH")}, extraEnv...),
 		StopTimeout: time.Second, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		AgentOfficeBin: os.Args[0],
 	}
 	return f
 }
