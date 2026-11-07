@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -38,6 +39,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
+	pricing "github.com/OzanAlpkaya/agent-office/internal/usage"
 	"github.com/OzanAlpkaya/agent-office/web"
 )
 
@@ -226,13 +228,19 @@ type serveConfig struct {
 	egressAllow         []string // added to sandbox.DefaultEgressAllow
 	sandboxMemory       string
 	sandboxPids         int
-	github              bool   // push and open pull requests (ADR 0020)
-	githubRemote        string // remote of the main repository to push to
-	reviewer            string // internal | coderabbit | none (ADR 0021)
-	reviewRounds        int    // automatic follow-ups per pull request (ADR 0022)
-	pack                string // stack pack name (ADR 0023); empty: none
-	packsDir            string // user stack packs
-	secretsDir          string // values of the pack's env vars, one file per name
+	github              bool    // push and open pull requests (ADR 0020)
+	githubRemote        string  // remote of the main repository to push to
+	reviewer            string  // internal | coderabbit | none (ADR 0021)
+	reviewRounds        int     // automatic follow-ups per pull request (ADR 0022)
+	pack                string  // stack pack name (ADR 0023); empty: none
+	packsDir            string  // user stack packs
+	secretsDir          string  // values of the pack's env vars, one file per name
+	pricesFile          string  // user price table (ADR 0026)
+	pricesRequired      bool    // named explicitly: a missing file is an error
+	budgetSessionUSD    float64 // per agent session (ADR 0027); 0: off
+	budgetGoalUSD       float64 // per goal; 0: off
+	eventRetentionDays  int     // ADR 0028; 0: keep events
+	logFormat           string  // text | json
 }
 
 func parseServe(args []string) (serveConfig, error) {
@@ -297,9 +305,39 @@ func parseServe(args []string) (serveConfig, error) {
 		"values of the pack's env vars, one user-only file per name ["+pack.SecretsDirEnv+"]")
 	fs.BoolVar(&c.dev, "dev", false, "allow the Vite dev server origin (localhost:5173)")
 	fs.StringVar(&c.logLevel, "log-level", envOr("AGENT_OFFICE_LOG_LEVEL", "info"), "debug | info | warn [AGENT_OFFICE_LOG_LEVEL]")
+	fs.StringVar(&c.logFormat, "log-format", envOr("AGENT_OFFICE_LOG_FORMAT", "text"),
+		"text | json; every line about an agent carries its session_id [AGENT_OFFICE_LOG_FORMAT]")
+	pricesFile, err := pricing.DefaultPricesFile()
+	if err != nil {
+		return c, err
+	}
+	c.pricesRequired = os.Getenv(pricing.PricesFileEnv) != ""
+	fs.StringVar(&c.pricesFile, "prices", pricesFile,
+		"your price table for cost estimates, merged over the built-in one; optional at the default path ["+pricing.PricesFileEnv+"]")
+	if c.budgetSessionUSD, err = envFloat("AGENT_OFFICE_BUDGET_SESSION_USD", 0); err != nil {
+		return c, err
+	}
+	fs.Float64Var(&c.budgetSessionUSD, "budget-session-usd", c.budgetSessionUSD,
+		"sandboxed agents: refuse API requests once one session's estimated cost reaches this; 0 = off [AGENT_OFFICE_BUDGET_SESSION_USD]")
+	if c.budgetGoalUSD, err = envFloat("AGENT_OFFICE_BUDGET_GOAL_USD", 0); err != nil {
+		return c, err
+	}
+	fs.Float64Var(&c.budgetGoalUSD, "budget-goal-usd", c.budgetGoalUSD,
+		"sandboxed agents: refuse API requests once a goal's estimated cost (lead, workers, reviewers) reaches this; 0 = off [AGENT_OFFICE_BUDGET_GOAL_USD]")
+	retention, err := envInt("AGENT_OFFICE_EVENT_RETENTION_DAYS", 30)
+	if err != nil {
+		return c, err
+	}
+	fs.IntVar(&c.eventRetentionDays, "event-retention-days", retention,
+		"delete agent activity events older than this; 0 = keep [AGENT_OFFICE_EVENT_RETENTION_DAYS]")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "prices" {
+			c.pricesRequired = true
+		}
+	})
 	if c.repo == "" {
 		return c, errors.New("--repo is required")
 	}
@@ -349,6 +387,22 @@ func parseServe(args []string) (serveConfig, error) {
 	if c.reviewRounds < 0 || c.reviewRounds > engine.MaxReviewRounds {
 		return c, fmt.Errorf("--review-rounds must be between 0 and %d, got %d", engine.MaxReviewRounds, c.reviewRounds)
 	}
+	if c.logFormat != "text" && c.logFormat != "json" {
+		return c, fmt.Errorf("--log-format must be text or json, got %q", c.logFormat)
+	}
+	for name, v := range map[string]float64{"--budget-session-usd": c.budgetSessionUSD, "--budget-goal-usd": c.budgetGoalUSD} {
+		if v < 0 || v > 1e6 || math.IsNaN(v) {
+			return c, fmt.Errorf("%s must be between 0 and 1000000, got %v", name, v)
+		}
+	}
+	if c.eventRetentionDays < 0 || c.eventRetentionDays > 3650 {
+		return c, fmt.Errorf("--event-retention-days must be between 0 and 3650, got %d", c.eventRetentionDays)
+	}
+	if c.pricesFile != "" {
+		if c.pricesFile, err = filepath.Abs(c.pricesFile); err != nil {
+			return c, err
+		}
+	}
 	if c.maxAgents < 1 || c.maxAgents > 32 {
 		return c, fmt.Errorf("--max-agents must be between 1 and 32, got %d", c.maxAgents)
 	}
@@ -371,7 +425,19 @@ func serve(args []string) error {
 	if err := level.UnmarshalText([]byte(cfg.logLevel)); err != nil {
 		return fmt.Errorf("--log-level: %w", err)
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	var handler slog.Handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	if cfg.logFormat == "json" {
+		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	}
+	log := slog.New(handler)
+	prices, err := pricing.Load(cfg.pricesFile, cfg.pricesRequired)
+	if err != nil {
+		return fmt.Errorf("price table: %w", err)
+	}
+	budgets := engine.Budgets{SessionUSD: cfg.budgetSessionUSD, GoalUSD: cfg.budgetGoalUSD}
+	if err := checkBudgetModel(budgets, cfg.model, prices); err != nil {
+		return err
+	}
 
 	claudeBin, err := exec.LookPath(cfg.claudeBin)
 	if err != nil {
@@ -400,6 +466,10 @@ func serve(args []string) error {
 		log.Warn("host mode: agents run unsandboxed on this machine, with permission prompts on")
 	}
 	warnings := append(versionWarnings(ci, cfg.sandbox), packWarnings...)
+	if (budgets.SessionUSD > 0 || budgets.GoalUSD > 0) && cfg.sandbox == modeHost {
+		warnings = append(warnings, "budgets apply to sandboxed agents only: host-mode agents reach Anthropic directly "+
+			"and are not limited (ADR 0027)")
+	}
 	for _, w := range warnings {
 		log.Warn(w)
 	}
@@ -431,6 +501,7 @@ func serve(args []string) error {
 		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
 		Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version, GitHub: ghOpts,
+		Prices: prices, Budgets: budgets, EventRetention: time.Duration(cfg.eventRetentionDays) * 24 * time.Hour,
 	})
 	if err != nil {
 		return err
@@ -451,7 +522,9 @@ func serve(args []string) error {
 	log.Info("agent-office starting", "version", version, "addr", "http://"+cfg.addr, "repo", eng.Project().RepoPath,
 		"data_dir", cfg.dataDir, "max_agents", cfg.maxAgents, "git_version", gitVersion,
 		"claude", ci.path, "claude_version", ci.version, "sandbox", cfg.sandbox, "model", cfg.model,
-		"inherit_user_settings", cfg.inheritUserSettings, "github", cfg.github, "ui_built", built, "dev", cfg.dev)
+		"inherit_user_settings", cfg.inheritUserSettings, "github", cfg.github, "ui_built", built, "dev", cfg.dev,
+		"prices_as_of", prices.AsOf, "prices_file", prices.File, "budget_session_usd", budgets.SessionUSD,
+		"budget_goal_usd", budgets.GoalUSD, "event_retention_days", cfg.eventRetentionDays)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -509,6 +582,33 @@ func defaultDataDir() string {
 		base = filepath.Join(home, ".local", "share")
 	}
 	return filepath.Join(base, "agent-office")
+}
+
+func envFloat(key string, def float64) (float64, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	return f, nil
+}
+
+// checkBudgetModel refuses to start with a budget when --model names a model
+// the price table does not know, since its spend could not be measured (ADR
+// 0027). Aliases such as "haiku" resolve inside Claude Code and are checked
+// per request instead (an unpriced model is refused then).
+func checkBudgetModel(b engine.Budgets, model string, p *pricing.Prices) error {
+	if b.SessionUSD <= 0 && b.GoalUSD <= 0 || !strings.HasPrefix(model, "claude-") {
+		return nil
+	}
+	if _, ok := p.Lookup(model); !ok {
+		return fmt.Errorf("--model %s has no price in the price table, so a budget cannot be enforced; "+
+			"add it to %s or turn the budgets off", model, pricing.PricesFileEnv)
+	}
+	return nil
 }
 
 func envInt(key string, def int) (int, error) {
