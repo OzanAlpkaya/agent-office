@@ -5,9 +5,13 @@ A lead agent plans the work and assigns tasks; each worker agent gets its own gi
 sandbox; a web UI shows a task board, live terminals and, later, a pixel-art office where you can
 watch the team at work.
 
-> **Status:** early development. Phase 2 works: a task board, several Claude Code agents in
-> parallel, each in its own git worktree, with live terminals and state tracked from hooks.
-> Sandboxing comes in Phase 3.
+> **Status:** in development; Phases 0–7 are done: sandboxed Claude Code agents (rootless Podman),
+> a lead that plans and delegates through a team MCP server, a GitHub PR loop with code review,
+> stack packs, and a pixel-art office. See [PROGRESS.md](PROGRESS.md).
+
+![The Office tab: agents at their desks, the lead's whiteboard with sub-tasks, two agents waiting for approval](docs/screenshots/office.png)
+
+<p align="center"><img src="docs/screenshots/office-desks.png" alt="Close-up of the desks: typing, waiting with a raised hand, reviewing with a magnifier, idle" width="720"></p>
 
 ## Quick start (Linux)
 
@@ -42,7 +46,7 @@ See the full roadmap in [docs/plan.md](docs/plan.md) and progress in [PROGRESS.m
 
 - **Daemon:** Go (`net/http`, `coder/websocket`, `creack/pty`, MCP Go SDK, SQLite + sqlc,
   go-github, `log/slog`). Shipped as a single binary.
-- **UI:** React, Vite, TypeScript, xterm.js (PixiJS later), embedded into the binary.
+- **UI:** React, Vite, TypeScript, xterm.js, PixiJS (office view), embedded into the binary.
 - **Platform:** Linux first.
 
 Architecture decisions are recorded in [docs/adr/](docs/adr/).

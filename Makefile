@@ -8,7 +8,7 @@ SQLC_VERSION ?= v1.31.1
 DEV_ROOT ?= $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/agent-office-dev
 DEV_DATA_DIR ?= $(DEV_ROOT)/data
 
-.PHONY: build web test lint check dev serve clean generate e2e sandbox-test worker-image
+.PHONY: build web test web-test ui-test lint check dev serve clean generate e2e sandbox-test worker-image
 
 # Static (CGO_ENABLED=0): the same binary is mounted into worker containers, whose
 # glibc may be older than the host's (Spike F).
@@ -31,7 +31,11 @@ lint: web/node_modules
 	go vet ./...
 	cd web && npm run typecheck
 
-check: lint test build
+# Unit tests of the UI's pure logic (Vitest, ADR 0025).
+web-test: web/node_modules
+	cd web && npm test
+
+check: lint test web-test build
 
 # Opt-in end-to-end test with real Claude Code sessions (haiku; costs a few cents).
 # The test passes --data-dir with a temp dir to every daemon it starts. TestEndToEnd runs host
@@ -58,6 +62,12 @@ worker-image: build
 # through the egress proxy, which needs internet access.
 sandbox-test: build
 	go test -tags sandbox -race -count=1 -v ./internal/sandbox/ ./internal/engine/
+
+# Opt-in browser tests of the UI against a mocked daemon (Playwright, ADR 0025); no daemon, no
+# tokens. Screenshots land in web/test-results/screens. Needs the browser once:
+#   cd web && npx playwright install chromium-headless-shell
+ui-test: web
+	cd web && npm run ui-test
 
 # Run the built daemon against DEV_DATA_DIR, never the real data dir.
 #   make serve REPO=~/projects/agent-office-playground [ARGS="--dev --addr 127.0.0.1:7690"]

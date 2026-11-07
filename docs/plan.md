@@ -193,14 +193,27 @@ derived from Claude Code hooks.
 
 **Goal:** A pixel-art office view where agents are characters whose activity reflects their state.
 
-**Scope**
-- PixiJS scene alongside the task board; original art assets only.
-- Agent state (working, waiting, idle, reviewing) shown through animations; click to open a terminal.
+**Scope** (see ADRs 0024, 0025 and `docs/plans/phase-7.md`)
+- PixiJS scene in an Office tab next to the task board, lazy-loaded; original art drawn in code.
+- Agent state (working, waiting, idle, reviewing, starting, exited) shown through poses and
+  animations; the lead's whiteboard shows its sub-tasks; messages fly between desks; click to open
+  a terminal. No daemon changes.
 
 **Definition of Done**
-- [ ] The office shows every running agent with live state.
-- [ ] Clicking an agent opens its terminal/task.
-- [ ] Runs smoothly with 10 agents; all assets are original or properly licensed.
+- [x] The office shows every running agent with live state: every agent the daemon knows gets a
+      desk and a pose that follows its state and role (`pose.test.ts`; Playwright "shows every
+      agent at a desk with its pose", "follows live state changes, new and removed agents"); live
+      check against a real daemon with a haiku lead and two workers in sandbox mode.
+- [x] Clicking an agent opens its terminal/task: a click on the character in the canvas, or its
+      nameplate (also by keyboard), opens the agent's terminal (Playwright "clicking a character
+      opens its terminal", "nameplates open agents from the keyboard"; live check).
+- [x] Runs smoothly with 10 agents; all assets are original or properly licensed: in headless
+      Chromium (WebGL) a drawn frame costs the scene 0.7 ms at p95 and at most 3.4 ms with 10 and
+      20 agents, the page stays at 60 fps, the scene draws only frames that changed (at most
+      30 fps; none when nothing moves), and 20 tab round trips leak no WebGL context (Playwright
+      "stays smooth with 10/20 agents", "an office where nothing moves does not redraw",
+      "switching tabs does not leak…"); all art drawn in code (`web/src/office/ART.md`), checked
+      by `art.test.ts`.
 
 ---
 
@@ -218,6 +231,12 @@ derived from Claude Code hooks.
 - [ ] Cost estimates use a configurable price table.
 - [ ] Logs can be followed across daemon, agent and hook events via a correlation id.
 
+**Backlog** (from Ozan's end-to-end test, 2026-11-08)
+- When an agent stops, Claude Code prints "Resume this session with: claude --resume …", which
+  cannot be used with agent-office yet (the session belongs to the agent's sandbox and config).
+  Hide that line or explain it in the terminal view until Phase 9 makes resuming work. Placed here
+  because it is the next phase; the real fix is in Phase 9.
+
 ---
 
 ## Phase 9: Memory & persistence
@@ -233,6 +252,10 @@ derived from Claude Code hooks.
 - [ ] Agents can read relevant project memory at task start.
 - [ ] Memory is inspectable and editable by the user.
 
+**Backlog** (from Ozan's end-to-end test, 2026-11-08)
+- Make the "Resume this session" line meaningful: resume a stopped agent's session from
+  agent-office (same agent, workspace and sandbox), then drop the Phase 8 interim that hides it.
+
 ---
 
 ## Phase 10: Remote access
@@ -246,6 +269,12 @@ derived from Claude Code hooks.
 **Definition of Done**
 - [ ] The PWA installs on a phone and shows the board, terminals and approvals.
 - [ ] The daemon is not reachable outside localhost/Tailscale; unauthenticated requests are rejected.
+
+**Backlog** (from Ozan's end-to-end test, 2026-11-08)
+- Copy and paste in the browser terminal: Ctrl+C must keep interrupting the agent, Ctrl+Shift+C
+  opens Chrome's devtools, and a mouse selection is not copied. Support Ctrl+Shift+C / Ctrl+Shift+V
+  and copy on selection, like a normal terminal (xterm.js key handler and selection API; the
+  clipboard API needs a secure context, which loopback is). Needed on a phone too.
 
 ---
 
@@ -267,3 +296,70 @@ derived from Claude Code hooks.
 - [ ] A fresh Linux machine can install and run it by following the README.
 - [ ] Tagged release with binaries.
 - [ ] A short demo video/GIF and an architecture write-up linking the ADRs.
+
+**Backlog** (from Ozan's end-to-end test, 2026-11-08)
+- The worker image has no `python3`; agents reach for it to edit files and fail. Either add
+  `python3` to the base image (pinned with the other Debian packages above) or tell agents in the
+  packs' skills that it is not available and which tools are.
+
+---
+
+## Phase 12: Team workflow
+
+Added after Ozan's end-to-end test (2026-11-08). Appended rather than inserted so that the phase
+numbers ADRs refer to stay valid; it can run before Phases 10 and 11.
+
+**Goal:** A team run that holds up on real work: the lead stays available for follow-ups,
+parallel work does not silently collide, and every agent can reach the user.
+
+**Scope**
+- **The lead stays until the goal is done.** Today the lead exits right after reporting the goal
+  done. Instead it stays idle until the goal is marked done (or the user stops it), so the user
+  can review the result and give it follow-up work. Decide whether an idle lead keeps its
+  `--max-agents` slot, or exits and is resumed for follow-ups once Phase 9 can resume sessions.
+- **Conflicts between parallel workers.** Two workers on one goal produced conflicting branches
+  (both edited `internal/httpapi/handler.go`).
+  - Detect conflicts on `report_done`: `git merge-tree` of the branch against the default branch
+    and the other open agent branches, run in the main repository on imported branches (never in
+    an agent repository, ADR 0014); show them in the UI on the task and the PR.
+  - Let the lead plan dependent sub-tasks sequentially (a sub-task waits for the ones it depends
+    on), and tell it in its prompt to do so when sub-tasks touch the same files.
+  - After another PR merges, relaunch the worker whose branch now conflicts to resolve the
+    conflict (the ADR 0022 relaunch path), within a round limit.
+- **Messages to the user.** A worker without a lead tried to send a correction to a lead that did
+  not exist. Agents (with or without a lead) can send a message to the user; it is shown on the
+  task card, rendered as text, with the ADR 0018 limits.
+
+**Definition of Done**
+- [ ] A lead that reported its goal stays idle until the goal is marked done or stopped, and
+      takes follow-up work typed into its terminal.
+- [ ] Conflicts with the default branch and other open agent branches are detected on
+      `report_done` and shown in the UI (tested with two branches editing the same lines).
+- [ ] A lead can make a sub-task depend on others; it starts only after they are done.
+- [ ] After a merge, a worker whose branch conflicts can be relaunched to resolve it.
+- [ ] Any agent can message the user; the message appears on its task card.
+
+---
+
+## Phase 13: Office v2
+
+Design backlog from Ozan (2026-11-08); a late phase, or part of Phase 11.
+
+**Goal:** The office tells more of the story: characters move between places that mean
+something, in an office with rooms.
+
+**Scope**
+- Characters walk instead of only sitting at desks: to the lead's whiteboard to report
+  (`report_done`), to a coffee machine when idle, to the review room when reviewing.
+- Separate rooms: a lead's room, a review/meeting room and a workroom; desks still stay assigned
+  (ADR 0024).
+- Keep the Phase 7 performance budget: walking means continuous animation, so render on demand
+  stays the rule (frames only while someone moves), with a measured budget for a busy office;
+  `prefers-reduced-motion` moves characters without walking.
+
+**Definition of Done**
+- [ ] Characters walk between their desk and the places their events point to, and back.
+- [ ] The office has at least three rooms with a clear purpose.
+- [ ] An office where nothing moves still renders nothing; with 10 agents walking, a drawn frame
+      stays within the Phase 7 budget (p95 under 8 ms in the UI tests).
+- [ ] All new art is original or properly licensed.

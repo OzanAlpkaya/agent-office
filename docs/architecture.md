@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 0 design, updated through Phase 6 (stack packs), based on the spikes in `spikes/` and
+Status: Phase 0 design, updated through Phase 7 (pixel office UI), based on the spikes in `spikes/` and
 the ADRs in `docs/adr/`. Parts marked *(later)* belong to later phases and will be detailed then.
 
 ## Overview
@@ -242,6 +242,24 @@ sequenceDiagram
   I->>C: exec with the secrets in its environment only
 ```
 
+**Office view (Phase 7, ADR 0024, 0025).** The UI's Office tab draws the team as pixel-art
+characters at desks, from the same `/api/events` stream as the board; the daemon is unchanged.
+
+- Pure modules (`web/src/office/`): `pose` maps state and role to a pose (`starting` booting,
+  `idle` leaning back, `working` typing or, for reviewers, reviewing, `waiting_permission` or a
+  pending access request: hand raised, `exited` an empty chair); `layout` keeps every agent at
+  the same desk while it exists (the lead at the front, by the whiteboard) and picks 3 to 6
+  columns and a whole number of device pixels per world pixel for the pane; `model` adds the
+  lead's sub-tasks as whiteboard notes and finds new messages to animate.
+- The PixiJS 8 scene (WebGL, canvas fallback) is lazy-loaded with the tab and destroyed when it
+  closes; it draws only frames that changed, at most 30 a second, and honours
+  `prefers-reduced-motion`. Desk assignments last for the page, so switching tabs moves nobody.
+  All art is drawn in code (`web/src/office/ART.md`).
+- Names and task titles are HTML nameplates over the canvas, positioned from the same layout;
+  clicking a character or a nameplate opens that agent's terminal, the scene's only action.
+- Tests: Vitest for the pure modules (`make check`); Playwright against a mocked daemon
+  (`make ui-test`), including clicks on the canvas and the frame rate with 10 and 20 agents.
+
 **Isolation (Phase 3).** Each sandboxed worker is a rootless Podman container with
 `--network none`, a read-only rootfs and no capabilities (ADR 0007). It mounts its own shared
 clone (the main repository's objects read-only), its per-agent sockets and the read-only
@@ -313,7 +331,7 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Runaway cost / loops (agents keep each other busy) | Stop-hook loop guard (`stop_hook_active`: no delivery on that Stop); 30 messages per sender per 10 minutes, 50 undelivered per sender and recipient (report notices and agent-office's own messages are exempt, so a flood cannot block them); messages to agents that reported are refused. Residual: within those limits two agents can keep answering each other; budgets come in Phase 8. Tested: `TestStopHookDeliveryExactlyOnce`, `TestTeamLimits`, `TestQueueCapIsPerSender` | 4, 8 |
 | Prompt injection between agents (a compromised agent's message steers another) | Messages are framed as information from other agents, not instructions, with every body line quoted so it cannot forge a header (`TestQueueCapIsPerSender`); workers can reach only their lead and the lead only its workers; the recipient's own task and authorization are unchanged by any message. Residual: the recipient model may still follow a persuasive message within its own permissions | 4 |
 | Terminal injection through message delivery (escape sequences, Esc / Ctrl-C typed into another agent's PTY) | Stored bodies lose control characters except newline and tab; the PTY line loses all of them; delivery goes through the engine's input path (ADR 0008, 0018). Tested: `TestIdleDeliveryOverPTY`, `TestPTYLine` | 4 |
-| Agent-written text in the UI (messages, access reasons, task titles) | Rendered as text by React, never as HTML; message lists and the approval queue label it as the agent's words | 4 |
+| Agent-written text in the UI (messages, access reasons, task titles, tool names) | Rendered as text by React, never as HTML; message lists and the approval queue label it as the agent's words; the office shows titles and tool names only in HTML nameplates and tooltips, never through the canvas | 4, 7 |
 | Malicious repo content runs on the host | Phases 1–2 run agents on the host with normal permission prompts (no bypass); full permissions only inside the sandbox | 1–3 |
 | Agent pushes or merges unreviewed code | No git credentials or route to a remote in the sandbox (tested in Spike F); the daemon pushes from the main repository, agent branches only, never forced (`TestPush`); imported commits are checked for author and trailer and flagged ones are not pushed until the user accepts them (`TestFlaggedCommitsBlockPush`); the GitHub client has no merge operation and the fake fails any unknown request (`TestClientCannotMerge`, `TestGitHubLoop`); the internal reviewer only ever posts `COMMENT` reviews; recommended token without Contents write. Merging stays human | 3, 5 |
 | Agent-written workflows run with the repository's secrets | A change under `.github/` blocks the push until the user accepts that head (`TestWorkflowChangesBlockPush`) | 5 |
