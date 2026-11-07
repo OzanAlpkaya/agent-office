@@ -52,6 +52,14 @@ const (
 	WorktreeRemoved = "removed"
 )
 
+// Sandbox modes (agents.sandbox) and workspace kinds (worktrees.kind), ADR 0014.
+const (
+	SandboxHost   = "host"   // the agent runs on the host with permission prompts on
+	SandboxPodman = "podman" // the agent runs in a rootless Podman worker
+	KindWorktree  = "worktree"
+	KindClone     = "clone"
+)
+
 // Options configures the engine. All paths must be absolute.
 type Options struct {
 	Repo                string        // any path inside the repository
@@ -300,11 +308,12 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		if err := q.CreateAgent(ctx, db.CreateAgentParams{
 			ID: id, ProjectID: e.project.ID, TaskID: nullString(req.TaskID), Model: e.opts.Model,
 			InheritUserSettings: e.opts.InheritUserSettings, State: string(hooks.Starting), StartedAt: started,
+			Sandbox: SandboxHost,
 		}); err != nil {
 			return err
 		}
 		if err := q.CreateWorktree(ctx, db.CreateWorktreeParams{AgentID: id, ProjectID: e.project.ID, Path: wtPath,
-			Branch: branch, BaseCommit: base, CreatedAt: started}); err != nil {
+			Branch: branch, BaseCommit: base, CreatedAt: started, Kind: KindWorktree}); err != nil {
 			return err
 		}
 		if err := q.CreateSession(ctx, db.CreateSessionParams{ID: sid, AgentID: id, StartedAt: started}); err != nil {

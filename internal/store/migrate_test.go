@@ -182,3 +182,66 @@ func TestOpenBacksUpBeforeMigrating(t *testing.T) {
 		t.Fatalf("temp files left: %v", tmp)
 	}
 }
+
+// sourcesUpTo returns the embedded migrations with versions <= v.
+func sourcesUpTo(t *testing.T, v int64) fs.FS {
+	t.Helper()
+	mfs := fstest.MapFS{}
+	for i := int64(1); i <= v; i++ {
+		m, err := fs.Glob(migrations, fmt.Sprintf("migrations/%04d_*.sql", i))
+		if err != nil || len(m) != 1 {
+			t.Fatalf("migration %d: %v %v", i, m, err)
+		}
+		b, _ := migrations.ReadFile(m[0])
+		mfs[filepath.Base(m[0])] = &fstest.MapFile{Data: b}
+	}
+	return mfs
+}
+
+// Migration 0002 (Phase 3) on a database with Phase 2 rows: the rows survive
+// and read as host-mode agents with linked worktrees.
+func TestMigration0002KeepsPhase2Rows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agent-office.db")
+	v1, err := openWith(ctx, path, sourcesUpTo(t, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)
+	for _, q := range []string{
+		`INSERT INTO projects (id, name, repo_path, slug, created_at) VALUES ('p1', 'linkshelf', '/repo', 'linkshelf-1', ?)`,
+		`INSERT INTO agents (id, project_id, model, inherit_user_settings, state, started_at) VALUES ('a1', 'p1', 'haiku', 1, 'exited', ?)`,
+		`INSERT INTO worktrees (agent_id, project_id, path, branch, base_commit, status, created_at) VALUES ('a1', 'p1', '/wt/a1', 'agent-office/x', 'abc', 'kept', ?)`,
+	} {
+		if _, err := v1.DB.ExecContext(ctx, q, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v1.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Migration.From != 1 || s.Migration.To < 2 || s.Migration.Backup == "" {
+		t.Fatalf("migration %+v", s.Migration)
+	}
+	rows, err := s.Q.ListVisibleAgents(ctx, "p1")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows %+v %v", rows, err)
+	}
+	r := rows[0]
+	if r.ID != "a1" || r.Model != "haiku" || !r.InheritUserSettings || r.WorktreePath != "/wt/a1" ||
+		r.WorktreeStatus != "kept" || r.Sandbox != "host" || r.WorktreeKind != "worktree" || !r.StartedAt.Equal(ts) {
+		t.Fatalf("row after migration %+v", r)
+	}
+	for _, q := range []string{
+		`UPDATE agents SET sandbox = 'docker' WHERE id = 'a1'`,
+		`UPDATE worktrees SET kind = 'copy' WHERE agent_id = 'a1'`,
+	} {
+		if _, err := s.DB.ExecContext(ctx, q); err == nil {
+			t.Errorf("CHECK constraint missing: %s", q)
+		}
+	}
+}

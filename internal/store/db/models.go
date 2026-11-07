@@ -22,6 +22,7 @@ type Agent struct {
 	ExitCode            sql.NullInt64
 	ExitReason          string
 	RemovedAt           sql.NullTime
+	Sandbox             string
 }
 
 type Event struct {
@@ -70,4 +71,5 @@ type Worktree struct {
 	Status     string
 	CreatedAt  time.Time
 	RemovedAt  sql.NullTime
+	Kind       string
 }

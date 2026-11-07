@@ -12,8 +12,8 @@ import (
 )
 
 const createAgent = `-- name: CreateAgent :exec
-INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateAgentParams struct {
@@ -24,6 +24,7 @@ type CreateAgentParams struct {
 	InheritUserSettings bool
 	State               string
 	StartedAt           time.Time
+	Sandbox             string
 }
 
 func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error {
@@ -35,6 +36,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error 
 		arg.InheritUserSettings,
 		arg.State,
 		arg.StartedAt,
+		arg.Sandbox,
 	)
 	return err
 }
@@ -94,8 +96,8 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 }
 
 const createWorktree = `-- name: CreateWorktree :exec
-INSERT INTO worktrees (agent_id, project_id, path, branch, base_commit, status, created_at)
-VALUES (?, ?, ?, ?, ?, 'active', ?)
+INSERT INTO worktrees (agent_id, project_id, path, branch, base_commit, status, created_at, kind)
+VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
 `
 
 type CreateWorktreeParams struct {
@@ -105,6 +107,7 @@ type CreateWorktreeParams struct {
 	Branch     string
 	BaseCommit string
 	CreatedAt  time.Time
+	Kind       string
 }
 
 func (q *Queries) CreateWorktree(ctx context.Context, arg CreateWorktreeParams) error {
@@ -115,6 +118,7 @@ func (q *Queries) CreateWorktree(ctx context.Context, arg CreateWorktreeParams) 
 		arg.Branch,
 		arg.BaseCommit,
 		arg.CreatedAt,
+		arg.Kind,
 	)
 	return err
 }
@@ -153,7 +157,7 @@ func (q *Queries) GetTask(ctx context.Context, id string) (Task, error) {
 }
 
 const getWorktree = `-- name: GetWorktree :one
-SELECT agent_id, project_id, path, branch, base_commit, status, created_at, removed_at FROM worktrees WHERE agent_id = ?
+SELECT agent_id, project_id, path, branch, base_commit, status, created_at, removed_at, kind FROM worktrees WHERE agent_id = ?
 `
 
 func (q *Queries) GetWorktree(ctx context.Context, agentID string) (Worktree, error) {
@@ -168,6 +172,7 @@ func (q *Queries) GetWorktree(ctx context.Context, agentID string) (Worktree, er
 		&i.Status,
 		&i.CreatedAt,
 		&i.RemovedAt,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -280,8 +285,8 @@ func (q *Queries) ListTasks(ctx context.Context, projectID string) ([]Task, erro
 }
 
 const listVisibleAgents = `-- name: ListVisibleAgents :many
-SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, worktrees.path AS worktree_path, worktrees.branch AS branch,
-       worktrees.status AS worktree_status
+SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, agents.sandbox, worktrees.path AS worktree_path, worktrees.branch AS branch,
+       worktrees.status AS worktree_status, worktrees.kind AS worktree_kind
 FROM agents JOIN worktrees ON worktrees.agent_id = agents.id
 WHERE agents.project_id = ? AND agents.removed_at IS NULL
 ORDER BY agents.started_at, agents.id
@@ -300,9 +305,11 @@ type ListVisibleAgentsRow struct {
 	ExitCode            sql.NullInt64
 	ExitReason          string
 	RemovedAt           sql.NullTime
+	Sandbox             string
 	WorktreePath        string
 	Branch              string
 	WorktreeStatus      string
+	WorktreeKind        string
 }
 
 func (q *Queries) ListVisibleAgents(ctx context.Context, projectID string) ([]ListVisibleAgentsRow, error) {
@@ -327,9 +334,11 @@ func (q *Queries) ListVisibleAgents(ctx context.Context, projectID string) ([]Li
 			&i.ExitCode,
 			&i.ExitReason,
 			&i.RemovedAt,
+			&i.Sandbox,
 			&i.WorktreePath,
 			&i.Branch,
 			&i.WorktreeStatus,
+			&i.WorktreeKind,
 		); err != nil {
 			return nil, err
 		}
@@ -345,7 +354,7 @@ func (q *Queries) ListVisibleAgents(ctx context.Context, projectID string) ([]Li
 }
 
 const listWorktreesWithStatus = `-- name: ListWorktreesWithStatus :many
-SELECT agent_id, project_id, path, branch, base_commit, status, created_at, removed_at FROM worktrees WHERE project_id = ? AND status = ?
+SELECT agent_id, project_id, path, branch, base_commit, status, created_at, removed_at, kind FROM worktrees WHERE project_id = ? AND status = ?
 `
 
 type ListWorktreesWithStatusParams struct {
@@ -371,6 +380,7 @@ func (q *Queries) ListWorktreesWithStatus(ctx context.Context, arg ListWorktrees
 			&i.Status,
 			&i.CreatedAt,
 			&i.RemovedAt,
+			&i.Kind,
 		); err != nil {
 			return nil, err
 		}

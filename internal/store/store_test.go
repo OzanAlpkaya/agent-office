@@ -91,11 +91,11 @@ func TestAgentLifecycleAndRestart(t *testing.T) {
 	seedProject(t, s)
 	now := time.Now().UTC()
 	err := s.Tx(ctx, func(q *db.Queries) error {
-		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting",
+		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting", Sandbox: "host",
 			InheritUserSettings: true, StartedAt: now}); err != nil {
 			return err
 		}
-		return q.CreateWorktree(ctx, db.CreateWorktreeParams{AgentID: "a1", ProjectID: "p1", Path: "/wt/a1",
+		return q.CreateWorktree(ctx, db.CreateWorktreeParams{AgentID: "a1", ProjectID: "p1", Path: "/wt/a1", Kind: "worktree",
 			Branch: "agent-office/a1", BaseCommit: "abc", CreatedAt: now})
 	})
 	if err != nil {
@@ -128,7 +128,7 @@ func TestTxRollsBack(t *testing.T) {
 	seedProject(t, s)
 	boom := errors.New("boom")
 	err := s.Tx(ctx, func(q *db.Queries) error {
-		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting", StartedAt: time.Now().UTC()}); err != nil {
+		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting", Sandbox: "host", StartedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
 		return boom
@@ -147,7 +147,7 @@ func TestConcurrentWriters(t *testing.T) {
 	s, _ := open(t)
 	ctx := context.Background()
 	seedProject(t, s)
-	if err := s.Q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "idle", StartedAt: time.Now().UTC()}); err != nil {
+	if err := s.Q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "idle", Sandbox: "host", StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
