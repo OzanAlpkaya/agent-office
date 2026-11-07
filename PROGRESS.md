@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 3 (Isolation & security), not started; Phase 2 complete, awaiting review
+**Current phase:** Phase 3 (Isolation & security) complete on `phase-3/isolation`, awaiting review
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
@@ -9,7 +9,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 0: Research & design
 - [x] Phase 1: Single agent (PTY, live terminal, Claude Code hooks)
 - [x] Phase 2: Multi-agent + task board (SQLite, worktrees)
-- [ ] Phase 3: Isolation & security (rootless Podman, egress allowlist, secrets)
+- [x] Phase 3: Isolation & security (rootless Podman, egress allowlist, secrets)
 - [ ] Phase 4: Team MCP server + lead agent
 - [ ] Phase 5: GitHub loop + pluggable code review
 - [ ] Phase 6: Stack packs
@@ -42,3 +42,12 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - 2026-11-07: Phase 2 review: task prompt now forbids pushing and touching other branches (push and
   PRs are the daemon's job in Phase 5); ADR 0012 (forward-only migrations). Merged into `main`
   (`--no-ff`).
+- 2026-11-07: Phase 3 done on `phase-3/isolation`. ADRs 0013 (schema version guard, closes the
+  ADR 0012 gap), 0014 (git in the sandbox: shared clones owned by a subordinate uid, bundle
+  import, imports never move a branch backwards), 0015 (OAuth token file), 0016 (`--network none`,
+  per-agent egress allowlist and credential-injecting API socket); ADR 0007 implemented. Spike F
+  (Claude Code in a network-less worker). Workers run in rootless Podman with permission prompts
+  off only inside the container; host mode stays as a labelled, prompted option. Import now, save
+  work, restart reconciliation, sandbox events in the UI. Migrations 0002 and 0003.
+  `make sandbox-test` covers the isolation and token DoD; `make e2e` passes in host and sandbox
+  mode, including a daemon SIGKILL. CLAUDE.md: approved phase plans run without per-step check-ins.

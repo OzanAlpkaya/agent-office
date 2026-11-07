@@ -103,9 +103,9 @@ derived from Claude Code hooks.
   decided by the stack packs in Phase 6**; until then every worker gets this image.
 
 **Definition of Done**
-- [ ] A worker cannot read files outside its worktree or reach non-allowlisted domains (tested).
-- [ ] The OAuth token is absent from the agent's env, logs, DB, repo and `podman inspect` (tested).
-- [ ] Threat model updated; ADR on Podman vs Claude Code sandbox accepted.
+- [x] A worker cannot read files outside its worktree or reach non-allowlisted domains (tested).
+- [x] The OAuth token is absent from the agent's env, logs, DB, repo and `podman inspect` (tested).
+- [x] Threat model updated; ADR on Podman vs Claude Code sandbox accepted.
 
 ---
 
