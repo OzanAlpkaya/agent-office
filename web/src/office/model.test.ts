@@ -22,7 +22,7 @@ describe("buildOffice", () => {
       ["r", "desk", "reviewing", undefined],
       ["x", "desk", "away", undefined],
     ]);
-    expect(m.rows).toBe(2);
+    expect(m.desks).toBe(3);
   });
 
   it("shows a pending access request as waiting", () => {
@@ -36,6 +36,10 @@ describe("buildOffice", () => {
     const m = buildOffice(emptyAssignment, [agent("L", { role: "lead", task_id: "g" })],
       [task("g"), sub("b", 2, "done"), sub("a", 1, "todo"), task("other")], []);
     expect(m.goal?.notes.map((n) => [n.id, n.status])).toEqual([["a", "todo"], ["b", "done"]]);
+  });
+
+  it("has room for every sub-task a lead may create", () => {
+    expect(maxNotes).toBe(20);
   });
 
   it("caps the whiteboard", () => {

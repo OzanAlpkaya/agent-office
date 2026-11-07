@@ -1,4 +1,4 @@
-import { type JSX, useEffect, useState } from "react";
+import { type JSX, Suspense, lazy, useEffect, useState } from "react";
 import {
   type AccessRequest, type Agent, type AgentState, ApiError, type ImportInfo, type Message, type Project, type Role,
   type SandboxEvent, type Status, type Task, type TaskStatus, api,
@@ -6,6 +6,9 @@ import {
 import { Board } from "./Board";
 import { TerminalView } from "./TerminalView";
 import { useWorld } from "./useAgents";
+
+// The office pulls in PixiJS; load it only when its tab opens (ADR 0024).
+const Office = lazy(() => import("./office/Office"));
 
 const stateLabel: Record<AgentState, string> = {
   starting: "Starting",
@@ -59,7 +62,7 @@ const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
 // How long an agent may stay in "starting" before the UI flags it.
 const stuckAfterMs = 20_000;
 
-type View = { kind: "board" } | { kind: "agent"; id: string };
+type View = { kind: "board" } | { kind: "office" } | { kind: "agent"; id: string };
 
 export function App(): JSX.Element {
   const { agents, tasks, events, messages, accessRequests, pullRequests, connection } = useWorld();
@@ -190,6 +193,9 @@ export function App(): JSX.Element {
             <button className={view.kind === "board" ? "active" : ""} onClick={() => setView({ kind: "board" })}>
               Board
             </button>
+            <button className={view.kind === "office" ? "active" : ""} onClick={() => setView({ kind: "office" })}>
+              Office
+            </button>
             {agents.filter((a) => a.has_terminal).map((a) => (
               <button key={a.id} className={current?.id === a.id ? "active" : ""}
                 onClick={() => setView({ kind: "agent", id: a.id })}>
@@ -197,7 +203,12 @@ export function App(): JSX.Element {
               </button>
             ))}
           </nav>
-          {view.kind === "board" || !current ? (
+          {view.kind === "office" ? (
+            <Suspense fallback={<div className="empty">Loading the office…</div>}>
+              <Office agents={agents} tasks={tasks} messages={messages} accessRequests={accessRequests}
+                onOpenAgent={(id) => setView({ kind: "agent", id })} />
+            </Suspense>
+          ) : view.kind === "board" || !current ? (
             <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning}
               onStartLead={(t) => void startAgent(t.id, "lead")}
               onCreate={async (title, description) => (await run(() => api.createTask(title, description))) !== undefined}

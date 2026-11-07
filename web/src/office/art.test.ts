@@ -17,7 +17,6 @@ const maps: [string, art.PixelMap, art.Palette][] = [
   ["plant", art.plant, art.basePalette],
   ["waterCooler", art.waterCooler, art.basePalette],
   ["bubbleAlert", art.bubbleAlert, art.basePalette],
-  ["bubbleReview", art.bubbleReview, art.basePalette],
   ...art.bubbleDots.map((m, i): [string, art.PixelMap, art.Palette] => [`bubbleDots.${i}`, m, art.basePalette]),
   ["desk", art.desk, art.basePalette],
   ["door", art.door, art.basePalette],
@@ -76,6 +75,8 @@ describe("pixel maps", () => {
     const g = art.noteGrid;
     expect(g.x + (g.cols - 1) * g.dx + art.noteMap.w).toBeLessThanOrEqual(art.whiteboardSize.w - 2);
     expect(g.y + (g.rows - 1) * g.dy + art.noteMap.h).toBeLessThanOrEqual(art.whiteboardSize.h - 5);
+    expect(art.titleLine.y).toBeLessThan(g.y);
+    expect(art.titleLine.x + art.titleLine.w).toBeLessThanOrEqual(art.whiteboardSize.w - 2);
   });
 
   it("built pieces are deterministic", () => {

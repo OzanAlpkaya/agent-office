@@ -1,7 +1,7 @@
 // Desk assignment and office geometry (ADR 0024). Pure: the scene and the
 // HTML nameplates both place things from these numbers, in world pixels.
 import type { Agent } from "../api";
-import { wallHeight } from "./art";
+import { wallHeight, whiteboardSize } from "./art";
 
 // Assignment says who sits where. desks[i] is the agent at regular desk i.
 export interface Assignment {
@@ -49,28 +49,76 @@ export function assignDesks(prev: Assignment, agents: readonly Agent[]): Assignm
 
 // ---------------------------------------------------------------- geometry
 
-export const columns = 4;
 export const minRows = 2;
 export const cell = { w: 64, h: 52 } as const;
-export const world = { w: 320, margin: 32, leadRowY: wallHeight, leadRowH: 58, bottom: 10 } as const;
+export const world = { margin: 16, leadRowY: wallHeight, leadRowH: 58, bottom: 10 } as const;
 
-export function rowsFor(a: Assignment): number {
-  return Math.max(minRows, Math.ceil(a.desks.length / columns));
+// Columns of regular desks the office may use; the one that shows the office
+// largest in the pane wins (ties go to the one closest to four).
+export const columnChoices = [3, 4, 5, 6] as const;
+const preferredColumns = 4;
+// Largest drawing scale, in CSS pixels per world pixel.
+export const maxScale = 4;
+
+export interface Grid {
+  readonly columns: number;
+  readonly rows: number;
 }
 
-export function worldSize(rows: number): { w: number; h: number } {
-  return { w: world.w, h: world.leadRowY + world.leadRowH + rows * cell.h + world.bottom };
+export function gridFor(desks: number, columns: number): Grid {
+  return { columns, rows: Math.max(minRows, Math.ceil(desks / columns)) };
+}
+
+export function worldSize(g: Grid): { w: number; h: number } {
+  return {
+    w: g.columns * cell.w + 2 * world.margin,
+    h: world.leadRowY + world.leadRowH + g.rows * cell.h + world.bottom,
+  };
+}
+
+// fitGrid picks the columns and the whole number k of device pixels per world
+// pixel for a pane of w×h CSS pixels at device pixel ratio dpr. It never goes
+// below 2 CSS pixels per world pixel while the width allows it; the pane then
+// scrolls vertically.
+export function fitGrid(w: number, h: number, dpr: number, desks: number): { grid: Grid; k: number } {
+  const cap = Math.max(1, Math.floor(maxScale * dpr));
+  let best: { grid: Grid; k: number } | undefined;
+  const better = (c: { grid: Grid; k: number }): boolean =>
+    !best || c.k > best.k ||
+    (c.k === best.k && Math.abs(c.grid.columns - preferredColumns) < Math.abs(best.grid.columns - preferredColumns));
+  for (const columns of columnChoices) {
+    const grid = gridFor(desks, columns);
+    const size = worldSize(grid);
+    const k = Math.min(cap, Math.floor(Math.min((w * dpr) / size.w, (h * dpr) / size.h)));
+    if (better({ grid, k })) best = { grid, k };
+  }
+  const fit = best ?? { grid: gridFor(desks, preferredColumns), k: 1 };
+  if (fit.k >= 2 * dpr) return fit;
+  // Too small to read: fill the width instead, at most 2 CSS pixels.
+  best = undefined;
+  for (const columns of columnChoices) {
+    const grid = gridFor(desks, columns);
+    const k = Math.min(Math.ceil(2 * dpr), Math.floor((w * dpr) / worldSize(grid).w));
+    if (better({ grid, k })) best = { grid, k };
+  }
+  const wide = best ?? fit;
+  return wide.k > fit.k ? wide : { ...fit, k: Math.max(1, fit.k) };
 }
 
 export type Slot = { kind: "lead" } | { kind: "desk"; index: number };
 
 // slotOrigin is the top-left corner of a slot's cell.
-export function slotOrigin(slot: Slot): { x: number; y: number } {
-  if (slot.kind === "lead") return { x: (world.w - cell.w) / 2, y: world.leadRowY + 4 };
+export function slotOrigin(slot: Slot, g: Grid): { x: number; y: number } {
+  if (slot.kind === "lead") return { x: (worldSize(g).w - cell.w) / 2, y: world.leadRowY + 4 };
   return {
-    x: world.margin + (slot.index % columns) * cell.w,
-    y: world.leadRowY + world.leadRowH + Math.floor(slot.index / columns) * cell.h,
+    x: world.margin + (slot.index % g.columns) * cell.w,
+    y: world.leadRowY + world.leadRowH + Math.floor(slot.index / g.columns) * cell.h,
   };
+}
+
+// The lead's whiteboard hangs on the wall above the lead desk.
+export function whiteboardAt(g: Grid): { x: number; y: number } {
+  return { x: (worldSize(g).w - whiteboardSize.w) / 2, y: 6 };
 }
 
 // Positions inside a cell.
@@ -84,6 +132,7 @@ export const inCell = {
   mugRaised: { x: 38, y: 10 },
   magnifier: { x: 23, y: 10 },
   bubble: { x: 45, y: -5 },
+  bubbleRaised: { x: 50, y: -9 }, // clear of a raised hand
   nameplate: { x: 32, y: 30 }, // centre of the desk's front panel
   hit: { x: 8, y: -4, w: 48, h: 42 },
 } as const;

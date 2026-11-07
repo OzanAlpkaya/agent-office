@@ -340,17 +340,6 @@ export const bubbleAlert = bubbleFrame(
   "u",
 );
 
-export const bubbleReview = bubbleFrame(
-  [
-    "bkkbbbb",
-    "kbbkbbb",
-    "kbbkbbb",
-    "bkkkbbb",
-    "bbbbkbb",
-  ],
-  "b",
-);
-
 // ---------------------------------------------------------------- built pieces
 
 function grid(w: number, h: number, at: (x: number, y: number) => string): PixelMap {
@@ -383,15 +372,17 @@ export const desk = grid(44, 18, (x, y) => {
   return "D";
 });
 
-export const floorTile = grid(16, 16, (x, y) => {
-  const plank = Math.floor(y / 4);
-  const seamX = (plank * 7 + 3) % 16;
-  if (y % 4 === 3) return "2";
-  if (x === seamX) return "2";
-  return noise(x, y, plank) < 0.12 ? "1" : "0";
+// Wooden planks, 5 pixels wide, with a joint every 48 pixels at a different
+// place on each plank.
+export const floorTile = grid(48, 20, (x, y) => {
+  const plank = Math.floor(y / 5);
+  if (y % 5 === 4) return "2";
+  if (x === (plank * 19 + 7) % 48) return "2";
+  const n = noise(x >> 2, y, plank);
+  return n < 0.18 ? "1" : n > 0.9 ? "3" : "0";
 });
 
-export const floorPalette: Palette = { "0": 0x4b3a2f, "1": 0x544135, "2": 0x3a2c23 };
+export const floorPalette: Palette = { "0": 0x58432f, "1": 0x5f4934, "2": 0x45342a, "3": 0x523e2c };
 
 // One column of wall: plain wall, a chair rail, and a baseboard.
 export const wallHeight = 44;
@@ -436,7 +427,9 @@ export const whiteboardMap = grid(whiteboardSize.w, whiteboardSize.h, (x, y) => 
 });
 
 // Where sticky notes go on the whiteboard: a grid inside its frame.
-export const noteGrid = { x: 4, y: 4, cols: 9, rows: 3, dx: 8, dy: 8 } as const;
+export const noteGrid = { x: 4, y: 9, cols: 10, rows: 2, dx: 7, dy: 8 } as const;
+// The goal's "title", scribbled above the notes.
+export const titleLine = { x: 4, y: 4, w: 40 } as const;
 
 // A sticky note: "U" is the darker glued strip, "u" the note. The scene
 // recolours both per task status.

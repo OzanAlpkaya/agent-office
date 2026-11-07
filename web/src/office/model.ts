@@ -1,7 +1,8 @@
 // The office as data: who sits where, in which pose, and what the lead's
 // whiteboard shows. The scene draws this; the HTML nameplates label it. Pure.
 import type { AccessRequest, Agent, Message, Task, TaskStatus } from "../api";
-import { type Assignment, type Slot, assignDesks, rowsFor } from "./layout";
+import { noteGrid } from "./art";
+import { type Assignment, type Slot, assignDesks } from "./layout";
 import { type Look, type Pose, lookOf, poseOf } from "./pose";
 
 export interface Seat {
@@ -20,14 +21,14 @@ export interface Note {
 
 export interface OfficeModel {
   assignment: Assignment;
-  rows: number; // rows of regular desks
+  desks: number; // regular desks in use, including free ones between seated agents
   seats: Seat[]; // one per agent
   goal?: { title: string; notes: Note[] }; // the lead's goal and its sub-tasks
 }
 
-// The whiteboard has room for this many notes; a lead may create up to 20
-// sub-tasks (ADR 0017).
-export const maxNotes = 27;
+// The whiteboard has room for this many notes, as many as the sub-tasks a
+// lead may create (20, ADR 0017).
+export const maxNotes = noteGrid.cols * noteGrid.rows;
 
 export function buildOffice(
   prev: Assignment,
@@ -61,7 +62,7 @@ export function buildOffice(
       .map((t) => ({ id: t.id, title: t.title, status: t.status }));
     goal = { title: goalTask.title, notes };
   }
-  return { assignment, rows: rowsFor(assignment), seats, goal };
+  return { assignment, desks: assignment.desks.length, seats, goal };
 }
 
 // freshMessages returns the messages not seen before that were created at or
