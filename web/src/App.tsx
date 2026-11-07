@@ -67,6 +67,7 @@ export function App(): JSX.Element {
   const [project, setProject] = useState<Project>();
   const [version, setVersion] = useState("");
   const [status, setStatus] = useState<Status>();
+  const [showPack, setShowPack] = useState(false);
   const [error, setError] = useState<string>();
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -133,6 +134,12 @@ export function App(): JSX.Element {
             sandboxed · podman
           </span>
         )}
+        {status?.sandbox === "podman" && (
+          <button className="badge pack" onClick={() => setShowPack((v) => !v)} aria-expanded={showPack}
+            title="What sandboxed agents get: image, network, secrets, skills, MCP servers">
+            {status.pack ? `pack · ${status.pack.name}` : "no stack pack"}
+          </button>
+        )}
         {status?.sandbox === "host" && <span className="badge unsandboxed">unsandboxed · host mode</span>}
         {status?.github && (
           <span className="badge github" title={`Pushes to ${status.github.remote}; PRs into ${status.github.base}; ` +
@@ -148,6 +155,7 @@ export function App(): JSX.Element {
           using tools. Restart the daemon with <span className="mono">--sandbox podman</span> to isolate them.
         </div>
       )}
+      {showPack && status?.sandbox === "podman" && <PackPanel status={status} />}
       {status?.warnings.map((w) => <div key={w} className="banner warn">{w}</div>)}
       {pending.length > 0 && (
         <Approvals requests={pending} agents={agents} taskTitle={taskTitle}
@@ -421,5 +429,58 @@ function MessageList({ agentId, messages }: { agentId: string; messages: Message
         ))}
       </ul>
     </details>
+  );
+}
+
+// PackPanel shows what the stack pack gives sandboxed agents (ADR 0023).
+function PackPanel({ status }: { status: Status }) {
+  const p = status.pack;
+  const list = (xs: string[] | undefined) => (xs && xs.length > 0 ? xs.join(", ") : "none");
+  return (
+    <div className="pack-panel">
+      {p ? (
+        <p>
+          <span className="strong">Stack pack {p.name}</span>{" "}
+          <span className="muted">({p.source === "builtin" ? "built in" : p.source})</span>: {p.description}
+        </p>
+      ) : (
+        <p>
+          No stack pack: agents get the base image (no language toolchain) and the default allowlist. Start the
+          daemon with <span className="mono">--pack &lt;name&gt;</span>; <span className="mono">agent-office pack list</span>{" "}
+          shows the packs.
+        </p>
+      )}
+      <dl>
+        <dt>Image</dt>
+        <dd className="mono">{status.image}</dd>
+        <dt>Network</dt>
+        <dd className="mono">{list(status.egress)}</dd>
+        {p && (
+          <>
+            <dt>Secrets</dt>
+            <dd>
+              {p.secrets.length === 0
+                ? "none"
+                : p.secrets.map((s) => (
+                    <span key={s.name} className={`secret ${s.present ? "present" : "missing"}`}
+                      title={s.description ?? undefined}>
+                      <span className="mono">{s.name}</span> {s.present ? "set" : s.required ? "missing (required)" : "not set"}
+                    </span>
+                  ))}
+            </dd>
+            <dt>Skills</dt>
+            <dd className="mono">{list(p.skills)}</dd>
+            <dt>MCP servers</dt>
+            <dd className="mono">{list(p.mcp_servers)}</dd>
+          </>
+        )}
+      </dl>
+      {p && p.secrets.length > 0 && (
+        <p className="muted small">
+          Workers and reviewers get the secrets in their environment and could leak them through an allowed host:
+          give agents test or read-only credentials only.
+        </p>
+      )}
+    </div>
   );
 }
