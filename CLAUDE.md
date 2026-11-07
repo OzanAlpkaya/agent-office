@@ -24,6 +24,7 @@ These rules apply to every session in this repo.
 | `web/` | React + Vite + TypeScript UI, embedded into the binary |
 | `test/e2e/` | Opt-in end-to-end test (`e2e` build tag, real Claude Code, costs tokens) |
 | `docs/plan.md` | Phased roadmap with Definitions of Done |
+| `docs/plans/` | Approved phase plans (`phase-N.md`), with answers and changes during the phase |
 | `docs/adr/` | Architecture Decision Records |
 | `docs/architecture.md` | Components, flows, domain model, threat model |
 | `docs/research/` | Verified library/API notes and external tool research |
@@ -67,6 +68,13 @@ Phase 5. Keep it small and realistic; its backlog is in its `TODO.md`.
 
 - Work phase by phase from `docs/plan.md`.
 - **Before each phase:** propose a short plan (goal, files, approach, risks) and wait for approval.
+  Once approved, save it as `docs/plans/phase-N.md` (as approved, plus the answers to its open
+  questions) as the first commit of the phase branch, and append changes made during the phase.
+- **During a phase:** once the plan is approved, execute all of its steps without stopping to ask
+  whether to continue. Make the decisions yourself, record significant ones in ADRs, and list every
+  decision in the end-of-phase summary for review. Stop only when the phase is done, when something
+  needs Ozan (sudo, a token, a manual UI check), or when a decision is irreversible or would change
+  the approved plan's scope.
 - **After each phase:** update `PROGRESS.md` and explain in plain language what was built and why,
   including trade-offs and alternatives, so it can be discussed in interviews.
 - Record every significant decision as an ADR in `docs/adr/`: copy `0000-template.md`, number
@@ -87,6 +95,12 @@ Phase 5. Keep it small and realistic; its backlog is in its `TODO.md`.
 - Tests for core logic (engine, hooks parsing, store, MCP tools). Integration tests at DB/API boundaries.
 - Before committing: `make check` passes (gofmt, vet, web typecheck, `go test -race`, build).
   Report real output; never claim untested results.
+- **Never run the daemon, smoke tests or ad-hoc commands against the real data dir**
+  (`~/.local/share/agent-office`) during development. Always pass `--data-dir` or
+  `AGENT_OFFICE_DATA_DIR` pointing at a scratch dir outside this repo (Claude Code loads
+  `CLAUDE.md` from parent folders). `make serve` (`DEV_DATA_DIR`, default
+  `~/.cache/agent-office-dev/data`), `make test` and the e2e test do this by default; ad-hoc runs
+  use the session scratchpad.
 - `make e2e` (needs `AO_E2E_REPO`) spends real tokens: run it at the end of a phase or when hooks,
   engine or worktree behaviour change, not on every commit.
 - SQL changes go into a new numbered migration plus `queries.sql`, then `make generate`.

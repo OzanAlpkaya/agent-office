@@ -2,6 +2,8 @@
 //
 //	agent-office serve --repo <path>   run the daemon and web UI
 //	agent-office hook                  forward a hook payload (stdin) to the daemon; used by agents
+//	agent-office sandbox-init -- cmd   in-container init of a sandboxed worker (ADR 0016)
+//	agent-office worker-image          build the worker container image with podman
 //	agent-office version               print the version
 package main
 
@@ -28,6 +30,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
 	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
 	"github.com/OzanAlpkaya/agent-office/web"
@@ -49,6 +52,13 @@ func main() {
 		}
 	case "hook":
 		os.Exit(hook())
+	case "sandbox-init":
+		os.Exit(sandboxInit(os.Args[2:]))
+	case "worker-image":
+		if err := workerImage(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "agent-office:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -65,8 +75,55 @@ func usage(w io.Writer) {
 commands:
   serve     run the daemon and web UI (agent-office serve -h for flags)
   hook      forward a hook payload from stdin to the daemon (used by agents)
+  sandbox-init -- <command>
+            in-container init of a sandboxed worker (started by the daemon)
+  worker-image [--tag]
+            build the worker image with podman (--tag: print its tag only)
   version   print the version
 `)
+}
+
+// workerImage builds the worker image, or prints its tag with --tag.
+func workerImage(args []string) error {
+	fs := flag.NewFlagSet("worker-image", flag.ContinueOnError)
+	tagOnly := fs.Bool("tag", false, "print the image tag and exit")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *tagOnly {
+		fmt.Println(sandbox.WorkerImage())
+		return nil
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := (sandbox.Podman{}).BuildWorkerImage(ctx, os.Stderr); err != nil {
+		return err
+	}
+	fmt.Println(sandbox.WorkerImage())
+	return nil
+}
+
+// sandboxInitFailed is the exit code when sandbox-init itself fails, so it is
+// told apart from the agent's own exit codes.
+const sandboxInitFailed = 125
+
+// sandboxInit runs inside a worker container: it bridges the loopback proxy
+// addresses to the mounted sockets and runs the agent CLI as its child.
+func sandboxInit(args []string) int {
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	// The tty delivers SIGINT/SIGQUIT to the agent itself; init must survive
+	// them to keep the bridges up. SIGTERM/SIGHUP are passed on.
+	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
+	code, err := sandbox.RunInit(ctx, sandbox.InitFromEnv(args))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "agent-office:", err)
+		return sandboxInitFailed
+	}
+	return code
 }
 
 // hookTimeout must stay below the hook timeout in the generated settings
@@ -99,6 +156,10 @@ type serveConfig struct {
 	inheritUserSettings bool
 	dev                 bool
 	logLevel            string
+	sandbox             string   // modePodman | modeHost
+	egressAllow         []string // added to sandbox.DefaultEgressAllow
+	sandboxMemory       string
+	sandboxPids         int
 }
 
 func parseServe(args []string) (serveConfig, error) {
@@ -121,6 +182,17 @@ func parseServe(args []string) (serveConfig, error) {
 	}
 	fs.BoolVar(&c.inheritUserSettings, "inherit-user-settings", inherit,
 		"host mode: agents load your own Claude Code settings and hooks [AGENT_OFFICE_INHERIT_USER_SETTINGS]")
+	fs.StringVar(&c.sandbox, "sandbox", envOr("AGENT_OFFICE_SANDBOX", modePodman),
+		"podman: agents run in rootless Podman workers; host: unsandboxed, permission prompts on [AGENT_OFFICE_SANDBOX]")
+	egress := fs.String("egress-allow", os.Getenv("AGENT_OFFICE_EGRESS_ALLOW"),
+		"extra host names sandboxed agents may reach, comma-separated; .example.com for subdomains [AGENT_OFFICE_EGRESS_ALLOW]")
+	fs.StringVar(&c.sandboxMemory, "sandbox-memory", envOr("AGENT_OFFICE_SANDBOX_MEMORY", sandbox.DefaultMemory),
+		"memory limit per worker, e.g. 2g [AGENT_OFFICE_SANDBOX_MEMORY]")
+	pids, err := envInt("AGENT_OFFICE_SANDBOX_PIDS", sandbox.DefaultPids)
+	if err != nil {
+		return c, err
+	}
+	fs.IntVar(&c.sandboxPids, "sandbox-pids", pids, "process limit per worker [AGENT_OFFICE_SANDBOX_PIDS]")
 	fs.BoolVar(&c.dev, "dev", false, "allow the Vite dev server origin (localhost:5173)")
 	fs.StringVar(&c.logLevel, "log-level", envOr("AGENT_OFFICE_LOG_LEVEL", "info"), "debug | info | warn [AGENT_OFFICE_LOG_LEVEL]")
 	if err := fs.Parse(args); err != nil {
@@ -136,6 +208,20 @@ func parseServe(args []string) (serveConfig, error) {
 	c.repo = abs
 	if c.dataDir, err = filepath.Abs(c.dataDir); err != nil {
 		return c, err
+	}
+	if c.sandbox != modePodman && c.sandbox != modeHost {
+		return c, fmt.Errorf("--sandbox must be %s or %s, got %q", modePodman, modeHost, c.sandbox)
+	}
+	for _, h := range strings.Split(*egress, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			c.egressAllow = append(c.egressAllow, h)
+		}
+	}
+	if _, err := sandbox.ParseAllowlist(c.egressAllow); err != nil {
+		return c, fmt.Errorf("--egress-allow: %w", err)
+	}
+	if c.sandboxPids < 16 || c.sandboxPids > 65536 {
+		return c, fmt.Errorf("--sandbox-pids must be between 16 and 65536, got %d", c.sandboxPids)
 	}
 	if c.maxAgents < 1 || c.maxAgents > 32 {
 		return c, fmt.Errorf("--max-agents must be between 1 and 32, got %d", c.maxAgents)
@@ -165,6 +251,10 @@ func serve(args []string) error {
 	if err != nil {
 		return fmt.Errorf("claude binary: %w", err)
 	}
+	ci, err := resolveClaude(claudeBin)
+	if err != nil {
+		return err
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate own binary: %w", err)
@@ -172,6 +262,19 @@ func serve(args []string) error {
 	runtimeDir, err := runtimeDir()
 	if err != nil {
 		return err
+	}
+
+	var sb *engine.SandboxOptions
+	if cfg.sandbox == modePodman {
+		if sb, err = sandboxOptions(context.Background(), cfg, self, ci, log); err != nil {
+			return err
+		}
+	} else {
+		log.Warn("host mode: agents run unsandboxed on this machine, with permission prompts on")
+	}
+	warnings := versionWarnings(ci, cfg.sandbox)
+	for _, w := range warnings {
+		log.Warn(w)
 	}
 
 	g := git.Git{}
@@ -184,6 +287,9 @@ func serve(args []string) error {
 		return err
 	}
 	defer st.Close()
+	if m := st.Migration; m.From != m.To {
+		log.Info("database migrated", "from", m.From, "to", m.To, "backup", m.Backup)
+	}
 
 	eng, err := engine.New(context.Background(), engine.Options{
 		Repo: cfg.repo, WorktreeRoot: filepath.Join(cfg.dataDir, "worktrees"), Store: st, Git: g,
@@ -191,6 +297,7 @@ func serve(args []string) error {
 		ClaudeBin: claudeBin, HookCommand: agent.ShellQuote(self) + " hook",
 		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
+		Sandbox: sb, Warnings: warnings,
 	})
 	if err != nil {
 		return err
@@ -210,7 +317,7 @@ func serve(args []string) error {
 
 	log.Info("agent-office starting", "version", version, "addr", "http://"+cfg.addr, "repo", eng.Project().RepoPath,
 		"data_dir", cfg.dataDir, "max_agents", cfg.maxAgents, "git_version", gitVersion,
-		"claude", claudeBin, "claude_version", claudeVersion(claudeBin), "model", cfg.model,
+		"claude", ci.path, "claude_version", ci.version, "sandbox", cfg.sandbox, "model", cfg.model,
 		"inherit_user_settings", cfg.inheritUserSettings, "ui_built", built, "dev", cfg.dev)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

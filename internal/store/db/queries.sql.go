@@ -12,8 +12,8 @@ import (
 )
 
 const createAgent = `-- name: CreateAgent :exec
-INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateAgentParams struct {
@@ -24,6 +24,7 @@ type CreateAgentParams struct {
 	InheritUserSettings bool
 	State               string
 	StartedAt           time.Time
+	Sandbox             string
 }
 
 func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error {
@@ -35,6 +36,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error 
 		arg.InheritUserSettings,
 		arg.State,
 		arg.StartedAt,
+		arg.Sandbox,
 	)
 	return err
 }
@@ -94,8 +96,8 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 }
 
 const createWorktree = `-- name: CreateWorktree :exec
-INSERT INTO worktrees (agent_id, project_id, path, branch, base_commit, status, created_at)
-VALUES (?, ?, ?, ?, ?, 'active', ?)
+INSERT INTO worktrees (agent_id, project_id, path, branch, base_commit, status, created_at, kind)
+VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
 `
 
 type CreateWorktreeParams struct {
@@ -105,6 +107,7 @@ type CreateWorktreeParams struct {
 	Branch     string
 	BaseCommit string
 	CreatedAt  time.Time
+	Kind       string
 }
 
 func (q *Queries) CreateWorktree(ctx context.Context, arg CreateWorktreeParams) error {
@@ -115,6 +118,7 @@ func (q *Queries) CreateWorktree(ctx context.Context, arg CreateWorktreeParams) 
 		arg.Branch,
 		arg.BaseCommit,
 		arg.CreatedAt,
+		arg.Kind,
 	)
 	return err
 }
@@ -153,7 +157,7 @@ func (q *Queries) GetTask(ctx context.Context, id string) (Task, error) {
 }
 
 const getWorktree = `-- name: GetWorktree :one
-SELECT agent_id, project_id, path, branch, base_commit, status, created_at, removed_at FROM worktrees WHERE agent_id = ?
+SELECT agent_id, project_id, path, branch, base_commit, status, created_at, removed_at, kind FROM worktrees WHERE agent_id = ?
 `
 
 func (q *Queries) GetWorktree(ctx context.Context, agentID string) (Worktree, error) {
@@ -168,6 +172,7 @@ func (q *Queries) GetWorktree(ctx context.Context, agentID string) (Worktree, er
 		&i.Status,
 		&i.CreatedAt,
 		&i.RemovedAt,
+		&i.Kind,
 	)
 	return i, err
 }
@@ -202,6 +207,74 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error 
 	return err
 }
 
+const insertImport = `-- name: InsertImport :one
+INSERT INTO imports (agent_id, trigger, outcome, branch, head, previous, commits, flagged, at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, agent_id, "trigger", outcome, branch, head, previous, commits, flagged, at
+`
+
+type InsertImportParams struct {
+	AgentID  string
+	Trigger  string
+	Outcome  string
+	Branch   string
+	Head     string
+	Previous string
+	Commits  int64
+	Flagged  string
+	At       time.Time
+}
+
+func (q *Queries) InsertImport(ctx context.Context, arg InsertImportParams) (Import, error) {
+	row := q.db.QueryRowContext(ctx, insertImport,
+		arg.AgentID,
+		arg.Trigger,
+		arg.Outcome,
+		arg.Branch,
+		arg.Head,
+		arg.Previous,
+		arg.Commits,
+		arg.Flagged,
+		arg.At,
+	)
+	var i Import
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.Trigger,
+		&i.Outcome,
+		&i.Branch,
+		&i.Head,
+		&i.Previous,
+		&i.Commits,
+		&i.Flagged,
+		&i.At,
+	)
+	return i, err
+}
+
+const latestImport = `-- name: LatestImport :one
+SELECT id, agent_id, "trigger", outcome, branch, head, previous, commits, flagged, at FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT 1
+`
+
+func (q *Queries) LatestImport(ctx context.Context, agentID string) (Import, error) {
+	row := q.db.QueryRowContext(ctx, latestImport, agentID)
+	var i Import
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.Trigger,
+		&i.Outcome,
+		&i.Branch,
+		&i.Head,
+		&i.Previous,
+		&i.Commits,
+		&i.Flagged,
+		&i.At,
+	)
+	return i, err
+}
+
 const listEvents = `-- name: ListEvents :many
 SELECT id, agent_id, session_id, kind, hook, tool, detail, state, at FROM events WHERE agent_id = ? ORDER BY id DESC LIMIT ?
 `
@@ -213,6 +286,91 @@ type ListEventsParams struct {
 
 func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event, error) {
 	rows, err := q.db.QueryContext(ctx, listEvents, arg.AgentID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.SessionID,
+			&i.Kind,
+			&i.Hook,
+			&i.Tool,
+			&i.Detail,
+			&i.State,
+			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listImports = `-- name: ListImports :many
+SELECT id, agent_id, "trigger", outcome, branch, head, previous, commits, flagged, at FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT ?
+`
+
+type ListImportsParams struct {
+	AgentID string
+	Limit   int64
+}
+
+func (q *Queries) ListImports(ctx context.Context, arg ListImportsParams) ([]Import, error) {
+	rows, err := q.db.QueryContext(ctx, listImports, arg.AgentID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Import{}
+	for rows.Next() {
+		var i Import
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.Trigger,
+			&i.Outcome,
+			&i.Branch,
+			&i.Head,
+			&i.Previous,
+			&i.Commits,
+			&i.Flagged,
+			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSandboxEvents = `-- name: ListSandboxEvents :many
+SELECT id, agent_id, session_id, kind, hook, tool, detail, state, at FROM events WHERE agent_id = ? AND hook = 'sandbox' ORDER BY id DESC LIMIT ?
+`
+
+type ListSandboxEventsParams struct {
+	AgentID string
+	Limit   int64
+}
+
+func (q *Queries) ListSandboxEvents(ctx context.Context, arg ListSandboxEventsParams) ([]Event, error) {
+	rows, err := q.db.QueryContext(ctx, listSandboxEvents, arg.AgentID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -280,8 +438,8 @@ func (q *Queries) ListTasks(ctx context.Context, projectID string) ([]Task, erro
 }
 
 const listVisibleAgents = `-- name: ListVisibleAgents :many
-SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, worktrees.path AS worktree_path, worktrees.branch AS branch,
-       worktrees.status AS worktree_status
+SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, agents.sandbox, worktrees.path AS worktree_path, worktrees.branch AS branch,
+       worktrees.status AS worktree_status, worktrees.kind AS worktree_kind
 FROM agents JOIN worktrees ON worktrees.agent_id = agents.id
 WHERE agents.project_id = ? AND agents.removed_at IS NULL
 ORDER BY agents.started_at, agents.id
@@ -300,9 +458,11 @@ type ListVisibleAgentsRow struct {
 	ExitCode            sql.NullInt64
 	ExitReason          string
 	RemovedAt           sql.NullTime
+	Sandbox             string
 	WorktreePath        string
 	Branch              string
 	WorktreeStatus      string
+	WorktreeKind        string
 }
 
 func (q *Queries) ListVisibleAgents(ctx context.Context, projectID string) ([]ListVisibleAgentsRow, error) {
@@ -327,9 +487,11 @@ func (q *Queries) ListVisibleAgents(ctx context.Context, projectID string) ([]Li
 			&i.ExitCode,
 			&i.ExitReason,
 			&i.RemovedAt,
+			&i.Sandbox,
 			&i.WorktreePath,
 			&i.Branch,
 			&i.WorktreeStatus,
+			&i.WorktreeKind,
 		); err != nil {
 			return nil, err
 		}
@@ -345,7 +507,7 @@ func (q *Queries) ListVisibleAgents(ctx context.Context, projectID string) ([]Li
 }
 
 const listWorktreesWithStatus = `-- name: ListWorktreesWithStatus :many
-SELECT agent_id, project_id, path, branch, base_commit, status, created_at, removed_at FROM worktrees WHERE project_id = ? AND status = ?
+SELECT agent_id, project_id, path, branch, base_commit, status, created_at, removed_at, kind FROM worktrees WHERE project_id = ? AND status = ?
 `
 
 type ListWorktreesWithStatusParams struct {
@@ -371,6 +533,7 @@ func (q *Queries) ListWorktreesWithStatus(ctx context.Context, arg ListWorktrees
 			&i.Status,
 			&i.CreatedAt,
 			&i.RemovedAt,
+			&i.Kind,
 		); err != nil {
 			return nil, err
 		}

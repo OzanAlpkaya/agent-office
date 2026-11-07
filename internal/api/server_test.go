@@ -167,6 +167,50 @@ func TestRejectsCrossOriginWrites(t *testing.T) {
 	}
 }
 
+func TestStatusAPI(t *testing.T) {
+	f := newFixture(t)
+	r := f.doBody(t, "GET", "/api/status", nil, "")
+	var st engine.Status
+	if err := json.NewDecoder(r.Body).Decode(&st); err != nil || r.StatusCode != http.StatusOK {
+		t.Fatalf("status %d %v", r.StatusCode, err)
+	}
+	if st.Sandbox != engine.SandboxHost || st.Warnings == nil {
+		t.Fatalf("host fixture status %+v", st)
+	}
+}
+
+func TestImportRefusesHostAgents(t *testing.T) {
+	f := newFixture(t)
+	ct := map[string]string{"Content-Type": "application/json"}
+	r := f.doBody(t, "POST", "/api/agents", ct, `{}`)
+	var a engine.AgentInfo
+	_ = json.NewDecoder(r.Body).Decode(&a)
+	for _, path := range []string{"/api/agents/" + a.ID + "/import", "/api/agents/" + a.ID + "/save-work"} {
+		if r := f.doBody(t, "POST", path, ct, ``); r.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s on a host agent: %d", path, r.StatusCode)
+		}
+	}
+	if r := f.doBody(t, "POST", "/api/agents/nope/import", ct, ``); r.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown agent: %d", r.StatusCode)
+	}
+}
+
+func TestAgentEventsAPI(t *testing.T) {
+	f := newFixture(t)
+	ct := map[string]string{"Content-Type": "application/json"}
+	r := f.doBody(t, "POST", "/api/agents", ct, `{}`)
+	var a engine.AgentInfo
+	_ = json.NewDecoder(r.Body).Decode(&a)
+	r = f.doBody(t, "GET", "/api/agents/"+a.ID+"/events", nil, "")
+	body, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "[]" {
+		t.Fatalf("events of a host agent: %d %s", r.StatusCode, body)
+	}
+	if r := f.doBody(t, "GET", "/api/agents/nope/events", nil, ""); r.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown agent: %d", r.StatusCode)
+	}
+}
+
 func TestTasksAPI(t *testing.T) {
 	f := newFixture(t)
 	json415 := f.doBody(t, "POST", "/api/tasks", nil, `{"title":"x"}`) // no Content-Type

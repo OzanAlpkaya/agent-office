@@ -44,9 +44,9 @@ never edited.
 - Today no code path in the repo drops or truncates tables.
 - A mistake in a released migration is fixed by a follow-up migration, not by rolling back.
 - Tests and the e2e run use temporary or disposable databases, so they never need a down path.
-- Not handled yet: an older binary opening a database migrated by a newer one. This must be
-  decided (refuse to start, or tolerate unknown versions) before the second migration ships, and
-  backed by a test.
+- An older binary opening a database migrated by a newer one was left open here. It is decided in
+  ADR 0013: the older binary refuses to start, and every migration is preceded by a backup that
+  the older binary can open.
 - SQLite's limited `ALTER TABLE` means some future changes need the copy-table pattern inside an
   up migration (create the new table, copy the rows, drop the old one, rename). Its drop happens
   only after the data is copied, in one transaction; such a migration gets a test that checks the

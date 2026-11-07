@@ -91,11 +91,11 @@ func TestAgentLifecycleAndRestart(t *testing.T) {
 	seedProject(t, s)
 	now := time.Now().UTC()
 	err := s.Tx(ctx, func(q *db.Queries) error {
-		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting",
+		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting", Sandbox: "host",
 			InheritUserSettings: true, StartedAt: now}); err != nil {
 			return err
 		}
-		return q.CreateWorktree(ctx, db.CreateWorktreeParams{AgentID: "a1", ProjectID: "p1", Path: "/wt/a1",
+		return q.CreateWorktree(ctx, db.CreateWorktreeParams{AgentID: "a1", ProjectID: "p1", Path: "/wt/a1", Kind: "worktree",
 			Branch: "agent-office/a1", BaseCommit: "abc", CreatedAt: now})
 	})
 	if err != nil {
@@ -128,7 +128,7 @@ func TestTxRollsBack(t *testing.T) {
 	seedProject(t, s)
 	boom := errors.New("boom")
 	err := s.Tx(ctx, func(q *db.Queries) error {
-		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting", StartedAt: time.Now().UTC()}); err != nil {
+		if err := q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "starting", Sandbox: "host", StartedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
 		return boom
@@ -147,7 +147,7 @@ func TestConcurrentWriters(t *testing.T) {
 	s, _ := open(t)
 	ctx := context.Background()
 	seedProject(t, s)
-	if err := s.Q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "idle", StartedAt: time.Now().UTC()}); err != nil {
+	if err := s.Q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "idle", Sandbox: "host", StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
@@ -170,5 +170,32 @@ func TestConcurrentWriters(t *testing.T) {
 	ev, err := s.Q.ListEvents(ctx, db.ListEventsParams{AgentID: "a1", Limit: 500})
 	if err != nil || len(ev) != 200 {
 		t.Fatalf("events %d %v", len(ev), err)
+	}
+}
+
+func TestImportsConstraints(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	seedProject(t, s)
+	now := time.Now().UTC()
+	if err := s.Q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1", ProjectID: "p1", State: "exited", Sandbox: "podman", StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	imp, err := s.Q.InsertImport(ctx, db.InsertImportParams{AgentID: "a1", Trigger: "exit", Outcome: "diverged",
+		Branch: "agent-office/x-rewrite-2", Head: "abc", Previous: "def", Commits: 2, Flagged: `[{"commit":"abc"}]`, At: now})
+	if err != nil || imp.ID == 0 {
+		t.Fatalf("insert %+v %v", imp, err)
+	}
+	if last, err := s.Q.LatestImport(ctx, "a1"); err != nil || last.Outcome != "diverged" || last.Commits != 2 {
+		t.Fatalf("latest %+v %v", last, err)
+	}
+	for _, bad := range []db.InsertImportParams{
+		{AgentID: "a1", Trigger: "cron", Outcome: "created", At: now},
+		{AgentID: "a1", Trigger: "exit", Outcome: "forced", At: now},
+		{AgentID: "missing", Trigger: "exit", Outcome: "created", At: now},
+	} {
+		if _, err := s.Q.InsertImport(ctx, bad); err == nil {
+			t.Errorf("accepted %+v", bad)
+		}
 	}
 }

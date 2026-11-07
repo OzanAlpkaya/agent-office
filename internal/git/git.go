@@ -1,5 +1,6 @@
 // Package git wraps the git CLI for the operations agent-office needs:
-// repository discovery, worktrees and branches (ADR 0009).
+// repository discovery, worktrees and branches (ADR 0009), and the shared
+// clones and bundle hand-off of sandboxed agents (ADR 0014).
 package git
 
 import (
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +20,17 @@ import (
 type Git struct {
 	Bin     string
 	Timeout time.Duration
+	// UntrustedRoots are directories holding repositories that sandboxed
+	// agents control (ADR 0014). Git config written there (core.fsmonitor,
+	// hooks, ...) would run on the host, so every command whose working
+	// directory or absolute path arguments lie under one of them is refused,
+	// except while CreateSharedClone sets a new repository up.
+	UntrustedRoots []string
 }
+
+// ErrUntrusted is returned for a git command that would run on, or read from,
+// a path under Git.UntrustedRoots.
+var ErrUntrusted = errors.New("git: refusing to run git on an agent-controlled path")
 
 // Error is a failed git command.
 type Error struct {
@@ -58,6 +70,15 @@ func env() []string {
 }
 
 func (g Git) run(ctx context.Context, dir string, args ...string) (string, error) {
+	if err := g.checkTrusted(dir, args); err != nil {
+		return "", err
+	}
+	return g.exec(ctx, dir, args...)
+}
+
+// exec runs git without the untrusted-path check. Only run and the setup
+// steps of CreateSharedClone call it.
+func (g Git) exec(ctx context.Context, dir string, args ...string) (string, error) {
 	bin, timeout := g.Bin, g.Timeout
 	if bin == "" {
 		bin = "git"
@@ -76,6 +97,59 @@ func (g Git) run(ctx context.Context, dir string, args ...string) (string, error
 		return "", &Error{Args: args, Stderr: stderr.String(), Err: err}
 	}
 	return strings.TrimRight(stdout.String(), "\n"), nil
+}
+
+// checkTrusted refuses dir and absolute path arguments (also in --opt=value
+// form) that resolve, symlinks included, to a path under an untrusted root.
+func (g Git) checkTrusted(dir string, args []string) error {
+	if len(g.UntrustedRoots) == 0 {
+		return nil
+	}
+	paths := []string{}
+	if dir != "" {
+		paths = append(paths, dir)
+	}
+	for _, a := range args {
+		if _, v, ok := strings.Cut(a, "="); ok && strings.HasPrefix(a, "-") {
+			a = v
+		}
+		if filepath.IsAbs(a) {
+			paths = append(paths, a)
+		}
+	}
+	for _, p := range paths {
+		rp := resolve(p)
+		for _, root := range g.UntrustedRoots {
+			if within(rp, resolve(root)) {
+				return fmt.Errorf("%w: %s", ErrUntrusted, p)
+			}
+		}
+	}
+	return nil
+}
+
+// resolve makes p absolute and follows symlinks as far as the path exists.
+func resolve(p string) string {
+	p, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	for q, rest := p, ""; ; {
+		if r, err := filepath.EvalSymlinks(q); err == nil {
+			return filepath.Join(r, rest)
+		}
+		parent := filepath.Dir(q)
+		if parent == q {
+			return p
+		}
+		rest = filepath.Join(filepath.Base(q), rest)
+		q = parent
+	}
+}
+
+func within(p, root string) bool {
+	rel, err := filepath.Rel(root, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // Version returns the output of `git --version`.

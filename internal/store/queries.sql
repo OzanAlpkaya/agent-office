@@ -26,8 +26,8 @@ RETURNING *;
 DELETE FROM tasks WHERE id = ?;
 
 -- name: CreateAgent :exec
-INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: UpdateAgentState :exec
 UPDATE agents SET state = ?, activity = ? WHERE id = ?;
@@ -41,7 +41,7 @@ UPDATE agents SET removed_at = ? WHERE id = ?;
 
 -- name: ListVisibleAgents :many
 SELECT agents.*, worktrees.path AS worktree_path, worktrees.branch AS branch,
-       worktrees.status AS worktree_status
+       worktrees.status AS worktree_status, worktrees.kind AS worktree_kind
 FROM agents JOIN worktrees ON worktrees.agent_id = agents.id
 WHERE agents.project_id = ? AND agents.removed_at IS NULL
 ORDER BY agents.started_at, agents.id;
@@ -57,8 +57,8 @@ INSERT INTO sessions (id, agent_id, started_at) VALUES (?, ?, ?);
 UPDATE sessions SET ended_at = ? WHERE agent_id = ? AND ended_at IS NULL;
 
 -- name: CreateWorktree :exec
-INSERT INTO worktrees (agent_id, project_id, path, branch, base_commit, status, created_at)
-VALUES (?, ?, ?, ?, ?, 'active', ?);
+INSERT INTO worktrees (agent_id, project_id, path, branch, base_commit, status, created_at, kind)
+VALUES (?, ?, ?, ?, ?, 'active', ?, ?);
 
 -- name: GetWorktree :one
 SELECT * FROM worktrees WHERE agent_id = ?;
@@ -75,3 +75,17 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListEvents :many
 SELECT * FROM events WHERE agent_id = ? ORDER BY id DESC LIMIT ?;
+
+-- name: ListSandboxEvents :many
+SELECT * FROM events WHERE agent_id = ? AND hook = 'sandbox' ORDER BY id DESC LIMIT ?;
+
+-- name: InsertImport :one
+INSERT INTO imports (agent_id, trigger, outcome, branch, head, previous, commits, flagged, at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: LatestImport :one
+SELECT * FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT 1;
+
+-- name: ListImports :many
+SELECT * FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT ?;

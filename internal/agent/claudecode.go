@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -86,6 +87,76 @@ func ScrubEnv(env []string) []string {
 // HookSettings returns a Claude Code settings document that sends every
 // registered event to hookCommand (e.g. "'/usr/bin/agent-office' hook").
 func HookSettings(hookCommand string) ([]byte, error) {
+	return settings(hookCommand, nil)
+}
+
+// TestedClaudeCodeVersion is the Claude Code version the pre-seeded config
+// keys (SandboxSettings, SeedConfig) were tested with in Spike F. They are
+// undocumented; the daemon warns when the installed version differs.
+const TestedClaudeCodeVersion = "2.1.319"
+
+var versionRe = regexp.MustCompile(`^(\d+\.\d+\.\d+)\b`)
+
+// ParseVersion extracts "2.1.319" from `claude --version` output such as
+// "2.1.319 (Claude Code)".
+func ParseVersion(out string) (string, error) {
+	m := versionRe.FindStringSubmatch(strings.TrimSpace(out))
+	if m == nil {
+		return "", fmt.Errorf("agent: unrecognized claude version %q", strings.TrimSpace(out))
+	}
+	return m[1], nil
+}
+
+// SandboxSettings is HookSettings plus the keys that skip the theme picker and
+// the bypass-permissions warning in a fresh config dir (ADR 0016). Only
+// sandboxed workers get it.
+func SandboxSettings(hookCommand string) ([]byte, error) {
+	return settings(hookCommand, map[string]any{"theme": "dark", "skipDangerousModePermissionPrompt": true})
+}
+
+// SeedConfig is the .claude.json written into a worker's fresh
+// CLAUDE_CONFIG_DIR: onboarding done for this CLI version and the workspace
+// trusted, so no dialog blocks the session (ADR 0016).
+func SeedConfig(version, workspace string) ([]byte, error) {
+	if _, err := ParseVersion(version); err != nil || !strings.HasPrefix(workspace, "/") {
+		return nil, fmt.Errorf("agent: SeedConfig needs a version and an absolute workspace path")
+	}
+	return json.MarshalIndent(map[string]any{
+		"hasCompletedOnboarding": true,
+		"lastOnboardingVersion":  version,
+		"projects":               map[string]any{workspace: map[string]any{"hasTrustDialogAccepted": true}},
+	}, "", "  ")
+}
+
+// ContainerSpec describes the agent CLI command inside a sandboxed worker.
+// Paths are container paths.
+type ContainerSpec struct {
+	Bin           string // e.g. /opt/claude/claude
+	SessionID     string
+	Model         string
+	SettingsPath  string
+	InitialPrompt string
+}
+
+// ContainerArgs returns the CLI command line for a sandboxed worker. It is
+// the only place that turns permission prompts off: the agent then runs with
+// full permissions, which is acceptable only inside the container (ADR 0007).
+func ContainerArgs(s ContainerSpec) ([]string, error) {
+	if s.Bin == "" || s.SessionID == "" || s.SettingsPath == "" {
+		return nil, errors.New("agent: ContainerSpec needs Bin, SessionID and SettingsPath")
+	}
+	args := []string{s.Bin, "--session-id", s.SessionID, "--settings", s.SettingsPath}
+	if s.Model != "" {
+		args = append(args, "--model", s.Model)
+	}
+	args = append(args, "--dangerously-skip-permissions")
+	if s.InitialPrompt != "" {
+		args = append(args, "--", s.InitialPrompt)
+	}
+	return args, nil
+}
+
+func settings(hookCommand string, extra map[string]any) ([]byte, error) {
 	type hook struct {
 		Type    string `json:"type"`
 		Command string `json:"command"`
@@ -98,7 +169,11 @@ func HookSettings(hookCommand string) ([]byte, error) {
 	for _, e := range claudeHookEvents {
 		hooks[e] = []matcher{{Hooks: []hook{{Type: "command", Command: hookCommand, Timeout: hookTimeoutSeconds}}}}
 	}
-	return json.MarshalIndent(map[string]any{"hooks": hooks}, "", "  ")
+	doc := map[string]any{"hooks": hooks}
+	for k, v := range extra {
+		doc[k] = v
+	}
+	return json.MarshalIndent(doc, "", "  ")
 }
 
 // ShellQuote quotes s for a POSIX shell (hook commands run through a shell).

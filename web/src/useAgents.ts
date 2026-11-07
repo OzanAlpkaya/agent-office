@@ -1,12 +1,27 @@
 import { useEffect, useState } from "react";
-import { type Agent, type Task, parseEventMessage, wsURL } from "./api";
+import { type Agent, type SandboxEvent, type Task, api, parseEventMessage, wsURL } from "./api";
 
 export type Connection = "connecting" | "open" | "closed";
 
 export interface World {
   agents: Agent[];
   tasks: Task[];
+  events: Record<string, SandboxEvent[]>; // sandbox events per agent id, newest first
   connection: Connection;
+}
+
+// Events kept per agent in the UI; the API returns at most this many too.
+const maxEvents = 50;
+
+const eventKey = (e: SandboxEvent): string => `${e.at}|${e.kind}|${e.detail}`;
+
+// mergeEvents combines fetched and live events without duplicates, newest first.
+function mergeEvents(a: SandboxEvent[], b: SandboxEvent[]): SandboxEvent[] {
+  const seen = new Set<string>();
+  return [...a, ...b]
+    .filter((e) => !seen.has(eventKey(e)) && Boolean(seen.add(eventKey(e))))
+    .sort((x, y) => Date.parse(y.at) - Date.parse(x.at))
+    .slice(0, maxEvents);
 }
 
 function upsert<T extends { id: string }>(list: T[], item: T): T[] {
@@ -23,6 +38,7 @@ function upsert<T extends { id: string }>(list: T[], item: T): T[] {
 export function useWorld(): World {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [events, setEvents] = useState<Record<string, SandboxEvent[]>>({});
   const [connection, setConnection] = useState<Connection>("connecting");
 
   useEffect(() => {
@@ -48,12 +64,29 @@ export function useWorld(): World {
           case "snapshot":
             setAgents(msg.agents);
             setTasks(msg.tasks);
+            setEvents({});
+            // Recorded events, so a reload still shows earlier refusals. Live
+            // events that arrive meanwhile are merged, not overwritten.
+            for (const a of msg.agents.filter((x) => x.sandbox === "podman")) {
+              // Fire-and-forget: both outcomes are handled; a failure only loses history.
+              void api.agentEvents(a.id).then(
+                (evs) => setEvents((prev) => ({ ...prev, [a.id]: mergeEvents(prev[a.id] ?? [], evs) })),
+                () => console.warn(`agent-office: could not load sandbox events for ${a.id}`),
+              );
+            }
             break;
           case "agent":
             setAgents((prev) => upsert(prev, msg.agent));
             break;
           case "agent_removed":
             setAgents((prev) => prev.filter((a) => a.id !== msg.id));
+            setEvents((prev) => {
+              const { [msg.id]: _removed, ...rest } = prev;
+              return rest;
+            });
+            break;
+          case "sandbox_event":
+            setEvents((prev) => ({ ...prev, [msg.agent_id]: mergeEvents(prev[msg.agent_id] ?? [], [msg.event]) }));
             break;
           case "task":
             setTasks((prev) => upsert(prev, msg.task));
@@ -78,5 +111,5 @@ export function useWorld(): World {
     };
   }, []);
 
-  return { agents, tasks, connection };
+  return { agents, tasks, events, connection };
 }

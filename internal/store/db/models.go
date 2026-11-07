@@ -22,6 +22,7 @@ type Agent struct {
 	ExitCode            sql.NullInt64
 	ExitReason          string
 	RemovedAt           sql.NullTime
+	Sandbox             string
 }
 
 type Event struct {
@@ -34,6 +35,19 @@ type Event struct {
 	Detail    string
 	State     string
 	At        time.Time
+}
+
+type Import struct {
+	ID       int64
+	AgentID  string
+	Trigger  string
+	Outcome  string
+	Branch   string
+	Head     string
+	Previous string
+	Commits  int64
+	Flagged  string
+	At       time.Time
 }
 
 type Project struct {
@@ -70,4 +84,5 @@ type Worktree struct {
 	Status     string
 	CreatedAt  time.Time
 	RemovedAt  sql.NullTime
+	Kind       string
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
+	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
 )
 
@@ -54,10 +55,14 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/project", s.getProject)
+	mux.HandleFunc("GET /api/status", s.getStatus)
 	mux.HandleFunc("GET /api/agents", s.listAgents)
 	mux.HandleFunc("POST /api/agents", s.startAgent)
 	mux.HandleFunc("POST /api/agents/{id}/stop", s.stopAgent)
 	mux.HandleFunc("POST /api/agents/{id}/discard", s.discardAgent)
+	mux.HandleFunc("POST /api/agents/{id}/import", s.importAgent)
+	mux.HandleFunc("POST /api/agents/{id}/save-work", s.saveWork)
+	mux.HandleFunc("GET /api/agents/{id}/events", s.agentEvents)
 	mux.HandleFunc("DELETE /api/agents/{id}", s.removeAgent)
 	mux.HandleFunc("GET /api/agents/{id}/terminal", s.terminalWS)
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
@@ -145,6 +150,37 @@ func (s *server) stopAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a)
 }
 
+// importAgent brings a sandboxed agent's branch into the repository now
+// ("Import now"; also while it runs, ADR 0014).
+func (s *server) importAgent(w http.ResponseWriter, r *http.Request) {
+	imp, err := s.eng.Import(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, imp)
+}
+
+// saveWork commits an exited sandboxed agent's uncommitted work and imports it.
+func (s *server) saveWork(w http.ResponseWriter, r *http.Request) {
+	imp, err := s.eng.SaveWork(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, imp)
+}
+
+// agentEvents lists an agent's recent sandbox events, newest first (ADR 0016).
+func (s *server) agentEvents(w http.ResponseWriter, r *http.Request) {
+	evs, err := s.eng.SandboxEvents(r.Context(), r.PathValue("id"), 50)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, evs)
+}
+
 // removeAgent cleans up the worktree (keeping uncommitted work, ADR 0010).
 func (s *server) removeAgent(w http.ResponseWriter, r *http.Request) {
 	res, err := s.eng.Remove(r.Context(), r.PathValue("id"))
@@ -172,6 +208,12 @@ func (s *server) discardAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) getProject(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.eng.Project())
+}
+
+// getStatus reports the sandbox mode, the worker image and warnings (e.g. an
+// untested Claude Code version) for the UI.
+func (s *server) getStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.eng.Status())
 }
 
 func (s *server) listTasks(w http.ResponseWriter, r *http.Request) {
@@ -246,7 +288,8 @@ func (s *server) engineError(w http.ResponseWriter, err error) {
 	case errors.Is(err, engine.ErrNoTerminal):
 		writeError(w, http.StatusGone, err.Error())
 	case errors.Is(err, engine.ErrStillRunning), errors.Is(err, engine.ErrTooManyAgents),
-		errors.Is(err, engine.ErrWorktreeDirty), errors.Is(err, engine.ErrTaskHasRunning):
+		errors.Is(err, engine.ErrWorktreeDirty), errors.Is(err, engine.ErrTaskHasRunning),
+		errors.Is(err, git.ErrBranchCheckedOut):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		s.log.Error("engine", "err", err)

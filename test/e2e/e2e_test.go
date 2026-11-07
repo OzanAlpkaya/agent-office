@@ -310,6 +310,8 @@ func TestEndToEnd(t *testing.T) {
 	repo = gitOut(t, repo, "rev-parse", "--show-toplevel")
 	statusBefore := gitOut(t, repo, "status", "--porcelain")
 	branchesBefore := gitOut(t, repo, "branch", "--list", "agent-office/*")
+	// Compared, not counted: the repository may hold worktrees of its own.
+	worktreesBefore := gitOut(t, repo, "worktree", "list", "--porcelain")
 
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "agent-office")
@@ -319,7 +321,7 @@ func TestEndToEnd(t *testing.T) {
 	port := freePort(t)
 	d := &daemon{t: t, bin: bin, base: "http://127.0.0.1:" + port, logPath: filepath.Join(tmp, "daemon.log"),
 		args: []string{"serve", "--repo", repo, "--addr", "127.0.0.1:" + port, "--data-dir", filepath.Join(tmp, "data"),
-			"--model", model, "--max-agents", "3", "--log-level", "debug"}}
+			"--model", model, "--max-agents", "3", "--log-level", "debug", "--sandbox", "host"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
@@ -489,8 +491,8 @@ func TestEndToEnd(t *testing.T) {
 	if got := gitOut(t, repo, "branch", "--list", "agent-office/*"); got != branchesBefore {
 		t.Errorf("branches left behind: %q", got)
 	}
-	if got := gitOut(t, repo, "worktree", "list", "--porcelain"); strings.Count(got, "worktree ") != 1 {
-		t.Errorf("worktrees left behind:\n%s", got)
+	if got := gitOut(t, repo, "worktree", "list", "--porcelain"); got != worktreesBefore {
+		t.Errorf("worktrees changed:\nbefore:\n%s\nafter:\n%s", worktreesBefore, got)
 	}
 	if got := gitOut(t, repo, "status", "--porcelain"); got != statusBefore {
 		t.Errorf("main checkout changed:\n%s", got)
