@@ -1,6 +1,6 @@
 # Phase 6 plan: Stack packs
 
-- **Status:** In progress on `phase-6/stack-packs`. Written 2026-11-07 with the recommended option
+- **Status:** Done on `phase-6/stack-packs`, waiting for Ozan's review. Written 2026-11-07 with the recommended option
   for every open question and executed straight away, as Ozan asked ("write the Phase 6 plan using
   your recommended options, then execute it immediately without asking me anything"). Every
   decision is listed in the end-of-phase summary; nothing is merged until Ozan has read it.
@@ -217,4 +217,35 @@ agents work on, and everything they produce is checked by the same deterministic
 
 ## Changes during the phase
 
-(appended during the phase)
+- **ADR as planned:** 0023 (stack packs); ADRs 0007, 0015 and 0016 point to it.
+- **Skills frontmatter:** the Claude Code docs make every frontmatter field optional; agent-office
+  requires a `description` (the docs recommend it) and checks a `name` against the directory.
+  `CLAUDE_CONFIG_DIR/skills` was confirmed in the docs before relying on it.
+- **`pack check` reports ownership and content problems together**, not ownership first.
+- **Two pre-existing test bugs fixed** (separate `test:` commits): `TestIdleDeliveryOverPTY` and
+  `TestAgentEnvIsScrubbed` failed on every run without `-race` (also on `main`); `make test`
+  always uses `-race`, which hid them. Found while checking each commit's tree without `-race`.
+- **End-of-phase review fixes** (an independent reviewer read the diff; it found no way for a
+  secret to leak or for the repository to choose a pack):
+  - **Secrets go to workers only**, not reviewers (the plan said workers and reviewers):
+    reviewers read the agent-written diff, the most injectable input there is.
+  - **Skills are mounted read-only per launch** from the daemon-owned runtime dir instead of
+    copied once into the agent's config dir: the agent cannot change them, and a relaunch gets
+    the current pack's. They are the files checked at load.
+  - A Containerfile whose last stage sets an `ENTRYPOINT` is rejected; build files keep exec
+    bits; the image tag also hashes which file is the Containerfile; `.git/` in a pack is
+    ignored; more reserved env names (Go, shell startup, Claude Code variables without a
+    `CLAUDE` prefix, npm config, CA bundles, locale, XDG); secret status runs the launch's file
+    checks; the engine test checks `sandbox-init`'s own process (PID 1 is podman's init).
+  - Not changed: a heredoc line starting with `FROM` would confuse the Containerfile check
+    (unlikely; the build would still have to pass).
+- **Tests run:** `make check`, `make sandbox-test` (plus `AO_SANDBOX_NET=1` for
+  `TestWorkerEgress`) and `make e2e` with the GitHub run. `TestEndToEnd`, `TestSandboxEndToEnd`
+  (real agent ran `go test -race` with `--pack go`) and `TestTeamEndToEnd` passed. The first
+  `TestGitHubEndToEnd` failed: the relaunched worker got the follow-up review but called
+  `report_done` without a new commit, which the engine accepts because the branch already had
+  one. A rerun passed (including the relaunch through the read-only skills mount). Proposed for
+  later: refuse `report_done` in a follow-up round until the head has moved.
+- **Not verified live:** whether Claude Code actually listed the pack skill (it is mounted in the
+  worker, but nothing in its config dir names it); HTTP MCP servers through the egress proxy and whether Claude Code
+  passes stdio MCP servers the agent's environment (documented in `docs/packs.md`).

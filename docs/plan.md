@@ -174,10 +174,18 @@ derived from Claude Code hooks.
   images build `FROM` it. Secret values are user-only files, served once to the container's init.
 
 **Definition of Done**
-- [ ] At least two example packs (e.g. Go, Node/TypeScript).
-- [ ] Invalid packs are rejected with actionable error messages (tested).
-- [ ] A pack's domains feed the egress allowlist and its env var names feed the secret injection.
-- [ ] A pack selects the worker image (toolchain); projects without a pack get the default image.
+- [x] At least two example packs (e.g. Go, Node/TypeScript): built-in `go` and `node`, each with a
+      skill (`TestBuiltinsAreValid`; `TestSandboxedPackToolchains` runs `go test -race` and
+      `node`/`npm` in their images).
+- [x] Invalid packs are rejected with actionable error messages (tested): `TestLoadInvalid` (45
+      cases, each with its message), `TestLoadReportsEveryProblem`, `TestLoadDirChecksTheTree`,
+      `TestFindAndList`, `TestPackCommand`; `agent-office pack check` prints them.
+- [x] A pack's domains feed the egress allowlist and its env var names feed the secret injection:
+      `TestPackOptions`, `TestSandboxedPackLaunch` (a secret reaches the worker's agent CLI once and
+      nothing else; leads and reviewers get none).
+- [x] A pack selects the worker image (toolchain); projects without a pack get the default image:
+      `TestPackOptions`, `TestWorkerImageAndInit` (base image, no toolchain), `TestSandboxEndToEnd`
+      (real Claude Code with `--pack go` runs `go test -race` in the worker).
 
 ---
 
