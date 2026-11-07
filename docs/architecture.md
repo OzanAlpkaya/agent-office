@@ -59,7 +59,7 @@ flowchart LR
 | `engine` | Owns the lifecycle of agents, tasks, worktrees and messages. All state changes go through it. |
 | `hooks` | Accepts forwarded hook events from the per-agent sockets and runs the agent state machine. |
 | `mcp` | Team MCP server (go-sdk): `create_task`, `assign_task`, `send_message`, `report_done`, `request_access`. *(Phase 4)* |
-| `store` | SQLite via modernc + sqlc, forward-only goose migrations (ADR 0004, 0011, 0012). |
+| `store` | SQLite via modernc + sqlc, forward-only goose migrations; refuses schemas newer than the binary and backs up before migrating (ADR 0004, 0011, 0012, 0013). |
 | `git` | git CLI wrapper: worktrees, branches, branch-name slugs (ADR 0009, 0010). |
 | `sandbox` | Starts workers in rootless Podman with the egress proxy and secrets. *(Phase 3)* |
 | `github` | PRs and reviews through go-github; never the `gh` CLI. *(Phase 5)* |
