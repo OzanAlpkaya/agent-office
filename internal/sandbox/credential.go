@@ -51,7 +51,7 @@ func DefaultTokenFile() (string, error) {
 // regular file (not a symlink) owned by the current user with no group or
 // other permissions (0600 or 0400), in a directory that only its owner can
 // write. Surrounding whitespace is trimmed; the token must be non-empty and
-// contain no whitespace or control characters.
+// consist of printable ASCII only.
 func ReadTokenFile(path string) (Secret, error) {
 	fail := func(format string, a ...any) (Secret, error) {
 		return Secret{}, fmt.Errorf("%w %s: "+format, append([]any{ErrTokenFile, path}, a...)...)
@@ -101,9 +101,12 @@ func ReadTokenFile(path string) (Secret, error) {
 	if tok == "" {
 		return fail("is empty")
 	}
-	for _, r := range tok {
-		if r <= ' ' || r == 0x7f {
-			return fail("must contain only the token on one line")
+	// Bytes, not runes: anything outside printable ASCII (a stray Escape or
+	// arrow key from pasting, a non-breaking space, invalid UTF-8) is rejected.
+	// Such a byte cannot be part of the token, so naming it reveals nothing.
+	for i := 0; i < len(tok); i++ {
+		if c := tok[i]; c < 0x21 || c > 0x7e {
+			return fail("must contain only the token on one line; byte %#02x at offset %d is not printable ASCII (re-create the file)", c, i)
 		}
 	}
 	return Secret{v: tok}, nil

@@ -56,6 +56,10 @@ func TestReadTokenFileRejects(t *testing.T) {
 		"empty":          func(t *testing.T) string { return writeToken(t, tokenDir(t), " \n", 0o600) },
 		"two lines":      func(t *testing.T) string { return writeToken(t, tokenDir(t), fakeToken+"\nsecond", 0o600) },
 		"inner space":    func(t *testing.T) string { return writeToken(t, tokenDir(t), "fake token", 0o600) },
+		// A stray Escape or arrow key during the paste (seen in Spike F).
+		"escape byte": func(t *testing.T) string { return writeToken(t, tokenDir(t), "fake\x1b[Dtoken", 0o600) },
+		"non-ASCII":   func(t *testing.T) string { return writeToken(t, tokenDir(t), "fake token", 0o600) },
+		"bad UTF-8":   func(t *testing.T) string { return writeToken(t, tokenDir(t), "fake\xfftoken", 0o600) },
 		"too large": func(t *testing.T) string {
 			return writeToken(t, tokenDir(t), strings.Repeat("a", maxTokenBytes+1), 0o600)
 		},
