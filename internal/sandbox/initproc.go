@@ -16,9 +16,9 @@ import (
 // InitConfig is what `agent-office sandbox-init` needs inside a worker
 // (ADR 0016). FromEnv fills it from the variables WorkerArgs sets.
 type InitConfig struct {
-	EgressAddr, EgressSocket string // loopback address bridged to the egress socket
-	APIAddr, APISocket       string // loopback address bridged to the API socket
-	Home                     string // created if missing (tmpfs)
+	EgressAddr, EgressSocket string   // loopback address bridged to the egress socket
+	APIAddr, APISocket       string   // loopback address bridged to the API socket
+	Dirs                     []string // created if missing (HOME, CLAUDE_CODE_TMPDIR; on the tmpfs)
 	Command                  []string
 	Env                      []string // the child's environment
 	Stdin                    io.Reader
@@ -38,7 +38,7 @@ func InitFromEnv(command []string) InitConfig {
 	return InitConfig{
 		EgressAddr: EgressAddr, EgressSocket: os.Getenv("AGENT_OFFICE_EGRESS_SOCKET"),
 		APIAddr: APIAddr, APISocket: os.Getenv("AGENT_OFFICE_API_SOCKET"),
-		Home: os.Getenv("HOME"), Command: command, Env: env,
+		Dirs: nonEmpty(os.Getenv("HOME"), os.Getenv("CLAUDE_CODE_TMPDIR")), Command: command, Env: env,
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 	}
 }
@@ -73,9 +73,9 @@ func RunInit(ctx context.Context, cfg InitConfig) (int, error) {
 		listeners = append(listeners, l)
 		go Bridge(l, b.sock)
 	}
-	if cfg.Home != "" {
-		if err := os.MkdirAll(cfg.Home, 0o700); err != nil {
-			return 0, fmt.Errorf("sandbox-init: home: %w", err)
+	for _, d := range cfg.Dirs {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return 0, fmt.Errorf("sandbox-init: %w", err)
 		}
 	}
 
@@ -103,6 +103,16 @@ func RunInit(ctx context.Context, cfg InitConfig) (int, error) {
 			return exitCode(<-done)
 		}
 	}
+}
+
+func nonEmpty(s ...string) []string {
+	var out []string
+	for _, v := range s {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func exitCode(err error) (int, error) {

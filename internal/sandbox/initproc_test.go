@@ -54,7 +54,7 @@ func initCfg(t *testing.T, cmd ...string) (InitConfig, *bytes.Buffer) {
 	return InitConfig{
 		EgressAddr: freeAddr(t), EgressSocket: unixEcho(t, "egress:"),
 		APIAddr: freeAddr(t), APISocket: unixEcho(t, "api:"),
-		Home: filepath.Join(t.TempDir(), "home"), Command: cmd,
+		Dirs: []string{filepath.Join(t.TempDir(), "home"), filepath.Join(t.TempDir(), "home", "tmp")}, Command: cmd,
 		Env: []string{"PATH=" + os.Getenv("PATH"), "MARK=child-env"}, Stdout: &out, Stderr: &out,
 	}, &out
 }
@@ -93,8 +93,10 @@ func TestRunInitBridgesWhileChildRuns(t *testing.T) {
 	if reply = roundTrip(t, cfg.APIAddr, "POST /v1/messages"); reply != "api:POST /v1/messages" {
 		t.Fatalf("api bridge reply %q", reply)
 	}
-	if fi, err := os.Stat(cfg.Home); err != nil || !fi.IsDir() {
-		t.Fatalf("home not created: %v", err)
+	for _, d := range cfg.Dirs {
+		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
+			t.Fatalf("%s not created: %v", d, err)
+		}
 	}
 	cancel() // SIGTERM to the child
 	select {
@@ -169,7 +171,12 @@ func TestInitFromEnvDropsSocketVars(t *testing.T) {
 	t.Setenv("AGENT_OFFICE_EGRESS_SOCKET", "/run/agent-office/egress.sock")
 	t.Setenv("AGENT_OFFICE_API_SOCKET", "/run/agent-office/api.sock")
 	t.Setenv("AGENT_OFFICE_SOCKET", "/run/agent-office/hook.sock")
+	t.Setenv("HOME", "/tmp/home")
+	t.Setenv("CLAUDE_CODE_TMPDIR", "/tmp/home/tmp")
 	cfg := InitFromEnv([]string{"claude"})
+	if strings.Join(cfg.Dirs, " ") != "/tmp/home /tmp/home/tmp" {
+		t.Fatalf("dirs %q", cfg.Dirs)
+	}
 	if cfg.EgressSocket != "/run/agent-office/egress.sock" || cfg.APISocket != "/run/agent-office/api.sock" ||
 		cfg.EgressAddr != EgressAddr || cfg.APIAddr != APIAddr {
 		t.Fatalf("config %+v", cfg)

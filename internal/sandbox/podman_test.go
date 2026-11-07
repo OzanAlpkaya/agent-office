@@ -83,6 +83,7 @@ func TestWorkerArgsIsolation(t *testing.T) {
 	for _, want := range []string{"CLAUDE_CODE_OAUTH_TOKEN=" + Placeholder, "ANTHROPIC_BASE_URL=http://" + APIAddr,
 		"HTTPS_PROXY=http://" + EgressAddr, "NO_PROXY=127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		"DISABLE_AUTOUPDATER=1", "CLAUDE_CONFIG_DIR=" + ConfigDir, "AGENT_OFFICE_SOCKET=" + HookSocket,
+		"CLAUDE_CODE_TMPDIR=" + TmpDir,
 		"GIT_AUTHOR_NAME=Ozan", "GIT_COMMITTER_EMAIL=ozan@example.com", "GOFLAGS=-mod=mod",
 		"AGENT_OFFICE_CO_AUTHOR=worker-1 (agent-office) <noreply@agent-office.invalid>",
 		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=" + GitHooksDir} {
@@ -107,6 +108,9 @@ func TestWorkerArgsRejects(t *testing.T) {
 		"empty mount":        func(s *WorkerSpec) { s.GitHooks = "" },
 		"no command":         func(s *WorkerSpec) { s.Command = nil },
 		"bad memory":         func(s *WorkerSpec) { s.Memory = "lots" },
+		"objects in /usr":    func(s *WorkerSpec) { s.ObjectsDir = "/usr/src/repo/.git/objects" },
+		"objects over /opt":  func(s *WorkerSpec) { s.ObjectsDir = "/opt" },
+		"objects in /tmp/h":  func(s *WorkerSpec) { s.ObjectsDir = "/tmp/home/repo/.git/objects" },
 		"credential env":     func(s *WorkerSpec) { s.Env = []string{"ANTHROPIC_API_KEY=x"} },
 		"token-ish env":      func(s *WorkerSpec) { s.Env = []string{"MY_SERVICE_TOKEN=x"} },
 		"ssh agent":          func(s *WorkerSpec) { s.Env = []string{"SSH_AUTH_SOCK=/run/ssh"} },

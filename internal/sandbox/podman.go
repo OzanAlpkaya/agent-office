@@ -16,6 +16,7 @@ const (
 	WorkspaceDir    = "/workspace"
 	ConfigDir       = "/config" // CLAUDE_CONFIG_DIR
 	HomeDir         = "/tmp/home"
+	TmpDir          = HomeDir + "/tmp" // CLAUDE_CODE_TMPDIR; created by sandbox-init
 	runDir          = "/run/agent-office"
 	HookSocket      = runDir + "/hook.sock"
 	EgressSocket    = runDir + "/egress.sock"
@@ -89,6 +90,7 @@ var builtinEnv = map[string]bool{
 	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": true, "HTTPS_PROXY": true, "https_proxy": true,
 	"HTTP_PROXY": true, "http_proxy": true, "NO_PROXY": true, "no_proxy": true, "ANTHROPIC_BASE_URL": true,
 	"CLAUDE_CODE_OAUTH_TOKEN": true, "AGENT_OFFICE_SOCKET": true, "TERM": true, "COLORTERM": true,
+	"CLAUDE_CODE_TMPDIR":         true,
 	"AGENT_OFFICE_EGRESS_SOCKET": true, "AGENT_OFFICE_API_SOCKET": true,
 	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
 	"AGENT_OFFICE_CO_AUTHOR": true, "GIT_CONFIG_COUNT": true, "GIT_CONFIG_KEY_0": true, "GIT_CONFIG_VALUE_0": true,
@@ -124,6 +126,9 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 	if !regexp.MustCompile(`^[0-9]+[kmg]$`).MatchString(mem) {
 		return nil, fmt.Errorf("sandbox: invalid memory limit %q", mem)
 	}
+	if err := checkObjectsPath(s.ObjectsDir); err != nil {
+		return nil, err
+	}
 	mounts := []struct {
 		src, dst string
 		ro       bool
@@ -152,6 +157,10 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 	}
 	env := []string{
 		"HOME=" + HomeDir,
+		// Claude Code's default temp dir is /tmp/claude-<uid>; a same-path mount (the
+		// objects dir) under /tmp/claude-1000 would create it root-owned and Claude
+		// Code refuses to start. Its own tmpfs dir avoids that.
+		"CLAUDE_CODE_TMPDIR=" + TmpDir,
 		"CLAUDE_CONFIG_DIR=" + ConfigDir,
 		"DISABLE_AUTOUPDATER=1",
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
@@ -196,6 +205,9 @@ func HelperArgs(s HelperSpec) (name string, args []string, err error) {
 	if s.Image == "" || len(s.Command) == 0 {
 		return "", nil, fmt.Errorf("sandbox: helper needs an image and a command")
 	}
+	if err := checkObjectsPath(s.ObjectsDir); err != nil {
+		return "", nil, err
+	}
 	name = helperName(s.AgentID)
 	args = append(baseArgs(s.AgentID, "helper", helperMemory, helperPids), "--name", name)
 	for _, m := range []struct {
@@ -235,6 +247,20 @@ func baseArgs(agentID, role, mem string, pids int) []string {
 		"--log-driver", "none", // terminal output and git output are never stored by podman
 		"-w", WorkspaceDir,
 	}
+}
+
+// containerPaths are used inside every container; the objects dir, mounted at
+// its host path, must not overlap them.
+var containerPaths = []string{WorkspaceDir, ConfigDir, HomeDir, runDir, "/opt/agent-office", "/opt/claude",
+	"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/proc", "/sys", "/dev"}
+
+func checkObjectsPath(p string) error {
+	for _, c := range containerPaths {
+		if p == c || strings.HasPrefix(p, c+"/") || strings.HasPrefix(c, p+"/") {
+			return fmt.Errorf("sandbox: the repository's objects path %s overlaps %s inside the container; move the repository", p, c)
+		}
+	}
+	return nil
 }
 
 func volume(src, dst string, ro bool) (string, error) {

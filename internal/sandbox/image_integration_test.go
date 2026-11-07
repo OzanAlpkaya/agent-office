@@ -146,6 +146,7 @@ command -v ssh >/dev/null && echo ssh=present || echo ssh=absent
 test -s /etc/ssl/certs/ca-certificates.crt && echo certs=ok
 test -w / && echo rootfs=writable || echo rootfs=ro
 echo "token=$CLAUDE_CODE_OAUTH_TOKEN"
+test -d "$CLAUDE_CODE_TMPDIR" && test -O "$CLAUDE_CODE_TMPDIR" && echo tmpdir=own
 env | grep -c '^AGENT_OFFICE_\(EGRESS\|API\)_SOCKET=' | sed 's/^/init-vars-leaked=/'
 cd /workspace && git init -q -b main && git commit -q --allow-empty -m 'feat: x' \
   && git log -1 --format='author=%an <%ae>%n%(trailers:key=Co-authored-by)' | sed '/^$/d'
@@ -156,7 +157,7 @@ curl -s -o /dev/null -w 'api-noauth=%{http_code}\n' -X POST http://127.0.0.1:808
 	expectLines(t, out,
 		"uid=1000 gid=1000", "CapEff: 0000000000000000", "NoNewPrivs: 1", "net=lo ",
 		"go1.27.3", "0", "local", "git=ok", "rg=ok", "ssh=absent", "certs=ok", "rootfs=ro",
-		"token="+Placeholder, "init-vars-leaked=0",
+		"token="+Placeholder, "tmpdir=own", "init-vars-leaked=0",
 		"author=Ozan <ozan@example.com>", "Co-Authored-By: worker-e2e (agent-office) <noreply@agent-office.invalid>",
 		"api-models=403", "api-noauth=401")
 	kinds := map[EventKind]string{}
