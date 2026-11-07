@@ -95,6 +95,11 @@ derived from Claude Code hooks.
 - Egress allowlist (deny by default, allow listed domains).
 - Secrets passed as environment variables at launch; never written to disk or logs.
 - Agents run with permission prompts disabled only inside the sandbox.
+- One worker image (`internal/sandbox/Containerfile`): Debian slim pinned by digest,
+  ca-certificates, git (no SSH client), curl, ripgrep, and the toolchain the playground needs:
+  Go 1.27.3, no cgo (so no `go test -race` inside workers). The versioned `claude` binary and the
+  static `agent-office` binary are mounted read-only, not baked in. **Per-project toolchains are
+  decided by the stack packs in Phase 6**; until then every worker gets this image.
 
 **Definition of Done**
 - [ ] A worker cannot read files outside its worktree or reach non-allowlisted domains (tested).
@@ -145,13 +150,17 @@ derived from Claude Code hooks.
 **Goal:** Configure agents per tech stack with declarative YAML packs.
 
 **Scope**
-- YAML per tool/stack: allowed domains, skills, MCP servers, env var names (names only, no values).
+- YAML per tool/stack: allowed domains, skills, MCP servers, env var names (names only, no values),
+  and the **toolchain**, i.e. which worker image a project's agents get. This replaces Phase 3's single
+  image, which carries only the playground's Go toolchain (e.g. a Go pack with a C toolchain for
+  `-race`, a Node/TypeScript pack with Node and npm).
 - Schema validation with clear errors; packs applied when launching an agent/sandbox.
 
 **Definition of Done**
 - [ ] At least two example packs (e.g. Go, Node/TypeScript).
 - [ ] Invalid packs are rejected with actionable error messages (tested).
 - [ ] A pack's domains feed the egress allowlist and its env var names feed the secret injection.
+- [ ] A pack selects the worker image (toolchain); projects without a pack get the default image.
 
 ---
 
