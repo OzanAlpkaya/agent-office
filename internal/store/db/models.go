@@ -37,6 +37,19 @@ type Event struct {
 	At        time.Time
 }
 
+type Import struct {
+	ID       int64
+	AgentID  string
+	Trigger  string
+	Outcome  string
+	Branch   string
+	Head     string
+	Previous string
+	Commits  int64
+	Flagged  string
+	At       time.Time
+}
+
 type Project struct {
 	ID        string
 	Name      string

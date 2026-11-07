@@ -207,6 +207,74 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error 
 	return err
 }
 
+const insertImport = `-- name: InsertImport :one
+INSERT INTO imports (agent_id, trigger, outcome, branch, head, previous, commits, flagged, at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, agent_id, "trigger", outcome, branch, head, previous, commits, flagged, at
+`
+
+type InsertImportParams struct {
+	AgentID  string
+	Trigger  string
+	Outcome  string
+	Branch   string
+	Head     string
+	Previous string
+	Commits  int64
+	Flagged  string
+	At       time.Time
+}
+
+func (q *Queries) InsertImport(ctx context.Context, arg InsertImportParams) (Import, error) {
+	row := q.db.QueryRowContext(ctx, insertImport,
+		arg.AgentID,
+		arg.Trigger,
+		arg.Outcome,
+		arg.Branch,
+		arg.Head,
+		arg.Previous,
+		arg.Commits,
+		arg.Flagged,
+		arg.At,
+	)
+	var i Import
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.Trigger,
+		&i.Outcome,
+		&i.Branch,
+		&i.Head,
+		&i.Previous,
+		&i.Commits,
+		&i.Flagged,
+		&i.At,
+	)
+	return i, err
+}
+
+const latestImport = `-- name: LatestImport :one
+SELECT id, agent_id, "trigger", outcome, branch, head, previous, commits, flagged, at FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT 1
+`
+
+func (q *Queries) LatestImport(ctx context.Context, agentID string) (Import, error) {
+	row := q.db.QueryRowContext(ctx, latestImport, agentID)
+	var i Import
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.Trigger,
+		&i.Outcome,
+		&i.Branch,
+		&i.Head,
+		&i.Previous,
+		&i.Commits,
+		&i.Flagged,
+		&i.At,
+	)
+	return i, err
+}
+
 const listEvents = `-- name: ListEvents :many
 SELECT id, agent_id, session_id, kind, hook, tool, detail, state, at FROM events WHERE agent_id = ? ORDER BY id DESC LIMIT ?
 `
@@ -234,6 +302,49 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event
 			&i.Tool,
 			&i.Detail,
 			&i.State,
+			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listImports = `-- name: ListImports :many
+SELECT id, agent_id, "trigger", outcome, branch, head, previous, commits, flagged, at FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT ?
+`
+
+type ListImportsParams struct {
+	AgentID string
+	Limit   int64
+}
+
+func (q *Queries) ListImports(ctx context.Context, arg ListImportsParams) ([]Import, error) {
+	rows, err := q.db.QueryContext(ctx, listImports, arg.AgentID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Import{}
+	for rows.Next() {
+		var i Import
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.Trigger,
+			&i.Outcome,
+			&i.Branch,
+			&i.Head,
+			&i.Previous,
+			&i.Commits,
+			&i.Flagged,
 			&i.At,
 		); err != nil {
 			return nil, err

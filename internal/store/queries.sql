@@ -75,3 +75,14 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListEvents :many
 SELECT * FROM events WHERE agent_id = ? ORDER BY id DESC LIMIT ?;
+
+-- name: InsertImport :one
+INSERT INTO imports (agent_id, trigger, outcome, branch, head, previous, commits, flagged, at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: LatestImport :one
+SELECT * FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT 1;
+
+-- name: ListImports :many
+SELECT * FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT ?;
