@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-11-07
 - **Amends:** ADR 0017 ("workers that reported are gone, so follow-up work is a new sub-task")
+- **Amended:** 2026-11-07 (Phase 6, decided by Ozan): a follow-up round needs a new commit or an
+  explicit "no change needed" (below)
 
 ## Context
 
@@ -57,6 +59,22 @@ Option 3 and option 2.
     starts.
   - Workspace removed, or no free slot after waiting: `refused`, shown with the reason; "Send to
     worker" retries.
+- **Answering a round** (added in Phase 6, after the Phase 6 e2e saw haiku call `report_done`
+  without committing the review's fix, which the engine accepted because the branch already had
+  the first round's commit). The relaunched worker carries its round: the PR, the review and the
+  head the review was about. Until it answers:
+  - `report_done` is **refused while the branch is still at that head**, with a message that says
+    to commit, or to use `report_no_change`.
+  - **`report_no_change(reason)`** (workers only, listed for every worker but refused outside a
+    round) answers without a commit: the workspace must be clean and the branch at the reviewed
+    head. The reason (1–2 000 characters) is stored on the review (`reviews.reply`, migration
+    0006), posted on the PR as a conversation comment (issues API; the token's Pull requests write
+    permission covers it), neutralized and quoted as the agent's words, and the task goes back to
+    `review`. No new review starts, since the head did not move; the round counts as used. A
+    lead-managed worker's lead gets the reason as a message. The comment is posted once, never
+    retried; if posting fails, the reason stays in agent-office (shown as "not posted").
+  - Both answers end the round, so a second answer is refused. The round lives with the running
+    agent: a daemon restart ends the agent, and "Send to worker" starts a new round.
 - **Rounds:** at most `--review-rounds` (default 2, `AGENT_OFFICE_REVIEW_ROUNDS`, 0–5) follow-ups
   start automatically per PR; later actionable reviews are `skipped` and wait for the user. The UI's
   **"Send to worker"** (`POST /api/pull-requests/{id}/follow-up` with a review id) works for any

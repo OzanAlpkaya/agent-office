@@ -58,7 +58,7 @@ flowchart LR
 | `agent` | Adapter per agent CLI: command line, env, settings file, and translating CLI-specific hook payloads into common events. |
 | `engine` | Owns the lifecycle of agents, tasks, worktrees and messages. All state changes go through it. |
 | `hooks` | Accepts forwarded hook events from the per-agent sockets and runs the agent state machine. |
-| `mcp` | Team MCP server (go-sdk v1.8.0): `create_task`, `assign_task`, `list_tasks`, `send_message`, `report_done`, `request_access` over a `Team` interface the engine implements; per-agent socket listener; the `agent-office mcp` stdio bridge (ADR 0006). |
+| `mcp` | Team MCP server (go-sdk v1.8.0): `create_task`, `assign_task`, `list_tasks`, `send_message`, `report_done`, `request_access`, `submit_review` (reviewers), `report_no_change` (workers in a review follow-up) over a `Team` interface the engine implements; per-agent socket listener; the `agent-office mcp` stdio bridge (ADR 0006). |
 | `store` | SQLite via modernc + sqlc, forward-only goose migrations; refuses schemas newer than the binary and backs up before migrating (ADR 0004, 0011, 0012, 0013). |
 | `git` | git CLI wrapper: worktrees, branches, branch-name slugs (ADR 0009, 0010). |
 | `sandbox` | Starts workers in rootless Podman (`--network none`); per-agent egress proxy and credential-injecting API proxy; token file reader (ADR 0007, 0014–0016). |
@@ -202,7 +202,9 @@ sequenceDiagram
   worker (a still-running one is ended first, once idle): same agent, workspace and branch, new
   session, the review quoted in its prompt; at most
   `--review-rounds` (default 2) automatic rounds per PR, then "Send to worker" by hand (ADR 0022).
-  Messages are only delivered to the session they were queued for.
+  Messages are only delivered to the session they were queued for. In a follow-up round,
+  `report_done` is refused until the branch has a new commit; a worker that finds no change needed
+  calls `report_no_change(reason)`, which agent-office posts on the PR as a comment.
 - Polling: every 30 s while a review or checks are pending, every 2 minutes otherwise; no webhooks
   (the daemon is loopback-only).
 - `--github` needs sandboxed agents. Pushes wait for the user's acceptance of flagged commits and of
@@ -278,7 +280,7 @@ events: logged, stored (rate-limited), pushed to the UI live and listed by
 | **Message** | id, from_agent_id (empty: agent-office), to_agent_id, body, created_at, delivered_at, delivery (stop_hook / pty) | Claimed once, then delivered (ADR 0018). |
 | **AccessRequest** | id, agent_id, kind (domain; secret / path reserved), value, reason, status (pending / approved / denied / expired), decided_at, decided_by | A human decides in the UI; a grant lasts for that agent's run (ADR 0019). |
 | **PullRequest** | id, task_id, agent_id (the worker), branch, base, number, url, state (pending / open / merged / closed), head, checks, pending / accepted flagged commits, rounds, error | One per pushed branch (migration 0005, ADR 0020). |
-| **Review** | id, pr_id, reviewer (internal / coderabbit / human), head, status (queued / running / done / failed / timed_out), verdict, summary, comments, agent_id, github_review_id, followup | One per reviewed head; people's reviews are recorded, never acted on automatically (ADR 0021, 0022). |
+| **Review** | id, pr_id, reviewer (internal / coderabbit / human), head, status (queued / running / done / failed / timed_out), verdict, summary, comments, agent_id, github_review_id, followup, reply, reply_url | One per reviewed head; people's reviews are recorded, never acted on automatically (ADR 0021, 0022). |
 | **Event** | id, agent_id, session_id, kind, at, summary | Hook events, reduced to non-sensitive fields. |
 
 ## Threat model (first draft, updated in Phases 3 and 4)
