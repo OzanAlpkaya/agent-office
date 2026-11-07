@@ -134,7 +134,12 @@ type ghState struct {
 	lastPoll map[int64]time.Time
 	backoff  time.Time // rate limited until
 	kick     chan struct{}
+	messaged map[string][]messagedReview // agent id -> reviews sent to it as a message
 }
+
+// messagedReview is a review sent to a running worker as a message; if the
+// worker exits before it is delivered, the worker is relaunched with it.
+type messagedReview struct{ msgID, prID, reviewID int64 }
 
 // noReviewer is --reviewer none.
 type noReviewer struct{}
@@ -169,7 +174,7 @@ func (e *Engine) startGitHub(ctx context.Context) error {
 		g.CodeRabbitLogin = review.CodeRabbitLogin
 	}
 	st := &ghState{login: g.CodeRabbitLogin, locks: map[string]*sync.Mutex{}, lastPoll: map[int64]time.Time{},
-		kick: make(chan struct{}, 1)}
+		kick: make(chan struct{}, 1), messaged: map[string][]messagedReview{}}
 	switch g.Reviewer {
 	case review.NameInternal, "":
 		g.Reviewer = review.NameInternal
@@ -888,9 +893,13 @@ func (e *Engine) followUp(ctx context.Context, row db.PullRequest, rv db.Review)
 			}
 		}
 		body := truncateRunes(text+"\n\nAddress it on your branch, commit, then call report_done again.", MaxMessageLen)
-		if _, err := e.sendMessage(ctx, "", row.AgentID, body, false); err != nil {
+		m, err := e.sendMessage(ctx, "", row.AgentID, body, false)
+		if err != nil {
 			return "", err
 		}
+		e.gh.mu.Lock()
+		e.gh.messaged[row.AgentID] = append(e.gh.messaged[row.AgentID], messagedReview{msgID: m.ID, prID: row.ID, reviewID: rv.ID})
+		e.gh.mu.Unlock()
 		e.log.Info("review sent to the running worker", "agent_id", row.AgentID, "pr", row.Number, "review_id", rv.ID)
 		return FollowupMessaged, nil
 	}
@@ -912,6 +921,40 @@ func (e *Engine) followUp(ctx context.Context, row db.PullRequest, rv db.Review)
 			return "", ctx.Err()
 		case <-time.After(500 * time.Millisecond):
 		}
+	}
+}
+
+// followupAfterExit relaunches a worker that exited before a review sent to
+// it as a message was delivered (ADR 0022): the message is never delivered to
+// the next session, so the review goes into its prompt instead.
+func (e *Engine) followupAfterExit(agentID string) {
+	e.gh.mu.Lock()
+	pending := e.gh.messaged[agentID]
+	delete(e.gh.messaged, agentID)
+	e.gh.mu.Unlock()
+	for _, p := range pending {
+		e.background(e.opts.GitHub.SlotWait+time.Minute, func(ctx context.Context) {
+			m, err := e.q.GetMessage(ctx, p.msgID)
+			if err != nil || m.DeliveredAt.Valid {
+				return
+			}
+			row, err := e.getPR(ctx, p.prID)
+			if err != nil || row.State != PROpen {
+				return
+			}
+			rv, err := e.q.GetReview(ctx, p.reviewID)
+			if err != nil || rv.Head != row.Head || rv.Followup != FollowupMessaged {
+				return
+			}
+			e.log.Info("worker exited before the review reached it; relaunching it", "agent_id", agentID, "pr", row.Number)
+			outcome, err := e.followUp(ctx, row, rv)
+			msg := ""
+			if err != nil {
+				outcome, msg = FollowupRefused, firstLine(err.Error())
+			}
+			e.setFollowup(ctx, rv, outcome, msg)
+			e.publishPRByID(ctx, row.ID)
+		})
 	}
 }
 

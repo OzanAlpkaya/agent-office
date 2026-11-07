@@ -42,6 +42,7 @@ var (
 	ErrFlagged        = errors.New("the branch has flagged commits; accept them before pushing")
 	ErrNoGitHub       = errors.New("GitHub is not enabled; start the daemon with --github")
 	ErrUpstream       = errors.New("git or GitHub failed") // push or GitHub API errors (ADR 0020)
+	ErrShuttingDown   = errors.New("the daemon is shutting down")
 )
 
 // Exit reasons recorded for agents.
@@ -175,6 +176,7 @@ type agentProc struct {
 	mcp        *mcp.Listener // team MCP socket; nil once the agent exited
 	mcpConfig  string        // host mode: the --mcp-config file
 	reviewID   int64         // reviewers: the review they were started for (ADR 0021)
+	since      time.Time     // this session's start: older messages are not delivered to it (ADR 0022)
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
 	hasPrompt     bool        // started with an initial prompt
@@ -207,6 +209,7 @@ type Engine struct {
 
 	gh       *ghState // GitHub integration; nil when off (ADR 0020)
 	stopPoll context.CancelFunc
+	closing  bool // Shutdown began: no agent starts any more; guarded by mu
 }
 
 // New validates opts, registers the repository as a project, reconciles state
@@ -402,6 +405,10 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		return AgentInfo{}, fmt.Errorf("%w: a lead needs a goal: start it on a task", ErrInvalid)
 	}
 	e.mu.Lock()
+	if e.closing {
+		e.mu.Unlock()
+		return AgentInfo{}, ErrShuttingDown
+	}
 	if e.runningLocked()+e.starting >= e.opts.MaxAgents {
 		e.mu.Unlock()
 		return AgentInfo{}, ErrTooManyAgents
@@ -566,7 +573,7 @@ type launchInfo struct {
 // registerLocked adds a freshly launched agent, or replaces the exited one a
 // relaunch started again (keeping its place, start time and last import).
 func (e *Engine) registerLocked(a *agentProc, l launchInfo) {
-	a.reviewID = l.reviewID
+	a.reviewID, a.since = l.reviewID, l.started
 	if l.prev != nil {
 		a.info.StartedAt, a.info.LastImport = l.prev.info.StartedAt, l.prev.info.LastImport
 		a.info.WorktreeStatus = l.prev.info.WorktreeStatus
@@ -715,6 +722,9 @@ func (e *Engine) watch(a *agentProc) {
 	}
 	if a.reviewID != 0 {
 		e.reviewerExited(a.reviewID, a.info.ID)
+	}
+	if e.gh != nil {
+		e.followupAfterExit(a.info.ID)
 	}
 }
 
@@ -1045,6 +1055,7 @@ func (e *Engine) Shutdown() {
 		e.stopPoll() // first, so no reviewer or follow-up starts while agents stop
 	}
 	e.mu.Lock()
+	e.closing = true
 	ids := slices.Clone(e.order)
 	e.mu.Unlock()
 	var wg sync.WaitGroup

@@ -12,10 +12,10 @@ import (
 )
 
 const claimMessages = `-- name: ClaimMessages :many
-UPDATE messages SET delivered_at = ?, delivery = ?
+UPDATE messages SET delivered_at = ?1, delivery = ?2
 WHERE id IN (
     SELECT m.id FROM messages m
-    WHERE m.to_agent_id = ? AND m.delivered_at IS NULL
+    WHERE m.to_agent_id = ?3 AND m.delivered_at IS NULL AND m.created_at >= ?4
     ORDER BY m.id LIMIT 10
 )
 RETURNING id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery
@@ -25,11 +25,19 @@ type ClaimMessagesParams struct {
 	DeliveredAt sql.NullTime
 	Delivery    string
 	ToAgentID   string
+	Since       time.Time
 }
 
-// Hands out a recipient's oldest undelivered messages exactly once (ADR 0018).
+// Hands out a recipient's oldest undelivered messages exactly once (ADR 0018), only those
+// queued during its current session: a relaunched agent (ADR 0022) never gets messages
+// meant for its previous session.
 func (q *Queries) ClaimMessages(ctx context.Context, arg ClaimMessagesParams) ([]Message, error) {
-	rows, err := q.db.QueryContext(ctx, claimMessages, arg.DeliveredAt, arg.Delivery, arg.ToAgentID)
+	rows, err := q.db.QueryContext(ctx, claimMessages,
+		arg.DeliveredAt,
+		arg.Delivery,
+		arg.ToAgentID,
+		arg.Since,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -135,11 +143,16 @@ func (q *Queries) CountPendingAccessRequests(ctx context.Context, agentID string
 }
 
 const countPendingMessages = `-- name: CountPendingMessages :one
-SELECT count(*) FROM messages WHERE to_agent_id = ? AND delivered_at IS NULL
+SELECT count(*) FROM messages WHERE to_agent_id = ? AND delivered_at IS NULL AND created_at >= ?
 `
 
-func (q *Queries) CountPendingMessages(ctx context.Context, toAgentID string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countPendingMessages, toAgentID)
+type CountPendingMessagesParams struct {
+	ToAgentID string
+	CreatedAt time.Time
+}
+
+func (q *Queries) CountPendingMessages(ctx context.Context, arg CountPendingMessagesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countPendingMessages, arg.ToAgentID, arg.CreatedAt)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -439,6 +452,26 @@ func (q *Queries) GetAccessRequest(ctx context.Context, id int64) (AccessRequest
 		&i.CreatedAt,
 		&i.DecidedAt,
 		&i.DecidedBy,
+	)
+	return i, err
+}
+
+const getMessage = `-- name: GetMessage :one
+SELECT id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery FROM messages WHERE id = ?
+`
+
+func (q *Queries) GetMessage(ctx context.Context, id int64) (Message, error) {
+	row := q.db.QueryRowContext(ctx, getMessage, id)
+	var i Message
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.FromAgentID,
+		&i.ToAgentID,
+		&i.Body,
+		&i.CreatedAt,
+		&i.DeliveredAt,
+		&i.Delivery,
 	)
 	return i, err
 }

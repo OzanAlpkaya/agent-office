@@ -18,6 +18,8 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string) (AgentInfo, er
 	a, ok := e.agents[id]
 	var err error
 	switch {
+	case e.closing:
+		err = ErrShuttingDown
 	case !ok:
 		err = fmt.Errorf("agent %s: %w", id, ErrNotFound)
 	case a.running() || a.status.State != hooks.Exited:

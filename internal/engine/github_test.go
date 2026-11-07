@@ -39,11 +39,22 @@ func newGHFixture(t *testing.T, tweak func(o *GitHubOptions)) *ghFixture {
 	f.opts.enterDelay = 20 * time.Millisecond
 	gitIn(t, f.repo, "config", "user.name", "Test User")
 	gitIn(t, f.repo, "config", "user.email", "test@example.com")
+	g, srv, bare := withGitHub(t, f)
+	if tweak != nil {
+		tweak(g)
+	}
+	e := f.engine(t)
+	return &ghFixture{f: f, e: e, log: record(t, e), srv: srv, bare: bare, team: e.Team()}
+}
+
+// withGitHub turns the GitHub loop on for f: a local bare repository as the
+// push remote and the GitHub API fake.
+func withGitHub(t *testing.T, f *fixture) (*GitHubOptions, *githubtest.Server, string) {
+	t.Helper()
 	bare := filepath.Join(t.TempDir(), "remote.git")
 	gitIn(t, f.repo, "init", "-q", "--bare", bare)
 	gitIn(t, f.repo, "remote", "add", "origin", bare)
 	gitIn(t, f.repo, "push", "-q", "origin", "main")
-
 	srv := githubtest.New(t, "octo", "shelf")
 	srv.HeadOf = func(branch string) string {
 		out, err := os.ReadFile(filepath.Join(bare, "refs", "heads", branch))
@@ -67,12 +78,8 @@ func newGHFixture(t *testing.T, tweak func(o *GitHubOptions)) *ghFixture {
 	}
 	g := &GitHubOptions{Client: client, Remote: "origin", Base: "main", Reviewer: review.NameInternal, Rounds: 2,
 		PollFast: 50 * time.Millisecond, PollSlow: 200 * time.Millisecond, SlotWait: 5 * time.Second}
-	if tweak != nil {
-		tweak(g)
-	}
 	f.opts.GitHub = g
-	e := f.engine(t)
-	return &ghFixture{f: f, e: e, log: record(t, e), srv: srv, bare: bare, team: e.Team()}
+	return g, srv, bare
 }
 
 // worker starts a host worker on a new task, lets it commit and report done.
@@ -535,4 +542,37 @@ func TestReviewPath(t *testing.T) {
 			t.Errorf("%q accepted", in)
 		}
 	}
+}
+
+// A review sent as a message to a running worker that exits before it is
+// delivered: the worker is relaunched with the review in its prompt, and the
+// stale message is never delivered to the new session (ADR 0018, 0022).
+func TestReviewMessageMissedOnExitRelaunches(t *testing.T) {
+	gf := newGHFixture(t, nil)
+	ctx := context.Background()
+	_, w := gf.reportedWorker(t, "Add tags", "done")
+	gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return p.State == PROpen })
+	typeLine(t, gf.e, w.ID, "busy") // a turn that keeps running: no delivery
+	gf.log.wait(t, 5*time.Second, agentState(w.ID, hooks.Working))
+	r := gf.reviewer(t, 1)
+	gf.submit(t, r, mcp.SubmitReviewInput{Verdict: review.VerdictChangesRequested, Summary: "rename x"})
+	gf.waitPR(t, 5*time.Second, func(p *PullRequest) bool { return len(p.Reviews) == 1 && p.Reviews[0].Followup == FollowupMessaged })
+	typeLine(t, gf.e, w.ID, "exit")
+
+	gf.log.wait(t, 10*time.Second, func(u Update) bool {
+		return u.Type == "agent" && u.Agent.ID == w.ID && u.Agent.SessionID != w.SessionID && u.Agent.State == string(hooks.Idle)
+	})
+	screen(t, gf.e, w.ID, "rename x")
+	gf.waitPR(t, 5*time.Second, func(p *PullRequest) bool { return len(p.Reviews) == 1 && p.Reviews[0].Followup == FollowupStarted })
+	typeLine(t, gf.e, w.ID, "turn") // the new session finishes a turn and goes idle
+	time.Sleep(500 * time.Millisecond)
+	msgs := messagesTo(t, gf.e, w.ID)
+	if len(msgs) != 1 || msgs[0].DeliveredAt != nil {
+		t.Fatalf("the old session's message was delivered to the new one: %+v", msgs)
+	}
+	// Messages queued for the new session are delivered as usual.
+	if _, err := gf.e.sendMessage(ctx, "", w.ID, "hello again", false); err != nil {
+		t.Fatal(err)
+	}
+	screen(t, gf.e, w.ID, "hello again")
 }

@@ -102,17 +102,22 @@ VALUES (?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: ClaimMessages :many
--- Hands out a recipient's oldest undelivered messages exactly once (ADR 0018).
-UPDATE messages SET delivered_at = ?, delivery = ?
+-- Hands out a recipient's oldest undelivered messages exactly once (ADR 0018), only those
+-- queued during its current session: a relaunched agent (ADR 0022) never gets messages
+-- meant for its previous session.
+UPDATE messages SET delivered_at = sqlc.arg(delivered_at), delivery = sqlc.arg(delivery)
 WHERE id IN (
     SELECT m.id FROM messages m
-    WHERE m.to_agent_id = ? AND m.delivered_at IS NULL
+    WHERE m.to_agent_id = sqlc.arg(to_agent_id) AND m.delivered_at IS NULL AND m.created_at >= sqlc.arg(since)
     ORDER BY m.id LIMIT 10
 )
 RETURNING *;
 
 -- name: CountPendingMessages :one
-SELECT count(*) FROM messages WHERE to_agent_id = ? AND delivered_at IS NULL;
+SELECT count(*) FROM messages WHERE to_agent_id = ? AND delivered_at IS NULL AND created_at >= ?;
+
+-- name: GetMessage :one
+SELECT * FROM messages WHERE id = ?;
 
 -- name: CountMessagesSentSince :one
 SELECT count(*) FROM messages WHERE from_agent_id = ? AND created_at >= ?;

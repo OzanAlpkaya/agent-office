@@ -166,7 +166,8 @@ func (e *Engine) stopAfterReportLocked(a *agentProc) {
 
 // claimLocked hands out the agent's undelivered messages exactly once.
 func (e *Engine) claimLocked(ctx context.Context, a *agentProc, via string, log *slog.Logger) []Message {
-	rows, err := e.q.ClaimMessages(ctx, db.ClaimMessagesParams{DeliveredAt: nullTime(now()), Delivery: via, ToAgentID: a.info.ID})
+	rows, err := e.q.ClaimMessages(ctx, db.ClaimMessagesParams{DeliveredAt: nullTime(now()), Delivery: via, ToAgentID: a.info.ID,
+		Since: a.since})
 	if err != nil {
 		log.Error("claim messages", "err", err)
 		return nil
@@ -188,7 +189,7 @@ func (e *Engine) scheduleDeliveryLocked(ctx context.Context, a *agentProc) {
 	if a.deliverTimer != nil || !a.running() || a.stopAfterTurn {
 		return
 	}
-	if n, err := e.q.CountPendingMessages(ctx, a.info.ID); err != nil || n == 0 {
+	if n, err := e.q.CountPendingMessages(ctx, db.CountPendingMessagesParams{ToAgentID: a.info.ID, CreatedAt: a.since}); err != nil || n == 0 {
 		return
 	}
 	e.scheduleAfterLocked(a, e.opts.deliverySettle)
