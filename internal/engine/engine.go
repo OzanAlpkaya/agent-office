@@ -183,17 +183,18 @@ type agentProc struct {
 	term       *terminal.Session // nil for agents from a previous daemon run
 	listener   *hooks.Listener
 	settings   string
-	exited     chan struct{} // closed by watch after the exit is recorded
-	afterExit  chan struct{} // closed by watch after the exit import (sandbox); nil for agents of a previous run
-	exitReason string        // set before stopping on purpose
-	busy       bool          // a remove/discard is in progress
-	sandbox    *sandboxRes   // nil in host mode and once the worker is gone
-	events     eventLimit    // sandbox event rate limit
-	importMu   sync.Mutex    // serializes imports and removal of a sandboxed agent
-	mcp        *mcp.Listener // team MCP socket; nil once the agent exited
-	mcpConfig  string        // host mode: the --mcp-config file
-	reviewID   int64         // reviewers: the review they were started for (ADR 0021)
-	since      time.Time     // this session's start: older messages are not delivered to it (ADR 0022)
+	exited     chan struct{}  // closed by watch after the exit is recorded
+	afterExit  chan struct{}  // closed by watch after the exit import (sandbox); nil for agents of a previous run
+	exitReason string         // set before stopping on purpose
+	busy       bool           // a remove/discard is in progress
+	sandbox    *sandboxRes    // nil in host mode and once the worker is gone
+	events     eventLimit     // sandbox event rate limit
+	importMu   sync.Mutex     // serializes imports and removal of a sandboxed agent
+	mcp        *mcp.Listener  // team MCP socket; nil once the agent exited
+	mcpConfig  string         // host mode: the --mcp-config file
+	reviewID   int64          // reviewers: the review they were started for (ADR 0021)
+	followup   *followupRound // workers relaunched for a review, until they report (ADR 0022); guarded by Engine.mu
+	since      time.Time      // this session's start: older messages are not delivered to it (ADR 0022)
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
 	hasPrompt     bool        // started with an initial prompt
@@ -587,15 +588,16 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 type launchInfo struct {
 	id, sid, role, branch, path, base, taskID string
 	started                                   time.Time
-	prompt                                    string     // initial prompt; empty for none
-	reviewID                                  int64      // reviewers (ADR 0021)
-	prev                                      *agentProc // a relaunch: the exited agent it replaces (ADR 0022)
+	prompt                                    string         // initial prompt; empty for none
+	reviewID                                  int64          // reviewers (ADR 0021)
+	prev                                      *agentProc     // a relaunch: the exited agent it replaces (ADR 0022)
+	followup                                  *followupRound // a relaunch to address a review (ADR 0022)
 }
 
 // registerLocked adds a freshly launched agent, or replaces the exited one a
 // relaunch started again (keeping its place, start time and last import).
 func (e *Engine) registerLocked(a *agentProc, l launchInfo) {
-	a.reviewID, a.since = l.reviewID, l.started
+	a.reviewID, a.since, a.followup = l.reviewID, l.started, l.followup
 	if l.prev != nil {
 		a.info.StartedAt, a.info.LastImport = l.prev.info.StartedAt, l.prev.info.LastImport
 		a.info.WorktreeStatus = l.prev.info.WorktreeStatus

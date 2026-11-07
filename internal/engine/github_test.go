@@ -684,3 +684,110 @@ func TestRestartReoffersFollowup(t *testing.T) {
 		t.Fatalf("after restart %+v %v", prs, err)
 	}
 }
+
+// followupWorker reports a worker's task, has the reviewer request changes and
+// waits until the original worker is relaunched with the review (ADR 0022).
+func (gf *ghFixture) followupWorker(t *testing.T) (Task, AgentInfo) {
+	t.Helper()
+	task, w := gf.reportedWorker(t, "Add tags", "Added tags.")
+	gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return p.State == PROpen })
+	if err := gf.e.Stop(w.ID); err != nil {
+		t.Fatal(err)
+	}
+	r := gf.reviewer(t, 1)
+	gf.submit(t, r, mcp.SubmitReviewInput{Verdict: review.VerdictChangesRequested, Summary: "Add a nil check."})
+	gf.log.wait(t, 10*time.Second, func(u Update) bool {
+		return u.Type == "agent" && u.Agent.ID == w.ID && u.Agent.HasTerminal && u.Agent.SessionID != w.SessionID &&
+			u.Agent.State == string(hooks.Idle)
+	})
+	scr := screen(t, gf.e, w.ID, "Add a nil check.")
+	if !strings.Contains(scr, "report_no_change") || !strings.Contains(scr, "refused until the branch has a new commit") {
+		t.Fatalf("follow-up prompt does not explain the two ways to answer:\n%s", scr)
+	}
+	return task, w
+}
+
+// In a follow-up round, report_done needs a new commit; report_no_change
+// answers without one, posts the reason on the pull request and starts no
+// new review.
+func TestFollowupNoChangeNeeded(t *testing.T) {
+	gf := newGHFixture(t, nil)
+	ctx := context.Background()
+	task, w := gf.followupWorker(t)
+
+	_, err := gf.team.ReportDone(ctx, w.ID, mcp.ReportDoneInput{Summary: "Nothing to do"})
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "no new commit since the review of pull request #1") ||
+		!strings.Contains(err.Error(), "report_no_change") {
+		t.Fatalf("report_done without a new commit: %v", err)
+	}
+	if tk, _ := gf.e.getTask(ctx, task.ID); tk.Status != StatusInProgress {
+		t.Fatalf("a refused report moved the task to %s", tk.Status)
+	}
+
+	out, err := gf.team.ReportNoChange(ctx, w.ID, mcp.ReportNoChangeInput{
+		Reason: "The nil check is in store.go:12 already. cc @octocat, fixes #3"})
+	if err != nil || !out.Posted || out.Status != StatusReview || !strings.Contains(out.URL, "#issuecomment-") {
+		t.Fatalf("report_no_change %+v %v", out, err)
+	}
+	comments := gf.srv.CommentsOf(1)
+	if len(comments) != 1 || !strings.Contains(comments[0], "made no change") || !strings.Contains(comments[0], "> The nil check") ||
+		strings.Contains(comments[0], "@octocat") || strings.Contains(comments[0], "fixes #3") {
+		t.Fatalf("PR comment not posted, quoted or neutralized: %q", comments)
+	}
+	if tk, _ := gf.e.getTask(ctx, task.ID); tk.Status != StatusReview {
+		t.Fatalf("task %s after report_no_change", tk.Status)
+	}
+	p := gf.waitPR(t, 5*time.Second, func(p *PullRequest) bool { return len(p.Reviews) == 1 && p.Reviews[0].ReplyURL != "" })
+	if p.Reviews[0].Reply != "The nil check is in store.go:12 already. cc @octocat, fixes #3" || p.Rounds != 1 {
+		t.Fatalf("review reply %+v", p.Reviews[0])
+	}
+	time.Sleep(300 * time.Millisecond) // the head did not move: no new review
+	if n := len(gf.srv.ReviewsOf(1)); n != 1 {
+		t.Fatalf("%d reviews posted, want only the first", n)
+	}
+	if _, err := gf.team.ReportNoChange(ctx, w.ID, mcp.ReportNoChangeInput{Reason: "again"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a second answer to the same round: %v", err)
+	}
+	if n := len(gf.srv.CommentsOf(1)); n != 1 {
+		t.Fatalf("%d comments", n)
+	}
+}
+
+// report_no_change is only for a follow-up round still at the reviewed head;
+// a follow-up with a new commit reports with report_done as before.
+func TestReportNoChangeRefusals(t *testing.T) {
+	gf := newGHFixture(t, nil)
+	ctx := context.Background()
+	_, w := gf.reportedWorker(t, "Add tags", "Added tags.")
+	if _, err := gf.team.ReportNoChange(ctx, w.ID, mcp.ReportNoChangeInput{Reason: "no"}); !errors.Is(err, ErrInvalid) ||
+		!strings.Contains(err.Error(), "there is none open for you") {
+		t.Fatalf("outside a follow-up round: %v", err)
+	}
+	gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return p.State == PROpen })
+	if err := gf.e.Stop(w.ID); err != nil {
+		t.Fatal(err)
+	}
+	r := gf.reviewer(t, 1)
+	gf.submit(t, r, mcp.SubmitReviewInput{Verdict: review.VerdictChangesRequested, Summary: "Add a nil check."})
+	gf.log.wait(t, 10*time.Second, func(u Update) bool {
+		return u.Type == "agent" && u.Agent.ID == w.ID && u.Agent.SessionID != w.SessionID && u.Agent.State == string(hooks.Idle)
+	})
+	if _, err := gf.team.ReportNoChange(ctx, r.ID, mcp.ReportNoChangeInput{Reason: "no"}); !errors.Is(err, ErrForbidden) &&
+		!errors.Is(err, ErrInvalid) {
+		t.Fatalf("a reviewer: %v", err)
+	}
+	typeLine(t, gf.e, w.ID, "commit-more")
+	screen(t, gf.e, w.ID, "\ncommitted more\n")
+	if _, err := gf.team.ReportNoChange(ctx, w.ID, mcp.ReportNoChangeInput{Reason: "no"}); !errors.Is(err, ErrInvalid) ||
+		!strings.Contains(err.Error(), "new commits since the review") {
+		t.Fatalf("with a new commit: %v", err)
+	}
+	if _, err := gf.team.ReportDone(ctx, w.ID, mcp.ReportDoneInput{Summary: "Added the nil check"}); err != nil {
+		t.Fatalf("report_done with a new commit: %v", err)
+	}
+	head := gitIn(t, gf.f.repo, "rev-parse", w.Branch)
+	gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return p.Head == head })
+	if n := len(gf.srv.CommentsOf(1)); n != 0 {
+		t.Fatalf("%d comments posted", n)
+	}
+}
