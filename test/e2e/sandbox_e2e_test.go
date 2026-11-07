@@ -3,8 +3,10 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 )
 
 type importInfo struct {
@@ -26,10 +30,13 @@ type importInfo struct {
 	} `json:"flagged"`
 }
 
-// TestSandboxEndToEnd runs one real Claude Code agent in a rootless Podman
-// worker (Phase 3): it creates and commits a file with permission prompts off,
-// the commit is imported into the repository with the user's identity and the
-// agent's trailer, and stop/remove leave nothing behind.
+// TestSandboxEndToEnd runs real Claude Code agents in rootless Podman workers
+// (Phase 3). Agent A creates and commits a file with permission prompts off;
+// the commit is imported with the user's identity and the agent's trailer.
+// The daemon is then SIGKILLed: the restart removes A's orphaned container and
+// imports its work. Agent B covers stop. The OAuth token never appears in
+// podman inspect, the workers, the daemon log, the data dir or the repository,
+// and removal leaves nothing behind.
 //
 // It works on a throwaway clone of AO_E2E_REPO, because sandboxed starts add
 // a base ref and imported branches to the repository. Requirements beyond the
@@ -45,6 +52,18 @@ func TestSandboxEndToEnd(t *testing.T) {
 			t.Skipf("%s not on PATH", bin)
 		}
 	}
+	tokenPath := os.Getenv(sandbox.TokenFileEnv)
+	if tokenPath == "" {
+		var err error
+		if tokenPath, err = sandbox.DefaultTokenFile(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	secret, err := sandbox.ReadTokenFile(tokenPath)
+	if err != nil {
+		t.Skipf("no usable OAuth token file: %v", err) // the error never contains the token
+	}
+	token := secret.Reveal()
 	model := os.Getenv("AO_E2E_MODEL")
 	if model == "" {
 		model = "haiku"
@@ -71,13 +90,17 @@ func TestSandboxEndToEnd(t *testing.T) {
 			"--model", model, "--log-level", "debug", "--sandbox", "podman"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
-	var agentID string
+	var agentIDs []string
 	t.Cleanup(func() {
-		if agentID != "" && d.cmd != nil {
-			d.do("POST", "/api/agents/"+agentID+"/stop", nil)
+		if d.cmd != nil {
+			for _, id := range agentIDs {
+				d.do("POST", "/api/agents/"+id+"/stop", nil)
+			}
 		}
 		d.signal(syscall.SIGTERM)
-		_ = exec.Command("podman", "rm", "-f", "ao-"+agentID).Run()
+		for _, id := range agentIDs {
+			_ = exec.Command("podman", "rm", "-f", "ao-"+id).Run()
+		}
 		if t.Failed() {
 			if logData, err := os.ReadFile(d.logPath); err == nil {
 				t.Logf("daemon log tail:\n%s", tail(string(logData), 60))
@@ -102,7 +125,7 @@ func TestSandboxEndToEnd(t *testing.T) {
 		WorkspaceKind string `json:"workspace_kind"`
 	}
 	d.json("POST", "/api/agents", map[string]string{"task_id": task.ID}, 201, &a)
-	agentID = a.ID
+	agentIDs = append(agentIDs, a.ID)
 	if a.Sandbox != "podman" || a.WorkspaceKind != "clone" {
 		t.Fatalf("agent %+v", a)
 	}
@@ -138,26 +161,96 @@ func TestSandboxEndToEnd(t *testing.T) {
 		t.Errorf("the user's checkout changed: %q", st)
 	}
 
-	// Stop: the container goes away; removal keeps the branch with commits.
-	d.json("POST", "/api/agents/"+a.ID+"/stop", nil, 200, nil)
-	if out, _ := exec.Command("podman", "ps", "-aq", "--filter", "label=io.agent-office.agent="+a.ID).Output(); len(strings.TrimSpace(string(out))) != 0 {
+	// The token reaches the API through the daemon's proxy only.
+	inspect, err := exec.Command("podman", "inspect", "ao-"+a.ID).Output()
+	if err != nil || !bytes.Contains(inspect, []byte("CLAUDE_CODE_OAUTH_TOKEN="+sandbox.Placeholder)) {
+		t.Fatalf("podman inspect without the placeholder env: %v", err)
+	}
+	noToken(t, "podman inspect", inspect, token)
+	inside, err := exec.Command("podman", "exec", "ao-"+a.ID, "sh", "-c",
+		`cat /proc/[0-9]*/environ /proc/[0-9]*/cmdline 2>/dev/null; find /workspace /config /tmp /run -type f -exec cat {} + 2>/dev/null; true`).Output()
+	if err != nil || !bytes.Contains(inside, []byte("sandbox-init")) || !bytes.Contains(inside, []byte("claude")) {
+		t.Fatalf("worker processes not read: %v", err)
+	}
+	noToken(t, "the worker's processes, env and files (including Claude Code's config and transcripts)", inside, token)
+
+	// Hard crash: the worker outlives the daemon; the restart removes it and
+	// imports the agent's work.
+	d.signal(syscall.SIGKILL)
+	time.Sleep(2 * time.Second)
+	if !containerExists(a.ID) {
+		t.Log("the worker container ended with the daemon; the restart has no orphan to remove")
+	}
+	d.start()
+	var after agentInfoImport
+	deadline := time.Now().Add(time.Minute)
+	for {
+		var list []agentInfoImport
+		d.json("GET", "/api/agents", nil, 200, &list)
+		if len(list) == 1 && list[0].LastImport != nil && list[0].LastImport.Trigger == "restart" {
+			after = list[0]
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no restart import: %+v", list)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if after.State != "exited" || after.ExitReason != "daemon_restart" || after.HasTerminal {
+		t.Errorf("after restart: %+v", after.agentInfo)
+	}
+	if after.LastImport.Outcome != "up_to_date" || after.LastImport.Head != imp.Head {
+		t.Errorf("restart import %+v, want up_to_date at %s", after.LastImport, imp.Head)
+	}
+	if containerExists(a.ID) {
+		t.Error("orphaned worker container still exists after the restart")
+	}
+
+	// Agent B: stop removes its container.
+	w = watch(t, ctx, d.base)
+	var b agentInfo
+	d.json("POST", "/api/agents", map[string]string{}, 201, &b)
+	agentIDs = append(agentIDs, b.ID)
+	w.waitFor(t, b.ID, "B to become idle", 2*time.Minute, func(h []string) bool { return len(h) > 0 && h[len(h)-1] == "idle" })
+	d.json("POST", "/api/agents/"+b.ID+"/stop", nil, 200, nil)
+	if containerExists(b.ID) {
 		t.Error("worker container still exists after stop")
 	}
-	code, body := d.do("DELETE", "/api/agents/"+a.ID, nil)
-	if code != http.StatusOK {
-		t.Fatalf("remove: %d %s", code, body)
+
+	// The token is nowhere on disk: the data dir (database, agent repositories,
+	// Claude Code config and transcripts), the daemon log and the repository.
+	if files := filesWithToken(t, token, data); len(files) != 0 {
+		t.Errorf("the token is in %v", files)
 	}
-	var res struct{ Worktree, Branch string }
-	_ = json.Unmarshal(body, &res)
-	if res.Worktree != "removed" || res.Branch != "kept" {
-		t.Errorf("remove result %+v", res)
+	logData, _ := os.ReadFile(d.logPath)
+	noToken(t, "the daemon log", logData, token)
+	history, err := exec.Command("git", "-C", repo, "log", "--all", "-p", "--format=raw").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	noToken(t, "the repository's history", history, token)
+	if files := filesWithToken(t, token, repo); len(files) != 0 {
+		t.Errorf("the token is in %v", files)
+	}
+
+	// Removal: A keeps its branch (it has commits), B's goes.
+	for _, c := range []struct{ id, branch string }{{a.ID, "kept"}, {b.ID, "deleted"}} {
+		code, body := d.do("DELETE", "/api/agents/"+c.id, nil)
+		if code != http.StatusOK {
+			t.Fatalf("remove %s: %d %s", c.id, code, body)
+		}
+		var res struct{ Worktree, Branch string }
+		_ = json.Unmarshal(body, &res)
+		if res.Worktree != "removed" || res.Branch != c.branch {
+			t.Errorf("remove result %+v, want branch %s", res, c.branch)
+		}
 	}
 	if _, err := os.Stat(a.WorktreePath); err == nil {
 		t.Error("agent repository still on disk")
 	}
 
 	// Nothing refused on the API socket: Claude Code needed only POST /v1/messages.
-	logData, _ := os.ReadFile(d.logPath)
+	logData, _ = os.ReadFile(d.logPath)
 	for _, line := range strings.Split(string(logData), "\n") {
 		if strings.Contains(line, "api request refused") {
 			t.Errorf("API socket refused a request: %s", line)
@@ -166,5 +259,41 @@ func TestSandboxEndToEnd(t *testing.T) {
 			t.Logf("egress denial (expected for the plugin marketplace): %s", line)
 		}
 	}
-	agentID = ""
+	agentIDs = nil
+}
+
+type agentInfoImport struct {
+	agentInfo
+	LastImport *importInfo `json:"last_import"`
+}
+
+func containerExists(agentID string) bool {
+	out, _ := exec.Command("podman", "ps", "-aq", "--filter", "label=io.agent-office.agent="+agentID).Output()
+	return len(strings.TrimSpace(string(out))) != 0
+}
+
+// noToken fails if data contains the token; the message names only where.
+func noToken(t *testing.T, where string, data []byte, token string) {
+	t.Helper()
+	if len(data) == 0 {
+		t.Errorf("%s: nothing to check", where)
+	}
+	if bytes.Contains(data, []byte(token)) {
+		t.Errorf("the token is in %s", where)
+	}
+}
+
+// filesWithToken lists the files under dir that contain the token, reading
+// agent-owned (subordinate uid) files via podman unshare. The token goes
+// through stdin, never argv.
+func filesWithToken(t *testing.T, token, dir string) []string {
+	t.Helper()
+	cmd := exec.Command("podman", "unshare", "grep", "-rlF", "-f", "-", "--", dir)
+	cmd.Stdin = strings.NewReader(token + "\n")
+	out, err := cmd.Output()
+	var ee *exec.ExitError
+	if err != nil && !(errors.As(err, &ee) && ee.ExitCode() == 1) {
+		t.Fatalf("grep %s: %v", dir, err)
+	}
+	return strings.Fields(string(out))
 }
