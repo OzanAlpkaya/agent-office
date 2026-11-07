@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 3 (Isolation & security) complete on `phase-3/isolation`, awaiting review
+**Current phase:** Phase 4 (Team MCP server + lead agent), not started; Phase 3 merged
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
@@ -51,3 +51,5 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   work, restart reconciliation, sandbox events in the UI. Migrations 0002 and 0003.
   `make sandbox-test` covers the isolation and token DoD; `make e2e` passes in host and sandbox
   mode, including a daemon SIGKILL. CLAUDE.md: approved phase plans run without per-step check-ins.
+- 2026-11-07: Phase 3 review: all decisions approved, including the plan.md scope update. Approved
+  phase plans are now saved under `docs/plans/` (`phase-3.md` first). Merged into `main` (`--no-ff`).
