@@ -82,6 +82,45 @@ type Project struct {
 	CreatedAt time.Time
 }
 
+type PullRequest struct {
+	ID              int64
+	ProjectID       string
+	TaskID          sql.NullString
+	AgentID         string
+	Branch          string
+	Base            string
+	Number          int64
+	Url             string
+	State           string
+	Head            string
+	Checks          string
+	FailedChecks    string
+	AcceptedFlagged string
+	Rounds          int64
+	Error           string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type Review struct {
+	ID             int64
+	PrID           int64
+	Reviewer       string
+	Head           string
+	Status         string
+	Verdict        string
+	Summary        string
+	Comments       string
+	AgentID        sql.NullString
+	GithubReviewID int64
+	Url            string
+	Followup       string
+	Error          string
+	Attempts       int64
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type Session struct {
 	ID        string
 	AgentID   string
