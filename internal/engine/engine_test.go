@@ -523,3 +523,22 @@ func TestNewValidates(t *testing.T) {
 		t.Fatal("non-git directory accepted")
 	}
 }
+
+func TestTaskPrompt(t *testing.T) {
+	p := taskPrompt("Add export", "CSV only.", "agent-office/add-export-abc123")
+	for _, want := range []string{
+		"Task: Add export\n",
+		"\nCSV only.\n",
+		"on branch agent-office/add-export-abc123.",
+		"commit your changes on this branch",
+		"Do not push.",
+		"Do not touch any other branch",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(taskPrompt("T", "", "b"), "\n\n\n") {
+		t.Error("empty description leaves a blank block")
+	}
+}

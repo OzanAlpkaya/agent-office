@@ -190,6 +190,9 @@ func (e *Engine) DeleteTask(ctx context.Context, id string) error {
 }
 
 // taskPrompt is the first prompt an agent gets when it starts from a task.
+// The git rules are instructions, not enforcement: until the sandbox (Phase 3)
+// withholds push credentials, a host agent could still ignore them. Pushing and
+// pull requests are the daemon's job (Phase 5).
 func taskPrompt(title, description, branch string) string {
 	var b strings.Builder
 	b.WriteString("Task: " + title + "\n")
@@ -197,6 +200,8 @@ func taskPrompt(title, description, branch string) string {
 		b.WriteString("\n" + description + "\n")
 	}
 	b.WriteString("\nYou are working in a dedicated git worktree on branch " + branch +
-		". When the task is done, commit your changes on this branch.")
+		". When the task is done, commit your changes on this branch." +
+		" Do not push. Do not touch any other branch: do not create, check out, merge, rebase," +
+		" reset or delete other branches. agent-office pushes and opens pull requests itself.")
 	return b.String()
 }
