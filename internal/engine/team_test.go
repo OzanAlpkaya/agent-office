@@ -368,8 +368,9 @@ func TestIdleDeliveryOverPTY(t *testing.T) {
 	}
 	typeLine(t, e, w.ID, "turn") // first turn ends: the Stop delivers it
 	screen(t, e, w.ID, "STOP-REPLY:")
+	from := tf.log.mark() // the idle after SessionStart does not count
 	typeLine(t, e, w.ID, "stop")
-	tf.log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
+	tf.log.waitFrom(t, 5*time.Second, from, agentState(w.ID, hooks.Idle))
 
 	// Now idle: escape sequences, Ctrl-C and newlines never reach the PTY.
 	body := "use \x1b[31mred\x1b[0m\x03 and\nthen\ttabs done"
@@ -387,9 +388,13 @@ func TestIdleDeliveryOverPTY(t *testing.T) {
 		t.Fatalf("stored %+v", stored)
 	}
 
-	// The user typed a moment ago: delivery waits until they stop.
+	// The user typed a moment ago: delivery waits until they stop. The fake
+	// handles lines in order and waits for each hook's reply, so the echoed
+	// marker means the Stop was processed (the agent stays idle, so there is
+	// no update to wait for); otherwise "later" could go out on that Stop.
 	typeLine(t, e, w.ID, "stop")
-	tf.log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
+	typeLine(t, e, w.ID, "stop-done")
+	screen(t, e, w.ID, "INPUT:stop-done")
 	if err := e.Input(w.ID, []byte("half a line")); err != nil {
 		t.Fatal(err)
 	}
