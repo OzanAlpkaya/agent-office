@@ -1,6 +1,6 @@
 # Phase 5 plan: GitHub loop + pluggable code review
 
-- **Status:** In progress on `phase-5/github-review`. Written 2026-11-07 with the recommended option
+- **Status:** Done on `phase-5/github-review`, waiting for Ozan's review; not merged. Written 2026-11-07 with the recommended option
   for every open question and executed straight away, as Ozan asked ("write the Phase 5 plan using
   your recommended options, then execute it immediately without asking me anything"). Every
   decision is listed in the end-of-phase summary; nothing is merged until Ozan has read it.
@@ -239,4 +239,34 @@ many review rounds run on their own) is decided by deterministic Go code in the 
 
 ## Changes during the phase
 
-(appended as the phase goes)
+- **ADRs as planned:** 0020 (GitHub integration), 0021 (pluggable review), 0022 (follow-ups,
+  amends ADR 0017's "follow-up work is a new sub-task").
+- **`internal/secret`** holds the token-file reader and `Secret` (moved from `internal/sandbox`,
+  which keeps thin wrappers), so both tokens get the same checks.
+- **`githubtest`**, an in-memory fake of the GitHub endpoints used, fails any test that sends an
+  unknown request (a merge included) or a review event other than `COMMENT`.
+- **Migration 0005** replaces `agents.role` by add/copy/drop/rename instead of a table rebuild:
+  dropping `agents` would cascade-delete every row that references it. It gained
+  `pull_requests.pending_flagged` during the phase (not applied anywhere outside tests yet).
+- **People's GitHub reviews** are recorded (reviewer `human`) and offered with "Send to worker";
+  they never start anything on their own.
+- **A running worker gets the review as a message** (a top-level worker keeps its session after
+  `report_done`); only exited workers are relaunched.
+- **Messages are delivered only to the session they were queued for**, found while testing the
+  relaunch: a relaunched agent keeps its id and would otherwise get its previous session's
+  messages (ADR 0018 says it must not). A review message that a worker misses by exiting
+  relaunches it with the review in its prompt.
+- **`Shutdown` refuses new starts and waits for starts in progress**, so a follow-up cannot start
+  an agent while the daemon stops (found as a test hang).
+- **The exit import runs before `afterExit` closes**, and a relaunch waits for it.
+- **End-of-phase review fixes** (an independent reviewer read the diff): `--github` refuses
+  host-mode agents; changes under `.github/` block the push until accepted; at most 10 automatic
+  reviews per PR; reviews of older heads are superseded; an internal reviewer that never submits
+  is ended after 30 minutes; titles and Markdown images in agent text are neutralized; early
+  refusals are recorded on the PR row; follow-ups left by a restart are offered again; a failed
+  relaunch puts the task back; a recording error after posting never allows a second post.
+- **Not done live:** CodeRabbit. It is covered by the shared contract test and a filter test
+  against the fake; a live run needs the CodeRabbit app installed on the private playground
+  (possibly a paid plan), which is Ozan's call.
+- **Tests added:** `TestSandboxedReviewLoop` (`make sandbox-test`, real Podman, no tokens) and
+  `TestGitHubEndToEnd` (`make e2e` with `AO_E2E_GITHUB_REPO`, real Claude Code and GitHub).
