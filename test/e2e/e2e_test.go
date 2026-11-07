@@ -319,7 +319,7 @@ func TestEndToEnd(t *testing.T) {
 	port := freePort(t)
 	d := &daemon{t: t, bin: bin, base: "http://127.0.0.1:" + port, logPath: filepath.Join(tmp, "daemon.log"),
 		args: []string{"serve", "--repo", repo, "--addr", "127.0.0.1:" + port, "--data-dir", filepath.Join(tmp, "data"),
-			"--model", model, "--max-agents", "3", "--log-level", "debug"}}
+			"--model", model, "--max-agents", "3", "--log-level", "debug", "--sandbox", "host"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 

@@ -167,6 +167,18 @@ func TestRejectsCrossOriginWrites(t *testing.T) {
 	}
 }
 
+func TestStatusAPI(t *testing.T) {
+	f := newFixture(t)
+	r := f.doBody(t, "GET", "/api/status", nil, "")
+	var st engine.Status
+	if err := json.NewDecoder(r.Body).Decode(&st); err != nil || r.StatusCode != http.StatusOK {
+		t.Fatalf("status %d %v", r.StatusCode, err)
+	}
+	if st.Sandbox != engine.SandboxHost || st.Warnings == nil {
+		t.Fatalf("host fixture status %+v", st)
+	}
+}
+
 func TestTasksAPI(t *testing.T) {
 	f := newFixture(t)
 	json415 := f.doBody(t, "POST", "/api/tasks", nil, `{"title":"x"}`) // no Content-Type

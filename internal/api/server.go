@@ -54,6 +54,7 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/project", s.getProject)
+	mux.HandleFunc("GET /api/status", s.getStatus)
 	mux.HandleFunc("GET /api/agents", s.listAgents)
 	mux.HandleFunc("POST /api/agents", s.startAgent)
 	mux.HandleFunc("POST /api/agents/{id}/stop", s.stopAgent)
@@ -172,6 +173,12 @@ func (s *server) discardAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) getProject(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.eng.Project())
+}
+
+// getStatus reports the sandbox mode, the worker image and warnings (e.g. an
+// untested Claude Code version) for the UI.
+func (s *server) getStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.eng.Status())
 }
 
 func (s *server) listTasks(w http.ResponseWriter, r *http.Request) {

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/OzanAlpkaya/agent-office/internal/agent"
 )
 
 func TestParseServe(t *testing.T) {
@@ -12,7 +14,8 @@ func TestParseServe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.addr != "127.0.0.1:7680" || !c.inheritUserSettings || c.repo != "/tmp" {
+	if c.addr != "127.0.0.1:7680" || !c.inheritUserSettings || c.repo != "/tmp" || c.sandbox != modePodman ||
+		c.sandboxMemory != "2g" || c.sandboxPids != 256 || len(c.egressAllow) != 0 {
 		t.Fatalf("defaults: %+v", c)
 	}
 
@@ -21,6 +24,11 @@ func TestParseServe(t *testing.T) {
 		{"--repo", "/tmp", "--addr", "0.0.0.0:7680"}, // not loopback
 		{"--repo", "/tmp", "--addr", "192.168.1.5:7680"},
 		{"--repo", "/tmp", "--addr", "nonsense"},
+		{"--repo", "/tmp", "--sandbox", "docker"},
+		{"--repo", "/tmp", "--sandbox", ""},
+		{"--repo", "/tmp", "--egress-allow", "*.example.com"},
+		{"--repo", "/tmp", "--egress-allow", "10.0.0.1"},
+		{"--repo", "/tmp", "--sandbox-pids", "1"},
 	} {
 		if _, err := parseServe(args); err == nil {
 			t.Errorf("parseServe(%v) accepted", args)
@@ -37,6 +45,33 @@ func TestParseServe(t *testing.T) {
 	}
 	if _, err := parseServe([]string{"--repo", "/tmp", "--addr", "[::1]:7680"}); err != nil {
 		t.Errorf("IPv6 loopback rejected: %v", err)
+	}
+}
+
+func TestSandboxFlagsFromEnv(t *testing.T) {
+	t.Setenv("AGENT_OFFICE_SANDBOX", "host")
+	t.Setenv("AGENT_OFFICE_EGRESS_ALLOW", "pypi.org, .pythonhosted.org,")
+	c, err := parseServe([]string{"--repo", "/tmp"})
+	if err != nil || c.sandbox != modeHost || strings.Join(c.egressAllow, "|") != "pypi.org|.pythonhosted.org" {
+		t.Fatalf("env not applied: %+v %v", c, err)
+	}
+}
+
+func TestVersionWarnings(t *testing.T) {
+	if w := versionWarnings(claudeInfo{version: agent.TestedClaudeCodeVersion}, modePodman); len(w) != 0 {
+		t.Fatalf("tested version warned: %q", w)
+	}
+	if w := versionWarnings(claudeInfo{version: "9.9.9"}, modePodman); len(w) != 1 || !strings.Contains(w[0], "9.9.9") {
+		t.Fatalf("untested version: %q", w)
+	}
+	if w := versionWarnings(claudeInfo{version: "9.9.9"}, modeHost); len(w) != 0 {
+		t.Fatalf("host mode does not use the seeded config: %q", w)
+	}
+}
+
+func TestIsStatic(t *testing.T) {
+	if ok, err := isStatic("/bin/sh"); err != nil || ok {
+		t.Fatalf("/bin/sh is dynamically linked: %v %v", ok, err)
 	}
 }
 

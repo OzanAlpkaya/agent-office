@@ -156,6 +156,10 @@ type serveConfig struct {
 	inheritUserSettings bool
 	dev                 bool
 	logLevel            string
+	sandbox             string   // modePodman | modeHost
+	egressAllow         []string // added to sandbox.DefaultEgressAllow
+	sandboxMemory       string
+	sandboxPids         int
 }
 
 func parseServe(args []string) (serveConfig, error) {
@@ -178,6 +182,17 @@ func parseServe(args []string) (serveConfig, error) {
 	}
 	fs.BoolVar(&c.inheritUserSettings, "inherit-user-settings", inherit,
 		"host mode: agents load your own Claude Code settings and hooks [AGENT_OFFICE_INHERIT_USER_SETTINGS]")
+	fs.StringVar(&c.sandbox, "sandbox", envOr("AGENT_OFFICE_SANDBOX", modePodman),
+		"podman: agents run in rootless Podman workers; host: unsandboxed, permission prompts on [AGENT_OFFICE_SANDBOX]")
+	egress := fs.String("egress-allow", os.Getenv("AGENT_OFFICE_EGRESS_ALLOW"),
+		"extra host names sandboxed agents may reach, comma-separated; .example.com for subdomains [AGENT_OFFICE_EGRESS_ALLOW]")
+	fs.StringVar(&c.sandboxMemory, "sandbox-memory", envOr("AGENT_OFFICE_SANDBOX_MEMORY", sandbox.DefaultMemory),
+		"memory limit per worker, e.g. 2g [AGENT_OFFICE_SANDBOX_MEMORY]")
+	pids, err := envInt("AGENT_OFFICE_SANDBOX_PIDS", sandbox.DefaultPids)
+	if err != nil {
+		return c, err
+	}
+	fs.IntVar(&c.sandboxPids, "sandbox-pids", pids, "process limit per worker [AGENT_OFFICE_SANDBOX_PIDS]")
 	fs.BoolVar(&c.dev, "dev", false, "allow the Vite dev server origin (localhost:5173)")
 	fs.StringVar(&c.logLevel, "log-level", envOr("AGENT_OFFICE_LOG_LEVEL", "info"), "debug | info | warn [AGENT_OFFICE_LOG_LEVEL]")
 	if err := fs.Parse(args); err != nil {
@@ -193,6 +208,20 @@ func parseServe(args []string) (serveConfig, error) {
 	c.repo = abs
 	if c.dataDir, err = filepath.Abs(c.dataDir); err != nil {
 		return c, err
+	}
+	if c.sandbox != modePodman && c.sandbox != modeHost {
+		return c, fmt.Errorf("--sandbox must be %s or %s, got %q", modePodman, modeHost, c.sandbox)
+	}
+	for _, h := range strings.Split(*egress, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			c.egressAllow = append(c.egressAllow, h)
+		}
+	}
+	if _, err := sandbox.ParseAllowlist(c.egressAllow); err != nil {
+		return c, fmt.Errorf("--egress-allow: %w", err)
+	}
+	if c.sandboxPids < 16 || c.sandboxPids > 65536 {
+		return c, fmt.Errorf("--sandbox-pids must be between 16 and 65536, got %d", c.sandboxPids)
 	}
 	if c.maxAgents < 1 || c.maxAgents > 32 {
 		return c, fmt.Errorf("--max-agents must be between 1 and 32, got %d", c.maxAgents)
@@ -222,6 +251,10 @@ func serve(args []string) error {
 	if err != nil {
 		return fmt.Errorf("claude binary: %w", err)
 	}
+	ci, err := resolveClaude(claudeBin)
+	if err != nil {
+		return err
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate own binary: %w", err)
@@ -229,6 +262,19 @@ func serve(args []string) error {
 	runtimeDir, err := runtimeDir()
 	if err != nil {
 		return err
+	}
+
+	var sb *engine.SandboxOptions
+	if cfg.sandbox == modePodman {
+		if sb, err = sandboxOptions(context.Background(), cfg, self, ci, log); err != nil {
+			return err
+		}
+	} else {
+		log.Warn("host mode: agents run unsandboxed on this machine, with permission prompts on")
+	}
+	warnings := versionWarnings(ci, cfg.sandbox)
+	for _, w := range warnings {
+		log.Warn(w)
 	}
 
 	g := git.Git{}
@@ -251,6 +297,7 @@ func serve(args []string) error {
 		ClaudeBin: claudeBin, HookCommand: agent.ShellQuote(self) + " hook",
 		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
+		Sandbox: sb, Warnings: warnings,
 	})
 	if err != nil {
 		return err
@@ -270,7 +317,7 @@ func serve(args []string) error {
 
 	log.Info("agent-office starting", "version", version, "addr", "http://"+cfg.addr, "repo", eng.Project().RepoPath,
 		"data_dir", cfg.dataDir, "max_agents", cfg.maxAgents, "git_version", gitVersion,
-		"claude", claudeBin, "claude_version", claudeVersion(claudeBin), "model", cfg.model,
+		"claude", ci.path, "claude_version", ci.version, "sandbox", cfg.sandbox, "model", cfg.model,
 		"inherit_user_settings", cfg.inheritUserSettings, "ui_built", built, "dev", cfg.dev)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
