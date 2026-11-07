@@ -8,7 +8,7 @@ SQLC_VERSION ?= v1.31.1
 DEV_ROOT ?= $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/agent-office-dev
 DEV_DATA_DIR ?= $(DEV_ROOT)/data
 
-.PHONY: build web test lint check dev serve clean generate e2e sandbox-test
+.PHONY: build web test lint check dev serve clean generate e2e sandbox-test worker-image
 
 # Static (CGO_ENABLED=0): the same binary is mounted into worker containers, whose
 # glibc may be older than the host's (Spike F).
@@ -40,8 +40,14 @@ e2e:
 	@test -n "$(AO_E2E_REPO)" || (echo "set AO_E2E_REPO to a trusted git repository"; exit 1)
 	AO_E2E_REPO="$(AO_E2E_REPO)" go test -tags e2e -count=1 -v -timeout 15m ./test/e2e/
 
-# Opt-in integration tests against real rootless Podman (no tokens; needs the pinned base image).
-sandbox-test:
+# Build the worker image (podman; needs network). The tag comes from internal/sandbox/Containerfile.
+worker-image: build
+	./bin/agent-office worker-image
+
+# Opt-in integration tests against real rootless Podman (no tokens; needs the pinned base image,
+# and `make worker-image` for the worker tests). AO_SANDBOX_NET=1 adds HTTPS through the egress
+# proxy, which needs internet access.
+sandbox-test: build
 	go test -tags sandbox -race -count=1 -v ./internal/sandbox/
 
 # Run the built daemon against DEV_DATA_DIR, never the real data dir.

@@ -1,0 +1,33 @@
+# agent-office worker image (ADR 0007, 0016). Built locally with `agent-office worker-image`
+# (or `make worker-image`); the tag is derived from this file, so a change means a rebuild.
+#
+# Toolchain: what the playground (linkshelf) needs today: Go, standard library only, no cgo.
+# Phase 6 stack packs will choose toolchains per project; until then this is the only image.
+# Deliberately absent: openssh-client (no SSH; pushing is the daemon's job, ADR 0014), a C
+# toolchain (so `go test -race`, which needs cgo, is not available inside workers).
+FROM docker.io/library/debian:trixie-slim@sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392
+
+# ca-certificates is not in Debian slim; git, curl and Go need it for HTTPS through the
+# CONNECT proxy. --no-install-recommends keeps git's recommended openssh-client out.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git curl ripgrep \
+ && rm -rf /var/lib/apt/lists/*
+
+# Go from go.dev, checked against the official SHA-256 (go.dev/dl/?mode=json).
+ARG GO_VERSION=1.27.3
+ARG GO_SHA256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+RUN curl -fsSLo /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+ && echo "${GO_SHA256}  /tmp/go.tgz" | sha256sum -c - \
+ && tar -C /usr/local -xzf /tmp/go.tgz \
+ && rm /tmp/go.tgz
+
+# HOME is a tmpfs (/tmp/home, created by sandbox-init); Go's caches live there.
+# GOTOOLCHAIN=local: never download another toolchain at run time.
+ENV PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    CGO_ENABLED=0 \
+    GOTOOLCHAIN=local \
+    GOPATH=/tmp/home/go \
+    GOCACHE=/tmp/home/.cache/go-build \
+    GOFLAGS=-modcacherw
+
+LABEL io.agent-office.image=worker

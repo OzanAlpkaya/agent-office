@@ -3,6 +3,7 @@
 //	agent-office serve --repo <path>   run the daemon and web UI
 //	agent-office hook                  forward a hook payload (stdin) to the daemon; used by agents
 //	agent-office sandbox-init -- cmd   in-container init of a sandboxed worker (ADR 0016)
+//	agent-office worker-image          build the worker container image with podman
 //	agent-office version               print the version
 package main
 
@@ -53,6 +54,11 @@ func main() {
 		os.Exit(hook())
 	case "sandbox-init":
 		os.Exit(sandboxInit(os.Args[2:]))
+	case "worker-image":
+		if err := workerImage(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "agent-office:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -71,8 +77,30 @@ commands:
   hook      forward a hook payload from stdin to the daemon (used by agents)
   sandbox-init -- <command>
             in-container init of a sandboxed worker (started by the daemon)
+  worker-image [--tag]
+            build the worker image with podman (--tag: print its tag only)
   version   print the version
 `)
+}
+
+// workerImage builds the worker image, or prints its tag with --tag.
+func workerImage(args []string) error {
+	fs := flag.NewFlagSet("worker-image", flag.ContinueOnError)
+	tagOnly := fs.Bool("tag", false, "print the image tag and exit")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *tagOnly {
+		fmt.Println(sandbox.WorkerImage())
+		return nil
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := (sandbox.Podman{}).BuildWorkerImage(ctx, os.Stderr); err != nil {
+		return err
+	}
+	fmt.Println(sandbox.WorkerImage())
+	return nil
 }
 
 // sandboxInitFailed is the exit code when sandbox-init itself fails, so it is
