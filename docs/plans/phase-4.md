@@ -187,4 +187,19 @@ arrives on, never from tool arguments.
 
 ## Changes during the phase
 
-(appended as the phase goes)
+- **ADR numbering as planned:** 0017 (team roles and authority), 0018 (message delivery), 0019
+  (access requests); ADR 0006 accepted with a separate MCP socket.
+- **Lead-only tools are not listed for workers** (in addition to the engine refusing them), so a
+  worker's model is not offered tools it may not use.
+- **`report_done` auto-exit only for lead-managed workers** (tasks with a goal) and for the lead
+  itself. A worker the user started on a top-level task moves its task to `review` and keeps
+  running, so the user can continue the conversation.
+- **Worker addressing:** a worker on a top-level task has no lead; `send_message` is refused with
+  "your task is not part of a goal".
+- **Idle delivery counts an interrupt (Esc) as a finished turn**, since an interrupted first turn
+  sends no Stop and delivery would otherwise wait forever.
+- **Tests added beyond the plan:** `TestSandboxedTeamWorker` (real Podman, no tokens): a worker
+  calls `list_tasks` and `report_done` through `agent-office mcp` inside its container, which
+  proves the socket mount, the bridge and identity end to end.
+- **Shared engine test helpers** (`updateLog`, `screen`) moved from the sandbox-tagged file into
+  `helpers_test.go`.
