@@ -9,6 +9,8 @@ coverage.*
 # Web UI
 web/node_modules/
 web/dist/app/
+web/test-results/
+web/playwright-report/
 
 # Local databases
 *.db
