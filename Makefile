@@ -34,7 +34,9 @@ lint: web/node_modules
 check: lint test build
 
 # Opt-in end-to-end test with real Claude Code sessions (haiku; costs a few cents).
-# The test passes --data-dir with a temp dir to every daemon it starts.
+# The test passes --data-dir with a temp dir to every daemon it starts. TestEndToEnd runs host
+# mode in AO_E2E_REPO; TestSandboxEndToEnd runs a sandboxed agent on a throwaway clone of it and
+# needs podman, `make worker-image` and the OAuth token file (ADR 0015).
 #   AO_E2E_REPO=~/projects/agent-office-playground make e2e
 e2e:
 	@test -n "$(AO_E2E_REPO)" || (echo "set AO_E2E_REPO to a trusted git repository"; exit 1)
