@@ -123,6 +123,10 @@ func TestWorkerArgsSecretsSocket(t *testing.T) {
 		!slices.Contains(flagValues(args, "-e"), secretsSocketEnv+"="+SecretsSocket) {
 		t.Fatalf("secrets socket not mounted: %v", args)
 	}
+	s.Skills = "/run/user/1000/ao/a/skills"
+	if args, err = WorkerArgs(s); err != nil || !slices.Contains(flagValues(args, "-v"), s.Skills+":"+SkillsDir+":ro") {
+		t.Fatalf("skills not mounted read-only: %v %v", args, err)
+	}
 	s.Env = []string{secretsSocketEnv + "=/elsewhere"}
 	if _, err := WorkerArgs(s); err == nil {
 		t.Fatal("callers may not set the secrets socket variable")
@@ -136,7 +140,13 @@ func TestReservedEnv(t *testing.T) {
 			t.Errorf("%s not reserved", n)
 		}
 	}
-	for _, n := range []string{"NPM_TOKEN", "DATABASE_URL", "GOPRIVATE"} {
+	for _, n := range []string{"GOFLAGS", "GOPROXY", "CGO_ENABLED", "BASH_ENV", "ENV", "MCP_TIMEOUT", "OTEL_EXPORTER_OTLP_ENDPOINT",
+		"DISABLE_AUTOUPDATER", "npm_config_registry", "NPM_CONFIG_REGISTRY", "XDG_CONFIG_HOME", "LC_ALL", "REQUESTS_CA_BUNDLE", "NODE_PATH"} {
+		if !ReservedEnv(n) {
+			t.Errorf("%s not reserved", n)
+		}
+	}
+	for _, n := range []string{"NPM_TOKEN", "NODE_AUTH_TOKEN", "DATABASE_URL", "GOOGLE_API_KEY"} {
 		if ReservedEnv(n) {
 			t.Errorf("%s reserved", n)
 		}
@@ -144,17 +154,27 @@ func TestReservedEnv(t *testing.T) {
 }
 
 func TestPackImageTag(t *testing.T) {
-	files := map[string][]byte{"Containerfile": []byte("ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n"), "a.txt": []byte("a")}
-	tag := PackImage("go", files)
+	cf := BuildFile{Data: []byte("ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n")}
+	files := map[string]BuildFile{"Containerfile": cf, "B.Containerfile": cf, "a.txt": {Data: []byte("a")}}
+	tag := PackImage("go", "Containerfile", files)
 	if !strings.HasPrefix(tag, "localhost/agent-office-pack-go:") || len(tag) != len("localhost/agent-office-pack-go:")+12 {
 		t.Fatal(tag)
 	}
-	if PackImage("go", files) != tag {
+	if PackImage("go", "Containerfile", files) != tag {
 		t.Fatal("tag not stable")
 	}
-	changed := map[string][]byte{"Containerfile": files["Containerfile"], "a.txt": []byte("b")}
-	renamed := map[string][]byte{"Containerfile": files["Containerfile"], "b.txt": []byte("a")}
-	for _, other := range []string{PackImage("go", changed), PackImage("go", renamed), PackImage("node", files)} {
+	with := func(name string, f BuildFile) map[string]BuildFile {
+		m := map[string]BuildFile{"Containerfile": cf, "B.Containerfile": cf}
+		m[name] = f
+		return m
+	}
+	for _, other := range []string{
+		PackImage("go", "Containerfile", with("a.txt", BuildFile{Data: []byte("b")})),             // content
+		PackImage("go", "Containerfile", with("b.txt", BuildFile{Data: []byte("a")})),             // name
+		PackImage("go", "Containerfile", with("a.txt", BuildFile{Data: []byte("a"), Exec: true})), // exec bit
+		PackImage("go", "B.Containerfile", files),                                                 // which Containerfile
+		PackImage("node", "Containerfile", files),
+	} {
 		if other == tag {
 			t.Fatal("a build input changed but the tag did not")
 		}

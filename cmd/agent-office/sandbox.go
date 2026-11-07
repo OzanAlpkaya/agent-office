@@ -144,12 +144,8 @@ func packOptions(cfg serveConfig) (sandboxPack, []string, error) {
 		return sandboxPack{}, nil, fmt.Errorf("--pack: %w", err)
 	}
 	sp := sandboxPack{pack: p, image: sandbox.BaseImage(), hosts: append(append([]string{}, p.Egress...), cfg.egressAllow...)}
-	files, err := p.BuildFiles()
-	if err != nil {
+	if sp.image, err = p.Image(); err != nil {
 		return sandboxPack{}, nil, fmt.Errorf("--pack %s: %w", p.Name, err)
-	}
-	if files != nil {
-		sp.image = sandbox.PackImage(p.Name, files)
 	}
 	// Required secrets are checked now and read again at every launch.
 	_, skipped, err := p.ReadSecrets(cfg.secretsDir)

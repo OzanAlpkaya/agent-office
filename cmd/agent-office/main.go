@@ -111,7 +111,7 @@ func workerImage(args []string) error {
 		return err
 	}
 	var p *pack.Pack
-	var files map[string][]byte
+	var files map[string]sandbox.BuildFile
 	tag := sandbox.BaseImage()
 	if *name != "" {
 		if p, err = pack.Find(*name, *dir); err != nil {
@@ -120,8 +120,8 @@ func workerImage(args []string) error {
 		if files, err = p.BuildFiles(); err != nil {
 			return err
 		}
-		if files != nil {
-			tag = sandbox.PackImage(p.Name, files)
+		if tag, err = p.Image(); err != nil {
+			return err
 		}
 	}
 	if *tagOnly {

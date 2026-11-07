@@ -22,13 +22,13 @@ import (
 // has a toolchain), its allowlist and the secrets dir.
 func usePack(t *testing.T, f *fixture, p *pack.Pack, secretsDir string) {
 	t.Helper()
-	files, err := p.BuildFiles()
+	img, err := p.Image()
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := f.opts.Sandbox
-	if files != nil {
-		s.Image = sandbox.PackImage(p.Name, files)
+	if p.Containerfile != "" {
+		s.Image = img
 		if ok, err := s.Podman.ImageExists(context.Background(), s.Image); err != nil || !ok {
 			t.Skipf("pack image %s missing: run make worker-image PACK=%s (%v)", s.Image, p.Name, err)
 		}
@@ -88,12 +88,15 @@ func TestSandboxedPackLaunch(t *testing.T) {
 	log.wait(t, 30*time.Second, agentState(a.ID, hooks.Idle))
 	typeLine(t, e, a.ID, `sh echo "secret=$DEMO_SECRET opt=${DEMO_OPT:-unset} sock=${AGENT_OFFICE_SECRETS_SOCKET:-unset}"`)
 	screen(t, e, a.ID, "sh: secret="+canary+" opt=unset sock=unset\n")
-	typeLine(t, e, a.ID, `sh grep -c "$DEMO_SECRET" /proc/1/environ /proc/1/cmdline | tr '\n' ' '; echo`)
-	screen(t, e, a.ID, "sh: /proc/1/environ:0 /proc/1/cmdline:0 \n")
+	// sandbox-init (not PID 1: podman's --init is) never holds the value; the
+	// loop also proves it found the process.
+	typeLine(t, e, a.ID, `sh for p in /proc/[0-9]*; do if tr '\0' ' ' < $p/cmdline 2>/dev/null | grep -q '^/opt/agent-office/agent-office sandbox-init '; then echo "init-env=$(grep -c "$DEMO_SECRET" $p/environ) init-cmd=$(grep -c "$DEMO_SECRET" $p/cmdline)"; fi; done`)
+	screen(t, e, a.ID, "sh: init-env=0 init-cmd=0\n")
 	typeLine(t, e, a.ID, `sh curl -s --unix-socket /run/agent-office/secrets.sock http://x/ >/dev/null; echo "second-fetch=$?"`)
 	screen(t, e, a.ID, "sh: second-fetch=7\n") // connection refused: served once
-	typeLine(t, e, a.ID, `sh head -2 /config/skills/demo-skill/SKILL.md | tail -1`)
+	typeLine(t, e, a.ID, `sh head -2 /config/skills/demo-skill/SKILL.md | tail -1; touch /config/skills/x 2>/dev/null && echo skills=writable || echo skills=ro`)
 	screen(t, e, a.ID, "sh: name: demo-skill\n")
+	screen(t, e, a.ID, "sh: skills=ro\n")
 	typeLine(t, e, a.ID, `sh grep -c -e '"url": "https://example.com/mcp"' -e '"command": "/usr/bin/true"' -e '"agent-office"' /opt/agent-office/mcp.json`)
 	screen(t, e, a.ID, "sh: 3\n")
 
@@ -133,6 +136,17 @@ func TestSandboxedPackLaunch(t *testing.T) {
 	}
 	if len(e.List()) != before {
 		t.Fatal("a refused start created an agent")
+	}
+
+	// Only workers get secrets: reviewers read agent-written diffs (ADR 0023).
+	if err := os.WriteFile(filepath.Join(secrets, "DEMO_SECRET"), []byte(canary+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for role, want := range map[string]int{RoleWorker: 1, RoleReviewer: 0, RoleLead: 0} {
+		prep, err := e.prepareSandboxStart(ctx, "agent-x", role)
+		if err != nil || len(prep.secrets) != want {
+			t.Errorf("%s gets %d secrets (%v), want %d", role, len(prep.secrets), err, want)
+		}
 	}
 
 	e.Shutdown()

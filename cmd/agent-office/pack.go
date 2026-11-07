@@ -8,7 +8,6 @@ import (
 	"text/tabwriter"
 
 	"github.com/OzanAlpkaya/agent-office/internal/pack"
-	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 )
 
 // packCommand runs `agent-office pack list|check` (ADR 0023) and returns the
@@ -81,14 +80,14 @@ func packCommand(args []string, stdout, stderr io.Writer) int {
 
 // imageOf is the worker image a valid pack's agents get.
 func imageOf(p *pack.Pack) string {
-	files, err := p.BuildFiles()
+	img, err := p.Image()
 	switch {
 	case err != nil:
 		return "error: " + err.Error()
-	case files == nil:
-		return sandbox.BaseImage() + " (base)"
+	case p.Containerfile == "":
+		return img + " (base)"
 	}
-	return sandbox.PackImage(p.Name, files)
+	return img
 }
 
 func describe(w io.Writer, p *pack.Pack) {

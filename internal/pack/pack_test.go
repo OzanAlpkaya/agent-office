@@ -52,7 +52,7 @@ func TestBuiltinsAreValid(t *testing.T) {
 			t.Fatalf("built-in %s: %+v", name, p)
 		}
 		files, err := p.BuildFiles()
-		if err != nil || files["Containerfile"] == nil || files[File] != nil {
+		if _, hasYAML := files[File]; err != nil || files["Containerfile"].Data == nil || hasYAML {
 			t.Fatalf("build files of %s: %v %v", name, keys(files), err)
 		}
 	}
@@ -74,7 +74,7 @@ func TestLoadValid(t *testing.T) {
 		t.Fatalf("servers %+v", p.MCPServers)
 	}
 	files, err := p.BuildFiles()
-	if err != nil || len(files) != 2 || string(files["files/extra.txt"]) != "x" {
+	if err != nil || len(files) != 2 || string(files["files/extra.txt"].Data) != "x" {
 		t.Fatalf("build files %v %v", keys(files), err)
 	}
 
@@ -146,6 +146,11 @@ func TestLoadInvalid(t *testing.T) {
 		{"containerfile other base", base + "toolchain:\n  containerfile: Containerfile\n",
 			map[string]string{"Containerfile": "ARG BASE_IMAGE\nFROM ${BASE_IMAGE} AS b\nFROM docker.io/library/golang:1.27\n"},
 			[]string{"the last stage must start with `FROM ${BASE_IMAGE}`", "golang:1.27"}},
+		{"containerfile entrypoint", base + "toolchain:\n  containerfile: Containerfile\n",
+			map[string]string{"Containerfile": "ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nENTRYPOINT [\"/bin/tool\"]\n"},
+			[]string{"the last stage sets an ENTRYPOINT"}},
+		{"url host upper case", base + "egress:\n  allow: [a.com]\nmcp_servers:\n  x: {url: 'https://A.com/mcp'}\n", nil,
+			[]string{"must name a lower-case host"}},
 		{"containerfile no from", base + "toolchain:\n  containerfile: Containerfile\n", map[string]string{"Containerfile": "ARG BASE_IMAGE\nRUN true\n"},
 			[]string{"has no FROM"}},
 		{"oversized", base + "description: " + strings.Repeat("x", maxPackBytes) + "\n", nil, []string{"larger than 64 KiB"}},
@@ -191,6 +196,8 @@ func TestContainerfileParsing(t *testing.T) {
 		"ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n",
 		"# syntax comment\nARG BASE_IMAGE=x\nFROM docker.io/library/golang:1.27 AS build\nRUN go build\nFROM --platform=linux/amd64 $BASE_IMAGE\nCOPY --from=build /x /x\n",
 		"arg BASE_IMAGE\nfrom ${BASE_IMAGE}\nRUN a \\\n  && b\n",
+		"ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN a \\\n# a comment inside a continuation\n  && b\n",
+		"ARG BASE_IMAGE\nFROM debian AS tools\nENTRYPOINT [\"x\"]\nFROM ${BASE_IMAGE}\n", // an earlier stage may
 	}
 	for _, src := range ok {
 		if msg := checkContainerfile([]byte(src)); msg != "" {
@@ -306,13 +313,16 @@ func TestFindAndList(t *testing.T) {
 	}
 }
 
-func TestCopySkills(t *testing.T) {
-	p, err := load(validFS(), "demo", "test", "demo/pack.yaml")
+func TestWriteSkills(t *testing.T) {
+	fsys := validFS()
+	p, err := load(fsys, "demo", "test", "demo/pack.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// What agents get is what was checked at load, not the files as they are later.
+	fsys["skills/s/SKILL.md"] = &fstest.MapFile{Data: []byte("changed after load")}
 	dst := filepath.Join(t.TempDir(), "skills")
-	if err := p.CopySkills(dst); err != nil {
+	if err := p.WriteSkills(dst); err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{"s/SKILL.md": goodSkill, "s/ref.md": "more"} {
@@ -351,12 +361,43 @@ func TestReadSecrets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "DEMO_OPTIONAL"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if st := p.SecretStatus(dir); st[1].Present || !strings.Contains(st[1].Problem, "chmod 600") || strings.Contains(st[1].Problem, "x\n") {
+		t.Fatalf("an unusable file is not present: %+v", st[1])
+	}
 	if _, _, err := p.ReadSecrets(dir); !errors.Is(err, ErrSecret) || !strings.Contains(err.Error(), "chmod 600") {
 		t.Fatalf("a present optional file with a bad mode must fail: %v", err)
 	}
 }
 
-func keys(m map[string][]byte) []string {
+func TestBuildFilesKeepExecAndSkipGit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "demo")
+	writeTree(t, dir, validTree())
+	writeTree(t, dir, map[string]string{"tool.sh": "#!/bin/sh\n", ".git/HEAD": "ref: x\n"})
+	if err := os.Chmod(filepath.Join(dir, "tool.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc/passwd", filepath.Join(dir, ".git", "link")); err != nil {
+		t.Fatal(err)
+	}
+	p, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("a pack kept in git: %v", err)
+	}
+	files, err := p.BuildFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !files["tool.sh"].Exec || files["Containerfile"].Exec {
+		t.Fatalf("exec bits %+v", files)
+	}
+	for name := range files {
+		if strings.HasPrefix(name, ".git") {
+			t.Fatalf("%s in the build context", name)
+		}
+	}
+}
+
+func keys[V any](m map[string]V) []string {
 	var out []string
 	for k := range m {
 		out = append(out, k)

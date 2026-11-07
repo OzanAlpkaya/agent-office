@@ -29,19 +29,29 @@ func DefaultSecretsDir() (string, error) {
 	return filepath.Join(cfg, "agent-office", "secrets"), nil
 }
 
-// SecretInfo says whether a pack env var has a value file. It never holds
-// the value.
+// SecretInfo says whether a pack env var has a usable value file. It never
+// holds the value.
 type SecretInfo struct {
 	EnvVar
-	Present bool `json:"present"`
+	Present bool   `json:"present"`           // the file exists and passes the checks
+	Problem string `json:"problem,omitempty"` // why an existing file is not usable (never its contents)
 }
 
-// SecretStatus reports which of the pack's env vars have a file in dir.
+// SecretStatus reports which of the pack's env vars have a usable file in
+// dir, with the same checks a launch runs.
 func (p *Pack) SecretStatus(dir string) []SecretInfo {
 	out := make([]SecretInfo, 0, len(p.Env))
 	for _, v := range p.Env {
-		_, err := os.Lstat(filepath.Join(dir, v.Name))
-		out = append(out, SecretInfo{EnvVar: v, Present: err == nil})
+		info := SecretInfo{EnvVar: v}
+		file := filepath.Join(dir, v.Name)
+		if _, err := os.Lstat(file); err == nil {
+			if _, err := secret.ReadFile(file, ErrSecret); err != nil {
+				info.Problem = err.Error()
+			} else {
+				info.Present = true
+			}
+		}
+		out = append(out, info)
 	}
 	return out
 }

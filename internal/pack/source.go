@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+
+	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 )
 
 // builtinFS holds the packs shipped with agent-office, one directory each.
@@ -183,6 +185,9 @@ func checkTree(root string) []Problem {
 			return fmt.Errorf("more than %d entries; a pack holds a pack.yaml, a Containerfile and its build files, and skills", maxFiles*2)
 		}
 		rel, _ := filepath.Rel(root, p)
+		if d.IsDir() && d.Name() == ".git" { // a pack kept in git: its metadata is not part of the pack
+			return filepath.SkipDir
+		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			probs = append(probs, Problem{Field: rel, Msg: "is a symlink; a pack may hold only regular files and directories"})
 			return nil
@@ -220,22 +225,27 @@ func checkPerm(p, what string) []Problem {
 }
 
 // BuildFiles returns the image build context: every file of the pack except
-// pack.yaml and skills/, by path. Nil for a pack without a Containerfile.
-func (p *Pack) BuildFiles() (map[string][]byte, error) {
+// pack.yaml, skills/ and .git/, by path, with its exec bit. Nil for a pack
+// without a Containerfile.
+func (p *Pack) BuildFiles() (map[string]sandbox.BuildFile, error) {
 	if p.Containerfile == "" {
 		return nil, nil
 	}
-	files := map[string][]byte{}
+	files := map[string]sandbox.BuildFile{}
 	var total int64
 	err := fs.WalkDir(p.fsys, ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if name == "skills" && d.IsDir() {
+		if d.IsDir() && (name == "skills" || d.Name() == ".git") {
 			return fs.SkipDir
 		}
 		if d.IsDir() || name == File {
 			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
 		}
 		b, err := readFile(p.fsys, name, maxBuildBytes)
 		if err != nil {
@@ -244,7 +254,7 @@ func (p *Pack) BuildFiles() (map[string][]byte, error) {
 		if total += int64(len(b)); total > maxBuildBytes || len(files) >= maxFiles {
 			return fmt.Errorf("the build files are larger than %d MiB or more than %d files", maxBuildBytes>>20, maxFiles)
 		}
-		files[name] = b
+		files[name] = sandbox.BuildFile{Data: b, Exec: fi.Mode().Perm()&0o111 != 0}
 		return nil
 	})
 	if err != nil {
@@ -253,26 +263,32 @@ func (p *Pack) BuildFiles() (map[string][]byte, error) {
 	return files, nil
 }
 
-// CopySkills writes the pack's skills into dst/<skill>/ (an agent's
-// CLAUDE_CONFIG_DIR/skills, ADR 0023).
-func (p *Pack) CopySkills(dst string) error {
-	for _, s := range p.Skills {
-		err := fs.WalkDir(p.fsys, path.Join("skills", s), func(name string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			target := filepath.Join(dst, filepath.FromSlash(strings.TrimPrefix(name, "skills/")))
-			if d.IsDir() {
-				return os.MkdirAll(target, 0o755)
-			}
-			b, err := readFile(p.fsys, name, maxSkillBytes)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(target, b, 0o644)
-		})
-		if err != nil {
-			return fmt.Errorf("pack %s: copy skill %s: %w", p.Name, s, err)
+// Image is the tag of the pack's worker image; the base image for a pack
+// without a toolchain.
+func (p *Pack) Image() (string, error) {
+	files, err := p.BuildFiles()
+	if err != nil || files == nil {
+		return sandbox.BaseImage(), err
+	}
+	return sandbox.PackImage(p.Name, p.Containerfile, files), nil
+}
+
+// WriteSkills writes the pack's skills, as checked when the pack was loaded,
+// into dst/<skill>/ (ADR 0023: mounted read-only at the agent's
+// CLAUDE_CONFIG_DIR/skills).
+func (p *Pack) WriteSkills(dst string) error {
+	names := make([]string, 0, len(p.skills))
+	for n := range p.skills {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		target := filepath.Join(dst, filepath.FromSlash(strings.TrimPrefix(n, "skills/")))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("pack %s: write skills: %w", p.Name, err)
+		}
+		if err := os.WriteFile(target, p.skills[n], 0o644); err != nil {
+			return fmt.Errorf("pack %s: write skills: %w", p.Name, err)
 		}
 	}
 	return nil

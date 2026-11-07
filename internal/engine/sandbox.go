@@ -142,7 +142,9 @@ func (e *Engine) prepareSandboxStart(ctx context.Context, agentName, role string
 		return sandboxPrep{}, err
 	}
 	var secrets map[string]secret.Secret
-	if p := e.opts.Sandbox.Pack; p != nil && role != RoleLead { // leads plan; they do not run code
+	// Workers only: leads plan and run no code, and reviewers read the agent-written
+	// diff, the most injectable input there is (ADR 0023).
+	if p := e.opts.Sandbox.Pack; p != nil && role == RoleWorker {
 		var skipped []string
 		if secrets, skipped, err = p.ReadSecrets(e.opts.Sandbox.SecretsDir); err != nil {
 			return sandboxPrep{}, fmt.Errorf("%w: %v", ErrInvalid, err)
@@ -231,10 +233,20 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 			return fail(err)
 		}
 	}
-	// The pack's skills become the agent's personal skills (ADR 0023); a
-	// relaunch keeps the copy of its first session.
-	if p := s.Pack; p != nil && l.prev == nil && len(p.Skills) > 0 {
-		if err := p.CopySkills(filepath.Join(cfgDir, "skills")); err != nil {
+	// The pack's skills become the agent's personal skills (ADR 0023): written
+	// fresh for every launch into the daemon-owned runtime dir and mounted
+	// read-only over CLAUDE_CONFIG_DIR/skills, so the agent cannot change them
+	// and a relaunch gets the current pack's. The mount point is created
+	// while the config dir still belongs to the user.
+	if l.prev == nil {
+		if err := os.MkdirAll(filepath.Join(cfgDir, "skills"), 0o755); err != nil {
+			return fail(err)
+		}
+	}
+	var skillsPath string
+	if p := s.Pack; p != nil && len(p.Skills) > 0 {
+		skillsPath = filepath.Join(res.dir, "skills")
+		if err := p.WriteSkills(skillsPath); err != nil {
 			return fail(err)
 		}
 	}
@@ -301,7 +313,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	args, err := sandbox.WorkerArgs(sandbox.WorkerSpec{
 		Instance: s.Instance, AgentID: id, Image: s.Image, Workspace: wsPath, ObjectsDir: prep.objects, ConfigDir: cfgDir,
 		HookSocket: ln.Path(), MCPSocket: mcpPath, MCPConfig: mcpConfig, EgressSocket: egressPath, APISocket: apiPath,
-		SecretsSocket: secretsPath, AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
+		SecretsSocket: secretsPath, Skills: skillsPath, AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
 		Git: prep.ident, Memory: s.Memory, Pids: s.Pids, Command: command,
 	})
 	if err != nil {

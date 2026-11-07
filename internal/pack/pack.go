@@ -72,7 +72,8 @@ type Pack struct {
 	Skills        []string
 	MCPServers    map[string]MCPServer
 
-	fsys fs.FS // the pack directory
+	fsys   fs.FS             // the pack directory
+	skills map[string][]byte // skill files read and checked at load, by path under skills/
 }
 
 // SourceBuiltin is Pack.Source for packs embedded in the binary.
@@ -184,7 +185,7 @@ func load(fsys fs.FS, dir, source, label string) (*Pack, error) {
 		e.add("", "more than one YAML document (a second ---); a pack is a single document")
 	}
 
-	p := &Pack{Source: source, fsys: fsys, MCPServers: map[string]MCPServer{}}
+	p := &Pack{Source: source, fsys: fsys, MCPServers: map[string]MCPServer{}, skills: map[string][]byte{}}
 	switch {
 	case f.Schema == nil:
 		e.add("schema", "missing; add `schema: %d` as the first line", Schema)
@@ -276,9 +277,13 @@ func load(fsys fs.FS, dir, source, label string) (*Pack, error) {
 		case slices.Contains(p.Skills, s):
 			e.add(field, "%q is listed twice", s)
 		default:
-			if msg := checkSkill(fsys, s); msg != "" {
+			files, msg := checkSkill(fsys, s)
+			if msg != "" {
 				e.add(field, "%s", msg)
 				continue
+			}
+			for k, v := range files {
+				p.skills[k] = v
 			}
 			p.Skills = append(p.Skills, s)
 		}
@@ -391,7 +396,7 @@ func checkContainerfile(src []byte) string {
 	var cur strings.Builder
 	for _, line := range strings.Split(string(src), "\n") {
 		t := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if cur.Len() == 0 && (t == "" || strings.HasPrefix(t, "#")) {
+		if t == "" || strings.HasPrefix(t, "#") { // comments are dropped inside continuations too
 			continue
 		}
 		if c, ok := strings.CutSuffix(t, `\`); ok {
@@ -407,14 +412,16 @@ func checkContainerfile(src []byte) string {
 	if f := strings.Fields(cur.String()); len(f) > 0 {
 		instr = append(instr, f)
 	}
-	firstFrom, lastFrom, arg := -1, -1, false
+	firstFrom, lastFrom, arg, entrypoint := -1, -1, false, false
 	for i, f := range instr {
 		switch strings.ToUpper(f[0]) {
 		case "FROM":
 			if firstFrom < 0 {
 				firstFrom = i
 			}
-			lastFrom = i
+			lastFrom, entrypoint = i, false
+		case "ENTRYPOINT":
+			entrypoint = true
 		case "ARG":
 			if firstFrom < 0 && len(f) > 1 && strings.SplitN(f[1], "=", 2)[0] == "BASE_IMAGE" {
 				arg = true
@@ -438,35 +445,39 @@ func checkContainerfile(src []byte) string {
 	if img != "${BASE_IMAGE}" && img != "$BASE_IMAGE" {
 		return fmt.Sprintf("the last stage must start with `FROM ${BASE_IMAGE}`, not %q: workers rely on the base image's git, certificates and user", strings.Join(f, " "))
 	}
+	if entrypoint {
+		return "the last stage sets an ENTRYPOINT; remove it: agent-office starts workers with its own init and command"
+	}
 	return ""
 }
 
 // checkSkill requires skills/<name>/SKILL.md with a description in its
-// frontmatter (code.claude.com/docs/en/skills) and bounds the skill's size.
-func checkSkill(fsys fs.FS, name string) string {
+// frontmatter (code.claude.com/docs/en/skills), bounds the skill's size and
+// returns its files, so what agents get is exactly what was checked.
+func checkSkill(fsys fs.FS, name string) (map[string][]byte, string) {
 	dir := path.Join("skills", name)
 	md, err := readFile(fsys, path.Join(dir, "SKILL.md"), maxSkillMDBytes)
 	if err != nil {
-		return fmt.Sprintf("%v (a skill is a directory skills/%s/ with a SKILL.md)", err, name)
+		return nil, fmt.Sprintf("%v (a skill is a directory skills/%s/ with a SKILL.md)", err, name)
 	}
 	body := strings.TrimPrefix(string(md), "\ufeff")
 	rest, ok := strings.CutPrefix(body, "---\n")
 	end := strings.Index(rest, "\n---")
 	if !ok || end < 0 {
-		return fmt.Sprintf("skills/%s/SKILL.md must start with YAML frontmatter between --- lines, with a description", name)
+		return nil, fmt.Sprintf("skills/%s/SKILL.md must start with YAML frontmatter between --- lines, with a description", name)
 	}
 	var front map[string]any
 	if err := yaml.Unmarshal([]byte(rest[:end]), &front); err != nil {
-		return fmt.Sprintf("skills/%s/SKILL.md: frontmatter is not valid YAML: %s", name, strings.TrimPrefix(err.Error(), "yaml: "))
+		return nil, fmt.Sprintf("skills/%s/SKILL.md: frontmatter is not valid YAML: %s", name, strings.TrimPrefix(err.Error(), "yaml: "))
 	}
 	if d, _ := front["description"].(string); strings.TrimSpace(d) == "" {
-		return fmt.Sprintf("skills/%s/SKILL.md: the frontmatter needs a description (Claude uses it to decide when to load the skill)", name)
+		return nil, fmt.Sprintf("skills/%s/SKILL.md: the frontmatter needs a description (Claude uses it to decide when to load the skill)", name)
 	}
 	if n, ok := front["name"]; ok && n != name {
-		return fmt.Sprintf("skills/%s/SKILL.md: frontmatter name %v differs from the directory name %q", name, n, name)
+		return nil, fmt.Sprintf("skills/%s/SKILL.md: frontmatter name %v differs from the directory name %q", name, n, name)
 	}
+	files := map[string][]byte{}
 	var size int64
-	count := 0
 	err = fs.WalkDir(fsys, dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -474,24 +485,20 @@ func checkSkill(fsys fs.FS, name string) string {
 		if d.IsDir() {
 			return nil
 		}
-		fi, err := d.Info()
+		b, err := readFile(fsys, p, maxSkillBytes)
 		if err != nil {
 			return err
 		}
-		if !fi.Mode().IsRegular() {
-			return fmt.Errorf("%s is not a regular file", p)
+		if size += int64(len(b)); size > maxSkillBytes || len(files) >= maxFiles {
+			return fmt.Errorf("skills/%s is larger than %d KiB or has more than %d files", name, maxSkillBytes>>10, maxFiles)
 		}
-		size += fi.Size()
-		count++
+		files[p] = b
 		return nil
 	})
-	switch {
-	case err != nil:
-		return err.Error()
-	case size > maxSkillBytes || count > maxFiles:
-		return fmt.Sprintf("skills/%s is larger than %d KiB or has more than %d files", name, maxSkillBytes>>10, maxFiles)
+	if err != nil {
+		return nil, err.Error()
 	}
-	return ""
+	return files, ""
 }
 
 func checkServer(command string, args []string, rawURL string, allow sandbox.Allowlist) string {
@@ -526,7 +533,7 @@ func checkServer(command string, args []string, rawURL string, allow sandbox.All
 	}
 	host := u.Hostname()
 	if !sandbox.ValidHost(host) {
-		return fmt.Sprintf("url %q must name a host, not an IP address", rawURL)
+		return fmt.Sprintf("url %q must name a lower-case host with at least two labels, such as docs.example.com (no IP address)", rawURL)
 	}
 	if !allow.Allows(host) {
 		return fmt.Sprintf("the host %s is not in egress.allow; add it there, since the server is reached through the egress proxy", host)

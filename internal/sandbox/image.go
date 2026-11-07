@@ -21,21 +21,28 @@ import (
 // (ADR 0023).
 //
 //go:embed Containerfile
-var containerfile []byte
+var baseContainerfile []byte
 
 // BaseImage is the local tag of the base worker image built from the
 // embedded Containerfile: a change to the file changes the tag.
 func BaseImage() string {
-	sum := sha256.Sum256(containerfile)
+	sum := sha256.Sum256(baseContainerfile)
 	return "localhost/agent-office-base:" + hex.EncodeToString(sum[:6])
 }
 
 var packNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
+// BuildFile is one file of an image build context.
+type BuildFile struct {
+	Data []byte
+	Exec bool // written 0755 instead of 0644, so COPY keeps scripts executable
+}
+
 // PackImage is the local tag of a stack pack's image (ADR 0023). It hashes
-// the base Containerfile, the pack name and every build file, so a change to
-// any of them changes the tag.
-func PackImage(pack string, files map[string][]byte) string {
+// the base Containerfile, the pack name, which file is the Containerfile and
+// every build file with its exec bit, so a change to any of them changes the
+// tag.
+func PackImage(pack, containerfile string, files map[string]BuildFile) string {
 	h := sha256.New()
 	put := func(b []byte) {
 		var n [8]byte
@@ -43,8 +50,9 @@ func PackImage(pack string, files map[string][]byte) string {
 		h.Write(n[:])
 		h.Write(b)
 	}
-	put(containerfile)
+	put(baseContainerfile)
 	put([]byte(pack))
+	put([]byte(containerfile))
 	names := make([]string, 0, len(files))
 	for n := range files {
 		names = append(names, n)
@@ -52,7 +60,8 @@ func PackImage(pack string, files map[string][]byte) string {
 	sort.Strings(names)
 	for _, n := range names {
 		put([]byte(n))
-		put(files[n])
+		put(files[n].Data)
+		put([]byte{map[bool]byte{false: 0, true: 1}[files[n].Exec]})
 	}
 	return "localhost/agent-office-pack-" + pack + ":" + hex.EncodeToString(h.Sum(nil)[:6])
 }
@@ -60,14 +69,14 @@ func PackImage(pack string, files map[string][]byte) string {
 // BuildBaseImage builds BaseImage with podman, streaming the build output to
 // out. It needs network access for the base image and Debian packages.
 func (p Podman) BuildBaseImage(ctx context.Context, out io.Writer) error {
-	return p.build(ctx, BaseImage(), map[string][]byte{"Containerfile": containerfile}, "Containerfile", nil, out)
+	return p.build(ctx, BaseImage(), map[string]BuildFile{"Containerfile": {Data: baseContainerfile}}, "Containerfile", nil, out)
 }
 
 // BuildPackImage builds a pack's image FROM BaseImage, which must exist.
 // files is the pack's build context (pack.Pack.BuildFiles), containerfile its
 // path in there.
-func (p Podman) BuildPackImage(ctx context.Context, pack string, files map[string][]byte, containerfile string, out io.Writer) error {
-	if !packNameRe.MatchString(pack) || files[containerfile] == nil {
+func (p Podman) BuildPackImage(ctx context.Context, pack string, files map[string]BuildFile, containerfile string, out io.Writer) error {
+	if _, ok := files[containerfile]; !packNameRe.MatchString(pack) || !ok {
 		return fmt.Errorf("sandbox: invalid pack %q or missing Containerfile %q", pack, containerfile)
 	}
 	if ok, err := p.ImageExists(ctx, BaseImage()); err != nil {
@@ -75,10 +84,10 @@ func (p Podman) BuildPackImage(ctx context.Context, pack string, files map[strin
 	} else if !ok {
 		return fmt.Errorf("sandbox: base image %s missing; build it first", BaseImage())
 	}
-	return p.build(ctx, PackImage(pack, files), files, containerfile, []string{"BASE_IMAGE=" + BaseImage()}, out)
+	return p.build(ctx, PackImage(pack, containerfile, files), files, containerfile, []string{"BASE_IMAGE=" + BaseImage()}, out)
 }
 
-func (p Podman) build(ctx context.Context, tag string, files map[string][]byte, file string, buildArgs []string, out io.Writer) error {
+func (p Podman) build(ctx context.Context, tag string, files map[string]BuildFile, file string, buildArgs []string, out io.Writer) error {
 	dir, err := os.MkdirTemp("", "agent-office-image-")
 	if err != nil {
 		return err
@@ -92,7 +101,11 @@ func (p Podman) build(ctx context.Context, tag string, files map[string][]byte, 
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(target, b, 0o644); err != nil {
+		mode := os.FileMode(0o644)
+		if b.Exec {
+			mode = 0o755
+		}
+		if err := os.WriteFile(target, b.Data, mode); err != nil {
 			return err
 		}
 	}

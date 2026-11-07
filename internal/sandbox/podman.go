@@ -14,7 +14,8 @@ import (
 const (
 	ContainerUser   = "1000:1000" // a subordinate uid on the host (ADR 0014)
 	WorkspaceDir    = "/workspace"
-	ConfigDir       = "/config" // CLAUDE_CONFIG_DIR
+	ConfigDir       = "/config"             // CLAUDE_CONFIG_DIR
+	SkillsDir       = ConfigDir + "/skills" // personal skills; a pack's are mounted here read-only
 	HomeDir         = "/tmp/home"
 	TmpDir          = HomeDir + "/tmp" // CLAUDE_CODE_TMPDIR; created by sandbox-init
 	runDir          = "/run/agent-office"
@@ -60,6 +61,7 @@ type WorkerSpec struct {
 	EgressSocket  string
 	APISocket     string
 	SecretsSocket string // optional: stack pack secrets, served once to sandbox-init (ADR 0023)
+	Skills        string // optional: stack pack skills, mounted read-only at ConfigDir/skills (ADR 0023)
 	AgentOffice   string // static agent-office binary
 	Claude        string // the resolved, versioned claude binary
 	Settings      string // daemon-generated settings file
@@ -124,14 +126,23 @@ func ReservedEnv(name string) bool {
 	if builtinEnv[name] || credentialEnv[name] {
 		return true
 	}
-	for _, p := range []string{"AGENT_OFFICE_", "CLAUDE", "ANTHROPIC_", "GIT_", "SSH_", "LD_", "BUN_"} {
+	// Prefixes: agent-office's own, Claude Code's (several without a CLAUDE
+	// prefix), git, SSH, the dynamic loader, Bun (the claude binary's runtime),
+	// shells, npm config, locale and XDG paths.
+	for _, p := range []string{"AGENT_OFFICE_", "CLAUDE", "ANTHROPIC_", "MCP_", "OTEL_", "DISABLE_", "GIT_", "SSH_",
+		"LD_", "BUN_", "BASH_", "CGO_", "NPM_CONFIG_", "npm_config_", "LC_", "XDG_"} {
 		if strings.HasPrefix(name, p) {
 			return true
 		}
 	}
 	switch name {
-	case "PATH", "USER", "LOGNAME", "SHELL", "PWD", "TMPDIR", "LANG", "ALL_PROXY", "all_proxy",
-		"NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR":
+	case "PATH", "USER", "LOGNAME", "SHELL", "PWD", "TMPDIR", "LANG", "ENV", "PROMPT_COMMAND", "IFS",
+		"ALL_PROXY", "all_proxy", "API_TIMEOUT_MS",
+		"NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
+		"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "AWS_CA_BUNDLE",
+		// The go pack's toolchain settings and module routing (a pack's image sets them).
+		"GOFLAGS", "GOPROXY", "GOSUMDB", "GONOSUMDB", "GOPRIVATE", "GONOPROXY", "GOTOOLCHAIN",
+		"GOPATH", "GOCACHE", "GOMODCACHE", "GOROOT", "GODEBUG", "GOTMPDIR", "GOENV", "GOINSECURE", "GOVCS":
 		return true
 	}
 	return false
@@ -182,6 +193,12 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 			src, dst string
 			ro       bool
 		}{s.SecretsSocket, SecretsSocket, false})
+	}
+	if s.Skills != "" {
+		mounts = append(mounts, struct {
+			src, dst string
+			ro       bool
+		}{s.Skills, SkillsDir, true})
 	}
 	args := append(baseArgs(s.Instance, s.AgentID, "worker", mem, pids),
 		"--name", ContainerName(s.AgentID),
