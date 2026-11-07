@@ -443,6 +443,32 @@ func (c *Client) PostReview(ctx context.Context, number int, commit, body string
 	return PostedReview{ID: r.GetID(), URL: r.GetHTMLURL(), Inline: inline && len(comments) > 0}, nil
 }
 
+// PostedComment is a comment agent-office posted on a pull request.
+type PostedComment struct {
+	ID  int64
+	URL string
+}
+
+// PostComment posts a comment on pull request number (a reply in its
+// conversation, through the issues API; the token's Pull requests write
+// permission covers it). It is not retried, so it is never posted twice.
+func (c *Client) PostComment(ctx context.Context, number int, body string) (PostedComment, error) {
+	if strings.TrimSpace(body) == "" {
+		return PostedComment{}, errors.New("github: a comment needs a body")
+	}
+	var cm *gh.IssueComment
+	err := c.do(ctx, "create_comment", false, func(cl *gh.Client) (*gh.Response, error) {
+		var resp *gh.Response
+		var err error
+		cm, resp, err = cl.Issues.CreateComment(ctx, c.opts.Repo.Owner, c.opts.Repo.Name, number, gh.IssueCommentRequest{Body: body})
+		return resp, err
+	})
+	if err != nil {
+		return PostedComment{}, err
+	}
+	return PostedComment{ID: cm.GetID(), URL: cm.GetHTMLURL()}, nil
+}
+
 // FoldComments appends inline comments to a review body as a list.
 func FoldComments(body string, comments []Comment) string {
 	var b strings.Builder

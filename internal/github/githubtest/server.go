@@ -68,6 +68,7 @@ type Server struct {
 	Login         string // the token owner; posted reviews are by this user
 	PRs           []*PR
 	Reviews       map[int][]*Review // by PR number
+	Comments      map[int][]string  // conversation comments by PR number (issues API)
 	CheckRuns     map[string][]CheckRun
 	Statuses      map[string][]Status
 	ChecksStatus  int                        // non-zero: check-runs answers this status (e.g. 403)
@@ -82,7 +83,7 @@ type Server struct {
 // New starts a fake for owner/name with default branch main.
 func New(t testing.TB, owner, name string) *Server {
 	s := &Server{t: t, Owner: owner, Name: name, DefaultBranch: "main", Login: "ozan-test",
-		Reviews: map[int][]*Review{}, CheckRuns: map[string][]CheckRun{}, Statuses: map[string][]Status{},
+		Reviews: map[int][]*Review{}, Comments: map[int][]string{}, CheckRuns: map[string][]CheckRun{}, Statuses: map[string][]Status{},
 		Fail: map[string][]int{}, nextReview: 1000}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.Close)
@@ -115,6 +116,13 @@ func (s *Server) PR(number int) (PR, bool) {
 		}
 	}
 	return PR{}, false
+}
+
+// CommentsOf returns the conversation comments posted on pull request number.
+func (s *Server) CommentsOf(number int) []string {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	return append([]string(nil), s.Comments[number]...)
 }
 
 // AddReview adds a review by user on pull request number and returns its id.
@@ -189,6 +197,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		op = "create_review"
 	case r.Method == "GET" && len(parts) == 5 && parts[0] == "pulls" && parts[2] == "reviews" && parts[4] == "comments":
 		op = "list_review_comments"
+	case r.Method == "POST" && len(parts) == 3 && parts[0] == "issues" && parts[2] == "comments":
+		op = "create_comment"
 	case r.Method == "GET" && len(parts) == 3 && parts[0] == "commits" && parts[2] == "check-runs":
 		op = "check_runs"
 	case r.Method == "GET" && len(parts) == 3 && parts[0] == "commits" && parts[2] == "status":
@@ -288,6 +298,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"id": rv.ID, "state": rv.State, "body": rv.Body, "commit_id": rv.CommitID,
 			"user":     map[string]string{"login": rv.User},
 			"html_url": fmt.Sprintf("https://github.com/x/pull/%d#review-%d", n, rv.ID)})
+	case "create_comment":
+		n, _ := strconv.Atoi(parts[1])
+		var in struct{ Body string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeJSON(w, 400, map[string]string{"message": "bad json"})
+			return
+		}
+		found := false
+		for _, p := range s.PRs {
+			found = found || p.Number == n
+		}
+		if !found {
+			writeJSON(w, 404, map[string]string{"message": "Not Found"})
+			return
+		}
+		s.Comments[n] = append(s.Comments[n], in.Body)
+		id := len(s.Comments[n])
+		writeJSON(w, 201, map[string]any{"id": id, "body": in.Body,
+			"html_url": fmt.Sprintf("https://github.com/x/pull/%d#issuecomment-%d", n, id)})
 	case "check_runs":
 		if s.ChecksStatus != 0 {
 			writeJSON(w, s.ChecksStatus, map[string]string{"message": "Resource not accessible by personal access token"})
