@@ -97,15 +97,15 @@ func workerImage(args []string) error {
 		return err
 	}
 	if *tagOnly {
-		fmt.Println(sandbox.WorkerImage())
+		fmt.Println(sandbox.BaseImage())
 		return nil
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := (sandbox.Podman{}).BuildWorkerImage(ctx, os.Stderr); err != nil {
+	if err := (sandbox.Podman{}).BuildBaseImage(ctx, os.Stderr); err != nil {
 		return err
 	}
-	fmt.Println(sandbox.WorkerImage())
+	fmt.Println(sandbox.BaseImage())
 	return nil
 }
 

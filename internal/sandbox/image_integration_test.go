@@ -31,8 +31,8 @@ import (
 func workerRun(t *testing.T, script string) (string, []Event) {
 	t.Helper()
 	p := Podman{}
-	if ok, err := p.ImageExists(context.Background(), WorkerImage()); err != nil || !ok {
-		t.Skipf("worker image %s missing: run make worker-image (%v)", WorkerImage(), err)
+	if ok, err := p.ImageExists(context.Background(), BaseImage()); err != nil || !ok {
+		t.Skipf("worker image %s missing: run make worker-image (%v)", BaseImage(), err)
 	}
 	self, err := filepath.Abs("../../bin/agent-office")
 	if err != nil {
@@ -106,7 +106,7 @@ func workerRun(t *testing.T, script string) (string, []Event) {
 	})
 
 	args, err := WorkerArgs(WorkerSpec{
-		Instance: "0123456789ab", AgentID: "e2e0123456ab", Image: WorkerImage(), Workspace: ws, ObjectsDir: objects, ConfigDir: cfgDir,
+		Instance: "0123456789ab", AgentID: "e2e0123456ab", Image: BaseImage(), Workspace: ws, ObjectsDir: objects, ConfigDir: cfgDir,
 		HookSocket: hookSock, MCPSocket: mcpSock, MCPConfig: mcpConfig, EgressSocket: egressSock, APISocket: apiSock,
 		AgentOffice: self, Claude: "/bin/true", Settings: settings, GitHooks: hooks,
 		Git:     GitIdentity{Name: "Ozan", Email: "ozan@example.com", CoAuthor: CoAuthor("worker-e2e")},

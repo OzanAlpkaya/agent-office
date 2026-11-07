@@ -74,7 +74,7 @@ func sandboxOptions(ctx context.Context, cfg serveConfig, self string, ci claude
 	if ci.version == "" {
 		return nil, fmt.Errorf("sandbox mode needs the Claude Code version for the worker config: `%s --version` failed", ci.path)
 	}
-	image := sandbox.WorkerImage()
+	image := sandbox.BaseImage()
 	if ok, err := p.ImageExists(ctx, image); err != nil {
 		return nil, err
 	} else if !ok {

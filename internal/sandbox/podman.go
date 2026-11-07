@@ -48,26 +48,27 @@ var AgentIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // WorkerSpec describes one worker container. Host paths must be absolute.
 type WorkerSpec struct {
-	Instance     string // daemon instance; scopes startup reconciliation
-	AgentID      string
-	Image        string
-	Workspace    string // the agent's shared clone
-	ObjectsDir   string // the main repository's objects, mounted read-only at the same path
-	ConfigDir    string // per-agent Claude Code config dir
-	HookSocket   string
-	MCPSocket    string // team MCP socket (ADR 0006)
-	MCPConfig    string // daemon-generated --mcp-config file
-	EgressSocket string
-	APISocket    string
-	AgentOffice  string // static agent-office binary
-	Claude       string // the resolved, versioned claude binary
-	Settings     string // daemon-generated settings file
-	GitHooks     string // directory with the commit-msg hook (WriteGitHooks)
-	Git          GitIdentity
-	Env          []string
-	Memory       string // e.g. "2g"; empty: DefaultMemory
-	Pids         int    // 0: DefaultPids
-	Command      []string
+	Instance      string // daemon instance; scopes startup reconciliation
+	AgentID       string
+	Image         string
+	Workspace     string // the agent's shared clone
+	ObjectsDir    string // the main repository's objects, mounted read-only at the same path
+	ConfigDir     string // per-agent Claude Code config dir
+	HookSocket    string
+	MCPSocket     string // team MCP socket (ADR 0006)
+	MCPConfig     string // daemon-generated --mcp-config file
+	EgressSocket  string
+	APISocket     string
+	SecretsSocket string // optional: stack pack secrets, served once to sandbox-init (ADR 0023)
+	AgentOffice   string // static agent-office binary
+	Claude        string // the resolved, versioned claude binary
+	Settings      string // daemon-generated settings file
+	GitHooks      string // directory with the commit-msg hook (WriteGitHooks)
+	Git           GitIdentity
+	Env           []string
+	Memory        string // e.g. "2g"; empty: DefaultMemory
+	Pids          int    // 0: DefaultPids
+	Command       []string
 }
 
 // HelperSpec describes a short-lived git helper container (status, bundle,
@@ -101,7 +102,7 @@ var builtinEnv = map[string]bool{
 	"HTTP_PROXY": true, "http_proxy": true, "NO_PROXY": true, "no_proxy": true, "ANTHROPIC_BASE_URL": true,
 	"CLAUDE_CODE_OAUTH_TOKEN": true, "AGENT_OFFICE_SOCKET": true, "AGENT_OFFICE_MCP_SOCKET": true, "TERM": true, "COLORTERM": true,
 	"CLAUDE_CODE_TMPDIR":         true,
-	"AGENT_OFFICE_EGRESS_SOCKET": true, "AGENT_OFFICE_API_SOCKET": true,
+	"AGENT_OFFICE_EGRESS_SOCKET": true, "AGENT_OFFICE_API_SOCKET": true, secretsSocketEnv: true,
 	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
 	"AGENT_OFFICE_CO_AUTHOR": true, "GIT_CONFIG_COUNT": true, "GIT_CONFIG_KEY_0": true, "GIT_CONFIG_VALUE_0": true,
 	"GIT_CONFIG_GLOBAL": true, "GIT_CONFIG_SYSTEM": true, "GIT_CONFIG_NOSYSTEM": true,
@@ -115,6 +116,26 @@ var credentialEnv = map[string]bool{
 }
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ReservedEnv reports whether name is a variable agent-office, the sandbox or
+// the agent CLI depend on, or one that carries a credential agents must never
+// hold (ADR 0020), so a stack pack may not supply it (ADR 0023).
+func ReservedEnv(name string) bool {
+	if builtinEnv[name] || credentialEnv[name] {
+		return true
+	}
+	for _, p := range []string{"AGENT_OFFICE_", "CLAUDE", "ANTHROPIC_", "GIT_", "SSH_", "LD_", "BUN_"} {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	switch name {
+	case "PATH", "USER", "LOGNAME", "SHELL", "PWD", "TMPDIR", "LANG", "ALL_PROXY", "all_proxy",
+		"NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR":
+		return true
+	}
+	return false
+}
 
 // WorkerArgs returns the `podman` arguments for a worker. The agent CLI runs
 // as a child of `agent-office sandbox-init`, which bridges the loopback
@@ -155,6 +176,12 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 		{s.Settings, SettingsFile, true},
 		{s.MCPConfig, MCPConfigFile, true},
 		{s.GitHooks, GitHooksDir, true},
+	}
+	if s.SecretsSocket != "" {
+		mounts = append(mounts, struct {
+			src, dst string
+			ro       bool
+		}{s.SecretsSocket, SecretsSocket, false})
 	}
 	args := append(baseArgs(s.Instance, s.AgentID, "worker", mem, pids),
 		"--name", ContainerName(s.AgentID),
@@ -201,6 +228,9 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 		return nil, err
 	}
 	env = append(env, gitEnv...)
+	if s.SecretsSocket != "" {
+		env = append(env, secretsSocketEnv+"="+SecretsSocket)
+	}
 	for _, kv := range append(env, extra...) {
 		args = append(args, "-e", kv)
 	}
