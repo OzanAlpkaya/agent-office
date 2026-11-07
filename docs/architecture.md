@@ -149,7 +149,8 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Another local process forges hook events or MCP calls | Per-agent unix socket, mode 0600, in `$XDG_RUNTIME_DIR`; check `session_id` against the socket's agent | 1, 4 |
 | Agent reads host secrets (`~/.ssh`, credential stores) | Container mounts only the worktree. Claude Code's own sandbox is not enough: reads are open by default and file tools are not covered (Spike E) | 3 |
 | Agent exfiltrates data over the network | Internal network with no route and no DNS; allowlist proxy, CONNECT :443 only | 3 |
-| Secret leakage via the process list, `podman inspect` or logs | `podman secret` (not `-e`); never log env or hook payload contents; scrub `CLAUDE_CODE_*` from the child env | 1, 3 |
+| Secret leakage via the process list, `podman inspect`, disk or logs | Token in one user-only file, delivered over the agent socket, never `-e`, argv or `podman secret` (ADR 0015); `Secret` type redacts itself; never log env or hook payload contents; scrub `CLAUDE_CODE_*` from the child env | 1, 3 |
+| Agent exfiltrates its own credential through an allowlisted domain | Residual: the allowlist narrows but cannot close it (TLS hides contents). Evaluate a credential-injecting proxy so the token never enters the container (ADR 0015); rotate the token if an agent misbehaves | 3 |
 | Agent escalates its own permissions | `request_access` needs human approval; access changes are made by deterministic code, not the model | 4 |
 | Runaway cost / loops | Stop-hook loop guard (`stop_hook_active`); per-agent budget and turn limits; cost tracking | 4, 8 |
 | Malicious repo content runs on the host | Phases 1–2 run agents on the host with normal permission prompts (no bypass); full permissions only inside the sandbox | 1–3 |
