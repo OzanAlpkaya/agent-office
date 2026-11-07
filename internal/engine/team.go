@@ -40,7 +40,7 @@ func (e *Engine) listenMCP(path, id, role string) (*mcp.Listener, error) {
 // calling agent; anything else is reported to it as an internal error.
 func userErr(err error) error {
 	for _, target := range []error{ErrInvalid, ErrForbidden, ErrLimit, ErrNotFound, ErrTooManyAgents,
-		ErrLeadRunning, ErrTaskHasRunning, ErrWorktreeDirty, ErrDecided} {
+		ErrLeadRunning, ErrTaskHasRunning, ErrWorktreeDirty, ErrDecided, ErrNoGitHub} {
 		if errors.Is(err, target) {
 			return mcp.UserError{Err: err}
 		}
@@ -260,6 +260,9 @@ func (e *Engine) resolveRecipient(ctx context.Context, caller, to string) (strin
 	if to == "" {
 		return "", invalid("to is required")
 	}
+	if role == RoleReviewer {
+		return "", forbidden("reviewers do not send messages; put everything into submit_review")
+	}
 	if role == RoleWorker {
 		if to != "lead" {
 			e.mu.Lock()
@@ -345,6 +348,9 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 		a.reporting = false
 		e.mu.Unlock()
 	}()
+	if info.Role == RoleReviewer {
+		return mcp.ReportDoneOutput{}, forbidden("reviewers report with submit_review")
+	}
 	if info.TaskID == "" {
 		return mcp.ReportDoneOutput{}, invalid("you have no task to report")
 	}
@@ -419,6 +425,11 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 	out.Next = "Done. End your turn now."
 	if team {
 		out.Next += " agent-office ends your session when this turn ends."
+	}
+	if e.gh != nil {
+		// ADR 0020: the branch becomes a pull request, in the background.
+		e.autoPR(info.ID, summary)
+		out.Next += " agent-office pushes your branch and opens or updates its pull request."
 	}
 	e.log.Info("task reported", "agent_id", info.ID, "task_id", task.ID, "commits", out.Commits, "lead_notified", out.LeadNotified)
 	return out, nil
@@ -511,8 +522,13 @@ func (e *Engine) initialPrompt(ctx context.Context, role string, task *db.Task, 
 	if role == RoleLead {
 		return leadPrompt(task.Title, task.Description, MaxSubTasks, e.opts.MaxAgents-1)
 	}
-	p := taskPrompt(task.Title, task.Description, branch)
-	p += "\n\nWhen the task is done and committed, call the agent-office report_done tool with a short summary."
+	return taskPrompt(task.Title, task.Description, branch) + e.workerRules(task)
+}
+
+// workerRules is the part of a worker's prompt about reporting, its lead and
+// the network; also used by follow-ups (ADR 0022).
+func (e *Engine) workerRules(task *db.Task) string {
+	p := "\n\nWhen the task is done and committed, call the agent-office report_done tool with a short summary."
 	if task.ParentTaskID.Valid {
 		p += " This task is part of a goal led by another agent. If you are blocked or need a decision," +
 			` use the agent-office send_message tool with to="lead", then end your turn: the answer is delivered` +

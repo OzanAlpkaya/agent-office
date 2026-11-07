@@ -203,8 +203,12 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		return fail(err)
 	}
-	if err := os.WriteFile(filepath.Join(cfgDir, ".claude.json"), seed, 0o644); err != nil {
-		return fail(err)
+	// A relaunch (ADR 0022) keeps the config the agent's first session left; it
+	// belongs to the sandbox user by now.
+	if _, err := os.Lstat(filepath.Join(cfgDir, ".claude.json")); l.prev == nil || err != nil {
+		if err := os.WriteFile(filepath.Join(cfgDir, ".claude.json"), seed, 0o644); err != nil {
+			return fail(err)
+		}
 	}
 
 	if ln, err = hooks.Listen(filepath.Join(res.dir, "hook.sock"), e.hookHandler(id), log); err != nil {
@@ -281,11 +285,9 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		hasPrompt:  l.prompt != "",
 	}
 	e.mu.Lock()
-	e.agents[id] = a
-	e.order = append(e.order, id)
-	e.publishAgentLocked(a)
+	e.registerLocked(a, l)
 	e.mu.Unlock()
-	log.Info("agent started", "role", l.role, "sandbox", SandboxPodman, "session_id", sid, "task_id", taskID, "branch", branch,
+	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "sandbox", SandboxPodman, "session_id", sid, "task_id", taskID, "branch", branch,
 		"workspace", wsPath, "container", res.container, "image", s.Image, "model", e.opts.Model)
 	e.wg.Add(1)
 	go e.watch(a)

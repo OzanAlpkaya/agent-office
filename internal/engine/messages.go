@@ -146,11 +146,21 @@ func (e *Engine) onHookLocked(ctx context.Context, a *agentProc, ev agent.Event,
 // after the Stop hook has returned.
 func (e *Engine) stopAfterReportLocked(a *agentProc) {
 	id := a.info.ID
+	reason := ExitReported
+	if a.info.Role == RoleReviewer {
+		reason = ExitReviewed
+	}
 	e.wg.Add(1)
 	time.AfterFunc(time.Second, func() {
 		defer e.wg.Done()
-		e.log.Info("ending agent after report_done", "agent_id", id)
-		_ = e.stop(id, ExitReported)
+		e.mu.Lock()
+		same := e.agents[id] == a // not a relaunched successor (ADR 0022)
+		e.mu.Unlock()
+		if !same {
+			return
+		}
+		e.log.Info("ending agent after its final tool call", "agent_id", id, "reason", reason)
+		_ = e.stop(id, reason)
 	})
 }
 
