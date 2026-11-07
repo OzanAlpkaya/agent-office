@@ -29,6 +29,9 @@ func TestParseServe(t *testing.T) {
 		{"--repo", "/tmp", "--egress-allow", "*.example.com"},
 		{"--repo", "/tmp", "--egress-allow", "10.0.0.1"},
 		{"--repo", "/tmp", "--sandbox-pids", "1"},
+		{"--repo", "/tmp", "--reviewer", "gpt"},
+		{"--repo", "/tmp", "--review-rounds", "6"},
+		{"--repo", "/tmp", "--review-rounds", "-1"},
 	} {
 		if _, err := parseServe(args); err == nil {
 			t.Errorf("parseServe(%v) accepted", args)
@@ -45,6 +48,23 @@ func TestParseServe(t *testing.T) {
 	}
 	if _, err := parseServe([]string{"--repo", "/tmp", "--addr", "[::1]:7680"}); err != nil {
 		t.Errorf("IPv6 loopback rejected: %v", err)
+	}
+}
+
+func TestGitHubFlags(t *testing.T) {
+	for _, k := range []string{"AGENT_OFFICE_GITHUB", "AGENT_OFFICE_GITHUB_REMOTE", "AGENT_OFFICE_REVIEWER", "AGENT_OFFICE_REVIEW_ROUNDS"} {
+		t.Setenv(k, "")
+	}
+	c, err := parseServe([]string{"--repo", "/tmp"})
+	if err != nil || c.github || c.githubRemote != "origin" || c.reviewer != "internal" || c.reviewRounds != 2 {
+		t.Fatalf("defaults (GitHub is opt-in): %+v %v", c, err)
+	}
+	t.Setenv("AGENT_OFFICE_GITHUB", "true")
+	t.Setenv("AGENT_OFFICE_REVIEWER", "coderabbit")
+	t.Setenv("AGENT_OFFICE_REVIEW_ROUNDS", "0")
+	c, err = parseServe([]string{"--repo", "/tmp", "--github-remote", "upstream"})
+	if err != nil || !c.github || c.githubRemote != "upstream" || c.reviewer != "coderabbit" || c.reviewRounds != 0 {
+		t.Fatalf("env and flags: %+v %v", c, err)
 	}
 }
 

@@ -41,6 +41,7 @@ var (
 	ErrDecided        = errors.New("access request was already decided")
 	ErrFlagged        = errors.New("the branch has flagged commits; accept them before pushing")
 	ErrNoGitHub       = errors.New("GitHub is not enabled; start the daemon with --github")
+	ErrUpstream       = errors.New("git or GitHub failed") // push or GitHub API errors (ADR 0020)
 )
 
 // Exit reasons recorded for agents.

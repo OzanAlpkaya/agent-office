@@ -32,6 +32,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
+	"github.com/OzanAlpkaya/agent-office/internal/review"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -183,6 +184,10 @@ type serveConfig struct {
 	egressAllow         []string // added to sandbox.DefaultEgressAllow
 	sandboxMemory       string
 	sandboxPids         int
+	github              bool   // push and open pull requests (ADR 0020)
+	githubRemote        string // remote of the main repository to push to
+	reviewer            string // internal | coderabbit | none (ADR 0021)
+	reviewRounds        int    // automatic follow-ups per pull request (ADR 0022)
 }
 
 func parseServe(args []string) (serveConfig, error) {
@@ -216,6 +221,21 @@ func parseServe(args []string) (serveConfig, error) {
 		return c, err
 	}
 	fs.IntVar(&c.sandboxPids, "sandbox-pids", pids, "process limit per worker [AGENT_OFFICE_SANDBOX_PIDS]")
+	gh, err := envBool("AGENT_OFFICE_GITHUB", false)
+	if err != nil {
+		return c, err
+	}
+	fs.BoolVar(&c.github, "github", gh, "push finished work and open pull requests on GitHub [AGENT_OFFICE_GITHUB]")
+	fs.StringVar(&c.githubRemote, "github-remote", envOr("AGENT_OFFICE_GITHUB_REMOTE", "origin"),
+		"remote of --repo to push to; its URL names the GitHub repository [AGENT_OFFICE_GITHUB_REMOTE]")
+	fs.StringVar(&c.reviewer, "reviewer", envOr("AGENT_OFFICE_REVIEWER", review.NameInternal),
+		"who reviews pull requests: internal (a reviewer agent), coderabbit or none [AGENT_OFFICE_REVIEWER]")
+	rounds, err := envInt("AGENT_OFFICE_REVIEW_ROUNDS", 2)
+	if err != nil {
+		return c, err
+	}
+	fs.IntVar(&c.reviewRounds, "review-rounds", rounds,
+		"review feedback rounds sent to the worker automatically per pull request [AGENT_OFFICE_REVIEW_ROUNDS]")
 	fs.BoolVar(&c.dev, "dev", false, "allow the Vite dev server origin (localhost:5173)")
 	fs.StringVar(&c.logLevel, "log-level", envOr("AGENT_OFFICE_LOG_LEVEL", "info"), "debug | info | warn [AGENT_OFFICE_LOG_LEVEL]")
 	if err := fs.Parse(args); err != nil {
@@ -245,6 +265,15 @@ func parseServe(args []string) (serveConfig, error) {
 	}
 	if c.sandboxPids < 16 || c.sandboxPids > 65536 {
 		return c, fmt.Errorf("--sandbox-pids must be between 16 and 65536, got %d", c.sandboxPids)
+	}
+	switch c.reviewer {
+	case review.NameInternal, review.NameCodeRabbit, engine.ReviewerNone:
+	default:
+		return c, fmt.Errorf("--reviewer must be %s, %s or %s, got %q", review.NameInternal, review.NameCodeRabbit,
+			engine.ReviewerNone, c.reviewer)
+	}
+	if c.reviewRounds < 0 || c.reviewRounds > engine.MaxReviewRounds {
+		return c, fmt.Errorf("--review-rounds must be between 0 and %d, got %d", engine.MaxReviewRounds, c.reviewRounds)
 	}
 	if c.maxAgents < 1 || c.maxAgents > 32 {
 		return c, fmt.Errorf("--max-agents must be between 1 and 32, got %d", c.maxAgents)
@@ -305,6 +334,12 @@ func serve(args []string) error {
 	if err != nil {
 		return fmt.Errorf("git is required: %w", err)
 	}
+	var ghOpts *engine.GitHubOptions
+	if cfg.github {
+		if ghOpts, err = githubOptions(context.Background(), cfg, g, log); err != nil {
+			return err
+		}
+	}
 	st, err := store.Open(context.Background(), filepath.Join(cfg.dataDir, "agent-office.db"))
 	if err != nil {
 		return err
@@ -320,7 +355,7 @@ func serve(args []string) error {
 		ClaudeBin: claudeBin, HookCommand: agent.ShellQuote(self) + " hook",
 		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
-		Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version,
+		Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version, GitHub: ghOpts,
 	})
 	if err != nil {
 		return err
@@ -341,7 +376,7 @@ func serve(args []string) error {
 	log.Info("agent-office starting", "version", version, "addr", "http://"+cfg.addr, "repo", eng.Project().RepoPath,
 		"data_dir", cfg.dataDir, "max_agents", cfg.maxAgents, "git_version", gitVersion,
 		"claude", ci.path, "claude_version", ci.version, "sandbox", cfg.sandbox, "model", cfg.model,
-		"inherit_user_settings", cfg.inheritUserSettings, "ui_built", built, "dev", cfg.dev)
+		"inherit_user_settings", cfg.inheritUserSettings, "github", cfg.github, "ui_built", built, "dev", cfg.dev)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

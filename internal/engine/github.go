@@ -373,7 +373,7 @@ func (e *Engine) submitPR(ctx context.Context, agentID, summary string, manual b
 			row = r
 		}
 		e.publishPR(ctx, row)
-		return e.prView(ctx, row), fmt.Errorf("%s: %w", step, err)
+		return e.prView(ctx, row), fmt.Errorf("%w: %s: %v", ErrUpstream, step, firstLine(err.Error()))
 	}
 	if err := e.git.Push(ctx, repo, g.Remote, branch); err != nil {
 		return fail("push", err)
