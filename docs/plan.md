@@ -146,10 +146,16 @@ derived from Claude Code hooks.
 - Review feedback goes back to the original worker, relaunched in its workspace on its branch.
 
 **Definition of Done**
-- [ ] A completed task results in a PR on a test repository.
-- [ ] Both reviewer implementations work behind one interface.
-- [ ] Review comments are turned into follow-up work for the original worker.
-- [ ] Merging stays a human action.
+- [x] A completed task results in a PR on a test repository (`TestGitHubEndToEnd`: real Claude Code,
+      sandboxed, PR on `OzanAlpkaya/agent-office-playground`).
+- [x] Both reviewer implementations work behind one interface (`TestReviewerContract` runs one
+      contract against both; the internal reviewer also ran live in the e2e; CodeRabbit is tested
+      against the GitHub fake only, since its app is not installed on the playground).
+- [x] Review comments are turned into follow-up work for the original worker (`TestGitHubLoop`,
+      `TestSandboxedReviewLoop`; live in the e2e through "Send to worker", because haiku approved the
+      small change both times).
+- [x] Merging stays a human action (no merge operation in the client, COMMENT reviews only, the
+      fake fails any other request; a human merge only moves the task to done).
 
 ---
 
