@@ -233,7 +233,7 @@ func TestTeamEndToEnd(t *testing.T) {
 		case strings.Contains(line, "team tool failed"):
 			t.Errorf("team tool failed: %s", line)
 		case strings.Contains(line, "msg=\"team tool\""), strings.Contains(line, "message delivered"),
-			strings.Contains(line, "ending agent after report_done"), strings.Contains(line, "msg=\"agent started\""):
+			strings.Contains(line, "ending agent after its final tool call"), strings.Contains(line, "msg=\"agent started\""):
 			t.Log(line)
 		}
 	}

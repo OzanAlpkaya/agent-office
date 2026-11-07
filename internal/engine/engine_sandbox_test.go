@@ -45,13 +45,15 @@ send() { printf '{"hook_event_name":"%s","session_id":"%s"}' "$1" "$sid" | /opt/
 IGNORE_TERM
 echo "bypass=$bypass"
 case "$last" in *"Task: Sayfalama ekle"*) echo prompt=ok;; esac
+case "$last" in *"[agent-office] Review of pull request"*) echo followup=ok;; esac
+case "$last" in *"code reviewer of a pull request"*) echo review-prompt=ok;; esac
 grep -q '"hasTrustDialogAccepted": true' /config/.claude.json && echo seeded=yes
 echo "token=$CLAUDE_CODE_OAUTH_TOKEN"
 echo "api=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/models)"
 send SessionStart
 while IFS= read -r line; do
   case "$line" in
-    commit*) cd /workspace && n=$((n+1)) && echo "$n" > "agent-$n.txt" && git add "agent-$n.txt" \
+    commit*) cd /workspace && n=$((n+1)) && echo "$n $(date +%s%N)" > "agent-$n.txt" && git add "agent-$n.txt" \
       && git commit -qm "feat: agent work $n" \
       && git log -1 --format='log=%an|%(trailers:key=Co-authored-by,valueonly)' | sed '/^$/d' \
       && echo "committed $n" ;;
@@ -65,6 +67,7 @@ while IFS= read -r line; do
           '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
           "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"$tool\",\"arguments\":$args}}"
         sleep 8; } | /opt/agent-office/agent-office mcp | grep '"id":2' | sed 's/^/mcp-reply=/' ;;
+    stop*) send Stop ;;
     exit*) send SessionEnd; exit 0 ;;
   esac
 done
@@ -717,5 +720,78 @@ func TestSandboxedTeamWorker(t *testing.T) {
 	msgs, _ := e.Messages(ctx, lead.ID)
 	if len(msgs) != 1 || !strings.Contains(msgs[0].Body, "done in the sandbox") {
 		t.Fatalf("lead messages %+v", msgs)
+	}
+}
+
+// TestSandboxedReviewLoop runs the Phase 5 loop with real Podman and fake
+// agents (no tokens): a sandboxed worker reports through the in-container
+// bridge; its imported branch is pushed and becomes a pull request; a
+// sandboxed reviewer submits through its bridge; the worker is relaunched in
+// its own workspace (its config dir now belongs to the sandbox user) and its
+// new commit updates the pull request.
+func TestSandboxedReviewLoop(t *testing.T) {
+	f := sandboxFixture(t, false)
+	_, srv, bare := withGitHub(t, f)
+	logs := &lockedBuffer{}
+	f.opts.Logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("engine log:\n%s", logs.Bytes())
+		}
+	})
+	e := f.engine(t)
+	log := record(t, e)
+	ctx := context.Background()
+	task, _ := e.CreateTask(ctx, TaskInput{Title: "Add tags"})
+	w, err := e.Start(ctx, StartRequest{TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 60*time.Second, agentState(w.ID, hooks.Idle))
+	type_ := func(id, line string) {
+		t.Helper()
+		if err := e.Input(id, []byte(line+"\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type_(w.ID, "commit")
+	screen(t, e, w.ID, "committed 1")
+	type_(w.ID, `mcp report_done {"summary":"tags added"}`)
+	pr := log.wait(t, 90*time.Second, func(u Update) bool { return u.Type == "pull_request" && u.PullRequest.State == PROpen }).PullRequest
+	if got := gitIn(t, bare, "rev-parse", "refs/heads/"+pr.Branch); got != pr.Head {
+		t.Fatalf("remote %s, PR head %s", got, pr.Head)
+	}
+	type_(w.ID, "exit")
+	log.wait(t, 30*time.Second, agentState(w.ID, hooks.Exited))
+
+	r := log.wait(t, 60*time.Second, func(u Update) bool {
+		return u.Type == "agent" && u.Agent.Role == RoleReviewer && u.Agent.State == string(hooks.Idle)
+	}).Agent
+	screen(t, e, r.ID, "review-prompt=ok")
+	type_(r.ID, `mcp submit_review {"verdict":"changes_requested","summary":"add a test","comments":[{"path":"agent-1.txt","line":1,"body":"why?"}]}`)
+	out := screen(t, e, r.ID, "mcp-reply=")
+	if !strings.Contains(out, `"posted":true`) {
+		t.Fatalf("submit_review through the bridge:\n%s", out)
+	}
+	type_(r.ID, "stop")
+	if got := srv.ReviewsOf(1); len(got) != 1 || got[0].CommitID != pr.Head {
+		t.Fatalf("posted reviews %+v", got)
+	}
+
+	log.wait(t, 90*time.Second, func(u Update) bool {
+		return u.Type == "agent" && u.Agent.ID == w.ID && u.Agent.SessionID != w.SessionID && u.Agent.State == string(hooks.Idle)
+	})
+	screen(t, e, w.ID, "followup=ok")
+	type_(w.ID, "commit")
+	screen(t, e, w.ID, "committed 1")
+	type_(w.ID, `mcp report_done {"summary":"test added"}`)
+	pr2 := log.wait(t, 90*time.Second, func(u Update) bool {
+		return u.Type == "pull_request" && u.PullRequest.State == PROpen && u.PullRequest.Head != pr.Head
+	}).PullRequest
+	if pr2.Number != 1 || gitIn(t, bare, "rev-parse", "refs/heads/"+pr2.Branch) != pr2.Head {
+		t.Fatalf("follow-up push %+v", pr2)
+	}
+	if n := gitIn(t, f.repo, "rev-list", "--count", pr.Head+".."+pr2.Head); n != "1" {
+		t.Fatalf("follow-up is %s commit(s) on top, want a fast-forward of 1", n)
 	}
 }

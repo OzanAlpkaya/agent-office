@@ -138,11 +138,12 @@ derived from Claude Code hooks.
 
 **Goal:** Finished work becomes a pull request and gets reviewed automatically.
 
-**Scope**
-- go-github client using a token from env; git push over SSH.
-- Open PRs from worker branches; read review comments and checks.
-- Pluggable reviewer interface: CodeRabbit or an internal reviewer agent.
-- Review feedback goes back to the worker as a task.
+**Scope** (see ADRs 0020–0022 and `docs/plans/phase-5.md`)
+- go-github client with a token read from a user-only file whose path comes from the environment
+  (`AGENT_OFFICE_GITHUB_TOKEN_FILE`, ADR 0020); the daemon pushes over SSH from the main repository.
+- Open PRs from worker branches; read review comments and checks (polled; no webhooks).
+- Pluggable reviewer interface: CodeRabbit or an internal reviewer agent (role `reviewer`).
+- Review feedback goes back to the original worker, relaunched in its workspace on its branch.
 
 **Definition of Done**
 - [ ] A completed task results in a PR on a test repository.
