@@ -1,6 +1,6 @@
 # 0011. Data model and restart semantics
 
-- **Status:** Accepted
+- **Status:** Accepted; event retention decided in ADR 0028, session counters added in ADR 0026
 - **Date:** 2026-11-07
 
 ## Context

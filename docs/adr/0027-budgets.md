@@ -53,10 +53,11 @@ Option 2, option 3, option 3 and option 2.
 - Before forwarding a request, the API proxy asks the engine. A spent budget gets
   `403 {"type":"error","error":{"type":"permission_error","message":"agent-office: ... budget of
   $X is spent ..."}}`: Claude Code shows the message and does not retry a 403. The refusal is a
-  sandbox event in the UI (`budget`), logged with the session id.
+  sandbox event in the UI (`api_budget`, "Budget spent"), logged with the session id.
 - **Fail closed:** with any budget set, a request from a session whose usage includes a model
   without a price is refused (the spend cannot be known), and the daemon refuses to start when
-  `--model` names a model without a price.
+  `--model` is a full model id (`claude-…`) without a price. Aliases such as `haiku` resolve inside
+  Claude Code, so they are checked per request instead.
 - A relaunched worker (ADR 0022) starts a new session with a fresh session budget; the goal budget
   still counts everything before.
 - Host-mode agents are not limited (they have no API socket); the UI and `GET /api/status` say so.
