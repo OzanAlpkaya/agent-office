@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 )
 
 // claudeHookEvents are the Claude Code hook events the daemon registers.
@@ -39,6 +41,7 @@ type LaunchSpec struct {
 	SocketPath          string   // per-agent hook socket
 	BaseEnv             []string // usually os.Environ(); scrubbed before use
 	InitialPrompt       string   // optional first prompt of the interactive session
+	MCPConfigPath       string   // optional --mcp-config file with the team MCP server (ADR 0006)
 }
 
 // Command builds the claude command for spec. It does not start it.
@@ -52,6 +55,13 @@ func (c ClaudeCode) Command(spec LaunchSpec) (*exec.Cmd, error) {
 	}
 	if !spec.InheritUserSettings {
 		args = append(args, "--setting-sources", "project,local")
+	}
+	if spec.MCPConfigPath != "" {
+		args = append(args, "--mcp-config", spec.MCPConfigPath)
+		if !spec.InheritUserSettings {
+			// The user's own MCP servers belong to their settings too.
+			args = append(args, "--strict-mcp-config")
+		}
 	}
 	if spec.InitialPrompt != "" {
 		// After "--", so a prompt starting with "-" is never parsed as a flag.
@@ -135,6 +145,7 @@ type ContainerSpec struct {
 	SessionID     string
 	Model         string
 	SettingsPath  string
+	MCPConfigPath string // optional; the worker then uses only this MCP config
 	InitialPrompt string
 }
 
@@ -149,11 +160,33 @@ func ContainerArgs(s ContainerSpec) ([]string, error) {
 	if s.Model != "" {
 		args = append(args, "--model", s.Model)
 	}
+	if s.MCPConfigPath != "" {
+		args = append(args, "--mcp-config", s.MCPConfigPath, "--strict-mcp-config")
+	}
 	args = append(args, "--dangerously-skip-permissions")
 	if s.InitialPrompt != "" {
 		args = append(args, "--", s.InitialPrompt)
 	}
 	return args, nil
+}
+
+// MCPConfig returns a --mcp-config document with one stdio server: command
+// (the agent-office binary, as a path, not a shell string) run as
+// `<command> mcp`, bridged to socket (ADR 0006).
+func MCPConfig(command, socket string) ([]byte, error) {
+	if !strings.HasPrefix(command, "/") || !strings.HasPrefix(socket, "/") {
+		return nil, errors.New("agent: MCPConfig needs absolute command and socket paths")
+	}
+	return json.MarshalIndent(map[string]any{
+		"mcpServers": map[string]any{
+			mcp.ServerName: map[string]any{
+				"type":    "stdio",
+				"command": command,
+				"args":    []string{"mcp"},
+				"env":     map[string]string{mcp.SocketEnv: socket},
+			},
+		},
+	}, "", "  ")
 }
 
 func settings(hookCommand string, extra map[string]any) ([]byte, error) {
@@ -169,7 +202,10 @@ func settings(hookCommand string, extra map[string]any) ([]byte, error) {
 	for _, e := range claudeHookEvents {
 		hooks[e] = []matcher{{Hooks: []hook{{Type: "command", Command: hookCommand, Timeout: hookTimeoutSeconds}}}}
 	}
-	doc := map[string]any{"hooks": hooks}
+	// The team tools are pre-allowed: the daemon authorizes every call itself
+	// (ADR 0017), so a host-mode permission prompt would add nothing. Every
+	// other tool still prompts in host mode.
+	doc := map[string]any{"hooks": hooks, "permissions": map[string]any{"allow": []string{"mcp__" + mcp.ServerName}}}
 	for k, v := range extra {
 		doc[k] = v
 	}
