@@ -22,6 +22,7 @@ const exitLabel: Record<string, string> = {
   daemon_restart: "daemon restarted",
   start_failed: "start failed",
   reported_done: "reported done",
+  review_submitted: "review submitted",
 };
 
 const importOutcome: Record<string, string> = {
@@ -60,7 +61,7 @@ const stuckAfterMs = 20_000;
 type View = { kind: "board" } | { kind: "agent"; id: string };
 
 export function App(): JSX.Element {
-  const { agents, tasks, events, messages, accessRequests, connection } = useWorld();
+  const { agents, tasks, events, messages, accessRequests, pullRequests, connection } = useWorld();
   const [view, setView] = useState<View>({ kind: "board" });
   const [project, setProject] = useState<Project>();
   const [version, setVersion] = useState("");
@@ -132,6 +133,12 @@ export function App(): JSX.Element {
           </span>
         )}
         {status?.sandbox === "host" && <span className="badge unsandboxed">unsandboxed · host mode</span>}
+        {status?.github && (
+          <span className="badge github" title={`Pushes to ${status.github.remote}; PRs into ${status.github.base}; ` +
+            `${status.github.rounds} automatic follow-up round(s). agent-office never merges.`}>
+            GitHub · {status.github.repo} · review: {status.github.reviewer}
+          </span>
+        )}
         <span className={`conn conn-${connection}`}>{connection === "open" ? "connected" : connection}</span>
       </header>
       {status?.sandbox === "host" && (
@@ -189,6 +196,11 @@ export function App(): JSX.Element {
               onStart={(t) => void startAgent(t.id)}
               onDelete={(t) => void run(() => api.deleteTask(t.id))}
               onOpenAgent={(id) => setView({ kind: "agent", id })}
+              pullRequests={pullRequests} github={status?.github !== undefined}
+              onOpenPR={(t) => void run(() => api.openPullRequest(t.id))}
+              onRequestReview={(pr) => void run(() => api.requestReview(pr.id))}
+              onSendToWorker={(pr, r) => void run(() => api.sendToWorker(pr.id, r.id))}
+              onAcceptFlagged={(pr) => void run(() => api.acceptFlagged(pr.id, pr.flagged.map((f) => f.commit)))}
             />
           ) : current.has_terminal ? (
             <TerminalView key={current.id} agentId={current.id} />
@@ -232,6 +244,7 @@ function AgentCard({
       <div className="row">
         <span className={`chip role-${a.role}`} title={a.role === "lead"
           ? "Plans the goal and assigns sub-tasks to workers"
+          : a.role === "reviewer" ? "Reviews one pull request; never edits, pushes or merges"
           : "Works on one task on its own branch"}>{a.role}</span>
         {sandboxed
           ? <span className="chip sandboxed" title="Rootless Podman worker; permission prompts off inside it">sandboxed</span>

@@ -96,3 +96,16 @@ button.danger { border-color: #ff6b6b; color: #ff6b6b; }
 .approvals li { display: flex; flex-direction: column; gap: 0.25rem; }
 .strong { font-weight: 600; }
 .quote { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Phase 5: pull requests and reviews */
+.role-reviewer { color: #5fd3c7; }
+.badge.github { color: #c9d1d9; }
+.pr { border-top: 1px dashed var(--border); padding-top: 0.35rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.pr a { color: var(--accent); }
+.pr-open { color: #7bd88f; }
+.pr-merged { color: #c49bff; }
+.pr-closed, .pr-pending { color: var(--muted); }
+.checks-success { color: #7bd88f; }
+.checks-failure { color: #ff6b6b; }
+.checks-pending { color: #ffb454; }
+.checks-none, .checks-unavailable { color: var(--muted); }
