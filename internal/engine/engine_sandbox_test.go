@@ -27,6 +27,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
 	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 )
 
@@ -59,6 +60,11 @@ while IFS= read -r line; do
     dirty*) echo wip > /workspace/uncommitted.txt && echo dirty ;;
     message*) curl -s -o /dev/null -w 'message=%{http_code}\n' -X POST -H 'content-type: application/json' \
       -H "Authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN" -d '{"model":"m","messages":[]}' http://127.0.0.1:8080/v1/messages ;;
+    mcp\ *) tool=${line#mcp }; tool=${tool%% *}; args=${line#mcp $tool }
+      { printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fake","version":"1"}}}' \
+          '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+          "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"$tool\",\"arguments\":$args}}"
+        sleep 8; } | /opt/agent-office/agent-office mcp | grep '"id":2' | sed 's/^/mcp-reply=/' ;;
     exit*) send SessionEnd; exit 0 ;;
   esac
 done
@@ -648,5 +654,68 @@ func TestSandboxedTokenStaysOutside(t *testing.T) {
 	// The check above can find it: the token file itself.
 	if !agentFilesContain(t, token, filepath.Dir(f.opts.Sandbox.TokenFile)) {
 		t.Fatal("grep did not find the token in the token file")
+	}
+}
+
+// A sandboxed team worker uses the team tools through the real in-container
+// bridge and socket: identity comes from the mounted socket, and report_done
+// imports its branch (trigger report_done) before the task moves to review.
+func TestSandboxedTeamWorker(t *testing.T) {
+	f := sandboxFixture(t, false)
+	e := f.engine(t)
+	log := record(t, e)
+	ctx := context.Background()
+	goal, _ := e.CreateTask(ctx, TaskInput{Title: "Ship tags"})
+	lead, err := e.Start(ctx, StartRequest{TaskID: goal.ID, Role: RoleLead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 60*time.Second, agentState(lead.ID, hooks.Idle))
+	tm := e.Team()
+	sub, err := tm.CreateTask(ctx, lead.ID, mcp.CreateTaskInput{Title: "Add tag column"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	as, err := tm.AssignTask(ctx, lead.ID, mcp.AssignTaskInput{TaskID: sub.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := as.AgentID
+	log.wait(t, 60*time.Second, agentState(w, hooks.Idle))
+
+	if err := e.Input(w, []byte("mcp list_tasks {}\n")); err != nil {
+		t.Fatal(err)
+	}
+	out := screen(t, e, w, "mcp-reply=")
+	if !strings.Contains(out, `"id":"`+w+`","role":"worker"`) && !strings.Contains(out, `"id":"`+w+`"`) {
+		t.Fatalf("list_tasks through the in-container bridge:\n%s", out)
+	}
+	if err := e.Input(w, []byte("commit\n")); err != nil {
+		t.Fatal(err)
+	}
+	screen(t, e, w, "committed 1")
+	if err := e.Input(w, []byte(`mcp report_done {"summary":"done in the sandbox"}`+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		for i := 0; i < 300 && !ok(); i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !ok() {
+			t.Fatalf("timeout waiting for %s:\n%s", what, screen(t, e, w, ""))
+		}
+	}
+	waitFor("the task in review", func() bool { task, _ := e.getTask(ctx, sub.ID); return task.Status == StatusReview })
+	imp := waitImport(t, log, w, TriggerReportDone)
+	if imp.Commits != 1 || imp.Outcome != "created" {
+		t.Fatalf("import %+v", imp)
+	}
+	if got := gitIn(t, f.repo, "log", "-1", "--format=%s", imp.Branch); got != "feat: agent work 1" {
+		t.Fatalf("imported branch head %q", got)
+	}
+	msgs, _ := e.Messages(ctx, lead.ID)
+	if len(msgs) != 1 || !strings.Contains(msgs[0].Body, "done in the sandbox") {
+		t.Fatalf("lead messages %+v", msgs)
 	}
 }
