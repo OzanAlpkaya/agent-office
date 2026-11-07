@@ -313,3 +313,30 @@ func TestClientCannotMerge(t *testing.T) {
 		}
 	}
 }
+
+func TestPostCommentIsNeverRetried(t *testing.T) {
+	srv := githubtest.New(t, "octo", "shelf")
+	c := newClient(t, srv)
+	ctx := context.Background()
+	pr, _, err := c.EnsurePR(ctx, NewPR{Branch: "agent-office/x", Base: "main", Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.PostComment(ctx, pr.Number, "no change needed")
+	if err != nil || got.ID == 0 || !strings.Contains(got.URL, "#issuecomment-") {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if cs := srv.CommentsOf(pr.Number); len(cs) != 1 || cs[0] != "no change needed" {
+		t.Fatalf("comments %v", cs)
+	}
+	srv.Fail["create_comment"] = []int{502}
+	if _, err := c.PostComment(ctx, pr.Number, "again"); StatusCode(err) != 502 {
+		t.Fatalf("want the 502, got %v", err)
+	}
+	if n := srv.Count("POST /repos/octo/shelf/issues/1/comments"); n != 2 {
+		t.Fatalf("POST retried: %d requests", n)
+	}
+	if _, err := c.PostComment(ctx, pr.Number, "  "); err == nil {
+		t.Fatal("empty comment accepted")
+	}
+}

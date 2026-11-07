@@ -285,6 +285,16 @@ func gitOut(t *testing.T, repo string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// e2ePack is the stack pack sandboxed e2e runs use (ADR 0023): AO_E2E_PACK,
+// default go (the playground's stack). Its image must be built:
+// make worker-image PACK=go.
+func e2ePack() string {
+	if p := os.Getenv("AO_E2E_PACK"); p != "" {
+		return p
+	}
+	return "go"
+}
+
 func freePort(t *testing.T) string {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

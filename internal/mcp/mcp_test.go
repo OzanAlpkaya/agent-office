@@ -63,6 +63,11 @@ func (f *fakeTeam) ReportDone(_ context.Context, caller string, in ReportDoneInp
 	return ReportDoneOutput{TaskID: "t2", Status: "review", Next: "end your turn"}, f.err
 }
 
+func (f *fakeTeam) ReportNoChange(_ context.Context, caller string, in ReportNoChangeInput) (ReportNoChangeOutput, error) {
+	f.record(caller, ToolReportNoChange, in)
+	return ReportNoChangeOutput{TaskID: "t2", Status: "review", Posted: true, Next: "end your turn"}, f.err
+}
+
 func (f *fakeTeam) RequestAccess(_ context.Context, caller string, in RequestAccessInput) (RequestAccessOutput, error) {
 	f.record(caller, ToolRequestAccess, in)
 	return RequestAccessOutput{RequestID: 3, Status: "pending"}, f.err
@@ -132,7 +137,7 @@ func TestToolsPerRole(t *testing.T) {
 		t.Fatalf("lead tools %v", lead)
 	}
 	worker := toolNames(t, connect(t, &fakeTeam{}, "w1", RoleWorker))
-	want = []string{ToolListTasks, ToolReportDone, ToolRequestAccess, ToolSendMessage}
+	want = []string{ToolListTasks, ToolReportDone, ToolReportNoChange, ToolRequestAccess, ToolSendMessage}
 	if !slices.Equal(worker, want) {
 		t.Fatalf("worker tools %v", worker)
 	}
@@ -150,6 +155,29 @@ func TestToolsPerRole(t *testing.T) {
 	if _, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: ToolSubmitReview,
 		Arguments: map[string]any{"verdict": "approve", "summary": "x"}}); err == nil {
 		t.Fatal("worker could call submit_review")
+	}
+}
+
+func TestReportNoChange(t *testing.T) {
+	team := &fakeTeam{}
+	cs := connect(t, team, "w1", RoleWorker)
+	res := call(t, cs, ToolReportNoChange, map[string]any{"reason": "the line is already there"})
+	if res.IsError {
+		t.Fatalf("tool error %s", text(res))
+	}
+	if calls := team.all(); len(calls) != 1 || calls[0] != `w1 report_no_change {"reason":"the line is already there"}` {
+		t.Fatalf("calls %v", calls)
+	}
+	for _, args := range []map[string]any{{}, {"reason": 3}, {"reason": "x", "pr": 2}} {
+		if res := call(t, cs, ToolReportNoChange, args); !res.IsError {
+			t.Errorf("%v accepted", args)
+		}
+	}
+	// Leads and reviewers do not even see it.
+	for _, role := range []string{RoleLead, RoleReviewer} {
+		if slices.Contains(toolNames(t, connect(t, &fakeTeam{}, "x1", role)), ToolReportNoChange) {
+			t.Errorf("%s has report_no_change", role)
+		}
 	}
 }
 

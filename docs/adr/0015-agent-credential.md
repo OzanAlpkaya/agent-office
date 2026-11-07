@@ -4,6 +4,7 @@
   API socket). Socket delivery below is kept as the documented fallback.
 - **Date:** 2026-11-07
 - **Amends:** ADR 0007 (secrets via `podman secret`)
+- **Amended by:** ADR 0023 (the socket delivery is implemented for stack pack secrets, not for the OAuth token)
 
 ## Context
 

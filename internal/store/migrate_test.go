@@ -396,3 +396,46 @@ func TestMigration0005KeepsPhase4Rows(t *testing.T) {
 		}
 	}
 }
+
+// Migration 0006 (Phase 6) on a database with a Phase 5 review: the row keeps
+// its fields and gains an empty reply; a reply is length-checked.
+func TestMigration0006KeepsReviews(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agent-office.db")
+	v5, err := openWith(ctx, path, sourcesUpTo(t, 5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)
+	for _, q := range []string{
+		`INSERT INTO projects (id, name, repo_path, slug, created_at) VALUES ('p1', 'linkshelf', '/repo', 'linkshelf-1', ?)`,
+		`INSERT INTO agents (id, project_id, model, inherit_user_settings, state, started_at, sandbox, role) VALUES ('w1', 'p1', 'haiku', 0, 'exited', ?, 'podman', 'worker')`,
+		`INSERT INTO pull_requests (project_id, agent_id, branch, number, state, created_at, updated_at) VALUES ('p1', 'w1', 'b', 3, 'open', ?, ?1)`,
+		`INSERT INTO reviews (pr_id, reviewer, head, status, verdict, summary, followup, created_at, updated_at) VALUES (1, 'human', 'h1', 'done', 'comment', 'add a line', 'started', ?, ?1)`,
+	} {
+		if _, err := v5.DB.ExecContext(ctx, q, ts); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	v5.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Migration.From != 5 || s.Migration.To < 6 {
+		t.Fatalf("migration %+v", s.Migration)
+	}
+	rv, err := s.Q.GetReview(ctx, 1)
+	if err != nil || rv.Summary != "add a line" || rv.Followup != "started" || rv.Reply != "" || rv.ReplyUrl != "" {
+		t.Fatalf("review %+v %v", rv, err)
+	}
+	rv, err = s.Q.SetReviewReply(ctx, db.SetReviewReplyParams{Reply: "already there", ReplyUrl: "https://x/1", UpdatedAt: ts, ID: 1})
+	if err != nil || rv.Reply != "already there" || rv.ReplyUrl != "https://x/1" {
+		t.Fatalf("reply %+v %v", rv, err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE reviews SET reply = ? WHERE id = 1`, string(bytes.Repeat([]byte("x"), 4001))); err == nil {
+		t.Error("CHECK constraint missing on reviews.reply")
+	}
+}

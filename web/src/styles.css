@@ -109,3 +109,15 @@ button.danger { border-color: #ff6b6b; color: #ff6b6b; }
 .checks-failure { color: #ff6b6b; }
 .checks-pending { color: #ffb454; }
 .checks-none, .checks-unavailable { color: var(--muted); }
+
+/* Phase 6: stack packs */
+button.badge.pack { background: none; color: #ffd580; cursor: pointer; font: inherit; font-size: 0.75rem; }
+.pack-panel { padding: 0.5rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+.pack-panel p { margin: 0 0 0.35rem; }
+.pack-panel dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.15rem 0.75rem; margin: 0 0 0.35rem; }
+.pack-panel dt { color: var(--muted); }
+.pack-panel dd { margin: 0; overflow-wrap: anywhere; }
+.pack-panel .secret { margin-right: 0.75rem; }
+.pack-panel .secret.missing { color: #ffb454; }
+.pack-panel .secret.present { color: #7bd88f; }
+.pr .reply { border-left: 2px solid var(--border); padding-left: 0.5rem; }

@@ -5,6 +5,7 @@
 //	agent-office mcp                   team MCP server for an agent: stdio <-> the daemon (ADR 0006)
 //	agent-office sandbox-init -- cmd   in-container init of a sandboxed worker (ADR 0016)
 //	agent-office worker-image          build the worker container image with podman
+//	agent-office pack list|check       list stack packs, validate a pack directory (ADR 0023)
 //	agent-office version               print the version
 package main
 
@@ -32,6 +33,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
+	"github.com/OzanAlpkaya/agent-office/internal/pack"
 	"github.com/OzanAlpkaya/agent-office/internal/review"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
@@ -64,6 +66,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "agent-office:", err)
 			os.Exit(1)
 		}
+	case "pack":
+		os.Exit(packCommand(os.Args[2:], os.Stdout, os.Stderr))
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -83,29 +87,67 @@ commands:
   mcp       team MCP server over stdio, bridged to the daemon (used by agents)
   sandbox-init -- <command>
             in-container init of a sandboxed worker (started by the daemon)
-  worker-image [--tag]
-            build the worker image with podman (--tag: print its tag only)
+  worker-image [--pack <name>] [--tag]
+            build the base worker image, and a stack pack's image with --pack, with podman
+            (--tag: print the tag only)
+  pack list               list the built-in and your stack packs
+  pack check <dir>...     validate stack pack directories and print every problem
   version   print the version
 `)
 }
 
-// workerImage builds the worker image, or prints its tag with --tag.
+// workerImage builds the base worker image and, with --pack, the pack's image
+// on top of it (ADR 0023). --tag prints the tag only.
 func workerImage(args []string) error {
 	fs := flag.NewFlagSet("worker-image", flag.ContinueOnError)
 	tagOnly := fs.Bool("tag", false, "print the image tag and exit")
+	name := fs.String("pack", os.Getenv("AGENT_OFFICE_PACK"), "also build this stack pack's image [AGENT_OFFICE_PACK]")
+	defDir, err := pack.DefaultDir()
+	if err != nil {
+		return err
+	}
+	dir := fs.String("packs-dir", defDir, "your stack packs ["+pack.DirEnv+"]")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	var p *pack.Pack
+	var files map[string]sandbox.BuildFile
+	tag := sandbox.BaseImage()
+	if *name != "" {
+		if p, err = pack.Find(*name, *dir); err != nil {
+			return err
+		}
+		if files, err = p.BuildFiles(); err != nil {
+			return err
+		}
+		if tag, err = p.Image(); err != nil {
+			return err
+		}
+	}
 	if *tagOnly {
-		fmt.Println(sandbox.WorkerImage())
+		fmt.Println(tag)
 		return nil
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := (sandbox.Podman{}).BuildWorkerImage(ctx, os.Stderr); err != nil {
+	pm := sandbox.Podman{}
+	have, err := pm.ImageExists(ctx, sandbox.BaseImage())
+	if err != nil {
 		return err
 	}
-	fmt.Println(sandbox.WorkerImage())
+	if p == nil || !have { // without --pack, always (re)build: podman's cache makes it cheap
+		if err := pm.BuildBaseImage(ctx, os.Stderr); err != nil {
+			return err
+		}
+	}
+	if files != nil {
+		if err := pm.BuildPackImage(ctx, p.Name, files, p.Containerfile, os.Stderr); err != nil {
+			return err
+		}
+	} else if p != nil {
+		fmt.Fprintf(os.Stderr, "stack pack %s has no toolchain; its agents use the base image\n", p.Name)
+	}
+	fmt.Println(tag)
 	return nil
 }
 
@@ -188,6 +230,9 @@ type serveConfig struct {
 	githubRemote        string // remote of the main repository to push to
 	reviewer            string // internal | coderabbit | none (ADR 0021)
 	reviewRounds        int    // automatic follow-ups per pull request (ADR 0022)
+	pack                string // stack pack name (ADR 0023); empty: none
+	packsDir            string // user stack packs
+	secretsDir          string // values of the pack's env vars, one file per name
 }
 
 func parseServe(args []string) (serveConfig, error) {
@@ -236,6 +281,20 @@ func parseServe(args []string) (serveConfig, error) {
 	}
 	fs.IntVar(&c.reviewRounds, "review-rounds", rounds,
 		"review feedback rounds sent to the worker automatically per pull request [AGENT_OFFICE_REVIEW_ROUNDS]")
+	fs.StringVar(&c.pack, "pack", os.Getenv("AGENT_OFFICE_PACK"),
+		"stack pack for sandboxed agents: image, egress, secrets, skills, MCP servers (built in: go, node; "+
+			"`agent-office pack list`); empty: the base image [AGENT_OFFICE_PACK]")
+	packsDir, err := pack.DefaultDir()
+	if err != nil {
+		return c, err
+	}
+	fs.StringVar(&c.packsDir, "packs-dir", packsDir, "your stack packs, one directory each ["+pack.DirEnv+"]")
+	secretsDir, err := pack.DefaultSecretsDir()
+	if err != nil {
+		return c, err
+	}
+	fs.StringVar(&c.secretsDir, "secrets-dir", secretsDir,
+		"values of the pack's env vars, one user-only file per name ["+pack.SecretsDirEnv+"]")
 	fs.BoolVar(&c.dev, "dev", false, "allow the Vite dev server origin (localhost:5173)")
 	fs.StringVar(&c.logLevel, "log-level", envOr("AGENT_OFFICE_LOG_LEVEL", "info"), "debug | info | warn [AGENT_OFFICE_LOG_LEVEL]")
 	if err := fs.Parse(args); err != nil {
@@ -271,6 +330,15 @@ func parseServe(args []string) (serveConfig, error) {
 		// change .git hooks that the daemon's push would then run (ADR 0020).
 		return c, errors.New("--github needs sandboxed agents (--sandbox podman): host-mode agents run as you and " +
 			"could read the GitHub token or change the git hooks the daemon's push runs")
+	}
+	if c.pack != "" && c.sandbox == modeHost {
+		return c, errors.New("--pack needs sandboxed agents (--sandbox podman): a stack pack configures the worker " +
+			"container (image, egress, secrets), which host-mode agents do not have")
+	}
+	for _, d := range []*string{&c.packsDir, &c.secretsDir} {
+		if *d, err = filepath.Abs(*d); err != nil {
+			return c, err
+		}
 	}
 	switch c.reviewer {
 	case review.NameInternal, review.NameCodeRabbit, engine.ReviewerNone:
@@ -323,14 +391,15 @@ func serve(args []string) error {
 	}
 
 	var sb *engine.SandboxOptions
+	var packWarnings []string
 	if cfg.sandbox == modePodman {
-		if sb, err = sandboxOptions(context.Background(), cfg, self, ci, log); err != nil {
+		if sb, packWarnings, err = sandboxOptions(context.Background(), cfg, self, ci, log); err != nil {
 			return err
 		}
 	} else {
 		log.Warn("host mode: agents run unsandboxed on this machine, with permission prompts on")
 	}
-	warnings := versionWarnings(ci, cfg.sandbox)
+	warnings := append(versionWarnings(ci, cfg.sandbox), packWarnings...)
 	for _, w := range warnings {
 		log.Warn(w)
 	}

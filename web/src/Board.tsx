@@ -199,6 +199,15 @@ function PRPanel({ pr, onRequestReview, onSendToWorker, onAcceptFlagged, onOpenA
                 {r.comments.map((c, i) => (
                   <div key={i} className="quote"><span className="mono">{c.path}:{c.line}</span> {c.body}</div>
                 ))}
+                {r.reply && (
+                  <div className="reply">
+                    <span className="muted">Worker: no change needed</span>
+                    {r.reply_url
+                      ? <> · <a href={r.reply_url} target="_blank" rel="noreferrer noopener">on GitHub</a></>
+                      : <span className="hint"> · not posted on GitHub (see the daemon log)</span>}
+                    <div className="quote">{r.reply}</div>
+                  </div>
+                )}
                 {r.status === "done" && pr.state === "open" && r.followup !== "started" && r.followup !== "messaged" &&
                   r.head === pr.head && (r.verdict !== "approve" || r.comments.length > 0) && (
                   <button onClick={() => onSendToWorker(pr, r)} title="Give this review to the worker as follow-up work">

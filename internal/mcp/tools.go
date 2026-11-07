@@ -25,13 +25,14 @@ const (
 
 // Tool names.
 const (
-	ToolCreateTask    = "create_task"
-	ToolAssignTask    = "assign_task"
-	ToolListTasks     = "list_tasks"
-	ToolSendMessage   = "send_message"
-	ToolReportDone    = "report_done"
-	ToolRequestAccess = "request_access"
-	ToolSubmitReview  = "submit_review"
+	ToolCreateTask     = "create_task"
+	ToolAssignTask     = "assign_task"
+	ToolListTasks      = "list_tasks"
+	ToolSendMessage    = "send_message"
+	ToolReportDone     = "report_done"
+	ToolRequestAccess  = "request_access"
+	ToolSubmitReview   = "submit_review"
+	ToolReportNoChange = "report_no_change" // a follow-up round that needs no change (ADR 0022)
 )
 
 // Team is what the tools call. The engine implements it; caller is the agent
@@ -43,6 +44,7 @@ type Team interface {
 	ListTasks(ctx context.Context, caller string) (ListTasksOutput, error)
 	SendMessage(ctx context.Context, caller string, in SendMessageInput) (SendMessageOutput, error)
 	ReportDone(ctx context.Context, caller string, in ReportDoneInput) (ReportDoneOutput, error)
+	ReportNoChange(ctx context.Context, caller string, in ReportNoChangeInput) (ReportNoChangeOutput, error)
 	RequestAccess(ctx context.Context, caller string, in RequestAccessInput) (RequestAccessOutput, error)
 	SubmitReview(ctx context.Context, caller string, in SubmitReviewInput) (SubmitReviewOutput, error)
 }
@@ -118,6 +120,20 @@ type ReportDoneOutput struct {
 	Commits      int    `json:"commits"`
 	LeadNotified bool   `json:"lead_notified"`
 	Next         string `json:"next"`
+}
+
+// ReportNoChangeInput is report_no_change's input.
+type ReportNoChangeInput struct {
+	Reason string `json:"reason" jsonschema:"Why the review needs no change to the code (1-2000 characters). It is posted on the pull request."`
+}
+
+// ReportNoChangeOutput is report_no_change's result.
+type ReportNoChangeOutput struct {
+	TaskID string `json:"task_id"`
+	Status string `json:"status"`
+	Posted bool   `json:"posted"` // the reason was posted on the pull request
+	URL    string `json:"url,omitempty"`
+	Next   string `json:"next"`
 }
 
 // RequestAccessInput is request_access's input.
@@ -222,6 +238,15 @@ func NewServer(team Team, caller, role, version string, log *slog.Logger) *sdk.S
 		func(ctx context.Context, in ReportDoneInput) (ReportDoneOutput, error) {
 			return team.ReportDone(ctx, caller, in)
 		})
+	if role == RoleWorker {
+		add(s, t, &sdk.Tool{Name: ToolReportNoChange, Description: "Only when you were relaunched to address a " +
+			"review of your pull request: report that the review needs no change to the code, with the reason. " +
+			"agent-office posts the reason on the pull request and moves your task back to review. If you changed " +
+			"anything, commit it and call report_done instead."},
+			func(ctx context.Context, in ReportNoChangeInput) (ReportNoChangeOutput, error) {
+				return team.ReportNoChange(ctx, caller, in)
+			})
+	}
 	add(s, t, &sdk.Tool{Name: ToolRequestAccess, Description: "Ask a human for network access to one more host " +
 		"name (kind \"domain\"). Nothing is granted until a human approves it in the agent-office UI; you get a " +
 		"message with the decision. Only for sandboxed agents."},

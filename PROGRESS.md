@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 6 (Stack packs), not started; Phase 5 merged
+**Current phase:** Phase 7 (Pixel office UI), not started; Phase 6 merged
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
@@ -12,7 +12,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 3: Isolation & security (rootless Podman, egress allowlist, secrets)
 - [x] Phase 4: Team MCP server + lead agent
 - [x] Phase 5: GitHub loop + pluggable code review
-- [ ] Phase 6: Stack packs
+- [x] Phase 6: Stack packs
 - [ ] Phase 7: Pixel office UI
 - [ ] Phase 8: Observability & cost
 - [ ] Phase 9: Memory & persistence
@@ -78,3 +78,21 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - 2026-11-07: Phase 5 review: all decisions approved. Ozan narrowed the GitHub token to Contents
   read-only. Closing keywords in agents' commit messages added to Phase 11 as a later item. Merged
   into `main` (`--no-ff`).
+- 2026-11-07: Phase 6 done on `phase-6/stack-packs`; plan written with the recommended options and
+  executed without a separate approval, as Ozan asked (`docs/plans/phase-6.md`). ADR 0023 (stack
+  packs). New package `pack`; new dependency `go.yaml.in/yaml/v3` v3.0.5. Packs (strict YAML,
+  every problem reported with its fix) come from the binary (`go`, `node`) or a user-owned
+  directory, never the repository; `--pack` picks one per run. The worker image is now a base
+  image without a toolchain (the default); pack images build `FROM` it (`worker-image --pack`).
+  A pack's hosts replace the default allowlist; its secrets are user-only files served once over
+  a per-agent socket to `sandbox-init` (workers only); its skills are mounted read-only; its MCP
+  servers join the agent's MCP config. `pack list|check` commands and a UI pack panel. An
+  independent review led to 9 fixes (secrets for workers only, read-only skills, ENTRYPOINT,
+  exec bits, image tag inputs, reserved names). Two pre-existing tests that failed without
+  `-race` fixed. `make check`, `make sandbox-test` and `make e2e` pass (the GitHub run on a
+  rerun: haiku once reported a follow-up without committing).
+- 2026-11-07: Phase 6 review: all decisions approved. Added before the merge, as Ozan asked: in a
+  review follow-up round `report_done` needs a new commit, and `report_no_change(reason)` answers
+  without one, posting the reason on the PR (ADR 0022 amended, migration 0006); the sandbox e2e
+  checks with `/skills` that Claude Code lists the pack's skill. `make check`, `make sandbox-test`
+  and the sandbox and GitHub e2e runs pass. Merged into `main` (`--no-ff`).

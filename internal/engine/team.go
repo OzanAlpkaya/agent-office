@@ -314,6 +314,11 @@ func (e *Engine) resolveRecipient(ctx context.Context, caller, to string) (strin
 	return to, nil
 }
 
+func (t team) ReportNoChange(ctx context.Context, caller string, in mcp.ReportNoChangeInput) (mcp.ReportNoChangeOutput, error) {
+	out, err := t.e.reportNoChange(ctx, caller, in.Reason)
+	return out, userErr(err)
+}
+
 func (t team) ReportDone(ctx context.Context, caller string, in mcp.ReportDoneInput) (mcp.ReportDoneOutput, error) {
 	out, err := t.e.reportDone(ctx, caller, in.Summary)
 	return out, userErr(err)
@@ -328,8 +333,9 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 	a, err := e.callerLocked(caller)
 	var info AgentInfo
 	var base string
+	var fu *followupRound
 	if err == nil {
-		info, base = a.info, a.baseCommit
+		info, base, fu = a.info, a.baseCommit, a.followup
 		switch {
 		case a.stopAfterTurn:
 			err = invalid("you already reported; end your turn")
@@ -383,6 +389,9 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 		if imp.Outcome == OutcomeNoCommits {
 			return out, invalid("no commits on your branch yet: commit your work, then call report_done again")
 		}
+		if err := fu.needsNewCommit(imp.Head); err != nil {
+			return out, err
+		}
 		out.Branch, out.Commits = imp.Branch, imp.Commits
 	} else {
 		dirty, err := e.git.IsDirty(ctx, info.WorktreePath)
@@ -399,6 +408,15 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 		if n == 0 {
 			return out, invalid("no commits on your branch yet: commit your work, then call report_done again")
 		}
+		if fu != nil {
+			head, err := e.git.RevParse(ctx, e.project.RepoPath, info.Branch)
+			if err != nil {
+				return out, err
+			}
+			if err := fu.needsNewCommit(head); err != nil {
+				return out, err
+			}
+		}
 		out.Commits = n
 	}
 	if _, err := e.setTaskStatus(ctx, task, StatusReview); err != nil {
@@ -406,6 +424,7 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 	}
 
 	e.mu.Lock()
+	a.followup = nil // this round is answered
 	lead := e.leadOfGoalLocked(task.ParentTaskID.String)
 	team := task.ParentTaskID.Valid
 	if team {

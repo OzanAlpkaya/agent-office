@@ -13,7 +13,7 @@ import (
 // branch and base, with a new session and prompt (ADR 0022). Its task moves
 // back to in_progress. The workspace is never touched on failure: it holds the
 // agent's work.
-func (e *Engine) relaunch(ctx context.Context, id, prompt string) (AgentInfo, error) {
+func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRound) (AgentInfo, error) {
 	e.mu.Lock()
 	a, ok := e.agents[id]
 	var err error
@@ -62,7 +62,7 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string) (AgentInfo, er
 	}
 	var prep sandboxPrep
 	if info.Sandbox == SandboxPodman {
-		if prep, err = e.prepareSandboxStart(ctx, agentName(id)); err != nil {
+		if prep, err = e.prepareSandboxStart(ctx, agentName(id), info.Role); err != nil {
 			return AgentInfo{}, err
 		}
 	}
@@ -100,7 +100,7 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string) (AgentInfo, er
 	}
 
 	l := launchInfo{id: id, sid: sid, role: info.Role, branch: info.Branch, path: info.WorktreePath, base: a.baseCommit,
-		taskID: info.TaskID, started: started, prompt: prompt, prev: a}
+		taskID: info.TaskID, started: started, prompt: prompt, prev: a, followup: fu}
 	var out AgentInfo
 	if info.Sandbox == SandboxPodman {
 		out, err = e.launchSandboxed(l, prep)

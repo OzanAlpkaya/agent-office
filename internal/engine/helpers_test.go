@@ -38,10 +38,24 @@ func record(t *testing.T, e *Engine) *updateLog {
 
 func (l *updateLog) wait(t *testing.T, d time.Duration, match func(Update) bool) Update {
 	t.Helper()
+	return l.waitFrom(t, d, 0, match)
+}
+
+// mark is the number of updates recorded so far, for waitFrom.
+func (l *updateLog) mark() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.all)
+}
+
+// waitFrom is wait, ignoring the first from updates: a state reached
+// earlier in the test does not count.
+func (l *updateLog) waitFrom(t *testing.T, d time.Duration, from int, match func(Update) bool) Update {
+	t.Helper()
 	timeout := time.After(d)
 	for {
 		l.mu.Lock()
-		for _, u := range l.all {
+		for _, u := range l.all[from:] {
 			if match(u) {
 				l.mu.Unlock()
 				return u

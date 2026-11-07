@@ -163,18 +163,29 @@ derived from Claude Code hooks.
 
 **Goal:** Configure agents per tech stack with declarative YAML packs.
 
-**Scope**
+**Scope** (see ADR 0023, `docs/packs.md` and `docs/plans/phase-6.md`)
 - YAML per tool/stack: allowed domains, skills, MCP servers, env var names (names only, no values),
   and the **toolchain**, i.e. which worker image a project's agents get. This replaces Phase 3's single
   image, which carries only the playground's Go toolchain (e.g. a Go pack with a C toolchain for
   `-race`, a Node/TypeScript pack with Node and npm).
 - Schema validation with clear errors; packs applied when launching an agent/sandbox.
+- Packs come from the binary or a user-owned directory, never from the repository; one per daemon
+  run (`--pack`). The Phase 3 image becomes a base image without a toolchain (the default); pack
+  images build `FROM` it. Secret values are user-only files, served once to the container's init.
 
 **Definition of Done**
-- [ ] At least two example packs (e.g. Go, Node/TypeScript).
-- [ ] Invalid packs are rejected with actionable error messages (tested).
-- [ ] A pack's domains feed the egress allowlist and its env var names feed the secret injection.
-- [ ] A pack selects the worker image (toolchain); projects without a pack get the default image.
+- [x] At least two example packs (e.g. Go, Node/TypeScript): built-in `go` and `node`, each with a
+      skill (`TestBuiltinsAreValid`; `TestSandboxedPackToolchains` runs `go test -race` and
+      `node`/`npm` in their images).
+- [x] Invalid packs are rejected with actionable error messages (tested): `TestLoadInvalid` (45
+      cases, each with its message), `TestLoadReportsEveryProblem`, `TestLoadDirChecksTheTree`,
+      `TestFindAndList`, `TestPackCommand`; `agent-office pack check` prints them.
+- [x] A pack's domains feed the egress allowlist and its env var names feed the secret injection:
+      `TestPackOptions`, `TestSandboxedPackLaunch` (a secret reaches the worker's agent CLI once and
+      nothing else; leads and reviewers get none).
+- [x] A pack selects the worker image (toolchain); projects without a pack get the default image:
+      `TestPackOptions`, `TestWorkerImageAndInit` (base image, no toolchain), `TestSandboxEndToEnd`
+      (real Claude Code with `--pack go` runs `go test -race` in the worker).
 
 ---
 

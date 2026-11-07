@@ -20,6 +20,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
+	"github.com/OzanAlpkaya/agent-office/internal/pack"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -112,8 +113,22 @@ type Options struct {
 type Status struct {
 	Sandbox  string        `json:"sandbox"` // SandboxHost | SandboxPodman
 	Image    string        `json:"image,omitempty"`
+	Egress   []string      `json:"egress,omitempty"` // sandboxed agents' allowlist
+	Pack     *PackStatus   `json:"pack,omitempty"`   // stack pack (ADR 0023)
 	Warnings []string      `json:"warnings"`
 	GitHub   *GitHubStatus `json:"github,omitempty"`
+}
+
+// PackStatus is what the daemon's stack pack gives sandboxed agents. Secrets
+// are names and whether their file exists, never values.
+type PackStatus struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Source      string            `json:"source"` // "builtin" or the pack directory
+	Egress      []string          `json:"egress"`
+	Secrets     []pack.SecretInfo `json:"secrets"`
+	Skills      []string          `json:"skills"`
+	MCPServers  []string          `json:"mcp_servers"`
 }
 
 // Project is the repository the engine works on.
@@ -168,17 +183,18 @@ type agentProc struct {
 	term       *terminal.Session // nil for agents from a previous daemon run
 	listener   *hooks.Listener
 	settings   string
-	exited     chan struct{} // closed by watch after the exit is recorded
-	afterExit  chan struct{} // closed by watch after the exit import (sandbox); nil for agents of a previous run
-	exitReason string        // set before stopping on purpose
-	busy       bool          // a remove/discard is in progress
-	sandbox    *sandboxRes   // nil in host mode and once the worker is gone
-	events     eventLimit    // sandbox event rate limit
-	importMu   sync.Mutex    // serializes imports and removal of a sandboxed agent
-	mcp        *mcp.Listener // team MCP socket; nil once the agent exited
-	mcpConfig  string        // host mode: the --mcp-config file
-	reviewID   int64         // reviewers: the review they were started for (ADR 0021)
-	since      time.Time     // this session's start: older messages are not delivered to it (ADR 0022)
+	exited     chan struct{}  // closed by watch after the exit is recorded
+	afterExit  chan struct{}  // closed by watch after the exit import (sandbox); nil for agents of a previous run
+	exitReason string         // set before stopping on purpose
+	busy       bool           // a remove/discard is in progress
+	sandbox    *sandboxRes    // nil in host mode and once the worker is gone
+	events     eventLimit     // sandbox event rate limit
+	importMu   sync.Mutex     // serializes imports and removal of a sandboxed agent
+	mcp        *mcp.Listener  // team MCP socket; nil once the agent exited
+	mcpConfig  string         // host mode: the --mcp-config file
+	reviewID   int64          // reviewers: the review they were started for (ADR 0021)
+	followup   *followupRound // workers relaunched for a review, until they report (ADR 0022); guarded by Engine.mu
+	since      time.Time      // this session's start: older messages are not delivered to it (ADR 0022)
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
 	hasPrompt     bool        // started with an initial prompt
@@ -369,8 +385,13 @@ func (e *Engine) Project() Project { return e.project }
 // Status returns the daemon-wide sandbox mode and warnings.
 func (e *Engine) Status() Status {
 	st := Status{Sandbox: SandboxHost, Warnings: append([]string{}, e.opts.Warnings...)}
-	if e.opts.Sandbox != nil {
-		st.Sandbox, st.Image = SandboxPodman, e.opts.Sandbox.Image
+	if sb := e.opts.Sandbox; sb != nil {
+		st.Sandbox, st.Image, st.Egress = SandboxPodman, sb.Image, append([]string{}, sb.AllowNames...)
+		if p := sb.Pack; p != nil {
+			st.Pack = &PackStatus{Name: p.Name, Description: p.Description, Source: p.Source,
+				Egress: append([]string{}, p.Egress...), Secrets: p.SecretStatus(sb.SecretsDir),
+				Skills: append([]string{}, p.Skills...), MCPServers: p.ServerNames()}
+		}
 	}
 	if g := e.opts.GitHub; g != nil {
 		st.GitHub = &GitHubStatus{Repo: g.Client.Repo().String(), Base: g.Base, Remote: g.Remote, Reviewer: e.gh.reviewer.Name(),
@@ -473,7 +494,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	var undoWorktree func()
 	if e.opts.Sandbox != nil {
 		// Everything that can be checked is checked before state is created.
-		if prep, err = e.prepareSandboxStart(ctx, agentName(id)); err != nil {
+		if prep, err = e.prepareSandboxStart(ctx, agentName(id), role); err != nil {
 			return AgentInfo{}, err
 		}
 		mode, kind = SandboxPodman, KindClone
@@ -567,15 +588,16 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 type launchInfo struct {
 	id, sid, role, branch, path, base, taskID string
 	started                                   time.Time
-	prompt                                    string     // initial prompt; empty for none
-	reviewID                                  int64      // reviewers (ADR 0021)
-	prev                                      *agentProc // a relaunch: the exited agent it replaces (ADR 0022)
+	prompt                                    string         // initial prompt; empty for none
+	reviewID                                  int64          // reviewers (ADR 0021)
+	prev                                      *agentProc     // a relaunch: the exited agent it replaces (ADR 0022)
+	followup                                  *followupRound // a relaunch to address a review (ADR 0022)
 }
 
 // registerLocked adds a freshly launched agent, or replaces the exited one a
 // relaunch started again (keeping its place, start time and last import).
 func (e *Engine) registerLocked(a *agentProc, l launchInfo) {
-	a.reviewID, a.since = l.reviewID, l.started
+	a.reviewID, a.since, a.followup = l.reviewID, l.started, l.followup
 	if l.prev != nil {
 		a.info.StartedAt, a.info.LastImport = l.prev.info.StartedAt, l.prev.info.LastImport
 		a.info.WorktreeStatus = l.prev.info.WorktreeStatus
@@ -610,7 +632,7 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 	}
 	mcpPath, mcpConfig := filepath.Join(dir, id+".mcp.sock"), filepath.Join(dir, id+".mcp.json")
 	var mln *mcp.Listener
-	cfg, err := agent.MCPConfig(e.opts.AgentOfficeBin, mcpPath)
+	cfg, err := agent.MCPConfig(e.opts.AgentOfficeBin, mcpPath, nil)
 	if err == nil {
 		err = os.WriteFile(mcpConfig, cfg, 0o600)
 	}

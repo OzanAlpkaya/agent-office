@@ -67,6 +67,7 @@ while IFS= read -r line; do
           '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
           "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"$tool\",\"arguments\":$args}}"
         sleep 8; } | /opt/agent-office/agent-office mcp | grep '"id":2' | sed 's/^/mcp-reply=/' ;;
+    sh\ *) sh -c "${line#sh }" 2>&1 | sed 's/^/sh: /' ;;
     stop*) send Stop ;;
     exit*) send SessionEnd; exit 0 ;;
   esac
@@ -76,8 +77,8 @@ done
 func sandboxFixture(t *testing.T, ignoreTerm bool) *fixture {
 	t.Helper()
 	p := sandbox.Podman{}
-	if ok, err := p.ImageExists(context.Background(), sandbox.WorkerImage()); err != nil || !ok {
-		t.Skipf("worker image %s missing: run make worker-image (%v)", sandbox.WorkerImage(), err)
+	if ok, err := p.ImageExists(context.Background(), sandbox.BaseImage()); err != nil || !ok {
+		t.Skipf("worker image %s missing: run make worker-image (%v)", sandbox.BaseImage(), err)
 	}
 	self, _ := filepath.Abs("../../bin/agent-office")
 	if out, err := exec.Command("file", self).Output(); err != nil || !strings.Contains(string(out), "statically linked") {
@@ -106,7 +107,7 @@ func sandboxFixture(t *testing.T, ignoreTerm bool) *fixture {
 	}
 	allow, _ := sandbox.ParseAllowlist(sandbox.DefaultEgressAllow)
 	s := &SandboxOptions{
-		Instance: "0123456789ab", Podman: p, Image: sandbox.WorkerImage(),
+		Instance: "0123456789ab", Podman: p, Image: sandbox.BaseImage(),
 		WorkspaceRoot: filepath.Join(dir, "workspaces"), AgentsRoot: filepath.Join(dir, "agents"),
 		GitHooks: hooksDir, AgentOffice: self, Claude: claude, ClaudeVersion: agent.TestedClaudeCodeVersion,
 		TokenFile: filepath.Join(tokenDir, "oauth-token"), Allow: allow,
@@ -205,7 +206,7 @@ func TestSandboxedAgentLifecycle(t *testing.T) {
 	if evs, err := e.SandboxEvents(ctx, a.ID, 10); err != nil || len(evs) != 1 || evs[0].Detail != "GET /v1/models" {
 		t.Fatalf("listed sandbox events %+v %v", evs, err)
 	}
-	if st := e.Status(); st.Sandbox != SandboxPodman || st.Image != sandbox.WorkerImage() {
+	if st := e.Status(); st.Sandbox != SandboxPodman || st.Image != sandbox.BaseImage() {
 		t.Fatalf("status %+v", st)
 	}
 }

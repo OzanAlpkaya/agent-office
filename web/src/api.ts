@@ -54,9 +54,24 @@ export interface SandboxEvent {
   at: string;
 }
 
+// Stack pack of the daemon run (ADR 0023). Secrets are names and whether
+// their file exists, never values.
+export interface PackStatus {
+  name: string;
+  description: string;
+  source: string; // "builtin" or the pack directory
+  egress: string[];
+  // present: the file exists and passes the checks; problem: why an existing file is unusable.
+  secrets: { name: string; description?: string; required: boolean; present: boolean; problem?: string }[];
+  skills: string[];
+  mcp_servers: string[];
+}
+
 export interface Status {
   sandbox: SandboxMode;
   image?: string;
+  egress?: string[]; // sandboxed agents' allowlist
+  pack?: PackStatus;
   warnings: string[];
   github?: { repo: string; base: string; remote: string; reviewer: string; rounds: number };
 }
@@ -75,6 +90,10 @@ export interface Review {
   agent_id?: string;
   url?: string;
   followup?: "started" | "messaged" | "skipped" | "refused";
+  // The worker's "no change needed" answer to this review (agent-written: render as text) and,
+  // once posted, the comment on GitHub.
+  reply?: string;
+  reply_url?: string;
   error?: string;
   created_at: string;
   updated_at: string;

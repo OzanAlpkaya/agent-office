@@ -545,17 +545,24 @@ func TestAgentEnvIsScrubbed(t *testing.T) {
 	e := f.engine(t)
 	a, _ := e.Start(context.Background(), StartRequest{})
 	term, _ := e.Terminal(a.ID)
-	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", term.Pid()))
-	if err != nil {
-		t.Fatal(err)
+	// Until the child has exec'd, its environ is still the test process's.
+	hasSocket := func(kv string) bool { return strings.HasPrefix(kv, agent.SocketEnv+"=") }
+	var env []string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", term.Pid()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if env = strings.Split(string(raw), "\x00"); slices.ContainsFunc(env, hasSocket) {
+			break
+		}
 	}
-	env := strings.Split(string(raw), "\x00")
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "CLAUDECODE=") || strings.HasPrefix(kv, "CLAUDE_CODE_") {
 			t.Fatalf("leaked into agent env: %s", strings.SplitN(kv, "=", 2)[0])
 		}
 	}
-	if !slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, agent.SocketEnv+"=") }) {
+	if !slices.ContainsFunc(env, hasSocket) {
 		t.Fatal("socket env missing")
 	}
 }

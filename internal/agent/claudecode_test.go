@@ -136,7 +136,7 @@ func TestCommand(t *testing.T) {
 }
 
 func TestMCPConfig(t *testing.T) {
-	raw, err := MCPConfig("/opt/agent office/agent-office", "/run/user/1000/agent-office/agents/a.mcp.sock")
+	raw, err := MCPConfig("/opt/agent office/agent-office", "/run/user/1000/agent-office/agents/a.mcp.sock", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,8 +156,34 @@ func TestMCPConfig(t *testing.T) {
 		!slices.Equal(s.Args, []string{"mcp"}) || s.Env[mcp.SocketEnv] != "/run/user/1000/agent-office/agents/a.mcp.sock" {
 		t.Fatalf("config %s", raw)
 	}
-	if _, err := MCPConfig("agent-office", "/a.sock"); err == nil {
+	if _, err := MCPConfig("agent-office", "/a.sock", nil); err == nil {
 		t.Fatal("relative command accepted")
+	}
+}
+
+func TestMCPConfigWithPackServers(t *testing.T) {
+	raw, err := MCPConfig("/opt/agent-office/agent-office", "/run/mcp.sock", map[string]MCPServer{
+		"tool": {Command: "/usr/local/bin/tool", Args: []string{"mcp"}},
+		"docs": {URL: "https://docs.example.com/mcp"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		MCPServers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.MCPServers) != 3 || doc.MCPServers["tool"]["type"] != "stdio" || doc.MCPServers["tool"]["command"] != "/usr/local/bin/tool" ||
+		doc.MCPServers["docs"]["type"] != "http" || doc.MCPServers["docs"]["url"] != "https://docs.example.com/mcp" ||
+		doc.MCPServers[mcp.ServerName]["command"] != "/opt/agent-office/agent-office" {
+		t.Fatalf("config %s", raw)
+	}
+	for name, s := range map[string]MCPServer{mcp.ServerName: {Command: "/bin/x"}, "both": {Command: "/bin/x", URL: "https://a.b"}, "none": {}} {
+		if _, err := MCPConfig("/x", "/s", map[string]MCPServer{name: s}); err == nil {
+			t.Errorf("%s accepted", name)
+		}
 	}
 }
 

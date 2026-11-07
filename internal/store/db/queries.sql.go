@@ -70,7 +70,7 @@ func (q *Queries) ClaimMessages(ctx context.Context, arg ClaimMessagesParams) ([
 
 const claimReviewFollowup = `-- name: ClaimReviewFollowup :one
 UPDATE reviews SET followup = ?, updated_at = ? WHERE id = ? AND followup = ''
-RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at, reply, reply_url
 `
 
 type ClaimReviewFollowupParams struct {
@@ -100,6 +100,8 @@ func (q *Queries) ClaimReviewFollowup(ctx context.Context, arg ClaimReviewFollow
 		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reply,
+		&i.ReplyUrl,
 	)
 	return i, err
 }
@@ -487,7 +489,7 @@ func (q *Queries) GetPullRequest(ctx context.Context, id int64) (PullRequest, er
 }
 
 const getReview = `-- name: GetReview :one
-SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at FROM reviews WHERE id = ?
+SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at, reply, reply_url FROM reviews WHERE id = ?
 `
 
 func (q *Queries) GetReview(ctx context.Context, id int64) (Review, error) {
@@ -510,6 +512,8 @@ func (q *Queries) GetReview(ctx context.Context, id int64) (Review, error) {
 		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reply,
+		&i.ReplyUrl,
 	)
 	return i, err
 }
@@ -708,7 +712,7 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (M
 const insertReview = `-- name: InsertReview :one
 INSERT INTO reviews (pr_id, reviewer, head, status, verdict, summary, comments, github_review_id, url, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at, reply, reply_url
 `
 
 type InsertReviewParams struct {
@@ -757,6 +761,8 @@ func (q *Queries) InsertReview(ctx context.Context, arg InsertReviewParams) (Rev
 		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reply,
+		&i.ReplyUrl,
 	)
 	return i, err
 }
@@ -1039,7 +1045,7 @@ func (q *Queries) ListPullRequests(ctx context.Context, projectID string) ([]Pul
 }
 
 const listReviews = `-- name: ListReviews :many
-SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at FROM reviews WHERE pr_id = ? ORDER BY id DESC LIMIT ?
+SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at, reply, reply_url FROM reviews WHERE pr_id = ? ORDER BY id DESC LIMIT ?
 `
 
 type ListReviewsParams struct {
@@ -1073,6 +1079,8 @@ func (q *Queries) ListReviews(ctx context.Context, arg ListReviewsParams) ([]Rev
 			&i.Attempts,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Reply,
+			&i.ReplyUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -1088,7 +1096,7 @@ func (q *Queries) ListReviews(ctx context.Context, arg ListReviewsParams) ([]Rev
 }
 
 const listReviewsByStatus = `-- name: ListReviewsByStatus :many
-SELECT reviews.id, reviews.pr_id, reviews.reviewer, reviews.head, reviews.status, reviews.verdict, reviews.summary, reviews.comments, reviews.agent_id, reviews.github_review_id, reviews.url, reviews.followup, reviews.error, reviews.attempts, reviews.created_at, reviews.updated_at FROM reviews JOIN pull_requests ON pull_requests.id = reviews.pr_id
+SELECT reviews.id, reviews.pr_id, reviews.reviewer, reviews.head, reviews.status, reviews.verdict, reviews.summary, reviews.comments, reviews.agent_id, reviews.github_review_id, reviews.url, reviews.followup, reviews.error, reviews.attempts, reviews.created_at, reviews.updated_at, reviews.reply, reviews.reply_url FROM reviews JOIN pull_requests ON pull_requests.id = reviews.pr_id
 WHERE pull_requests.project_id = ? AND reviews.status = ?
 ORDER BY reviews.id
 `
@@ -1124,6 +1132,8 @@ func (q *Queries) ListReviewsByStatus(ctx context.Context, arg ListReviewsByStat
 			&i.Attempts,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Reply,
+			&i.ReplyUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -1403,7 +1413,7 @@ func (q *Queries) ReopenAgent(ctx context.Context, id string) error {
 }
 
 const reviewByAgent = `-- name: ReviewByAgent :one
-SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at FROM reviews WHERE agent_id = ? ORDER BY id DESC LIMIT 1
+SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at, reply, reply_url FROM reviews WHERE agent_id = ? ORDER BY id DESC LIMIT 1
 `
 
 func (q *Queries) ReviewByAgent(ctx context.Context, agentID sql.NullString) (Review, error) {
@@ -1426,12 +1436,14 @@ func (q *Queries) ReviewByAgent(ctx context.Context, agentID sql.NullString) (Re
 		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reply,
+		&i.ReplyUrl,
 	)
 	return i, err
 }
 
 const reviewByGitHubID = `-- name: ReviewByGitHubID :one
-SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at FROM reviews WHERE pr_id = ? AND github_review_id = ?
+SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at, reply, reply_url FROM reviews WHERE pr_id = ? AND github_review_id = ?
 `
 
 type ReviewByGitHubIDParams struct {
@@ -1459,12 +1471,14 @@ func (q *Queries) ReviewByGitHubID(ctx context.Context, arg ReviewByGitHubIDPara
 		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reply,
+		&i.ReplyUrl,
 	)
 	return i, err
 }
 
 const reviewForHead = `-- name: ReviewForHead :one
-SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at FROM reviews WHERE pr_id = ? AND reviewer = ? AND head = ? ORDER BY id DESC LIMIT 1
+SELECT id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at, reply, reply_url FROM reviews WHERE pr_id = ? AND reviewer = ? AND head = ? ORDER BY id DESC LIMIT 1
 `
 
 type ReviewForHeadParams struct {
@@ -1493,6 +1507,8 @@ func (q *Queries) ReviewForHead(ctx context.Context, arg ReviewForHeadParams) (R
 		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reply,
+		&i.ReplyUrl,
 	)
 	return i, err
 }
@@ -1544,7 +1560,7 @@ func (q *Queries) SetPullRequestFlagged(ctx context.Context, arg SetPullRequestF
 
 const setReviewFollowup = `-- name: SetReviewFollowup :one
 UPDATE reviews SET followup = ?, updated_at = ? WHERE id = ?
-RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at, reply, reply_url
 `
 
 type SetReviewFollowupParams struct {
@@ -1573,6 +1589,52 @@ func (q *Queries) SetReviewFollowup(ctx context.Context, arg SetReviewFollowupPa
 		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reply,
+		&i.ReplyUrl,
+	)
+	return i, err
+}
+
+const setReviewReply = `-- name: SetReviewReply :one
+UPDATE reviews SET reply = ?, reply_url = ?, updated_at = ? WHERE id = ?
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at, reply, reply_url
+`
+
+type SetReviewReplyParams struct {
+	Reply     string
+	ReplyUrl  string
+	UpdatedAt time.Time
+	ID        int64
+}
+
+// A worker's "no change needed" answer to a review (ADR 0022); reply_url once it is posted.
+func (q *Queries) SetReviewReply(ctx context.Context, arg SetReviewReplyParams) (Review, error) {
+	row := q.db.QueryRowContext(ctx, setReviewReply,
+		arg.Reply,
+		arg.ReplyUrl,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i Review
+	err := row.Scan(
+		&i.ID,
+		&i.PrID,
+		&i.Reviewer,
+		&i.Head,
+		&i.Status,
+		&i.Verdict,
+		&i.Summary,
+		&i.Comments,
+		&i.AgentID,
+		&i.GithubReviewID,
+		&i.Url,
+		&i.Followup,
+		&i.Error,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Reply,
+		&i.ReplyUrl,
 	)
 	return i, err
 }
@@ -1595,7 +1657,7 @@ func (q *Queries) SetWorktreeStatus(ctx context.Context, arg SetWorktreeStatusPa
 const startReview = `-- name: StartReview :one
 UPDATE reviews SET status = 'running', agent_id = ?, attempts = attempts + 1, updated_at = ?
 WHERE id = ? AND status = 'queued'
-RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at, reply, reply_url
 `
 
 type StartReviewParams struct {
@@ -1625,6 +1687,8 @@ func (q *Queries) StartReview(ctx context.Context, arg StartReviewParams) (Revie
 		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reply,
+		&i.ReplyUrl,
 	)
 	return i, err
 }
@@ -1755,7 +1819,7 @@ UPDATE reviews
 SET status = ?, verdict = ?, summary = ?, comments = ?, agent_id = ?, github_review_id = ?, url = ?, error = ?,
     attempts = ?, updated_at = ?
 WHERE id = ?
-RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at
+RETURNING id, pr_id, reviewer, head, status, verdict, summary, comments, agent_id, github_review_id, url, followup, error, attempts, created_at, updated_at, reply, reply_url
 `
 
 type UpdateReviewParams struct {
@@ -1804,6 +1868,8 @@ func (q *Queries) UpdateReview(ctx context.Context, arg UpdateReviewParams) (Rev
 		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reply,
+		&i.ReplyUrl,
 	)
 	return i, err
 }

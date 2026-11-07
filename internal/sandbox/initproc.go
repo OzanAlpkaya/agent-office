@@ -18,6 +18,7 @@ import (
 type InitConfig struct {
 	EgressAddr, EgressSocket string   // loopback address bridged to the egress socket
 	APIAddr, APISocket       string   // loopback address bridged to the API socket
+	SecretsSocket            string   // optional: stack pack secrets for the child's env (ADR 0023)
 	Dirs                     []string // created if missing (HOME, CLAUDE_CODE_TMPDIR; on the tmpfs)
 	Command                  []string
 	Env                      []string // the child's environment
@@ -31,13 +32,13 @@ func InitFromEnv(command []string) InitConfig {
 	var env []string
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
-		if k != "AGENT_OFFICE_EGRESS_SOCKET" && k != "AGENT_OFFICE_API_SOCKET" {
+		if k != "AGENT_OFFICE_EGRESS_SOCKET" && k != "AGENT_OFFICE_API_SOCKET" && k != secretsSocketEnv {
 			env = append(env, kv)
 		}
 	}
 	return InitConfig{
 		EgressAddr: EgressAddr, EgressSocket: os.Getenv("AGENT_OFFICE_EGRESS_SOCKET"),
-		APIAddr: APIAddr, APISocket: os.Getenv("AGENT_OFFICE_API_SOCKET"),
+		APIAddr: APIAddr, APISocket: os.Getenv("AGENT_OFFICE_API_SOCKET"), SecretsSocket: os.Getenv(secretsSocketEnv),
 		Dirs: nonEmpty(os.Getenv("HOME"), os.Getenv("CLAUDE_CODE_TMPDIR")), Command: command, Env: env,
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 	}
@@ -48,7 +49,8 @@ func InitFromEnv(command []string) InitConfig {
 // to the child (the caller maps SIGTERM/SIGHUP to cancellation); SIGINT and
 // SIGQUIT must be ignored by the caller, since the tty delivers them to the
 // child directly. A bridge that cannot start is an error before the child
-// runs, so an agent never starts without its proxies.
+// runs, so an agent never starts without its proxies; the same holds for
+// secrets that cannot be fetched.
 func RunInit(ctx context.Context, cfg InitConfig) (int, error) {
 	if len(cfg.Command) == 0 {
 		return 0, errors.New("sandbox-init: no command")
@@ -79,8 +81,17 @@ func RunInit(ctx context.Context, cfg InitConfig) (int, error) {
 		}
 	}
 
+	env := cfg.Env
+	if cfg.SecretsSocket != "" {
+		secrets, err := fetchSecrets(cfg.SecretsSocket)
+		if err != nil {
+			return 0, err
+		}
+		env = withEnv(env, secrets)
+	}
+
 	cmd := exec.Command(cfg.Command[0], cfg.Command[1:]...)
-	cmd.Env = cfg.Env
+	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = cfg.Stdin, cfg.Stdout, cfg.Stderr
 	// A background grandchild can keep inherited pipes open after the child
 	// exits; do not wait for it beyond this.

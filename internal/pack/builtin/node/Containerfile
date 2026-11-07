@@ -1,0 +1,15 @@
+# Built-in "node" stack pack (ADR 0023): Node.js and npm from the Debian archive (signed
+# packages; not the newest Node release). Built FROM agent-office's base image.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends nodejs npm \
+ && rm -rf /var/lib/apt/lists/*
+
+# HOME is a tmpfs (/tmp/home); npm's cache lives there. No update checks, funding or audit
+# calls at run time beyond the registry.
+ENV npm_config_update_notifier=false \
+    npm_config_fund=false
+
+LABEL io.agent-office.pack=node

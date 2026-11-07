@@ -125,6 +125,8 @@ type Review struct {
 	AgentID   string           `json:"agent_id,omitempty"`
 	URL       string           `json:"url,omitempty"`
 	Followup  string           `json:"followup,omitempty"`
+	Reply     string           `json:"reply,omitempty"`     // the worker's "no change needed" reason (agent-written)
+	ReplyURL  string           `json:"reply_url,omitempty"` // that reason on GitHub, once posted
 	Error     string           `json:"error,omitempty"`
 	CreatedAt time.Time        `json:"created_at"`
 	UpdatedAt time.Time        `json:"updated_at"`
@@ -976,7 +978,8 @@ func (e *Engine) followUp(ctx context.Context, row db.PullRequest, rv db.Review)
 				return "", err
 			}
 		}
-		_, err := e.relaunch(ctx, row.AgentID, prompt)
+		_, err := e.relaunch(ctx, row.AgentID, prompt, &followupRound{prID: row.ID, reviewID: rv.ID, number: int(row.Number),
+			head: row.Head})
 		if err == nil {
 			e.log.Info("worker relaunched for review feedback", "agent_id", row.AgentID, "pr", row.Number, "review_id", rv.ID)
 			return FollowupStarted, nil
@@ -1305,7 +1308,7 @@ func reviewView(rv db.Review) Review {
 	f := feedbackOf(rv)
 	return Review{ID: rv.ID, PRID: rv.PrID, Reviewer: rv.Reviewer, Head: rv.Head, Status: rv.Status, Verdict: rv.Verdict,
 		Summary: rv.Summary, Comments: f.Comments, AgentID: rv.AgentID.String, URL: rv.Url, Followup: rv.Followup,
-		Error: rv.Error, CreatedAt: rv.CreatedAt.UTC(), UpdatedAt: rv.UpdatedAt.UTC()}
+		Reply: rv.Reply, ReplyURL: rv.ReplyUrl, Error: rv.Error, CreatedAt: rv.CreatedAt.UTC(), UpdatedAt: rv.UpdatedAt.UTC()}
 }
 
 // PullRequests lists the project's pull requests with their recent reviews.
@@ -1376,7 +1379,9 @@ func (e *Engine) followUpPrompt(task db.Task, branch string, row db.PullRequest,
 	fmt.Fprintf(&b, "You worked on this task before, on git branch %s, and agent-office opened pull request #%d for it. "+
 		"This is a new session: your earlier commits are on the branch (git log), so look at them first.\n\n%s\n\n"+
 		"Address the review: fix what is right; if you disagree with a point, say why in your report summary. "+
-		"Commit on this same branch. Do not push. Do not touch any other branch: do not create, check out, merge, "+
+		"Commit on this same branch, then call report_done: it is refused until the branch has a new commit. "+
+		"Only if the review needs no change to the code at all, do not commit and call report_no_change with the "+
+		"reason instead; agent-office posts it on the pull request. Do not push. Do not touch any other branch: do not create, check out, merge, "+
 		"rebase, reset or delete other branches. agent-office pushes the branch and the pull request updates.",
 		branch, row.Number, reviewText)
 	b.WriteString(e.workerRules(&task))

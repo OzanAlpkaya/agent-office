@@ -242,6 +242,11 @@ RETURNING *;
 UPDATE reviews SET followup = ?, updated_at = ? WHERE id = ?
 RETURNING *;
 
+-- name: SetReviewReply :one
+-- A worker's "no change needed" answer to a review (ADR 0022); reply_url once it is posted.
+UPDATE reviews SET reply = ?, reply_url = ?, updated_at = ? WHERE id = ?
+RETURNING *;
+
 -- name: StartReview :one
 -- Hands a queued review to its reviewer agent, once (ADR 0021).
 UPDATE reviews SET status = 'running', agent_id = ?, attempts = attempts + 1, updated_at = ?

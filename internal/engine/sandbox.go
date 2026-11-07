@@ -9,12 +9,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
+	"github.com/OzanAlpkaya/agent-office/internal/pack"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
+	"github.com/OzanAlpkaya/agent-office/internal/secret"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
 )
@@ -33,8 +36,11 @@ type SandboxOptions struct {
 	ClaudeVersion string            // e.g. "2.1.319", for the seeded config
 	TokenFile     string            // OAuth token file (ADR 0015), read at every launch
 	Allow         sandbox.Allowlist // egress allowlist
+	AllowNames    []string          // the same entries, for the UI
 	Memory        string            // per-worker memory limit; empty: sandbox default
 	Pids          int               // per-worker pids limit; 0: sandbox default
+	Pack          *pack.Pack        // stack pack (ADR 0023); nil: none. Image and Allow already reflect it.
+	SecretsDir    string            // where the pack's secret values live (pack.DefaultSecretsDir)
 
 	apiUpstream *url.URL // tests only: the API proxy's upstream; nil: the Anthropic API
 }
@@ -68,6 +74,7 @@ type sandboxRes struct {
 	container string
 	egress    net.Listener
 	api       *http.Server
+	secrets   net.Listener    // one-shot pack secrets socket (ADR 0023); nil without secrets
 	grants    *sandbox.Grants // hosts approved at run time (ADR 0019)
 }
 
@@ -87,6 +94,9 @@ func (o *SandboxOptions) validate() error {
 	}
 	if o.Image == "" || o.ClaudeVersion == "" || !sandbox.InstancePattern.MatchString(o.Instance) {
 		return errors.New("engine: Sandbox.Image, Sandbox.ClaudeVersion and a valid Sandbox.Instance are required")
+	}
+	if o.Pack != nil && len(o.Pack.Env) > 0 && !filepath.IsAbs(o.SecretsDir) {
+		return fmt.Errorf("engine: Sandbox.SecretsDir must be an absolute path, got %q", o.SecretsDir)
 	}
 	return nil
 }
@@ -112,12 +122,13 @@ type sandboxPrep struct {
 	objects string
 	ident   sandbox.GitIdentity
 	token   sandbox.Secret
+	secrets map[string]secret.Secret // the pack's secrets for this agent (ADR 0023)
 }
 
 // prepareSandboxStart checks everything a sandboxed start needs before any
-// state is created: the repository's object store, the user's git identity
-// and the OAuth token file.
-func (e *Engine) prepareSandboxStart(ctx context.Context, agentName string) (sandboxPrep, error) {
+// state is created: the repository's object store, the user's git identity,
+// the OAuth token file and, for workers and reviewers, the pack's secrets.
+func (e *Engine) prepareSandboxStart(ctx context.Context, agentName, role string) (sandboxPrep, error) {
 	objects, err := e.git.ObjectsDir(ctx, e.project.RepoPath)
 	if err != nil {
 		return sandboxPrep{}, err
@@ -130,7 +141,19 @@ func (e *Engine) prepareSandboxStart(ctx context.Context, agentName string) (san
 	if err != nil {
 		return sandboxPrep{}, err
 	}
-	return sandboxPrep{objects: objects, token: token,
+	var secrets map[string]secret.Secret
+	// Workers only: leads plan and run no code, and reviewers read the agent-written
+	// diff, the most injectable input there is (ADR 0023).
+	if p := e.opts.Sandbox.Pack; p != nil && role == RoleWorker {
+		var skipped []string
+		if secrets, skipped, err = p.ReadSecrets(e.opts.Sandbox.SecretsDir); err != nil {
+			return sandboxPrep{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
+		if len(skipped) > 0 {
+			e.log.Warn("optional pack secrets not set", "pack", p.Name, "names", skipped)
+		}
+	}
+	return sandboxPrep{objects: objects, token: token, secrets: secrets,
 		ident: sandbox.GitIdentity{Name: name, Email: email, CoAuthor: sandbox.CoAuthor(agentName)}}, nil
 }
 
@@ -210,12 +233,29 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 			return fail(err)
 		}
 	}
+	// The pack's skills become the agent's personal skills (ADR 0023): written
+	// fresh for every launch into the daemon-owned runtime dir and mounted
+	// read-only over CLAUDE_CONFIG_DIR/skills, so the agent cannot change them
+	// and a relaunch gets the current pack's. The mount point is created
+	// while the config dir still belongs to the user.
+	if l.prev == nil {
+		if err := os.MkdirAll(filepath.Join(cfgDir, "skills"), 0o755); err != nil {
+			return fail(err)
+		}
+	}
+	var skillsPath string
+	if p := s.Pack; p != nil && len(p.Skills) > 0 {
+		skillsPath = filepath.Join(res.dir, "skills")
+		if err := p.WriteSkills(skillsPath); err != nil {
+			return fail(err)
+		}
+	}
 
 	if ln, err = hooks.Listen(filepath.Join(res.dir, "hook.sock"), e.hookHandler(id), log); err != nil {
 		return fail(err)
 	}
 	mcpPath, mcpConfig := filepath.Join(res.dir, "mcp.sock"), filepath.Join(res.dir, "mcp.json")
-	cfg, err := agent.MCPConfig(sandbox.AgentOfficeBin, sandbox.MCPSocket)
+	cfg, err := agent.MCPConfig(sandbox.AgentOfficeBin, sandbox.MCPSocket, packServers(s.Pack))
 	if err != nil {
 		return fail(err)
 	}
@@ -244,7 +284,21 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	res.api = &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = res.api.Serve(apiLn) }()
 
-	if err := s.Podman.Chown(ctx, e.opts.RuntimeDir, ln.Path(), mcpPath, egressPath, apiPath); err != nil {
+	socks := []string{ln.Path(), mcpPath, egressPath, apiPath}
+	var secretsPath string
+	if len(prep.secrets) > 0 {
+		secretsPath = filepath.Join(res.dir, "secrets.sock")
+		if res.secrets, err = listenUnix(secretsPath); err != nil {
+			return fail(err)
+		}
+		socks = append(socks, secretsPath)
+		go func(l net.Listener, vals map[string]secret.Secret) {
+			if err := sandbox.ServeSecretsOnce(l, vals); err != nil && !errors.Is(err, net.ErrClosed) {
+				log.Warn("secrets socket", "err", err)
+			}
+		}(res.secrets, prep.secrets)
+	}
+	if err := s.Podman.Chown(ctx, e.opts.RuntimeDir, socks...); err != nil {
 		return fail(err)
 	}
 	if err := s.Podman.Chown(ctx, s.AgentsRoot, filepath.Join(s.AgentsRoot, id)); err != nil {
@@ -259,7 +313,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	args, err := sandbox.WorkerArgs(sandbox.WorkerSpec{
 		Instance: s.Instance, AgentID: id, Image: s.Image, Workspace: wsPath, ObjectsDir: prep.objects, ConfigDir: cfgDir,
 		HookSocket: ln.Path(), MCPSocket: mcpPath, MCPConfig: mcpConfig, EgressSocket: egressPath, APISocket: apiPath,
-		AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
+		SecretsSocket: secretsPath, Skills: skillsPath, AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
 		Git: prep.ident, Memory: s.Memory, Pids: s.Pids, Command: command,
 	})
 	if err != nil {
@@ -289,7 +343,8 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	e.registerLocked(a, l)
 	e.mu.Unlock()
 	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "sandbox", SandboxPodman, "session_id", sid, "task_id", taskID, "branch", branch,
-		"workspace", wsPath, "container", res.container, "image", s.Image, "model", e.opts.Model)
+		"workspace", wsPath, "container", res.container, "image", s.Image, "pack", packName(s.Pack),
+		"secrets", secretNames(prep.secrets), "model", e.opts.Model)
 	e.wg.Add(1)
 	go e.watch(a)
 	return a.view(), nil
@@ -303,6 +358,9 @@ func (e *Engine) closeSandbox(res *sandboxRes, log interface{ Warn(string, ...an
 	}
 	if res.api != nil {
 		res.api.Close()
+	}
+	if res.secrets != nil {
+		res.secrets.Close()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -384,4 +442,33 @@ func listenUnix(path string) (net.Listener, error) {
 		return nil, err
 	}
 	return l, nil
+}
+
+// packServers converts a pack's MCP servers for the agent's MCP config.
+func packServers(p *pack.Pack) map[string]agent.MCPServer {
+	if p == nil {
+		return nil
+	}
+	out := make(map[string]agent.MCPServer, len(p.MCPServers))
+	for n, s := range p.MCPServers {
+		out[n] = agent.MCPServer{Command: s.Command, Args: s.Args, URL: s.URL}
+	}
+	return out
+}
+
+func packName(p *pack.Pack) string {
+	if p == nil {
+		return ""
+	}
+	return p.Name
+}
+
+// secretNames lists the names (never the values) of an agent's secrets.
+func secretNames(m map[string]secret.Secret) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
 }

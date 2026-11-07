@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 0 design, updated through Phase 5 (GitHub loop and pluggable review), based on the spikes in `spikes/` and
+Status: Phase 0 design, updated through Phase 6 (stack packs), based on the spikes in `spikes/` and
 the ADRs in `docs/adr/`. Parts marked *(later)* belong to later phases and will be detailed then.
 
 ## Overview
@@ -58,13 +58,14 @@ flowchart LR
 | `agent` | Adapter per agent CLI: command line, env, settings file, and translating CLI-specific hook payloads into common events. |
 | `engine` | Owns the lifecycle of agents, tasks, worktrees and messages. All state changes go through it. |
 | `hooks` | Accepts forwarded hook events from the per-agent sockets and runs the agent state machine. |
-| `mcp` | Team MCP server (go-sdk v1.8.0): `create_task`, `assign_task`, `list_tasks`, `send_message`, `report_done`, `request_access` over a `Team` interface the engine implements; per-agent socket listener; the `agent-office mcp` stdio bridge (ADR 0006). |
+| `mcp` | Team MCP server (go-sdk v1.8.0): `create_task`, `assign_task`, `list_tasks`, `send_message`, `report_done`, `request_access`, `submit_review` (reviewers), `report_no_change` (workers in a review follow-up) over a `Team` interface the engine implements; per-agent socket listener; the `agent-office mcp` stdio bridge (ADR 0006). |
 | `store` | SQLite via modernc + sqlc, forward-only goose migrations; refuses schemas newer than the binary and backs up before migrating (ADR 0004, 0011, 0012, 0013). |
 | `git` | git CLI wrapper: worktrees, branches, branch-name slugs (ADR 0009, 0010). |
 | `sandbox` | Starts workers in rootless Podman (`--network none`); per-agent egress proxy and credential-injecting API proxy; token file reader (ADR 0007, 0014–0016). |
 | `github` | go-github v93 client for one repository: find-or-create PR, reviews, COMMENT reviews, checks; token file read per operation; no merge operation; `githubtest` fake for tests (ADR 0020). Never the `gh` CLI. |
 | `review` | Pluggable `Reviewer` interface (`Request`, `Poll`) with the internal reviewer agent and CodeRabbit behind it; one `Feedback` shape (ADR 0021). |
 | `secret` | Redacting `Secret` type and the user-only token-file reader (OAuth and GitHub tokens, ADR 0015, 0020). |
+| `pack` | Stack packs (ADR 0023): strict YAML loader and validation, built-in `go` and `node` packs, user packs from a user-owned directory, build files for the pack image, skills, secret files. |
 | `api` | HTTP + WebSocket for the UI; serves the embedded UI build. |
 
 ## Key flows
@@ -201,11 +202,45 @@ sequenceDiagram
   worker (a still-running one is ended first, once idle): same agent, workspace and branch, new
   session, the review quoted in its prompt; at most
   `--review-rounds` (default 2) automatic rounds per PR, then "Send to worker" by hand (ADR 0022).
-  Messages are only delivered to the session they were queued for.
+  Messages are only delivered to the session they were queued for. In a follow-up round,
+  `report_done` is refused until the branch has a new commit; a worker that finds no change needed
+  calls `report_no_change(reason)`, which agent-office posts on the PR as a comment.
 - Polling: every 30 s while a review or checks are pending, every 2 minutes otherwise; no webhooks
   (the daemon is loopback-only).
 - `--github` needs sandboxed agents. Pushes wait for the user's acceptance of flagged commits and of
   any change under `.github/`. At most 10 automatic reviews per PR.
+
+**Stack packs (Phase 6, ADR 0023).** `--pack <name>` picks one pack for the daemon run: a
+built-in (`go`, `node`, embedded in the binary) or a directory in `~/.config/agent-office/packs`
+that belongs to the user. Packs are never read from the repository. At startup the daemon
+validates the pack, checks that its image exists and that its required secrets have files. Then,
+for every sandboxed agent:
+
+- **Image:** `localhost/agent-office-pack-<name>:<hash>`, built by `agent-office worker-image
+  --pack <name>` from the pack's Containerfile `FROM` the base image; without a pack, the base
+  image (no toolchain). The tag hashes every build input.
+- **Egress:** the pack's hosts replace the default allowlist; `--egress-allow` adds to both.
+- **Skills:** checked at load, written for each launch and mounted read-only at the agent's
+  `CLAUDE_CONFIG_DIR/skills`.
+- **MCP servers:** added to its `--mcp-config` next to `agent-office` (`--strict-mcp-config`).
+- **Secrets** (workers only): read from user-only files at every launch and
+  served **once** on a per-agent `secrets.sock`; `sandbox-init` puts them into the agent CLI's
+  environment before starting it, so they never appear in argv or the container's config.
+
+```mermaid
+sequenceDiagram
+  participant D as Daemon
+  participant P as podman
+  participant I as sandbox-init (container)
+  participant C as Claude Code
+  D->>D: read secret files (pack env names), write skills and MCP config
+  D->>D: listen secrets.sock (one connection, then closed)
+  D->>P: run pack image, mount secrets.sock (no secret in args or env)
+  P->>I: start
+  I->>D: connect secrets.sock
+  D-->>I: {"env": {...}}; listener closed
+  I->>C: exec with the secrets in its environment only
+```
 
 **Isolation (Phase 3).** Each sandboxed worker is a rootless Podman container with
 `--network none`, a read-only rootfs and no capabilities (ADR 0007). It mounts its own shared
@@ -245,7 +280,7 @@ events: logged, stored (rate-limited), pushed to the UI live and listed by
 | **Message** | id, from_agent_id (empty: agent-office), to_agent_id, body, created_at, delivered_at, delivery (stop_hook / pty) | Claimed once, then delivered (ADR 0018). |
 | **AccessRequest** | id, agent_id, kind (domain; secret / path reserved), value, reason, status (pending / approved / denied / expired), decided_at, decided_by | A human decides in the UI; a grant lasts for that agent's run (ADR 0019). |
 | **PullRequest** | id, task_id, agent_id (the worker), branch, base, number, url, state (pending / open / merged / closed), head, checks, pending / accepted flagged commits, rounds, error | One per pushed branch (migration 0005, ADR 0020). |
-| **Review** | id, pr_id, reviewer (internal / coderabbit / human), head, status (queued / running / done / failed / timed_out), verdict, summary, comments, agent_id, github_review_id, followup | One per reviewed head; people's reviews are recorded, never acted on automatically (ADR 0021, 0022). |
+| **Review** | id, pr_id, reviewer (internal / coderabbit / human), head, status (queued / running / done / failed / timed_out), verdict, summary, comments, agent_id, github_review_id, followup, reply, reply_url | One per reviewed head; people's reviews are recorded, never acted on automatically (ADR 0021, 0022). |
 | **Event** | id, agent_id, session_id, kind, at, summary | Hook events, reduced to non-sensitive fields. |
 
 ## Threat model (first draft, updated in Phases 3 and 4)
@@ -285,4 +320,7 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | GitHub token leaks or is misused by an agent | `--github` refuses host-mode agents (they run as the user); token in a user-only file, read per operation, held as a redacting `Secret`; sent only to the API origin (`TestTokenOnlyToAPIOrigin`); never in agent env, sandbox or logs; agents reach GitHub only through the daemon's fixed operations | 5 |
 | Agent-written text on GitHub notifies people or closes issues | Summaries, sub-task descriptions and review comments are neutralized (`@mentions`, closing keywords) before posting (`TestNeutralize`, `TestGitHubLoop`) | 5 |
 | A reviewer or review text steers the worker or spends sessions without limit | Only the configured reviewer's feedback acts automatically, framed and quoted as information; at most `--review-rounds` automatic follow-ups per PR (`TestFollowupRoundLimitAndHumanReviews`); people's GitHub reviews never act by themselves; a reviewer may only submit once, for its own review (`TestSubmitReviewAuthorization`). Residual: within the limit a persuasive review can still steer the worker inside its own permissions | 5 |
+| Repository content or an agent widens the sandbox (hosts, secrets, image) | Stack packs come only from the binary or a user-owned directory with no group/other write and no symlinks, never from the repository; one pack per run, chosen with `--pack`, never auto-detected; validated strictly at startup (`TestLoadInvalid`, `TestLoadDirChecksTheTree`, `TestFindAndList`). A pack image must build `FROM ${BASE_IMAGE}`. Residual: whoever can write the user's config directory controls the pack (same as the token files) | 6 |
+| Pack secrets leak to places other than the agent | Values only in user-only files, read at each launch; served once on a per-agent socket to `sandbox-init`, which sets them in the agent CLI's environment only; never argv, `-e`, container config, files, logs, DB or UI; only workers get them (not leads or reviewers); reserved names cannot override the sandbox's variables or hand agents a GitHub token. Tested: `TestSandboxedPackLaunch` (canary absent from sandbox-init, `podman inspect`, runtime dir, logs, DB; a second fetch is refused), `TestSecretsServedOnceToInit`, `TestFetchSecretsRefusesBadReplies`, `TestReservedEnv` | 6 |
+| Agent exfiltrates a pack secret | Residual by design: an agent can send a secret it holds to any allowed host (TLS hides contents from the proxy). Packs should hold test or read-only credentials; the UI and `docs/packs.md` say so | 6 |
 | Sensitive data in captured payloads | Store reduced events only; raw hook payloads and transcripts are never persisted or sent to the UI in full | 1, 8 |

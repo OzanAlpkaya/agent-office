@@ -120,6 +120,8 @@ type Review struct {
 	Attempts       int64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	Reply          string
+	ReplyUrl       string
 }
 
 type Session struct {

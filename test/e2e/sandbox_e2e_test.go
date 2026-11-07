@@ -40,7 +40,7 @@ type importInfo struct {
 //
 // It works on a throwaway clone of AO_E2E_REPO, because sandboxed starts add
 // a base ref and imported branches to the repository. Requirements beyond the
-// host test: podman, the worker image (make worker-image) and the OAuth token
+// host test: podman, the stack pack image (make worker-image PACK=go) and the OAuth token
 // file (ADR 0015).
 func TestSandboxEndToEnd(t *testing.T) {
 	src := os.Getenv("AO_E2E_REPO")
@@ -87,7 +87,7 @@ func TestSandboxEndToEnd(t *testing.T) {
 	port := freePort(t)
 	d := &daemon{t: t, bin: bin, base: "http://127.0.0.1:" + port, logPath: filepath.Join(tmp, "daemon.log"),
 		args: []string{"serve", "--repo", repo, "--addr", "127.0.0.1:" + port, "--data-dir", data,
-			"--model", model, "--log-level", "debug", "--sandbox", "podman"}}
+			"--model", model, "--log-level", "debug", "--sandbox", "podman", "--pack", e2ePack()}}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	var agentIDs []string
@@ -108,17 +108,23 @@ func TestSandboxEndToEnd(t *testing.T) {
 		}
 	})
 	d.start()
-	var status struct{ Sandbox, Image string }
+	var status struct {
+		Sandbox, Image string
+		Pack           *struct{ Name string } `json:"pack"`
+	}
 	d.json("GET", "/api/status", nil, 200, &status)
-	if status.Sandbox != "podman" {
+	if status.Sandbox != "podman" || status.Pack == nil || status.Pack.Name != e2ePack() ||
+		!strings.HasPrefix(status.Image, "localhost/agent-office-pack-"+e2ePack()+":") {
 		t.Fatalf("status %+v", status)
 	}
 	w := watch(t, ctx, d.base)
 
 	var task taskInfo
 	d.json("POST", "/api/tasks", map[string]string{"title": "E2E sandbox",
-		"description": "Create a file named sandbox-e2e.txt containing the single word hi, then commit it " +
-			"with the message 'test: sandbox e2e'. Do not do anything else and do not ask questions."}, 201, &task)
+		"description": "Create a file named sandbox-e2e.txt containing the single word hi. Then run " +
+			"`go test -race ./...` in the repository and create a file named race.txt containing the single word " +
+			"race-ok if it passed or race-failed if it did not. Commit both files with the message " +
+			"'test: sandbox e2e'. Do not do anything else and do not ask questions."}, 201, &task)
 	var a struct {
 		agentInfo
 		Sandbox       string `json:"sandbox"`
@@ -152,6 +158,21 @@ func TestSandboxEndToEnd(t *testing.T) {
 	if got := gitOut(t, repo, "show", a.Branch+":sandbox-e2e.txt"); strings.TrimSpace(got) != "hi" {
 		t.Errorf("file on the imported branch: %q", got)
 	}
+	// The go pack's toolchain, with the real agent: the race detector needs cgo.
+	if got := gitOut(t, repo, "show", a.Branch+":race.txt"); e2ePack() == "go" && strings.TrimSpace(got) != "race-ok" {
+		t.Errorf("race.txt on the imported branch: %q", got)
+	}
+	// The pack's skill sits in the agent's config dir. Whether Claude Code
+	// listed it is visible only in its own files there (logged, not asserted:
+	// the transcript format is not ours).
+	if out, err := exec.Command("podman", "exec", "ao-"+a.ID, "sh", "-c",
+		"test -s /config/skills/go-sandbox/SKILL.md && echo skill=present; "+
+			"grep -rlF go-sandbox /config --exclude-dir=skills 2>/dev/null | head -3").Output(); err == nil {
+		if e2ePack() == "go" && !strings.Contains(string(out), "skill=present") {
+			t.Errorf("the go pack's skill is not in the agent's config dir: %s", out)
+		}
+		t.Logf("pack skill in the worker: %s", strings.TrimSpace(string(out)))
+	}
 	if got := gitOut(t, repo, "log", "-1", "--format=%an <%ae>", a.Branch); got != name+" <"+email+">" {
 		t.Errorf("author %q, want %s <%s>", got, name, email)
 	}
@@ -174,6 +195,30 @@ func TestSandboxEndToEnd(t *testing.T) {
 		t.Fatalf("worker processes not read: %v", err)
 	}
 	noToken(t, "the worker's processes, env and files (including Claude Code's config and transcripts)", inside, token)
+
+	// Claude Code lists the pack's skill: /skills shows the available skills without a model call
+	// (code.claude.com/docs/en/commands). Esc closes the list.
+	if e2ePack() == "go" {
+		tm := attach(t, ctx, d.base, a.ID)
+		time.Sleep(2 * time.Second) // the scrollback replay and redraw after attaching
+		from := tm.len()            // only output after /skills counts: the task turn may name the skill
+		tm.typeLine(ctx, "/skills")
+		after := func() string {
+			tm.mu.Lock()
+			defer tm.mu.Unlock()
+			return ansi.ReplaceAllString(string(tm.buf.Bytes()[from:]), "")
+		}
+		listed := false
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline) && !listed; time.Sleep(500 * time.Millisecond) {
+			listed = strings.Contains(after(), "go-sandbox")
+		}
+		tm.send(ctx, "\x1b")
+		if !listed {
+			t.Errorf("/skills did not list the pack's go-sandbox skill:\n%s", tail(after(), 40))
+		} else {
+			t.Log("/skills lists the pack's go-sandbox skill")
+		}
+	}
 
 	// Hard crash: the worker outlives the daemon; the restart removes it and
 	// imports the agent's work.
