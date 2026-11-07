@@ -101,3 +101,20 @@ func TestHookExitsZeroWhenDaemonDown(t *testing.T) {
 		t.Fatalf("exit code %d without socket env, want 0", code)
 	}
 }
+
+// Without a daemon the MCP bridge fails fast and non-zero, so Claude Code
+// reports the server as failed instead of waiting.
+func TestMCPBridgeFailsWhenDaemonDown(t *testing.T) {
+	t.Setenv("AGENT_OFFICE_MCP_SOCKET", t.TempDir()+"/missing.sock")
+	start := time.Now()
+	if code := mcpBridge(); code == 0 {
+		t.Fatal("exit code 0 with the daemon down")
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("took %v with the daemon down", d)
+	}
+	t.Setenv("AGENT_OFFICE_MCP_SOCKET", "")
+	if code := mcpBridge(); code == 0 {
+		t.Fatal("exit code 0 without socket env")
+	}
+}
