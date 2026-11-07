@@ -33,7 +33,7 @@ flowchart LR
     FWD["agent-office hook / mcp<br/>(forwarder)"]
   end
 
-  PX[egress proxy<br/>allowlist CONNECT]
+  PX[egress + API sockets<br/>CONNECT allowlist · token injection]
   GHAPI[(GitHub API)]
 
   UI <-- WS: terminal bytes, state --> API
@@ -61,7 +61,7 @@ flowchart LR
 | `mcp` | Team MCP server (go-sdk): `create_task`, `assign_task`, `send_message`, `report_done`, `request_access`. *(Phase 4)* |
 | `store` | SQLite via modernc + sqlc, forward-only goose migrations; refuses schemas newer than the binary and backs up before migrating (ADR 0004, 0011, 0012, 0013). |
 | `git` | git CLI wrapper: worktrees, branches, branch-name slugs (ADR 0009, 0010). |
-| `sandbox` | Starts workers in rootless Podman with the egress proxy and secrets. *(Phase 3)* |
+| `sandbox` | Starts workers in rootless Podman (`--network none`); per-agent egress proxy and credential-injecting API proxy; token file reader (ADR 0007, 0014–0016). *(Phase 3)* |
 | `github` | PRs and reviews through go-github; never the `gh` CLI. *(Phase 5)* |
 | `api` | HTTP + WebSocket for the UI; serves the embedded UI build. |
 
@@ -118,9 +118,14 @@ as `{"decision":"block","reason":"<message>"}` on its next Stop hook (unless `st
 If it is **idle**, the daemon types the message into the PTY as user input. Both paths were shown
 to work in Spike B.
 
-**Isolation (Phase 3).** Each worker is a rootless Podman container on an `--internal
---disable-dns` network. Only its worktree and its own agent socket are mounted. Egress goes through
-an allowlist CONNECT proxy, and secrets arrive as `podman secret` env vars (ADR 0007).
+**Isolation (Phase 3).** Each sandboxed worker is a rootless Podman container with
+`--network none`, a read-only rootfs and no capabilities (ADR 0007). It mounts its own shared
+clone (the main repository's objects read-only), its per-agent sockets and the read-only
+`agent-office` and versioned `claude` binaries. An init process bridges loopback ports to the egress
+socket (CONNECT allowlist) and the API socket, where the daemon injects the OAuth token, so the
+token never enters the container (ADR 0016). Work comes back as a bundle that the host verifies and
+fetches; the host never runs git inside the agent's repository (ADR 0014). Host mode (no sandbox,
+permission prompts on) stays available as an explicit, labelled option.
 
 ## Domain model (first draft)
 
@@ -147,12 +152,14 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 |---|---|---|
 | A website drives the local daemon (CSRF / cross-site WebSocket) | Bind to loopback only; WebSocket same-origin check (tested in Spike A); later an auth token for the API | 1, 10 |
 | Another local process forges hook events or MCP calls | Per-agent unix socket, mode 0600, in `$XDG_RUNTIME_DIR`; check `session_id` against the socket's agent | 1, 4 |
-| Agent reads host secrets (`~/.ssh`, credential stores) | Container mounts only the worktree. Claude Code's own sandbox is not enough: reads are open by default and file tools are not covered (Spike E) | 3 |
-| Agent exfiltrates data over the network | Internal network with no route and no DNS; allowlist proxy, CONNECT :443 only | 3 |
+| Agent reads host secrets (`~/.ssh`, credential stores) | Container mounts only its own repository, the read-only object store and its sockets; env built from an allowlist (no `SSH_AUTH_SOCK`, tokens) (Spike F). Claude Code's own sandbox is not enough: reads are open by default and file tools are not covered (Spike E) | 3 |
+| Agent exfiltrates data over the network | `--network none`; per-agent CONNECT proxy, :443 and allowlisted names only, denials logged and shown (ADR 0016). Residual: allowlisted registries (e.g. `proxy.golang.org` fetching arbitrary module paths) can carry data out | 3 |
 | Secret leakage via the process list, `podman inspect`, disk or logs | Token in one user-only file, delivered over the agent socket, never `-e`, argv or `podman secret` (ADR 0015); `Secret` type redacts itself; never log env or hook payload contents; scrub `CLAUDE_CODE_*` from the child env | 1, 3 |
-| Agent exfiltrates its own credential through an allowlisted domain | Residual: the allowlist narrows but cannot close it (TLS hides contents). Evaluate a credential-injecting proxy so the token never enters the container (ADR 0015); rotate the token if an agent misbehaves | 3 |
+| Agent exfiltrates its own credential | The token never enters the container: the daemon injects it on the API socket, which forwards only `POST /v1/messages` and logs and surfaces every rejected request (ADR 0016) | 3 |
+| Agent-written git config runs on the host (`core.fsmonitor`, hooks) | The host never runs git inside an agent repository after start (enforced in `internal/git`); work comes back as a verified bundle fetched with `transfer.fsckObjects` (ADR 0014, Spike F) | 3 |
+| Agent spends inference without limit through the API socket | Budget limits on the API socket (deterministic, outside the model) | 4, 8 |
 | Agent escalates its own permissions | `request_access` needs human approval; access changes are made by deterministic code, not the model | 4 |
 | Runaway cost / loops | Stop-hook loop guard (`stop_hook_active`); per-agent budget and turn limits; cost tracking | 4, 8 |
 | Malicious repo content runs on the host | Phases 1–2 run agents on the host with normal permission prompts (no bypass); full permissions only inside the sandbox | 1–3 |
-| Agent pushes or merges unreviewed code | Agents never get merge rights; PRs are opened by the daemon, and merging stays human | 5 |
+| Agent pushes or merges unreviewed code | No git credentials or route to a remote in the sandbox (tested in Spike F); the daemon pushes from the main repository; imported commits are checked for author and trailer; merging stays human | 3, 5 |
 | Sensitive data in captured payloads | Store reduced events only; raw hook payloads and transcripts are never persisted or sent to the UI in full | 1, 8 |

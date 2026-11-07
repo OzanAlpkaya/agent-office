@@ -1,7 +1,9 @@
 # 0007. Isolation: rootless Podman per worker; Claude Code's sandbox at most as an inner layer
 
 - **Status:** Accepted (implementation in Phase 3)
-- **Amended by:** ADR 0015 (the agent credential comes over the agent socket, not `podman secret`)
+- **Amended by:** ADR 0015 (credential source, not `podman secret`), ADR 0016 (`--network none`
+  with per-agent egress and API sockets instead of an internal network and a proxy container;
+  credential injection), ADR 0014 (git in the sandbox)
 - **Date:** 2026-11-06
 
 ## Context

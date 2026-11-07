@@ -1,6 +1,7 @@
 # 0015. Agent credential: a user-only token file, delivered over the agent socket
 
-- **Status:** Accepted (delivery to be confirmed by Spike F)
+- **Status:** Accepted; the delivery part is superseded by ADR 0016 (credential injection on the
+  API socket). Socket delivery below is kept as the documented fallback.
 - **Date:** 2026-11-07
 - **Amends:** ADR 0007 (secrets via `podman secret`)
 
@@ -75,13 +76,14 @@ Source option 2 and delivery option 3:
   before the session's first hook event. `sandbox-init` puts the token into `claude`'s environment
   only: never argv, never a file, never a mounted path. The host's `~/.claude` credentials are
   never mounted.
-- If Spike F shows option 4 works, a follow-up ADR switches to it. The token file and its checks
+- Spike F showed that option 4 works; ADR 0016 switches to it. The token file and its checks
   stay the same.
 
 ## Consequences
 
 - Host mode is unaffected: host agents use Claude Code's normal login.
-- **The agent can read its own credential** (it is in its process environment). A prompt-injected
+- **With socket delivery, the agent can read its own credential** (it is in its process
+  environment). Under ADR 0016 this applies only if the fallback is enabled. A prompt-injected
   agent could try to exfiltrate it through an allowlisted domain. The egress allowlist narrows this
   but cannot close it, because TLS hides request contents from the proxy. This is a known
   residual risk in the threat model. It is the main reason to evaluate option 4, and the reason to

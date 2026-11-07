@@ -1,6 +1,7 @@
 # 0010. Worktree layout and lifecycle
 
-- **Status:** Accepted
+- **Status:** Accepted; for sandboxed agents amended by ADR 0014 (shared clone instead of a
+  linked worktree). Host mode keeps this layout.
 - **Date:** 2026-11-07
 
 ## Context
