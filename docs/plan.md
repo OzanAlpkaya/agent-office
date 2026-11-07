@@ -231,6 +231,8 @@ derived from Claude Code hooks.
 **Scope**
 - README with screenshots/GIF, architecture overview, quick start.
 - Release builds, demo script, write-up of key decisions.
+- Pin Debian package versions in the worker image (reproducible builds); Phase 3 pins only the
+  base image digest and the Go download.
 
 **Definition of Done**
 - [ ] A fresh Linux machine can install and run it by following the README.
