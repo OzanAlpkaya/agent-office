@@ -19,6 +19,8 @@ const (
 	TmpDir          = HomeDir + "/tmp" // CLAUDE_CODE_TMPDIR; created by sandbox-init
 	runDir          = "/run/agent-office"
 	HookSocket      = runDir + "/hook.sock"
+	MCPSocket       = runDir + "/mcp.sock" // team MCP server (ADR 0006)
+	MCPConfigFile   = "/opt/agent-office/mcp.json"
 	EgressSocket    = runDir + "/egress.sock"
 	APISocket       = runDir + "/api.sock"
 	AgentOfficeBin  = "/opt/agent-office/agent-office"
@@ -53,6 +55,8 @@ type WorkerSpec struct {
 	ObjectsDir   string // the main repository's objects, mounted read-only at the same path
 	ConfigDir    string // per-agent Claude Code config dir
 	HookSocket   string
+	MCPSocket    string // team MCP socket (ADR 0006)
+	MCPConfig    string // daemon-generated --mcp-config file
 	EgressSocket string
 	APISocket    string
 	AgentOffice  string // static agent-office binary
@@ -95,7 +99,7 @@ var builtinEnv = map[string]bool{
 	"HOME": true, "CLAUDE_CONFIG_DIR": true, "DISABLE_AUTOUPDATER": true,
 	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": true, "HTTPS_PROXY": true, "https_proxy": true,
 	"HTTP_PROXY": true, "http_proxy": true, "NO_PROXY": true, "no_proxy": true, "ANTHROPIC_BASE_URL": true,
-	"CLAUDE_CODE_OAUTH_TOKEN": true, "AGENT_OFFICE_SOCKET": true, "TERM": true, "COLORTERM": true,
+	"CLAUDE_CODE_OAUTH_TOKEN": true, "AGENT_OFFICE_SOCKET": true, "AGENT_OFFICE_MCP_SOCKET": true, "TERM": true, "COLORTERM": true,
 	"CLAUDE_CODE_TMPDIR":         true,
 	"AGENT_OFFICE_EGRESS_SOCKET": true, "AGENT_OFFICE_API_SOCKET": true,
 	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
@@ -143,11 +147,13 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 		{s.ObjectsDir, s.ObjectsDir, true},
 		{s.ConfigDir, ConfigDir, false},
 		{s.HookSocket, HookSocket, false},
+		{s.MCPSocket, MCPSocket, false},
 		{s.EgressSocket, EgressSocket, false},
 		{s.APISocket, APISocket, false},
 		{s.AgentOffice, AgentOfficeBin, true},
 		{s.Claude, ClaudeBin, true},
 		{s.Settings, SettingsFile, true},
+		{s.MCPConfig, MCPConfigFile, true},
 		{s.GitHooks, GitHooksDir, true},
 	}
 	args := append(baseArgs(s.Instance, s.AgentID, "worker", mem, pids),
@@ -175,6 +181,7 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 		"ANTHROPIC_BASE_URL=http://" + APIAddr,
 		"CLAUDE_CODE_OAUTH_TOKEN=" + Placeholder,
 		"AGENT_OFFICE_SOCKET=" + HookSocket,
+		"AGENT_OFFICE_MCP_SOCKET=" + MCPSocket,
 		"AGENT_OFFICE_EGRESS_SOCKET=" + EgressSocket,
 		"AGENT_OFFICE_API_SOCKET=" + APISocket,
 		"TERM=xterm-256color", "COLORTERM=truecolor",

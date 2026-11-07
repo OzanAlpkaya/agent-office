@@ -11,6 +11,7 @@ func workerSpec() WorkerSpec {
 		Instance: "0123456789ab", AgentID: "abcdef123456", Image: "localhost/agent-office-worker:dev",
 		Workspace: "/data/workspaces/p/abcdef123456", ObjectsDir: "/home/u/repo/.git/objects",
 		ConfigDir: "/data/agents/abcdef123456/config", HookSocket: "/run/user/1000/ao/a/hook.sock",
+		MCPSocket: "/run/user/1000/ao/a/mcp.sock", MCPConfig: "/run/user/1000/ao/a/mcp.json",
 		EgressSocket: "/run/user/1000/ao/a/egress.sock", APISocket: "/run/user/1000/ao/a/api.sock",
 		AgentOffice: "/usr/bin/agent-office", Claude: "/home/u/.local/share/claude/versions/2.1.319",
 		Settings: "/data/agents/abcdef123456/settings.json", GitHooks: "/data/git-hooks",
@@ -70,11 +71,13 @@ func TestWorkerArgsIsolation(t *testing.T) {
 		"/home/u/repo/.git/objects:/home/u/repo/.git/objects:ro",
 		"/data/agents/abcdef123456/config:/config",
 		"/run/user/1000/ao/a/hook.sock:" + HookSocket,
+		"/run/user/1000/ao/a/mcp.sock:" + MCPSocket,
 		"/run/user/1000/ao/a/egress.sock:" + EgressSocket,
 		"/run/user/1000/ao/a/api.sock:" + APISocket,
 		"/usr/bin/agent-office:" + AgentOfficeBin + ":ro",
 		"/home/u/.local/share/claude/versions/2.1.319:" + ClaudeBin + ":ro",
 		"/data/agents/abcdef123456/settings.json:" + SettingsFile + ":ro",
+		"/run/user/1000/ao/a/mcp.json:" + MCPConfigFile + ":ro",
 		"/data/git-hooks:" + GitHooksDir + ":ro",
 	}
 	if got := flagValues(opts, "-v"); !slices.Equal(got, wantVols) {
@@ -84,7 +87,7 @@ func TestWorkerArgsIsolation(t *testing.T) {
 	for _, want := range []string{"CLAUDE_CODE_OAUTH_TOKEN=" + Placeholder, "ANTHROPIC_BASE_URL=http://" + APIAddr,
 		"HTTPS_PROXY=http://" + EgressAddr, "NO_PROXY=127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		"DISABLE_AUTOUPDATER=1", "CLAUDE_CONFIG_DIR=" + ConfigDir, "AGENT_OFFICE_SOCKET=" + HookSocket,
-		"CLAUDE_CODE_TMPDIR=" + TmpDir,
+		"AGENT_OFFICE_MCP_SOCKET=" + MCPSocket, "CLAUDE_CODE_TMPDIR=" + TmpDir,
 		"GIT_AUTHOR_NAME=Ozan", "GIT_COMMITTER_EMAIL=ozan@example.com", "GOFLAGS=-mod=mod",
 		"AGENT_OFFICE_CO_AUTHOR=worker-1 (agent-office) <noreply@agent-office.invalid>",
 		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=" + GitHooksDir} {
