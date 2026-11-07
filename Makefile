@@ -10,8 +10,10 @@ DEV_DATA_DIR ?= $(DEV_ROOT)/data
 
 .PHONY: build web test lint check dev serve clean generate e2e sandbox-test
 
+# Static (CGO_ENABLED=0): the same binary is mounted into worker containers, whose
+# glibc may be older than the host's (Spike F).
 build: web
-	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/agent-office ./cmd/agent-office
+	CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/agent-office ./cmd/agent-office
 
 web: web/node_modules
 	cd web && npm run build
