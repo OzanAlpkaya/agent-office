@@ -80,7 +80,11 @@ Option 2 in each group.
     into the body and posted once more (one retry, so the review is not posted twice). The stored
     verdict, not GitHub's review state, drives follow-ups.
   - After a successful submit the reviewer's session ends (like a reported worker), freeing the
-    slot. A reviewer that exits without submitting leaves the review `failed`.
+    slot. A reviewer that exits without submitting, or does not submit within the review timeout
+    (30 minutes), leaves the review `failed` and is ended.
+  - At most 10 automatic reviews per PR, so a worker that keeps reporting cannot start reviewer
+    sessions without end; "Request review" asks for more by hand. A push of a new head supersedes
+    the pending reviews of older heads (a running reviewer of an old head is stopped).
   - Reviewer branches are never imported for PRs or pushed; on removal the usual rules apply
     (a branch without commits is deleted).
 - **CodeRabbit:**

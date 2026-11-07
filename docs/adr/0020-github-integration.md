@@ -45,7 +45,9 @@ Ozan created a fine-grained token limited to the playground repository and store
 Option 2 in each group.
 
 - **Opt-in:** `--github` (`AGENT_OFFICE_GITHUB=true`). The daemon pushes to a remote, so it never
-  does that unless asked.
+  does that unless asked. **Sandboxed agents only:** `--github` with `--sandbox host` is refused,
+  because host-mode agents run as the user and could read the token file or change the `.git/hooks`
+  that the daemon's push runs (found in the end-of-phase review).
 - **Token:** `AGENT_OFFICE_GITHUB_TOKEN_FILE` (a path, never the token; default
   `$XDG_CONFIG_HOME/agent-office/github-token`). The reader is the one from ADR 0015, moved to
   `internal/secret`: regular file opened with `O_NOFOLLOW`, owned by the user, mode 0600/0400,
@@ -72,9 +74,14 @@ Option 2 in each group.
   `POST`s are never retried blindly; `GET`s are retried twice with backoff on network errors and
   5xx. Every call has a 30-second timeout. Logs carry owner/name, PR number, branch, status and
   duration, never the token, headers or bodies.
-- **Text sent to GitHub:** agent-written text (summaries, review comments) has `@mentions` and
-  issue-closing keywords (`fixes #12`) neutralized with a zero-width joiner, so an agent cannot
-  notify people or close issues when a human merges.
+- **Text sent to GitHub:** agent-written text (titles, summaries, sub-task descriptions, review
+  comments) has `@mentions`, issue-closing keywords (`fixes #12`) and Markdown images neutralized with
+  a zero-width joiner, so an agent cannot notify people, close issues when a human merges, or make
+  GitHub fetch a URL carrying data. Commit messages are pushed as they are (residual: a closing
+  keyword in a commit message closes an issue when the PR is merged).
+- **Push gates:** commits failing ADR 0014's identity check, and any change under `.github/`
+  (push-triggered workflows run agent-written code with the repository's secrets), block the push
+  until the user accepts exactly those commits (the head, for `.github/`) in the UI.
 - **Polling:** one loop in the engine, every 30 seconds while a PR waits for a review or checks,
   every 2 minutes otherwise; on a rate-limit error it waits until the reset time. It reads the
   PR's state, its head's checks and the reviewer's feedback (ADR 0021).

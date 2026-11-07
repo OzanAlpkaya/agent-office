@@ -59,6 +59,12 @@ Option 3 and option 2.
   review, including a human's, and does not count against the limit.
 - **Relaunch rules:** only exited agents with a non-removed workspace; not while a removal or
   import runs; within `--max-agents`; leads and reviewers are never relaunched.
+- **Messages and sessions:** a relaunched agent keeps its id, so message delivery only considers
+  messages queued during the current session; one meant for the previous session is never
+  delivered to the next one (ADR 0018). If a worker exits before a review sent to it as a message
+  was delivered, it is relaunched with the review in its prompt instead.
+- **Restart:** a follow-up whose worker died with the daemon before it pushed a new head is set to
+  `refused` with that reason, so "Send to worker" offers it again.
 - **Removal:** removing an agent whose PR is open is allowed (the branch is in the main repository
   and on GitHub); later follow-ups for that PR are refused.
 
