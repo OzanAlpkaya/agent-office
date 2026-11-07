@@ -68,7 +68,8 @@ export function useWorld(): World {
             // Recorded events, so a reload still shows earlier refusals. Live
             // events that arrive meanwhile are merged, not overwritten.
             for (const a of msg.agents.filter((x) => x.sandbox === "podman")) {
-              api.agentEvents(a.id).then(
+              // Fire-and-forget: both outcomes are handled; a failure only loses history.
+              void api.agentEvents(a.id).then(
                 (evs) => setEvents((prev) => ({ ...prev, [a.id]: mergeEvents(prev[a.id] ?? [], evs) })),
                 () => console.warn(`agent-office: could not load sandbox events for ${a.id}`),
               );
