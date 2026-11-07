@@ -8,7 +8,8 @@ async function openOffice(page: Page, daemon: MockDaemon): Promise<void> {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("console", (m) => {
-    if (m.type() === "error") errors.push(m.text());
+    // Errors, and Chrome's warning when WebGL contexts leak ("Too many active WebGL contexts").
+    if (m.type() === "error" || /too many active webgl contexts|context lost/i.test(m.text())) errors.push(m.text());
   });
   (page as Page & { errors?: string[] }).errors = errors;
   await daemon.install(page);
@@ -19,6 +20,31 @@ async function openOffice(page: Page, daemon: MockDaemon): Promise<void> {
 }
 
 const errorsOf = (page: Page): string[] => (page as Page & { errors?: string[] }).errors ?? [];
+
+// characterPoint is where an agent's head is on screen: 6 world pixels right
+// of and 20 above the centre of its nameplate.
+async function characterPoint(page: Page, id: string): Promise<{ x: number; y: number }> {
+  // The office pane scrolls when it is short; bring the desk into view first.
+  await page.locator(`.nameplate[data-agent="${id}"]`).scrollIntoViewIfNeeded();
+  const plate = await page.locator(`.nameplate[data-agent="${id}"]`).boundingBox();
+  const scale = Number(await page.locator(".office").getAttribute("data-scale"));
+  if (!plate || !scale) throw new Error(`no nameplate or scale for ${id}`);
+  return { x: plate.x + plate.width / 2 + 6 * scale, y: plate.y + plate.height / 2 - 20 * scale };
+}
+
+interface FrameStats { ticks: number; renders: number; p95Ms: number; maxMs: number }
+
+// frameStats waits for the scene's statistics to cover at least ms more.
+async function frameStats(page: Page, ms: number): Promise<FrameStats> {
+  const read = async (): Promise<FrameStats> =>
+    JSON.parse((await page.locator(".office").getAttribute("data-stats")) ?? "null") as FrameStats;
+  await expect(page.locator(".office")).toHaveAttribute("data-stats", /ticks/);
+  const before = await read();
+  await page.waitForTimeout(ms);
+  await expect.poll(async () => (await read()).ticks).toBeGreaterThan(before.ticks);
+  const after = await read();
+  return { ...after, ticks: after.ticks - before.ticks, renders: after.renders - before.renders };
+}
 
 test("shows every agent at a desk with its pose", async ({ page }) => {
   const daemon = new MockDaemon(team(10));
@@ -76,12 +102,7 @@ test("clicking a character opens its terminal", async ({ page }) => {
   const daemon = new MockDaemon(team(10));
   await openOffice(page, daemon);
   const id = "c3d4e5000002";
-  const plate = await page.locator(`.nameplate[data-agent="${id}"]`).boundingBox();
-  const scale = Number(await page.locator(".office").getAttribute("data-scale"));
-  if (!plate || !scale) throw new Error("no nameplate or scale");
-  // The character's head is 6 world pixels right of and 20 above the nameplate's centre.
-  const x = plate.x + plate.width / 2 + 6 * scale;
-  const y = plate.y + plate.height / 2 - 20 * scale;
+  const { x, y } = await characterPoint(page, id);
   // the canvas, not a nameplate, is under that point
   expect(await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.tagName, [x, y])).toBe("CANVAS");
   await page.mouse.move(x, y);
@@ -115,46 +136,100 @@ for (const n of [10, 20]) {
   test(`stays smooth with ${n} agents`, async ({ page }) => {
     const daemon = new MockDaemon(team(n));
     await openOffice(page, daemon);
-    await page.waitForTimeout(500);
-    const stats = await page.evaluate(async () => {
-      const times: number[] = [];
+    // The scene's own cost per drawn frame (tick and render), measured inside the app.
+    const scene = await frameStats(page, 3000);
+    // And the page as a whole: requestAnimationFrame keeps its pace.
+    const pageFps = await page.evaluate(async () => {
+      const start = performance.now();
+      let frames = 0;
       await new Promise<void>((done) => {
-        const start = performance.now();
         const step = (t: number): void => {
-          times.push(t);
-          if (t - start < 3000) requestAnimationFrame(step);
+          frames++;
+          if (t - start < 2000) requestAnimationFrame(step);
           else done();
         };
         requestAnimationFrame(step);
       });
-      const gaps = times.slice(1).map((t, i) => t - times[i]).sort((a, b) => a - b);
-      return {
-        fps: (times.length - 1) / ((times[times.length - 1] - times[0]) / 1000),
-        p95: gaps[Math.floor(gaps.length * 0.95)],
-        worst: gaps[gaps.length - 1],
-      };
+      return frames / ((performance.now() - start) / 1000);
     });
     const renderer = await page.locator(".office").getAttribute("data-renderer");
-    test.info().annotations.push({ type: "frames", description: `${renderer}: ${stats.fps.toFixed(1)} fps, p95 ${stats.p95.toFixed(1)} ms, worst ${stats.worst.toFixed(1)} ms` });
-    console.log(`${n} agents, ${renderer}: ${stats.fps.toFixed(1)} fps, p95 frame ${stats.p95.toFixed(1)} ms, worst ${stats.worst.toFixed(1)} ms`);
-    expect(stats.fps).toBeGreaterThanOrEqual(50);
-    expect(stats.p95).toBeLessThan(34);
+    const line = `${n} agents, ${renderer}: scene drew ${scene.renders} of ${scene.ticks} ticks in ~3 s, ` +
+      `p95 ${scene.p95Ms.toFixed(2)} ms, max ${scene.maxMs.toFixed(2)} ms per frame; page ${pageFps.toFixed(0)} fps`;
+    test.info().annotations.push({ type: "frames", description: line });
+    console.log(line);
+    expect(scene.renders).toBeGreaterThan(20); // animating, at most 30 fps
+    expect(scene.ticks).toBeLessThanOrEqual(3 * 30 + 15);
+    expect(scene.p95Ms).toBeLessThan(8); // half a 60 Hz frame
+    expect(pageFps).toBeGreaterThan(30); // smoke check, generous for loaded machines
     if (n === 20) await page.screenshot({ path: `${screens}/office-20-agents.png` });
   });
 }
 
+test("an office where nothing moves does not redraw", async ({ page }) => {
+  const world = team(10);
+  world.agents = world.agents.map((a) => ({ ...a, state: "exited" as const }));
+  world.accessRequests = [];
+  const daemon = new MockDaemon(world);
+  await openOffice(page, daemon);
+  const stats = await frameStats(page, 2000);
+  expect(stats.ticks).toBeGreaterThan(20);
+  expect(stats.renders).toBeLessThanOrEqual(1);
+});
+
 test("switching tabs does not leak canvases or log errors", async ({ page }) => {
   const daemon = new MockDaemon(team(10));
   await openOffice(page, daemon);
-  for (let i = 0; i < 8; i++) {
+  // Chrome allows about 16 live WebGL contexts; a leak would show up as its
+  // warning (collected as an error) or a lost context after 20 round trips.
+  for (let i = 0; i < 20; i++) {
     await page.getByRole("button", { name: "Board", exact: true }).click();
     await expect(page.locator(".board")).toBeVisible();
     await page.getByRole("button", { name: "Office", exact: true }).click();
     await expect(page.locator(".nameplate")).toHaveCount(10);
   }
   await expect(page.locator("canvas")).toHaveCount(1);
+  await expect(page.locator(".office")).toHaveAttribute("data-renderer", "webgl");
+  const id = "c3d4e5000002";
+  const { x, y } = await characterPoint(page, id);
+  await page.mouse.click(x, y);
+  await expect(page.locator(".terminal-wrap")).toContainText(`mock terminal of ${id}`);
   expect(errorsOf(page)).toEqual([]);
 });
+
+test("desks stay put when the tab is left and reopened", async ({ page }) => {
+  const daemon = new MockDaemon(team(10));
+  await openOffice(page, daemon);
+  const plate = (id: string) => page.locator(`.nameplate[data-agent="${id}"]`);
+  const before = await plate("e5f6a7000004").boundingBox();
+  daemon.removeAgent("c3d4e5000002"); // frees a desk in front of e5f6a7
+  await expect(plate("c3d4e5000002")).toHaveCount(0);
+  await page.getByRole("button", { name: "Board", exact: true }).click();
+  await page.getByRole("button", { name: "Office", exact: true }).click();
+  await expect(page.locator(".nameplate")).toHaveCount(9);
+  expect(await plate("e5f6a7000004").boundingBox()).toEqual(before);
+});
+
+test("clicks hit the right agent after a resize and a new row of desks", async ({ page }) => {
+  const daemon = new MockDaemon(team(10));
+  await openOffice(page, daemon);
+  const scaleBefore = await page.locator(".office").getAttribute("data-scale");
+  await page.setViewportSize({ width: 1100, height: 760 });
+  await expect(page.locator(".office")).not.toHaveAttribute("data-scale", scaleBefore ?? "");
+  for (let i = 0; i < 9; i++) {
+    daemon.addAgent(agent(`f1${String(i).padStart(10, "0")}`, "worker", "working", { started_at: new Date(Date.now() + i).toISOString() }));
+  }
+  await expect(page.locator(".nameplate")).toHaveCount(19);
+  for (const id of ["f10000000008", "a1ead0000001", "d4e5f6000003"]) {
+    await page.getByRole("button", { name: "Office", exact: true }).click();
+    await expect(page.locator(".nameplate")).toHaveCount(19);
+    const { x, y } = await characterPoint(page, id);
+    expect(await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.tagName, [x, y])).toBe("CANVAS");
+    await page.mouse.click(x, y);
+    await expect(page.locator(".terminal-wrap")).toContainText(`mock terminal of ${id}`);
+  }
+  expect(errorsOf(page)).toEqual([]);
+});
+
 
 test("reduced motion still shows every pose", async ({ browser }) => {
   const context = await browser.newContext({ reducedMotion: "reduce", viewport: { width: 1440, height: 900 } });
