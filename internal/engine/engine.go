@@ -76,6 +76,15 @@ type Options struct {
 	TermSize            terminal.Size // initial terminal size
 	StopTimeout         time.Duration // SIGTERM -> SIGKILL grace period
 	Logger              *slog.Logger
+	Sandbox             *SandboxOptions // nil: host mode (permission prompts on)
+	Warnings            []string        // shown in the UI (e.g. an untested Claude Code version)
+}
+
+// Status is the daemon-wide state the UI shows next to the board.
+type Status struct {
+	Sandbox  string   `json:"sandbox"` // SandboxHost | SandboxPodman
+	Image    string   `json:"image,omitempty"`
+	Warnings []string `json:"warnings"`
 }
 
 // Project is the repository the engine works on.
@@ -95,8 +104,10 @@ type AgentInfo struct {
 	Activity            string     `json:"activity,omitempty"`
 	Model               string     `json:"model,omitempty"`
 	InheritUserSettings bool       `json:"inherit_user_settings"`
+	Sandbox             string     `json:"sandbox"` // SandboxHost | SandboxPodman
 	Branch              string     `json:"branch"`
 	WorktreePath        string     `json:"worktree_path"`
+	WorkspaceKind       string     `json:"workspace_kind"` // KindWorktree | KindClone
 	WorktreeStatus      string     `json:"worktree_status"`
 	HasTerminal         bool       `json:"has_terminal"`
 	StartedAt           time.Time  `json:"started_at"`
@@ -107,10 +118,11 @@ type AgentInfo struct {
 
 // Update is one change broadcast to subscribers.
 type Update struct {
-	Type  string     `json:"type"` // "agent" | "agent_removed" | "task" | "task_deleted"
-	Agent *AgentInfo `json:"agent,omitempty"`
-	Task  *Task      `json:"task,omitempty"`
-	ID    string     `json:"id,omitempty"`
+	Type         string        `json:"type"` // "agent" | "agent_removed" | "task" | "task_deleted" | "sandbox_event"
+	Agent        *AgentInfo    `json:"agent,omitempty"`
+	Task         *Task         `json:"task,omitempty"`
+	ID           string        `json:"id,omitempty"`
+	SandboxEvent *SandboxEvent `json:"sandbox_event,omitempty"`
 }
 
 type agentProc struct {
@@ -123,6 +135,7 @@ type agentProc struct {
 	exited     chan struct{} // closed by watch after the exit is recorded
 	exitReason string        // set before stopping on purpose
 	busy       bool          // a remove/discard is in progress
+	sandbox    *sandboxRes   // nil in host mode
 }
 
 // Engine owns agent and task lifecycles. All state changes go through it.
@@ -163,6 +176,11 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	if opts.MaxAgents <= 0 {
 		opts.MaxAgents = 4
 	}
+	if opts.Sandbox != nil {
+		if err := opts.Sandbox.validate(); err != nil {
+			return nil, err
+		}
+	}
 	for _, d := range []string{opts.RuntimeDir, opts.WorktreeRoot} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, fmt.Errorf("engine: %w", err)
@@ -197,6 +215,11 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		project: Project{ID: row.ID, Name: row.Name, RepoPath: row.RepoPath, Slug: row.Slug},
 		agents:  map[string]*agentProc{},
 		subs:    map[chan Update]struct{}{},
+	}
+	if opts.Sandbox != nil {
+		if err := e.prepareSandbox(); err != nil {
+			return nil, err
+		}
 	}
 	if err := e.reconcile(ctx); err != nil {
 		return nil, err
@@ -246,6 +269,19 @@ func (e *Engine) reconcile(ctx context.Context) error {
 // Project returns the engine's project.
 func (e *Engine) Project() Project { return e.project }
 
+// Status returns the daemon-wide sandbox mode and warnings.
+func (e *Engine) Status() Status {
+	st := Status{Sandbox: SandboxHost, Warnings: append([]string{}, e.opts.Warnings...)}
+	if e.opts.Sandbox != nil {
+		st.Sandbox, st.Image = SandboxPodman, e.opts.Sandbox.Image
+	}
+	return st
+}
+
+// agentName is how an agent is named in commit trailers until agents get
+// names of their own (Phase 4).
+func agentName(id string) string { return "agent-" + id[:6] }
+
 // StartRequest describes a new agent.
 type StartRequest struct {
 	TaskID string // optional: the agent works on this task
@@ -284,23 +320,38 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		title = task.Title
 	}
 	branch := git.BranchName(title, id)
-	wtPath := filepath.Join(e.opts.WorktreeRoot, e.project.Slug, id)
 	base, err := e.git.HeadCommit(ctx, e.project.RepoPath)
 	if err != nil {
 		return AgentInfo{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(wtPath), 0o700); err != nil {
-		return AgentInfo{}, err
-	}
-	if err := e.git.AddWorktree(ctx, e.project.RepoPath, wtPath, branch, base); err != nil {
-		return AgentInfo{}, fmt.Errorf("create worktree: %w", err)
-	}
-	undoWorktree := func() {
-		cctx := context.Background()
-		if err := e.git.RemoveWorktree(cctx, e.project.RepoPath, wtPath, true); err != nil {
-			e.log.Warn("cleanup worktree", "path", wtPath, "err", err)
+	mode, kind := SandboxHost, KindWorktree
+	wtPath := filepath.Join(e.opts.WorktreeRoot, e.project.Slug, id)
+	var prep sandboxPrep
+	var undoWorktree func()
+	if e.opts.Sandbox != nil {
+		// Everything that can be checked is checked before state is created.
+		if prep, err = e.prepareSandboxStart(ctx, agentName(id)); err != nil {
+			return AgentInfo{}, err
 		}
-		_ = e.git.DeleteBranch(cctx, e.project.RepoPath, branch)
+		mode, kind = SandboxPodman, KindClone
+		wtPath = filepath.Join(e.opts.Sandbox.WorkspaceRoot, e.project.Slug, id)
+		if undoWorktree, err = e.createClone(ctx, id, wtPath, branch, base); err != nil {
+			return AgentInfo{}, err
+		}
+	} else {
+		if err := os.MkdirAll(filepath.Dir(wtPath), 0o700); err != nil {
+			return AgentInfo{}, err
+		}
+		if err := e.git.AddWorktree(ctx, e.project.RepoPath, wtPath, branch, base); err != nil {
+			return AgentInfo{}, fmt.Errorf("create worktree: %w", err)
+		}
+		undoWorktree = func() {
+			cctx := context.Background()
+			if err := e.git.RemoveWorktree(cctx, e.project.RepoPath, wtPath, true); err != nil {
+				e.log.Warn("cleanup worktree", "path", wtPath, "err", err)
+			}
+			_ = e.git.DeleteBranch(cctx, e.project.RepoPath, branch)
+		}
 	}
 
 	started := now()
@@ -308,12 +359,12 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		if err := q.CreateAgent(ctx, db.CreateAgentParams{
 			ID: id, ProjectID: e.project.ID, TaskID: nullString(req.TaskID), Model: e.opts.Model,
 			InheritUserSettings: e.opts.InheritUserSettings, State: string(hooks.Starting), StartedAt: started,
-			Sandbox: SandboxHost,
+			Sandbox: mode,
 		}); err != nil {
 			return err
 		}
 		if err := q.CreateWorktree(ctx, db.CreateWorktreeParams{AgentID: id, ProjectID: e.project.ID, Path: wtPath,
-			Branch: branch, BaseCommit: base, CreatedAt: started, Kind: KindWorktree}); err != nil {
+			Branch: branch, BaseCommit: base, CreatedAt: started, Kind: kind}); err != nil {
 			return err
 		}
 		if err := q.CreateSession(ctx, db.CreateSessionParams{ID: sid, AgentID: id, StartedAt: started}); err != nil {
@@ -335,7 +386,12 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		return AgentInfo{}, fmt.Errorf("record agent: %w", err)
 	}
 
-	a, err := e.launch(id, sid, branch, wtPath, base, req.TaskID, started, task)
+	var a AgentInfo
+	if e.opts.Sandbox != nil {
+		a, err = e.launchSandboxed(id, sid, branch, wtPath, base, req.TaskID, started, task, prep)
+	} else {
+		a, err = e.launch(id, sid, branch, wtPath, base, req.TaskID, started, task)
+	}
 	if err != nil {
 		undoWorktree()
 		_ = e.q.MarkAgentExited(context.Background(), db.MarkAgentExitedParams{ExitedAt: nullTime(now()),
@@ -390,9 +446,9 @@ func (e *Engine) launch(id, sid, branch, wtPath, base, taskID string, started ti
 	}
 
 	a := &agentProc{
-		info: AgentInfo{ID: id, SessionID: sid, TaskID: taskID, Model: e.opts.Model,
+		info: AgentInfo{ID: id, SessionID: sid, TaskID: taskID, Model: e.opts.Model, Sandbox: SandboxHost,
 			InheritUserSettings: e.opts.InheritUserSettings, Branch: branch, WorktreePath: wtPath,
-			WorktreeStatus: WorktreeActive, HasTerminal: true, StartedAt: started},
+			WorkspaceKind: KindWorktree, WorktreeStatus: WorktreeActive, HasTerminal: true, StartedAt: started},
 		status:     hooks.Status{State: hooks.Starting},
 		baseCommit: base,
 		term:       term,
@@ -425,7 +481,11 @@ func (e *Engine) watch(a *agentProc) {
 		code = -1
 	}
 	_ = a.listener.Close()
-	_ = os.Remove(a.settings)
+	if a.sandbox != nil {
+		e.closeSandbox(a.sandbox, e.log.With("agent_id", a.info.ID))
+	} else {
+		_ = os.Remove(a.settings)
+	}
 
 	e.mu.Lock()
 	t := now()
@@ -757,8 +817,8 @@ func (a *agentProc) view() AgentInfo {
 func infoFromRow(r db.ListVisibleAgentsRow) AgentInfo {
 	info := AgentInfo{
 		ID: r.ID, TaskID: r.TaskID.String, State: r.State, Model: r.Model,
-		InheritUserSettings: r.InheritUserSettings, Branch: r.Branch, WorktreePath: r.WorktreePath,
-		WorktreeStatus: r.WorktreeStatus, StartedAt: r.StartedAt, ExitReason: r.ExitReason,
+		InheritUserSettings: r.InheritUserSettings, Sandbox: r.Sandbox, Branch: r.Branch, WorktreePath: r.WorktreePath,
+		WorkspaceKind: r.WorktreeKind, WorktreeStatus: r.WorktreeStatus, StartedAt: r.StartedAt, ExitReason: r.ExitReason,
 	}
 	if r.ExitedAt.Valid {
 		t := r.ExitedAt.Time

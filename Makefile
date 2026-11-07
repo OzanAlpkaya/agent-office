@@ -48,7 +48,7 @@ worker-image: build
 # and `make worker-image` for the worker tests). AO_SANDBOX_NET=1 adds HTTPS through the egress
 # proxy, which needs internet access.
 sandbox-test: build
-	go test -tags sandbox -race -count=1 -v ./internal/sandbox/
+	go test -tags sandbox -race -count=1 -v ./internal/sandbox/ ./internal/engine/
 
 # Run the built daemon against DEV_DATA_DIR, never the real data dir.
 #   make serve REPO=~/projects/agent-office-playground [ARGS="--dev --addr 127.0.0.1:7690"]

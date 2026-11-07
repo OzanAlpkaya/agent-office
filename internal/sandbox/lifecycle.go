@@ -110,6 +110,14 @@ func (l *limitWriter) Write(b []byte) (int, error) {
 	return l.w.Write(b)
 }
 
+// Command returns an unstarted podman command (e.g. a worker for a PTY), with
+// credential variables removed from its environment.
+func (p Podman) Command(args []string) *exec.Cmd {
+	cmd := exec.Command(p.bin(), args...)
+	cmd.Env = podmanEnv()
+	return cmd
+}
+
 // RunContainer runs a named container like Run. If the run fails, exceeds
 // max or is cancelled, the container is removed by name: killing the podman
 // client leaves the container running under conmon.
