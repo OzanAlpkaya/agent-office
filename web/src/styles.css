@@ -120,3 +120,4 @@ button.badge.pack { background: none; color: #ffd580; cursor: pointer; font: inh
 .pack-panel .secret { margin-right: 0.75rem; }
 .pack-panel .secret.missing { color: #ffb454; }
 .pack-panel .secret.present { color: #7bd88f; }
+.pr .reply { border-left: 2px solid var(--border); padding-left: 0.5rem; }
