@@ -69,18 +69,40 @@ directory or arguments point there is refused, except the creation step above.
 
 **Everything else runs in the sandbox**, in a short-lived helper container with the same mounts,
 image and restrictions as the agent (`--network none`, read-only rootfs, no capabilities):
-- **Status** (dirty or clean, for ADR 0010's removal rules): `git status --porcelain=v1 -z`. The
-  output is untrusted data: size-capped and parsed strictly.
+- **Status** (dirty or clean, for ADR 0010's removal rules): `git --no-optional-locks -c
+  core.fsmonitor=false status --porcelain=v1 -z`. The output is untrusted data: size-capped and
+  parsed strictly. `--no-optional-locks` matters because the helper also runs while the agent
+  works: a status that refreshes the index would take `index.lock` and break the agent's own git.
 - **Hand-off:** `git bundle create - <base>..<branch>`, streamed to a daemon-owned file with a size
   cap.
 
 **Importing** (on the host, in the main repository, which is trusted):
 - `git bundle verify`, then check that the bundle contains exactly `refs/heads/<branch>`.
-- `git -c transfer.fsckObjects=true fetch --no-tags <bundle> +refs/heads/<branch>:refs/heads/<branch>`.
-  Only that agent's branch is ever updated. A forced update is allowed because the agent may amend
-  or rebase its own branch.
-- Import happens when the agent exits and on request from the UI. Phase 5 pushes from the main
-  repository, never from the agent repository.
+- `git -c transfer.fsckObjects=true fetch --no-tags <bundle> +refs/heads/<branch>:refs/agent-office/incoming/<id>`:
+  into a private ref first, deleted again after the import.
+- **An import never moves an imported branch backwards** (decided 2026-11-07, after Ozan asked
+  for non-fast-forward imports to be explicit). Options were: refuse a non-fast-forward import and
+  show it in the UI, or import it under a new branch. Refusing leaves the rewritten work only in
+  the agent repository, which may be removed later. A new branch keeps both histories and moves
+  nothing. **Chosen: a new branch.** The known branches are `<branch>` and any earlier
+  `<branch>-rewrite-N`. Then:
+  - nothing imported yet: create `<branch>`;
+  - a known branch already at the agent's head: up to date, nothing changes;
+  - a known branch that is an ancestor of the head: fast-forward that branch;
+  - anything else (the agent rebased, reset or amended): create the next `<branch>-rewrite-N`
+    (N from 2) and leave every earlier branch as it was. The UI shows it as an event naming both
+    heads. Re-importing the same rewritten history, or new commits on top of it, fast-forwards the
+    rewrite branch instead of creating another one.
+- Every branch update is a compare-and-swap (`git update-ref <ref> <new> <old>`; all zeros means
+  "must not exist").
+- **A branch that is checked out** in a worktree of the main repository is not moved. The import is
+  refused with a clear error, because moving it would leave that working tree looking modified.
+- **When:** on agent exit; after a daemon restart, for agents whose workers were interrupted;
+  before an agent is removed; and on demand ("Import now", also for a running agent). All of these
+  go through one engine entry point, `Engine.Import`, which Phase 4's `report_done` reuses. Imports
+  of one agent never run concurrently.
+- Each import is recorded (target branch, head, outcome, flagged commits) for the UI and for
+  Phase 5, which pushes from the main repository, never from the agent repository.
 
 **Ownership: agent repositories belong to a subordinate uid, not to the user** (revised
 2026-11-07, Spike F addendum `spikes/sandbox-claude/subuid.sh`):

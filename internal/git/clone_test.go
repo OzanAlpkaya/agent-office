@@ -9,7 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+const testAgent = "abcdef123456"
 
 // sandboxGit runs git in dir the way the sandbox does: the test stands in for
 // the container, so it may touch the agent repository directly.
@@ -154,7 +157,7 @@ func TestUntrustedRootsAreRefused(t *testing.T) {
 		"subdir of clone":    func() error { _, err := g.TopLevel(ctx, filepath.Join(clone, ".git")); return err },
 		"symlink into clone": func() error { _, err := g.HeadCommit(ctx, link); return err },
 		"path arg in clone": func() error {
-			_, err := g.ImportBundle(ctx, repo, filepath.Join(clone, "x.bundle"), branch)
+			_, err := g.ImportBundle(ctx, repo, filepath.Join(clone, "x.bundle"), testAgent, branch)
 			return err
 		},
 		"option value in clone": func() error {
@@ -220,12 +223,12 @@ func TestBundleHandoffRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := g.ImportBundle(ctx, repo, bundle, branch)
+	got, err := g.ImportBundle(ctx, repo, bundle, testAgent, branch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != head {
-		t.Fatalf("imported %s, want %s", got, head)
+	if got.Head != head || got.Branch != branch || got.Outcome != ImportCreated {
+		t.Fatalf("imported %+v, want %s on %s", got, head, branch)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("importing ran agent-written git config on the host")
@@ -244,12 +247,17 @@ func TestBundleHandoffRoundTrip(t *testing.T) {
 		t.Fatalf("commits %+v", commits)
 	}
 
-	// The agent amends its own branch: a forced update of that branch is fine.
+	// The agent amends its own branch: the imported branch is not overwritten;
+	// the rewritten history goes to a new branch.
 	sandboxGit(t, clone, "commit", "-q", "--amend", "-m", "feat: paginate (v2)")
-	if _, err := g.ImportBundle(ctx, repo, writeBundle(t, clone, base, branch), branch); err != nil {
-		t.Fatalf("amended branch: %v", err)
+	res, err := g.ImportBundle(ctx, repo, writeBundle(t, clone, base, branch), testAgent, branch)
+	if err != nil || res.Outcome != ImportDiverged || res.Branch != branch+"-rewrite-2" || res.Previous != head {
+		t.Fatalf("amended branch: %+v %v", res, err)
 	}
-	if cs, _ := g.BranchCommits(ctx, repo, base, branch); len(cs) != 1 || len(cs[0].CoAuthors) != 0 {
+	if cur := strings.TrimSpace(string(sandboxGit(t, repo, "rev-parse", branch))); cur != head {
+		t.Fatal("the previously imported branch moved")
+	}
+	if cs, _ := g.BranchCommits(ctx, repo, base, res.Branch); len(cs) != 1 || len(cs[0].CoAuthors) != 0 {
 		t.Fatalf("after amend: %+v", cs) // the amend dropped the trailer: the import check will flag it
 	}
 }
@@ -290,7 +298,7 @@ func TestImportBundleRejects(t *testing.T) {
 		"missing bundle":   {filepath.Join(t.TempDir(), "nope"), branch},
 	}
 	for name, c := range cases {
-		if _, err := g.ImportBundle(ctx, repo, c.bundle, c.branch); err == nil {
+		if _, err := g.ImportBundle(ctx, repo, c.bundle, testAgent, c.branch); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
@@ -300,7 +308,7 @@ func TestImportBundleRejects(t *testing.T) {
 	if main := strings.TrimSpace(string(sandboxGit(t, repo, "rev-parse", "main"))); main != base {
 		t.Fatal("main moved")
 	}
-	if _, err := g.ImportBundle(ctx, repo, good, branch); err != nil {
+	if _, err := g.ImportBundle(ctx, repo, good, testAgent, branch); err != nil {
 		t.Fatalf("good bundle after rejects: %v", err)
 	}
 }
@@ -384,10 +392,141 @@ func TestImportBundleFscksObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandboxGit(t, clone, "update-ref", "refs/heads/"+branch, strings.TrimSpace(string(out)))
-	if _, err := g.ImportBundle(ctx, repo, writeBundle(t, clone, base, branch), branch); err == nil {
+	if _, err := g.ImportBundle(ctx, repo, writeBundle(t, clone, base, branch), testAgent, branch); err == nil {
 		t.Fatal("malformed commit imported")
 	}
 	if ok, _ := g.BranchExists(ctx, repo, branch); ok {
 		t.Fatal("branch created from a malformed bundle")
+	}
+}
+
+func refHead(t *testing.T, repo, ref string) string {
+	t.Helper()
+	return strings.TrimSpace(string(sandboxGit(t, repo, "rev-parse", ref)))
+}
+
+// ImportBundle never moves an imported branch backwards (ADR 0014).
+func TestImportOutcomes(t *testing.T) {
+	ctx := context.Background()
+	g, repo, clone, branch, base := agentClone(t)
+	imp := func() ImportResult {
+		t.Helper()
+		res, err := g.ImportBundle(ctx, repo, writeBundle(t, clone, base, branch), testAgent, branch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	commitIn(t, clone, "a.txt")
+	a := refHead(t, clone, "HEAD")
+	if r := imp(); r.Outcome != ImportCreated || r.Branch != branch || r.Head != a {
+		t.Fatalf("first import %+v", r)
+	}
+	if r := imp(); r.Outcome != ImportUpToDate || r.Branch != branch {
+		t.Fatalf("same head %+v", r)
+	}
+	commitIn(t, clone, "b.txt")
+	b := refHead(t, clone, "HEAD")
+	if r := imp(); r.Outcome != ImportFastForward || r.Branch != branch || r.Previous != a || refHead(t, repo, branch) != b {
+		t.Fatalf("new commit %+v", r)
+	}
+
+	// Rebase-like rewrite: drop b, commit c instead.
+	sandboxGit(t, clone, "reset", "-q", "--hard", a)
+	commitIn(t, clone, "c.txt")
+	c := refHead(t, clone, "HEAD")
+	r := imp()
+	if r.Outcome != ImportDiverged || r.Branch != branch+"-rewrite-2" || r.Previous != b || r.Head != c {
+		t.Fatalf("rewrite %+v", r)
+	}
+	if refHead(t, repo, branch) != b {
+		t.Fatal("rewrite moved the imported branch")
+	}
+	// Re-importing the rewritten history, and building on it, uses the rewrite branch.
+	if r := imp(); r.Outcome != ImportUpToDate || r.Branch != branch+"-rewrite-2" {
+		t.Fatalf("re-import of rewrite %+v", r)
+	}
+	commitIn(t, clone, "d.txt")
+	if r := imp(); r.Outcome != ImportFastForward || r.Branch != branch+"-rewrite-2" {
+		t.Fatalf("on top of rewrite %+v", r)
+	}
+	// A reset back to an imported commit is a rewrite too: new branch, nothing moves backwards.
+	sandboxGit(t, clone, "reset", "-q", "--hard", a)
+	if r := imp(); r.Outcome != ImportDiverged || r.Branch != branch+"-rewrite-3" || r.Head != a {
+		t.Fatalf("reset to an older commit %+v", r)
+	}
+	if refHead(t, repo, branch) != b {
+		t.Fatal("reset moved the imported branch backwards")
+	}
+	if out := sandboxGit(t, repo, "for-each-ref", "refs/agent-office/incoming/"); len(out) != 0 {
+		t.Fatalf("incoming ref left behind: %s", out)
+	}
+}
+
+func TestImportRefusesCheckedOutBranch(t *testing.T) {
+	ctx := context.Background()
+	g, repo, clone, branch, base := agentClone(t)
+	commitIn(t, clone, "a.txt")
+	if _, err := g.ImportBundle(ctx, repo, writeBundle(t, clone, base, branch), testAgent, branch); err != nil {
+		t.Fatal(err)
+	}
+	sandboxGit(t, repo, "switch", "-q", branch) // the user looks at the agent's work
+	commitIn(t, clone, "b.txt")
+	if _, err := g.ImportBundle(ctx, repo, writeBundle(t, clone, base, branch), testAgent, branch); !errors.Is(err, ErrBranchCheckedOut) {
+		t.Fatalf("want ErrBranchCheckedOut, got %v", err)
+	}
+	if st := strings.TrimSpace(string(sandboxGit(t, repo, "status", "--porcelain"))); st != "" {
+		t.Fatalf("user's working tree disturbed: %q", st)
+	}
+}
+
+// moveAgentBranch is a compare-and-swap: it never creates over an existing
+// branch or moves one that is not where the caller saw it.
+func TestMoveAgentBranchIsCompareAndSwap(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t)
+	g := Git{}
+	a := refHead(t, repo, "HEAD")
+	commitIn(t, repo, "b.txt")
+	b := refHead(t, repo, "HEAD")
+	br := BranchPrefix + "cas-abcdef"
+	if err := g.moveAgentBranch(ctx, repo, br, a, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.moveAgentBranch(ctx, repo, br, b, ""); err == nil {
+		t.Fatal("created over an existing branch")
+	}
+	if err := g.moveAgentBranch(ctx, repo, br, b, b); err == nil {
+		t.Fatal("moved a branch that was not at the expected head")
+	}
+	if refHead(t, repo, br) != a {
+		t.Fatal("branch moved")
+	}
+	if err := g.moveAgentBranch(ctx, repo, br, b, a); err != nil || refHead(t, repo, br) != b {
+		t.Fatalf("expected move: %v", err)
+	}
+}
+
+// The status helper also runs while the agent works: it must not take
+// index.lock to refresh the index.
+func TestStatusArgsDoesNotWriteTheIndex(t *testing.T) {
+	_, _, clone, _, _ := agentClone(t)
+	readme := filepath.Join(clone, "README.md")
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(readme, later, later); err != nil { // stat-dirty, same content
+		t.Fatal(err)
+	}
+	index := filepath.Join(clone, ".git", "index")
+	before, _ := os.ReadFile(index)
+	if n, err := ParseStatus(sandboxGit(t, clone, StatusArgs()...)); err != nil || n != 0 {
+		t.Fatalf("status %d %v", n, err)
+	}
+	after, _ := os.ReadFile(index)
+	if !bytes.Equal(before, after) {
+		t.Fatal("StatusArgs rewrote the index")
+	}
+	sandboxGit(t, clone, "status", "--porcelain") // control: plain status refreshes it
+	if control, _ := os.ReadFile(index); bytes.Equal(before, control) {
+		t.Fatal("control failed: plain status did not refresh the index")
 	}
 }

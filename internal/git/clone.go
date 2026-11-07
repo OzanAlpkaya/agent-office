@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -135,7 +136,9 @@ func CountArgs(base, branch string) []string {
 // config outranks the repository's, so an agent-written core.fsmonitor does
 // not run even inside the helper container.
 func StatusArgs() []string {
-	return []string{"-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z",
+	// --no-optional-locks: the helper also runs while the agent works; a status
+	// that refreshes the index would take index.lock and break the agent's git.
+	return []string{"--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z",
 		"--untracked-files=normal", "--ignore-submodules=none"}
 }
 
@@ -177,35 +180,163 @@ func statusCode(c byte) bool { return strings.IndexByte(" MTADRCU?!", c) >= 0 }
 
 // ---- import on the host (main repository, trusted) ----
 
-// ImportBundle verifies a bundle written by an agent's sandbox and fetches its
-// single ref, refs/heads/<branch>, into repo. Only agent branches can be
-// updated; a forced update is allowed because agents may amend their own
-// branch. Objects are fsck'd while they are received. Returns the new head.
-func (g Git) ImportBundle(ctx context.Context, repo, bundle, branch string) (string, error) {
+// ImportOutcome says what an import did to the main repository.
+type ImportOutcome string
+
+const (
+	ImportCreated     ImportOutcome = "created"      // the agent branch did not exist yet
+	ImportFastForward ImportOutcome = "fast_forward" // new commits on top of what was imported
+	ImportUpToDate    ImportOutcome = "up_to_date"   // nothing new
+	ImportDiverged    ImportOutcome = "diverged"     // rewritten history: imported under a new -rewrite-N branch
+)
+
+// ImportResult is the outcome of ImportBundle.
+type ImportResult struct {
+	Head     string        // the agent's branch head
+	Branch   string        // the branch in the main repository that now points at Head
+	Outcome  ImportOutcome //
+	Previous string        // the branch's previous head (empty when created)
+}
+
+// ErrBranchCheckedOut means the branch an import would move is checked out
+// in a worktree of the main repository; moving it would leave that working
+// tree looking modified.
+var ErrBranchCheckedOut = errors.New("git: the agent branch is checked out in your repository; switch to another branch to import")
+
+const maxRewrites = 100
+
+// ImportBundle verifies a bundle written by an agent's sandbox (exactly one
+// ref, refs/heads/<branch>), fetches it with fsck into a private ref, and then
+// updates the main repository without ever moving a branch backwards
+// (ADR 0014):
+//   - nothing imported yet: create <branch>
+//   - a known branch (<branch> or an earlier <branch>-rewrite-N) already at
+//     the head: up to date
+//   - a known branch that is an ancestor of the head: fast-forward it
+//   - otherwise (the agent rebased, reset or amended): create the next
+//     <branch>-rewrite-N and leave the earlier branches untouched
+//
+// Only agent branches are touched, each with a compare-and-swap update.
+func (g Git) ImportBundle(ctx context.Context, repo, bundle, agentID, branch string) (ImportResult, error) {
 	if !g.ValidBranch(ctx, branch) || !strings.HasPrefix(branch, BranchPrefix) {
-		return "", fmt.Errorf("git: invalid agent branch name %q", branch)
+		return ImportResult{}, fmt.Errorf("git: invalid agent branch name %q", branch)
+	}
+	if !agentIDRe.MatchString(agentID) {
+		return ImportResult{}, fmt.Errorf("git: invalid agent id %q", agentID)
 	}
 	if !filepath.IsAbs(bundle) {
-		return "", fmt.Errorf("git: bundle path must be absolute: %q", bundle)
+		return ImportResult{}, fmt.Errorf("git: bundle path must be absolute: %q", bundle)
 	}
 	ref := "refs/heads/" + branch
 	if _, err := g.run(ctx, repo, "bundle", "verify", "--quiet", bundle); err != nil {
-		return "", err
+		return ImportResult{}, err
 	}
 	heads, err := g.run(ctx, repo, "bundle", "list-heads", bundle)
 	if err != nil {
-		return "", err
+		return ImportResult{}, err
 	}
 	lines := strings.Split(heads, "\n")
-	sha, name, _ := strings.Cut(lines[0], " ")
-	if len(lines) != 1 || name != ref || len(sha) != 40 {
-		return "", fmt.Errorf("git: bundle must contain exactly %s", ref)
+	head, name, _ := strings.Cut(lines[0], " ")
+	if len(lines) != 1 || name != ref || len(head) != 40 {
+		return ImportResult{}, fmt.Errorf("git: bundle must contain exactly %s", ref)
 	}
+	incoming := "refs/agent-office/incoming/" + agentID
 	if _, err := g.run(ctx, repo, "-c", "transfer.fsckObjects=true", "fetch", "--quiet", "--no-tags",
-		"--no-write-fetch-head", "--no-recurse-submodules", bundle, "+"+ref+":"+ref); err != nil {
-		return "", err
+		"--no-write-fetch-head", "--no-recurse-submodules", bundle, "+"+ref+":"+incoming); err != nil {
+		return ImportResult{}, err
 	}
-	return sha, nil
+	defer func() { _, _ = g.run(context.WithoutCancel(ctx), repo, "update-ref", "-d", incoming) }()
+
+	// Known branches, newest first: the latest rewrite is the likeliest base.
+	known := []string{branch}
+	free := ""
+	for n := 2; n < 2+maxRewrites; n++ {
+		b := fmt.Sprintf("%s-rewrite-%d", branch, n)
+		if ok, err := g.BranchExists(ctx, repo, b); err != nil {
+			return ImportResult{}, err
+		} else if !ok {
+			free = b
+			break
+		}
+		known = append([]string{b}, known...)
+	}
+	for _, b := range known {
+		cur, ok, err := g.branchHead(ctx, repo, b)
+		if err != nil {
+			return ImportResult{}, err
+		}
+		if !ok {
+			continue
+		}
+		if cur == head {
+			return ImportResult{Head: head, Branch: b, Outcome: ImportUpToDate, Previous: cur}, nil
+		}
+		if anc, err := g.isAncestor(ctx, repo, cur, head); err != nil {
+			return ImportResult{}, err
+		} else if anc {
+			if err := g.moveAgentBranch(ctx, repo, b, head, cur); err != nil {
+				return ImportResult{}, err
+			}
+			return ImportResult{Head: head, Branch: b, Outcome: ImportFastForward, Previous: cur}, nil
+		}
+	}
+	if _, ok, err := g.branchHead(ctx, repo, branch); err != nil {
+		return ImportResult{}, err
+	} else if !ok {
+		if err := g.moveAgentBranch(ctx, repo, branch, head, ""); err != nil {
+			return ImportResult{}, err
+		}
+		return ImportResult{Head: head, Branch: branch, Outcome: ImportCreated}, nil
+	}
+	if free == "" || !g.ValidBranch(ctx, free) {
+		return ImportResult{}, fmt.Errorf("git: no free rewrite branch name for %s", branch)
+	}
+	prev, _, _ := g.branchHead(ctx, repo, known[0])
+	if err := g.moveAgentBranch(ctx, repo, free, head, ""); err != nil {
+		return ImportResult{}, err
+	}
+	return ImportResult{Head: head, Branch: free, Outcome: ImportDiverged, Previous: prev}, nil
+}
+
+// moveAgentBranch sets refs/heads/<branch> to head if it is still at old
+// (empty old: only if it does not exist), refusing a branch that is checked
+// out in a worktree of repo.
+func (g Git) moveAgentBranch(ctx context.Context, repo, branch, head, old string) error {
+	wts, err := g.ListWorktrees(ctx, repo)
+	if err != nil {
+		return err
+	}
+	for _, wt := range wts {
+		if wt.Branch == "refs/heads/"+branch {
+			return fmt.Errorf("%w (%s in %s)", ErrBranchCheckedOut, branch, wt.Path)
+		}
+	}
+	if old == "" {
+		old = strings.Repeat("0", 40) // must not exist yet
+	}
+	_, err = g.run(ctx, repo, "update-ref", "-m", "agent-office import", "refs/heads/"+branch, head, old)
+	return err
+}
+
+// branchHead returns the commit of a local branch, if it exists.
+func (g Git) branchHead(ctx context.Context, repo, branch string) (string, bool, error) {
+	ok, err := g.BranchExists(ctx, repo, branch)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	h, err := g.run(ctx, repo, "rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
+	return h, err == nil, err
+}
+
+// isAncestor reports whether commit a is an ancestor of (or equal to) b.
+func (g Git) isAncestor(ctx context.Context, repo, a, b string) (bool, error) {
+	_, err := g.run(ctx, repo, "merge-base", "--is-ancestor", a, b)
+	var gerr *Error
+	var exit *exec.ExitError
+	if errors.As(err, &gerr) && errors.As(gerr.Err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // UserIdentity returns user.name and user.email as configured for repo.
