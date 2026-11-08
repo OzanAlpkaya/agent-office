@@ -80,7 +80,11 @@ When the daemon or Tailscale is down, the app shows an offline page instead of a
 ## Copy and paste in the terminal (all browsers)
 
 - Select text to copy it; **Ctrl+Shift+C** copies the selection too.
+- **Right-click** the terminal for a menu with **Copy** and **Paste**.
 - **Ctrl+Shift+V** pastes. **Ctrl+C** still interrupts the agent, as in a terminal.
+- **F12** opens the browser's devtools, also while the terminal has focus.
+- If the browser refuses, a short "Copy failed: …" or "Paste failed: …" notice says why. Paste from
+  the menu may ask once for permission to read the clipboard; Ctrl+Shift+V never does.
 - Selections go to the system clipboard as they are made, including anything secret the agent
   printed.
 

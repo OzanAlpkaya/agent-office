@@ -200,3 +200,9 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   pairing code out of the URL). `make check`, `make ui-test` (36), `make sandbox-test` and `make e2e`
   (host, sandbox, team, workflow; the team tests on a rerun after an e2e harness fix) pass; the
   GitHub e2e was not run. Open: installing the app on Ozan's phone over his tailnet.
+- 2026-11-08: Phase 10, after Ozan's manual test: terminal copy silently failed in Chrome (the
+  async Clipboard API was refused without the clipboard-write permission, and the error was
+  dropped). Copy now goes through the browser's copy event first, failures show a notice, a
+  right-click menu has Copy and Paste, F12 reaches the browser; the new tests read back the
+  clipboard with only clipboard-read granted and fail on the old code. `make check` and
+  `make ui-test` (38) pass.

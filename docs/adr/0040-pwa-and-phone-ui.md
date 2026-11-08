@@ -48,8 +48,19 @@ reach xterm.js (no prompt).
 - **The focused terminal sets the PTY size** (option 2): it sends its size on focus.
 - **Copy and paste:** an xterm.js custom key handler: Ctrl+Shift+C copies the selection and calls
   `preventDefault`, so the browser does not open devtools; Ctrl+Shift+V is not sent to the agent and
-  the browser's paste event reaches xterm (no permission prompt); a selection is copied as it is
-  made; Ctrl+C without Shift goes to the agent as before.
+  the browser's paste event reaches xterm (no permission prompt); a selection is copied when the
+  mouse button is released (anywhere, since a drag often ends outside the terminal); Ctrl+C without
+  Shift goes to the agent as before. A right-click menu on live and saved terminals has Copy and
+  Paste, so copying never depends on a browser shortcut. F12 and Ctrl+Shift+I/J are left to the
+  browser.
+- **How text is copied** (changed after Ozan's manual test, where copying silently did nothing in
+  Chrome): the first version called only `navigator.clipboard.writeText`, which a browser refuses
+  when the page lacks the clipboard-write permission (`NotAllowedError: Write permission denied`,
+  reproduced), and it dropped the error. Copies now go first through the browser's copy event inside
+  the user's gesture (`document.execCommand("copy")` filling `clipboardData`, no permission needed;
+  deprecated but the only permission-free way), then through the async API; a failure shows "Copy
+  failed: <reason>" over the terminal. Paste from the menu or the key bar reads the clipboard (the
+  browser may ask once); its failure says that Ctrl+Shift+V needs no permission.
 - **Content-Security-Policy** (from the end-of-phase review): `default-src 'self'; script-src
   'self'` without eval, inline styles allowed (React style props, xterm.js), images `'self' data:
   blob:`, workers `'self' blob:`, connections to `'self'` plus this daemon's own `ws://`/`wss://`
@@ -58,7 +69,8 @@ reach xterm.js (no prompt).
   is loaded, so the office loads it. Checked live against the real daemon: office, terminals and the
   phone layout without a violation.
 - Tests run Chromium only (ADR 0025): phone viewports, `Page.getInstallabilityErrors` over CDP, the
-  offline page, clipboard round trips with granted permissions. The other UI tests block service
+  offline page, clipboard round trips with only clipboard-read granted (to read back), so the
+  refused-write case of the manual test is the one tested, plus a test of the failure notice. The other UI tests block service
   workers, since a worker would bypass the mocked daemon's `page.route`.
 
 ## Consequences

@@ -331,8 +331,11 @@ derived from Claude Code hooks.
       WebSockets close with 4401 (`TestRevokeClosesWebSockets`).
 
 **Backlog** (from Ozan's end-to-end test, 2026-11-08)
-- [x] Copy and paste in the browser terminal (Playwright "copy and paste in the terminal", "Paste on
-  the phone key bar…"; that Ctrl+Shift+C no longer opens devtools is a manual check). Original item:
+- [x] Copy and paste in the browser terminal: selection, Ctrl+Shift+C/V and a right-click menu with
+  Copy and Paste, working without the clipboard-write permission (fixed after Ozan's manual test);
+  F12 reaches the browser (Playwright "copied text lands in the clipboard without the
+  clipboard-write permission", "paste from the menu and Ctrl+Shift+V…", "a copy that fails says
+  why"). Original item:
   Copy and paste in the browser terminal: Ctrl+C must keep interrupting the agent, Ctrl+Shift+C
   opens Chrome's devtools, and a mouse selection is not copied. Support Ctrl+Shift+C / Ctrl+Shift+V
   and copy on selection, like a normal terminal (xterm.js key handler and selection API; the

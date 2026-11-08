@@ -246,5 +246,19 @@ from anywhere else and every request proves it comes from a device the user pair
   revocation from the desktop sending the phone back to pairing, no installability errors, and under
   the final CSP the office, a real Claude Code terminal and the phone layout without a violation. No
   token or login in the daemon log.
+- **Ozan's manual test** (Chrome on CachyOS, loopback, paired): copy on selection and Ctrl+Shift+C
+  copied nothing, without an error; Chrome's right-click menu had Copy disabled; F12 did not open
+  devtools. Cause, reproduced against a real Claude Code session: the only copy path was
+  `navigator.clipboard.writeText`, which is refused (`NotAllowedError: Write permission denied`) when
+  the page lacks the clipboard-write permission, and the error was dropped; the UI test had granted
+  that permission, so it passed. (Claude Code turned out not to enable mouse tracking, so xterm.js
+  owned the selection; Chrome's own menu has Copy disabled because xterm's selection is not a DOM
+  selection.) Fixed (ADR 0040 amended): copy through the copy event inside the gesture first, then
+  the async API, with a "Copy failed: <reason>" notice; copy on any mouse release (a drag ending
+  outside the terminal or over the notice copied nothing; found by the new test); a right-click menu
+  with Copy and Paste on live and saved terminals; F12 and Ctrl+Shift+I/J left to the browser. The
+  new Playwright tests grant only clipboard-read and read back what was copied; the main one fails
+  on the previous code with an empty clipboard. Checked again with real Claude Code and no write
+  permission: selection, Ctrl+Shift+C and the menu all put the text in the clipboard.
 - **Not done here:** the check on Ozan's own phone and tailnet (Tailscale is not installed on this
   machine; installing it needs sudo), and whether Ctrl+Shift+C still opens devtools in his Chrome.
