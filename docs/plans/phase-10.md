@@ -260,5 +260,22 @@ from anywhere else and every request proves it comes from a device the user pair
   new Playwright tests grant only clipboard-read and read back what was copied; the main one fails
   on the previous code with an empty clipboard. Checked again with real Claude Code and no write
   permission: selection, Ctrl+Shift+C and the menu all put the text in the clipboard.
+- **Ozan's second manual test**, two findings, both fixed:
+  1. "Copy failed: nothing is selected" on a visibly highlighted line in a resumed agent's
+     terminal. Not a stale terminal instance (checked: one live instance, the old one disposed) and
+     not specific to resuming: his sessions' saved terminals (escape modes only, no content) show
+     Claude Code in fullscreen mode, with mouse tracking, sending its own selection as OSC 52, which
+     xterm.js dropped. OSC 52 is now applied, gated on the user's gesture (ADR 0040), and a threat
+     model row covers clipboard injection. On the way: my first repro script selected an empty row
+     (`innerText` drops empty lines) and was redone; the new test found that the gesture window was
+     open for the first 3 s after a page load (fixed).
+  2. A sandboxed worker showed "resume failed" after its second restart. Cause, checked against
+     Claude Code 2.1.319: a fork resumed without a prompt (an idle restore) never gets a transcript,
+     so the next `--resume` of it finds no conversation. Resumes now skip such sessions for the one
+     they resumed (ADR 0035 amended). The engine tests' fake CLI now models this; two existing tests
+     had resumed such a fork and only passed because the fake accepted any session.
+     `TestRestoreTwice`, and step 7d of the host e2e: two restores continue the same conversation,
+     and a resume after them recalls the codeword. The sandbox e2e still restores once (the logic
+     does not depend on the sandbox).
 - **Not done here:** the check on Ozan's own phone and tailnet (Tailscale is not installed on this
   machine; installing it needs sudo), and whether Ctrl+Shift+C still opens devtools in his Chrome.

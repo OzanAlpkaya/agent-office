@@ -206,3 +206,9 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   right-click menu has Copy and Paste, F12 reaches the browser; the new tests read back the
   clipboard with only clipboard-read granted and fail on the old code. `make check` and
   `make ui-test` (38) pass.
+- 2026-11-08: Phase 10, Ozan's second manual test: (1) copy in Claude Code's fullscreen mode
+  (mouse tracking; its selection arrives as OSC 52, which the terminal dropped) now works, with
+  OSC 52 writes accepted only right after the user's gesture; (2) "resume failed" after a second
+  restart: forks resumed without a prompt have no transcript, so resumes now continue the latest
+  session with a conversation (ADR 0035 amended). `TestRestoreTwice`, OSC 52 UI tests, host e2e
+  step 7d (two restores, codeword recalled); `make check`, `make ui-test` (41) and the host e2e pass.

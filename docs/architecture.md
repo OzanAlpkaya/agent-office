@@ -359,7 +359,8 @@ sequenceDiagram
   D2->>DB: sessions.resumed_from; resume_state cleared; inbox notice (restored / not, why)
 ```
 
-- **Resume** (ADR 0035): an exited worker, architect, lead or assistant continues its latest
+- **Resume** (ADR 0035; since Phase 10 it skips resumed sessions without a finished turn, whose
+  forks Claude Code never wrote): an exited worker, architect, lead or assistant continues its latest
   conversation in its workspace and sandbox (Resume button, `POST /api/agents/{id}/resume`), with an
   optional prompt; same agent, new session (`resumed_from`), fresh session budget, task status
   unchanged, messages queued for the conversation delivered. QA and reviewers are not resumed.
@@ -480,6 +481,7 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Pairing codes are guessed | 40-bit codes, 5 minutes, single use, at most 5 open, compared in constant time; 10 wrong codes in 10 minutes drop every open code and stop pairing for the window. Tested: `TestWrongCodesLockPairing`, `TestPairingLocksAfterWrongCodes`, `TestCodesExpireAndAreLimited` | 10 |
 | A device token leaks (lost phone, logs, history) | 256-bit random tokens, stored as SHA-256 only, never in a response body (cookies only), logs or URLs (pairing codes travel in a URL fragment that the page removes); revocable from any device, which closes its WebSockets at once; 30 days idle and it ends. Tested: `TestPairWithCode`, `TestPairingAndSignOut`, `TestRevokeClosesWebSockets`, `TestIdleDevicesExpire`; the live check found no token in the daemon log. Residual: a stolen, unlocked phone works until it is signed out | 10 |
 | Clickjacking the approval buttons | CSP `frame-ancestors 'none'` and `X-Frame-Options: DENY` on every response (`TestSecurityHeaders`) | 10 |
+| An agent writes the user's clipboard (OSC 52) to plant a command | OSC 52 writes are applied only within 3 s of the user's own gesture in that terminal, never from replayed scrollback or saved sessions; reads are never answered; refusals are shown (ADR 0040). Tested: Playwright "an agent cannot set or read the clipboard on its own". Residual: within those 3 s after the user selects, the agent decides what is copied | 10 |
 | A stale cached UI or cached data on a device | The service worker caches only an offline page and an icon, never the app or `/api/`; API answers are `no-store`; the page, manifest and worker are revalidated on every load | 10 |
 | Another local process forges hook events or MCP calls | Per-agent unix sockets (hooks, MCP), mode 0600, in a 0700 dir under `$XDG_RUNTIME_DIR`; hooks: `session_id` checked against the socket's agent; MCP: one server per agent bound to its socket, the caller never comes from arguments. Tested: `TestListenerIdentity`, `TestMCPOverAgentSocket`, `TestSandboxedTeamWorker` (through the in-container bridge). Residual: any process of the same user can reach the sockets (same as hooks) | 1, 4 |
 | Agent reads host secrets (`~/.ssh`, credential stores) | Container mounts only its own repository, the read-only object store and its sockets; env built from an allowlist (no `SSH_AUTH_SOCK`, tokens) (Spike F). Claude Code's own sandbox is not enough: reads are open by default and file tools are not covered (Spike E). Tested: `TestWorkerIsolation` (no host files beyond the mounts, read-only mounts refuse writes, no SSH or git credentials), `TestWorkerArgsIsolation` | 3 |

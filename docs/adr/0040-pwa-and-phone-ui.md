@@ -61,6 +61,18 @@ reach xterm.js (no prompt).
   deprecated but the only permission-free way), then through the async API; a failure shows "Copy
   failed: <reason>" over the terminal. Paste from the menu or the key bar reads the clipboard (the
   browser may ask once); its failure says that Ctrl+Shift+V needs no permission.
+- **Claude Code's fullscreen mode and OSC 52** (Ozan's second manual test: a highlighted selection in
+  a resumed agent's terminal gave "Copy failed: nothing is selected"). His sessions (sandboxed,
+  with Claude Code's clean config) run in fullscreen mode: alternate screen and mouse tracking
+  (1000/1002/1003/1006), so Claude Code takes the mouse, draws its own selection and sends it as an
+  OSC 52 clipboard write; xterm.js then has no selection, and without a handler it dropped the OSC
+  52. The terminal now handles OSC 52, under rules, since a clipboard write from the agent is a
+  clipboard-injection risk (it could replace what the user is about to paste into a shell):
+  accepted only within 3 s of the user's own mouse or key gesture in that terminal, never from the
+  replayed scrollback (the first message) or a saved session, never a read request (`?`), payloads
+  capped at 1 MiB of base64; anything refused shows a notice. Ctrl+Shift+C says when Claude Code has
+  the mouse; Shift+drag still makes an xterm.js selection there. Checked live with a sandboxed
+  Claude Code 2.1.319 session (no clipboard-write permission).
 - **Content-Security-Policy** (from the end-of-phase review): `default-src 'self'; script-src
   'self'` without eval, inline styles allowed (React style props, xterm.js), images `'self' data:
   blob:`, workers `'self' blob:`, connections to `'self'` plus this daemon's own `ws://`/`wss://`

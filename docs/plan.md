@@ -345,6 +345,9 @@ derived from Claude Code hooks.
 - Push notifications for approvals and questions waiting on the user (Web Push: a push service and
   VAPID keys; ADR 0040).
 - A QR code for pairing a phone (needs a QR encoder; the 8-character code is typed today).
+- A worker started without a task that never got a prompt has no conversation, so restoring or
+  resuming it fails ("resume failed"); refuse it up front with a clear reason instead (found while
+  fixing the restore-twice bug).
 
 ---
 

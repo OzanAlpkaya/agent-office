@@ -1,6 +1,6 @@
 # 0035. Resuming conversations and restoring agents after a restart
 
-- **Status:** Accepted
+- **Status:** Accepted; which session a resume continues amended in Phase 10 (2026-11-08)
 - **Date:** 2026-11-08
 - **Amends:** ADR 0011 (restart semantics), ADR 0022 (relaunch path, message delivery to a new
   session), ADR 0026 (host usage of resumed sessions)
@@ -73,6 +73,15 @@ Option 2, option 2 and option 2.
     delivered to the new session; without a prompt, idle delivery may start after `SessionStart`.
   - The memory section is not appended again; the conversation has it.
   - A CLI that exits before its first hook ends with `resume_failed`.
+  - **Which session** (amended in Phase 10, after Ozan's test showed a sandboxed worker "resume
+    failed" after its second restart): Claude Code writes a fork's transcript only once the fork
+    gets a message (checked with 2.1.319: a fork shown without a prompt has no transcript, and
+    `--resume` of it prints "No conversation found"). An idle restore and a Resume without a prompt
+    make exactly such forks. The resume therefore continues the latest session, skipping resumed
+    sessions in which no turn finished for the session they resumed (same conversation). Original
+    sessions are never skipped, so a first turn cut off by a crash still resumes its own session.
+    The engine tests' fake CLI models Claude Code's behaviour (`AO_FAKE_CONV_DIR`);
+    `TestRestoreTwice` and the host e2e (step 7d) restore an agent twice.
 - **Restore:** `agents.resume_state` records what an agent was doing when the daemon stopped it:
   the live state on a clean shutdown, the row's last state after a crash (set by startup
   reconciliation). With `--restore-agents` (`AGENT_OFFICE_RESTORE_AGENTS`, default true) the next

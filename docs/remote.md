@@ -79,7 +79,10 @@ When the daemon or Tailscale is down, the app shows an offline page instead of a
 
 ## Copy and paste in the terminal (all browsers)
 
-- Select text to copy it; **Ctrl+Shift+C** copies the selection too.
+- Select text to copy it; **Ctrl+Shift+C** copies the selection too. When Claude Code runs in its
+  fullscreen mode it handles the mouse and copies its own selection; agent-office passes that to
+  your clipboard only right after your selection. Hold **Shift** while dragging for the terminal's
+  own selection instead.
 - **Right-click** the terminal for a menu with **Copy** and **Paste**.
 - **Ctrl+Shift+V** pastes. **Ctrl+C** still interrupts the agent, as in a terminal.
 - **F12** opens the browser's devtools, also while the terminal has focus.
