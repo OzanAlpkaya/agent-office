@@ -1,6 +1,6 @@
 # Phase 8 plan: Observability & cost
 
-- **Status:** In progress on `phase-8/observability-cost`. Written 2026-11-08 with the recommended
+- **Status:** Done on `phase-8/observability-cost`, waiting for Ozan's review. Written 2026-11-08 with the recommended
   option for every open question and executed straight away, as Ozan asked ("write the Phase 8
   plan using your recommended options, then execute it immediately without asking me anything").
   Every decision is listed in the end-of-phase summary; nothing is merged until Ozan has read it.
@@ -236,4 +236,73 @@ daemon through its hooks, team tool calls and API requests by one correlation id
 
 ## Changes during the phase
 
-(appended during the phase)
+- **ADRs as planned:** 0026 (usage and cost), 0027 (budgets), 0028 (correlation ids, log format,
+  retention).
+- **Prices checked against the live pricing page**, not the cached table of the API reference:
+  they differ for Sonnet 5.5 cache reads ($0.10, not $0.20). With the live table, a real session's
+  usage reproduced Claude Code's own `cost-state` per model to the cent.
+- **Integer money** (the global TypeScript rule: never floats for money). The first version used
+  float64 dollars; it was changed before the UI: prices are nano-USD per token (exact for every
+  published price; more than three decimals in a price file is refused), costs nano-USD, API fields
+  and budgets micro-USD (`cost_micro_usd`). Migration 0007's `cli_cost_usd REAL` became
+  `cli_cost_micro_usd INTEGER`; the migration was not merged or applied outside tests, so it was
+  corrected in place rather than followed by an 0008.
+- **`/api/usage` returns sessions and models**, and the UI groups sessions by goal, task and agent
+  (a few dozen rows; one shape for the report and the live updates), instead of server-side
+  groupings.
+- **Correlation:** besides a per-session logger for each launch, a wrapping `slog` handler adds
+  `session_id` and `task_id` to every record that names an agent. About 30 existing log calls name
+  only `agent_id`; the handler covers them and any new ones, instead of editing each call.
+- **Logging levels unchanged:** hook events and API requests stay at debug, so following a session
+  needs `--log-level debug`; UI requests are logged at debug with a `request_id` and
+  `X-Request-Id`.
+- **Budget startup check only for full model ids:** `--model haiku` is an alias Claude Code
+  resolves, so the "no price for --model" startup error applies to `claude-…` ids; aliases are
+  checked per request (fail closed).
+- **The UI is dark-only** (the existing styles have no light theme), so the Usage tab follows the
+  existing tokens; it has one series per bar, no legend, values in text ink.
+- **Tokens shown exactly below 10 000** (`1,234`), shortened above (`12.3k`).
+- **Found by the engine tests:** a transcript read error logged the local path (the OS error names
+  it): errors from the reader no longer carry the path; and the first read ran on SessionStart,
+  before the file existed (now silent, and the first read waits for a turn).
+- **Found by the real e2e run:** Claude Code runs the Stop hook before it writes the turn's last
+  assistant line, so the one read on Stop found nothing and three host sessions showed 0 messages.
+  The transcript is now read again 2 s and 8 s after a turn (`TestTranscriptWrittenAfterStop`,
+  which fails without it). The rerun matched all three sessions.
+- **A pre-existing race exposed:** `setFollowup` wrote a review's follow-up outcome and its reason
+  in two statements; the phase's extra work shifted timing so `TestFollowupRoundLimitAndHumanReviews`
+  saw "skipped" without a reason in 2 of 3 runs. Both are now written in one transaction (it
+  passed 4 of 4 after; `main` passed 3 of 3 before, so it was timing, not new logic).
+- **Independent review** (no blockers; five should-fix, all fixed):
+  - a failed usage write could let the session budget fail open → usage enters memory first, the
+    goal budget adds this session from memory;
+  - the goal budget silently switched off if the task lookup at launch failed → looked up again,
+    refusing while unreadable;
+  - a SQLite write ran inside the response stream's `Read` → one background writer per session
+    (latest value per message, `TestMeteredUsageIsPersisted`);
+  - the overflow bound was wrong (2^40 tokens × the highest price exceeds int64) → saturating
+    arithmetic, tested at the extremes;
+  - an encoded response passed unmetered silently → an `api_meter` event and a warning;
+  - nits taken: the UI keeps a live update that arrived during the report fetch; a budget that
+    rounds to 0 micro-USD is refused. Documented instead: deleting a sub-task (a user action)
+    detaches its rows from the goal budget; a replaced, larger transcript keeps a stale offset
+    (upserts make it harmless).
+- **Budget messages** show four decimals below $1, like the UI (the first e2e refusal read "$0.00
+  … ($0.00 estimated)"); a rounding bug at $0.99995 found by its test was fixed.
+- **Tests run at the end:** `make check` (Go tests with `-race`, 143 Vitest tests, typecheck,
+  build); `make ui-test` (17 Playwright tests, 3 new for usage); `make sandbox-test`; `make e2e`:
+  host (three real sessions equal their transcripts; usage survives a SIGKILL restart), sandbox
+  (6 of 6 transcript messages metered with identical tokens; a $0.000001 session budget refused
+  agent B's second turn and Claude Code showed the message), team; the GitHub run was not
+  configured (`AO_E2E_GITHUB_REPO` unset) and is unaffected by this phase.
+- **Live check** against a real daemon (scratch data dir, throwaway clone of the playground,
+  `--pack go --model haiku`, sandboxed): one task, 5 API messages, 1 turn, 4 tool calls, $0.0031,
+  shown on the card and in the Usage tab with no console errors, and still shown after a daemon
+  restart. The JSON log had 0 records naming the agent without its session id and no prompt
+  text. It found a layout bug the mocked data did not: the session table squeezed the task title
+  until it broke mid-word (`overflow-wrap: anywhere` let the column shrink to nothing) and pushed
+  the last column off screen; names now break only overlong words, the bar is narrower and
+  session dates are short.
+- **Seen, not changed (pre-existing):** after a daemon restart, a sandboxed agent's card says
+  "user settings on" where it said "off" before; the setting does not apply to sandboxed agents
+  (ADR 0003), so only the label is inconsistent. A Phase 9 or 11 item.

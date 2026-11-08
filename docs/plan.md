@@ -224,15 +224,31 @@ derived from Claude Code hooks.
 
 **Goal:** See what agents are doing and what they cost.
 
-**Scope**
-- Token usage and cost parsed from Claude Code session files.
-- Per agent / task / session metrics; structured logs with correlation ids.
-- Dashboard in the UI.
+**Scope** (see ADRs 0026–0028, `docs/usage.md` and `docs/plans/phase-8.md`)
+- Token usage per API message: metered on a sandboxed agent's API socket, read from a host-mode
+  agent's session files (transcript and subagent files); priced when read from a configurable
+  price table (integer money).
+- Per agent / task / goal / session / model usage, turns and tool calls; optional budgets per
+  session and per goal, refused on the API socket; structured logs with the session id as the
+  correlation id; event retention.
+- Usage tab in the UI; usage on agent and task cards.
 
 **Definition of Done**
-- [ ] Token usage per agent and task is shown and matches the session files (tested with fixtures).
-- [ ] Cost estimates use a configurable price table.
-- [ ] Logs can be followed across daemon, agent and hook events via a correlation id.
+- [x] Token usage per agent and task is shown and matches the session files (tested with fixtures):
+      the same messages as a redacted transcript and as API responses give identical usage, and the
+      price table reproduces the transcript's own cost (`TestTranscriptMatchesAPIResponses`); the
+      engine turns a host transcript into the same totals (`TestHostUsageFromTranscript`,
+      `TestTranscriptWrittenAfterStop`); the UI shows them per agent, task, goal, session and model
+      (Playwright `usage.spec.ts`). Live: in `make e2e`, three real host sessions equalled their
+      transcripts, and every message of a sandboxed session's transcript was metered on its API
+      socket with the same tokens.
+- [x] Cost estimates use a configurable price table: built in from the pricing page (2026-11-08),
+      overridden per model by a user-owned `prices.yaml` (`TestPricesUserFile`, `TestPricesInvalid`),
+      re-priced on read (`TestUsageRepricedOnRead`).
+- [x] Logs can be followed across daemon, agent and hook events via a correlation id: every record
+      naming an agent carries its `session_id` and `task_id`, from start and hooks through team
+      tool calls and API requests (with Anthropic's request id) to exit (`TestLogsFollowOneSession`);
+      `--log-format json`.
 
 **Backlog** (from Ozan's end-to-end test, 2026-11-08)
 - When an agent stops, Claude Code prints "Resume this session with: claude --resume …", which
