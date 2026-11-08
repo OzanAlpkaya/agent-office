@@ -39,6 +39,25 @@ func parseRemoteHosts(s string) ([]string, error) {
 	return out, nil
 }
 
+// parseRemoteUsers checks --remote-users: Tailscale logins (user@provider)
+// allowed to reach the daemon through tailscale serve; empty allows every
+// user of the tailnet (pairing still applies).
+func parseRemoteUsers(s string) ([]string, error) {
+	var out []string
+	for _, u := range strings.Split(s, ",") {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		if len(u) > 200 || !strings.Contains(u, "@") || strings.IndexFunc(u, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
+			return nil, fmt.Errorf("--remote-users %q: want Tailscale logins such as you@github, comma-separated "+
+				"(your login as the Tailscale admin console shows it)", u)
+		}
+		out = append(out, u)
+	}
+	return out, nil
+}
+
 func validTailnetName(h string) bool {
 	if len(h) > 253 || !strings.HasSuffix(h, ".ts.net") {
 		return false

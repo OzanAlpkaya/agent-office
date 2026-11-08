@@ -128,3 +128,40 @@ func TestPairCommand(t *testing.T) {
 		t.Fatal("empty token name accepted")
 	}
 }
+
+func TestParseRemoteUsers(t *testing.T) {
+	got, err := parseRemoteUsers(" ozan@github, ozan@example.com ,")
+	if err != nil || len(got) != 2 || got[0] != "ozan@github" {
+		t.Fatalf("got %v %v", got, err)
+	}
+	for _, bad := range []string{"ozan", "o zan@github", "ozan@github\x00", strings.Repeat("a", 200) + "@x"} {
+		if _, err := parseRemoteUsers(bad); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+	if _, err := parseServe([]string{"--repo", "/tmp", "--remote-users", "ozan@github"}); err == nil {
+		t.Fatal("--remote-users without --remote-host accepted")
+	}
+}
+
+// TestRuntimeDirRefusesAPlantedSymlink: without XDG_RUNTIME_DIR the runtime
+// dir is under /tmp, where another user could plant it first.
+func TestRuntimeDirRefusesAPlantedSymlink(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", tmp)
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(tmp, "agent-office")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtimeDir(); err == nil || !strings.Contains(err.Error(), "not a symlink") {
+		t.Fatalf("symlinked runtime dir: %v", err)
+	}
+	os.Remove(filepath.Join(tmp, "agent-office"))
+	dir, err := runtimeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Lstat(dir); fi.Mode().Perm() != 0o700 {
+		t.Fatalf("mode %v", fi.Mode())
+	}
+}

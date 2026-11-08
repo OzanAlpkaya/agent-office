@@ -258,6 +258,7 @@ type serveConfig struct {
 	qa                  bool     // a goal's report needs a passing QA run (ADR 0033)
 	restoreAgents       bool     // resume the agents the previous run's stop interrupted (ADR 0035)
 	remoteHosts         []string // tailnet names tailscale serve forwards here (ADR 0038)
+	remoteUsers         []string // Tailscale logins allowed through them; empty = every tailnet user
 }
 
 func parseServe(args []string) (serveConfig, error) {
@@ -367,6 +368,9 @@ func parseServe(args []string) (serveConfig, error) {
 	remoteHosts := fs.String("remote-host", os.Getenv("AGENT_OFFICE_REMOTE_HOSTS"),
 		"this machine's Tailscale name(s), comma-separated (e.g. box.tail1234.ts.net), when `tailscale serve` "+
 			"forwards HTTPS to the daemon; see docs/remote.md [AGENT_OFFICE_REMOTE_HOSTS]")
+	remoteUsers := fs.String("remote-users", os.Getenv("AGENT_OFFICE_REMOTE_USERS"),
+		"Tailscale logins (e.g. you@github), comma-separated, whose devices may reach the daemon through "+
+			"--remote-host; empty = every user of the tailnet [AGENT_OFFICE_REMOTE_USERS]")
 	fs.IntVar(&c.eventRetentionDays, "event-retention-days", retention,
 		"delete agent activity events older than this; 0 = keep [AGENT_OFFICE_EVENT_RETENTION_DAYS]")
 	if err := fs.Parse(args); err != nil {
@@ -382,6 +386,12 @@ func parseServe(args []string) (serveConfig, error) {
 	}
 	if c.remoteHosts, err = parseRemoteHosts(*remoteHosts); err != nil {
 		return c, err
+	}
+	if c.remoteUsers, err = parseRemoteUsers(*remoteUsers); err != nil {
+		return c, err
+	}
+	if len(c.remoteUsers) > 0 && len(c.remoteHosts) == 0 {
+		return c, errors.New("--remote-users needs --remote-host")
 	}
 	if c.roleModels, err = role.ParseModels(*roleModels); err != nil {
 		return c, err
@@ -590,7 +600,7 @@ func serve(args []string) error {
 	srv := &http.Server{
 		Addr: cfg.addr,
 		Handler: api.New(eng, ui, api.Options{Port: port, DevOrigins: devOrigins, Version: version, Logger: log,
-			Auth: devices, RemoteHosts: cfg.remoteHosts}),
+			Auth: devices, RemoteHosts: cfg.remoteHosts, RemoteUsers: cfg.remoteUsers}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	// The control socket hands out the first pairing code (agent-office pair, ADR 0039).
@@ -613,7 +623,8 @@ func serve(args []string) error {
 		"inherit_user_settings", cfg.inheritUserSettings, "github", cfg.github, "ui_built", built, "dev", cfg.dev,
 		"prices_as_of", prices.AsOf, "prices_file", prices.File, "budget_session_usd", cfg.budgetSessionUSD,
 		"budget_goal_usd", cfg.budgetGoalUSD, "event_retention_days", cfg.eventRetentionDays,
-		"remote_hosts", strings.Join(cfg.remoteHosts, ","), "paired_devices", len(devices.Devices()))
+		"remote_hosts", strings.Join(cfg.remoteHosts, ","), "remote_users", len(cfg.remoteUsers),
+		"paired_devices", len(devices.Devices()))
 	if len(devices.Devices()) == 0 {
 		log.Info("no device is paired yet: run `agent-office pair --data-dir " + cfg.dataDir + "` to pair this browser")
 	}
@@ -637,17 +648,33 @@ func serve(args []string) error {
 }
 
 // runtimeDir returns a private directory for sockets and settings files.
+// Without XDG_RUNTIME_DIR it falls back to /tmp, where another user could
+// plant the directory or a symlink first: every level agent-office creates
+// must be a real directory owned by the user (found in the Phase 10 review).
 func runtimeDir() (string, error) {
 	base := os.Getenv("XDG_RUNTIME_DIR")
+	dirs := []string{}
 	if base == "" {
 		base = filepath.Join(os.TempDir(), "agent-office-"+strconv.Itoa(os.Getuid()))
+		dirs = append(dirs, base)
 	}
 	dir := filepath.Join(base, "agent-office")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("runtime dir: %w", err)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return "", fmt.Errorf("runtime dir: %w", err)
+	dirs = append(dirs, dir)
+	for _, d := range dirs {
+		if err := os.Mkdir(d, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return "", fmt.Errorf("runtime dir: %w", err)
+		}
+		fi, err := os.Lstat(d)
+		if err != nil {
+			return "", fmt.Errorf("runtime dir: %w", err)
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !fi.IsDir() || !ok || int(st.Uid) != os.Getuid() {
+			return "", fmt.Errorf("runtime dir %s must be a directory owned by you (not a symlink)", d)
+		}
+		if err := os.Chmod(d, 0o700); err != nil {
+			return "", fmt.Errorf("runtime dir: %w", err)
+		}
 	}
 	return dir, nil
 }
