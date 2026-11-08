@@ -462,3 +462,8 @@ SELECT DISTINCT message_id FROM usage_messages WHERE agent_id = ? AND session_id
 
 -- name: ClearResumeStates :exec
 UPDATE agents SET resume_state = '' WHERE project_id = ? AND resume_state != '';
+
+-- name: DeleteSession :exec
+-- A resumed session whose CLI could not load the conversation (ADR 0035): it never ran, and a later
+-- resume must continue the session before it.
+DELETE FROM sessions WHERE id = ?;

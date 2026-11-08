@@ -174,6 +174,9 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 		bg := context.Background()
 		_ = e.q.MarkAgentExited(bg, db.MarkAgentExitedParams{ExitedAt: nullTime(now()), ExitReason: ExitStartFailed, ID: id})
 		_ = e.q.EndSessions(bg, db.EndSessionsParams{EndedAt: nullTime(now()), AgentID: id})
+		if r.resume {
+			_ = e.q.DeleteSession(bg, sid) // never ran; the next resume continues from.ID again
+		}
 		if task != nil && prevStatus != "" && prevStatus != StatusInProgress {
 			if t, gerr := e.getTask(bg, task.ID); gerr == nil {
 				_, _ = e.setTaskStatus(bg, t, prevStatus) // no agent works on it after all

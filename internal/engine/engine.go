@@ -239,7 +239,8 @@ type agentProc struct {
 	log        *slog.Logger   // this session's logger: agent, session and task ids (ADR 0028)
 	resumeFrom string         // the session this one continues (ADR 0035); "" for a fresh one
 
-	sessionStarted bool // the main agent's SessionStart arrived; guarded by Engine.mu
+	sessionStarted bool          // the main agent's SessionStart arrived; guarded by Engine.mu
+	historyDone    chan struct{} // closed after the session's terminal was saved for the last time (ADR 0036); nil for agents of a previous run
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
 	hasPrompt     bool        // started with an initial prompt
@@ -786,18 +787,19 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 			Role:                l.def.Name,
 			InheritUserSettings: e.opts.InheritUserSettings, Branch: branch, WorktreePath: wtPath,
 			WorkspaceKind: KindWorktree, WorktreeStatus: WorktreeActive, HasTerminal: true, StartedAt: started},
-		status:     hooks.Status{State: hooks.Starting},
-		baseCommit: base,
-		term:       term,
-		listener:   ln,
-		settings:   settingsPath,
-		exited:     make(chan struct{}),
-		afterExit:  make(chan struct{}),
-		mcp:        mln,
-		mcpConfig:  mcpConfig,
-		hasPrompt:  l.prompt != "",
-		usage:      e.newSessionUsage(l, SandboxHost),
-		log:        log,
+		status:      hooks.Status{State: hooks.Starting},
+		baseCommit:  base,
+		term:        term,
+		listener:    ln,
+		settings:    settingsPath,
+		exited:      make(chan struct{}),
+		afterExit:   make(chan struct{}),
+		historyDone: make(chan struct{}),
+		mcp:         mln,
+		mcpConfig:   mcpConfig,
+		hasPrompt:   l.prompt != "",
+		usage:       e.newSessionUsage(l, SandboxHost),
+		log:         log,
 	}
 	e.mu.Lock()
 	e.registerLocked(a, l)
@@ -867,6 +869,12 @@ func (e *Engine) watch(a *agentProc) {
 		alog.Error("persist agent exit", "err", err)
 	}
 	_ = e.q.EndSessions(ctx, db.EndSessionsParams{EndedAt: nullTime(t), AgentID: a.info.ID})
+	if reason == ExitResumeFailed {
+		// It never ran: a later resume continues the session before it (ADR 0035).
+		if err := e.q.DeleteSession(ctx, a.info.SessionID); err != nil {
+			alog.Warn("forget the failed resume's session", "err", err)
+		}
+	}
 	e.publishAgentLocked(a)
 	e.expireAccessLocked(ctx, a.info.ID)
 	e.mu.Unlock()
@@ -880,6 +888,9 @@ func (e *Engine) watch(a *agentProc) {
 		su.view.EndedAt = &t
 		su.mu.Unlock()
 		e.publishUsage(su)
+	}
+	if reason == ExitResumeFailed {
+		e.removeSessionHistory(a)
 	}
 	alog.Info("agent exited", "exit_code", code, "reason", reason)
 	close(a.exited)
@@ -1077,6 +1088,9 @@ func (e *Engine) removeAgent(ctx context.Context, id string, force bool) (Remove
 	e.order = slices.DeleteFunc(e.order, func(s string) bool { return s == id })
 	e.publishLocked(Update{Type: "agent_removed", ID: id})
 	e.mu.Unlock()
+	if a.historyDone != nil {
+		<-a.historyDone // the exit's last save, which would create the directory again
+	}
 	e.removeHistory(id)
 	e.log.Info("agent removed", "agent_id", id, "worktree", res.Worktree, "branch", res.Branch, "discarded", force)
 	return res, nil

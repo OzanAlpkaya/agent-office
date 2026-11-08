@@ -1322,24 +1322,17 @@ func (e *Engine) getPR(ctx context.Context, id int64) (db.PullRequest, error) {
 	return row, err
 }
 
+// prView is the API view of row r, as the caller has it (possibly with
+// fields it could not save), with its reviews.
 func (e *Engine) prView(ctx context.Context, r db.PullRequest) PullRequest {
-	// The row and its reviews are read in one transaction: a caller's row may
-	// be older than a follow-up's claim, which counts the round in the same
-	// transaction that starts the review's follow-up (seen in Phase 9:
-	// TestGitHubLoop read a started follow-up with rounds 0).
-	var rows []db.Review
-	err := e.st.Tx(ctx, func(q *db.Queries) error {
-		cur, err := q.GetPullRequest(ctx, r.ID)
-		if err != nil {
-			return err
-		}
-		r = cur
-		rows, err = q.ListReviews(ctx, db.ListReviewsParams{PrID: r.ID, Limit: 20})
-		return err
-	})
+	rows, err := e.q.ListReviews(ctx, db.ListReviewsParams{PrID: r.ID, Limit: 20})
 	if err != nil {
 		rows = nil
 	}
+	return prViewOf(r, rows)
+}
+
+func prViewOf(r db.PullRequest, rows []db.Review) PullRequest {
 	v := PullRequest{ID: r.ID, TaskID: r.TaskID.String, AgentID: r.AgentID, Branch: r.Branch, Base: r.Base,
 		Number: int(r.Number), URL: r.Url, State: r.State, Head: r.Head, Checks: r.Checks, Rounds: int(r.Rounds),
 		Error: r.Error, CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(), FailedChecks: []string{},
@@ -1378,8 +1371,29 @@ func (e *Engine) PullRequests(ctx context.Context) ([]PullRequest, error) {
 	return out, nil
 }
 
+// publishPR sends the pull request's current state. The row and its reviews
+// are read again in one transaction: a caller's row may be older than a
+// follow-up's claim, which counts the round in the same transaction that
+// starts the review's follow-up (seen in Phase 9: TestGitHubLoop read a
+// started follow-up with rounds 0). If that read fails, the caller's row is
+// sent.
 func (e *Engine) publishPR(ctx context.Context, r db.PullRequest) {
-	v := e.prView(ctx, r)
+	var v PullRequest
+	err := e.st.Tx(ctx, func(q *db.Queries) error {
+		cur, err := q.GetPullRequest(ctx, r.ID)
+		if err != nil {
+			return err
+		}
+		rows, err := q.ListReviews(ctx, db.ListReviewsParams{PrID: r.ID, Limit: 20})
+		if err != nil {
+			return err
+		}
+		v = prViewOf(cur, rows)
+		return nil
+	})
+	if err != nil {
+		v = e.prView(ctx, r)
+	}
 	e.publish(Update{Type: "pull_request", PullRequest: &v})
 }
 

@@ -587,6 +587,17 @@ func (q *Queries) DeleteMemory(ctx context.Context, id int64) (int64, error) {
 	return result.RowsAffected()
 }
 
+const deleteSession = `-- name: DeleteSession :exec
+DELETE FROM sessions WHERE id = ?
+`
+
+// A resumed session whose CLI could not load the conversation (ADR 0035): it never ran, and a later
+// resume must continue the session before it.
+func (q *Queries) DeleteSession(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, deleteSession, id)
+	return err
+}
+
 const endSessions = `-- name: EndSessions :exec
 UPDATE sessions SET ended_at = ? WHERE agent_id = ? AND ended_at IS NULL
 `

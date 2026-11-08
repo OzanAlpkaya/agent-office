@@ -49,12 +49,18 @@ func (e *Engine) historyPath(agentID, sid string) string {
 // keepHistory saves a's scrollback while its process runs and once at exit.
 func (e *Engine) keepHistory(a *agentProc) {
 	if e.opts.HistoryDir == "" || a.term == nil {
+		if a.historyDone != nil {
+			close(a.historyDone)
+		}
 		return
 	}
-	path, term, log := e.historyPath(a.info.ID, a.info.SessionID), a.term, a.logger(e)
+	path, term, log, done := e.historyPath(a.info.ID, a.info.SessionID), a.term, a.logger(e), a.historyDone
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
+		if done != nil {
+			defer close(done)
+		}
 		var last uint64
 		failed := false
 		save := func() {
@@ -195,6 +201,20 @@ func readSaved(path string) ([]byte, error) {
 		}
 	}
 	return io.ReadAll(io.LimitReader(f, MaxSavedTerminal))
+}
+
+// removeSessionHistory deletes one session's saved terminal once its last
+// save is done (a failed resume, whose session row is deleted too).
+func (e *Engine) removeSessionHistory(a *agentProc) {
+	if e.opts.HistoryDir == "" {
+		return
+	}
+	if a.historyDone != nil {
+		<-a.historyDone
+	}
+	if err := os.Remove(e.historyPath(a.info.ID, a.info.SessionID)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		e.log.Warn("remove a failed resume's terminal", "agent_id", a.info.ID, "err", err)
+	}
 }
 
 // removeHistory deletes an agent's saved terminals (when it is removed).

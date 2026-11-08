@@ -74,18 +74,24 @@ func (e *Engine) restore(ctx context.Context) {
 	if len(cands) == 0 {
 		return
 	}
-	defer func() {
-		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := e.q.ClearResumeStates(cctx, e.project.ID); err != nil {
+	if !e.opts.RestoreAgents {
+		if err := e.q.ClearResumeStates(ctx, e.project.ID); err != nil {
 			e.log.Warn("restore: clear states", "err", err)
 		}
-	}()
-	if !e.opts.RestoreAgents {
 		e.log.Info("agents of the previous run not restored (--restore-agents=false)", "count", len(cands))
 		return
 	}
 	e.restartImports.Wait() // their work is in the main repository before they continue
+	// forget clears the state of an agent this restore has dealt with (a
+	// resume clears it itself). States of agents it never reached stay, so a
+	// shutdown in the middle of the restore leaves them for the next start.
+	forget := func(id string) {
+		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := e.q.SetResumeState(cctx, db.SetResumeStateParams{ResumeState: "", ID: id}); err != nil {
+			e.log.Warn("restore: clear state", "agent_id", id, "err", err)
+		}
+	}
 	slices.SortStableFunc(cands, func(a, b db.ListVisibleAgentsRow) int {
 		ka, oka := restoreOrder[a.Kind]
 		kb, okb := restoreOrder[b.Kind]
@@ -102,10 +108,15 @@ func (e *Engine) restore(ctx context.Context) {
 	})
 	var restored, left []string
 	for _, r := range cands {
+		if e.shuttingDown() || ctx.Err() != nil {
+			e.log.Info("restore stopped by the shutdown; the rest is restored at the next start")
+			return // no notice: the next start sends one
+		}
 		name := fmt.Sprintf("%s (%s)", agentName(r.ID), r.Role)
 		if why := e.whyNotRestored(r); why != "" {
 			left = append(left, name+": "+why)
 			e.log.Info("agent not restored", "agent_id", r.ID, "reason", why)
+			forget(r.ID)
 			continue
 		}
 		prompt := ""
@@ -113,6 +124,10 @@ func (e *Engine) restore(ctx context.Context) {
 			prompt = restorePrompt
 		}
 		if _, err := e.relaunchWith(ctx, r.ID, relaunchSpec{prompt: prompt, resume: true}); err != nil {
+			if errors.Is(err, ErrShuttingDown) {
+				return // its state stays for the next start
+			}
+			forget(r.ID)
 			why := firstLine(err.Error())
 			if errors.Is(err, ErrTooManyAgents) {
 				why = "no free agent slot (--max-agents); resume it by hand"
@@ -144,6 +159,12 @@ func (e *Engine) restore(ctx context.Context) {
 	if _, err := e.addInbox(ictx, "", "", "", "", InboxInfo, b.String()); err != nil {
 		e.log.Warn("restore notice", "err", err)
 	}
+}
+
+func (e *Engine) shuttingDown() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.closing
 }
 
 // whyNotRestored says why an agent the stop interrupted stays exited, or "".

@@ -161,6 +161,7 @@ func TestResumeRefusals(t *testing.T) {
 // hook; the agent says so instead of "process exited".
 func TestResumeFailed(t *testing.T) {
 	f := newFixture(t)
+	f.opts.HistoryDir = t.TempDir()
 	e := f.engine(t)
 	log := record(t, e)
 	ctx := context.Background()
@@ -177,6 +178,52 @@ func TestResumeFailed(t *testing.T) {
 		t.Fatalf("exit reason %q", u.Agent.ExitReason)
 	}
 	screen(t, e, a.ID, "No conversation found with session ID: "+a.SessionID)
+	// The failed session never ran: it is forgotten, so the next resume
+	// continues the original conversation (found in the end-of-phase review).
+	ss, _ := e.Sessions(ctx, a.ID)
+	if len(ss) != 1 || ss[0].ID != a.SessionID {
+		t.Fatalf("sessions after a failed resume: %+v", ss)
+	}
+	if _, err := os.Stat(e.historyPath(a.ID, u.Agent.SessionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the failed session's terminal was kept: %v", err)
+	}
+	if _, err := os.Stat(e.historyPath(a.ID, a.SessionID)); err != nil {
+		t.Fatalf("the original session's terminal: %v", err)
+	}
+	if err := os.Remove(filepath.Join(a.WorktreePath, ".fake-no-conversation")); err != nil {
+		t.Fatal(err)
+	}
+	r, err := e.Resume(ctx, a.ID, "")
+	if err != nil || r.ResumedFrom != a.SessionID {
+		t.Fatalf("resume after a failed one: %+v %v", r, err)
+	}
+	screen(t, e, a.ID, "RESUMED:"+a.SessionID)
+}
+
+// A shutdown in the middle of a restore keeps the states it did not reach,
+// so the next start restores them (found in the end-of-phase review).
+func TestRestoreStopsAtShutdown(t *testing.T) {
+	f := newFixture(t)
+	f.opts.RestoreAgents = true
+	ctx := context.Background()
+	e1, err := New(ctx, f.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := record(t, e1)
+	w, _ := e1.Start(ctx, StartRequest{})
+	log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
+	e1.Shutdown()
+	// A daemon that is already shutting down when its restore reaches the agent.
+	e2 := &Engine{opts: f.opts, log: e1.log, q: f.store.Q, st: f.store, project: e1.project, agents: map[string]*agentProc{},
+		subs: map[chan Update]struct{}{}, startingKind: map[string]bool{}, noRestore: map[string]string{}, closing: true}
+	e2.restore(ctx)
+	if st := resumeStateOf(t, f, w.ID); st != "idle" {
+		t.Fatalf("resume state after an interrupted restore: %q", st)
+	}
+	if items, _ := e2.Inbox(ctx); len(items) != 0 {
+		t.Fatalf("notice from an interrupted restore: %+v", items)
+	}
 }
 
 // Messages queued for a conversation reach the session that resumes it, even
