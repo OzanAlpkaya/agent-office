@@ -49,14 +49,16 @@ Option 2 in each group.
   `qa_runs` row records the branches and heads it was given.
 - **`report_qa(verdict, summary, bugs)`**: `pass` or `fail` (a failure needs at least one bug); at
   most 10 bugs. The integration branch must be committed and is imported like a worker's (ADR
-  0014). Each bug becomes a `todo` sub-task (`Bug: <title>`, created by QA, within the 20 per
-  goal; the rest are listed in the message). The run is finished once, the lead gets the verdict,
+  0014); a `pass` is refused unless every branch QA was given is an ancestor of its head. Each bug
+  becomes a `todo` sub-task (`Bug: <title>`, created by QA, within the 20 per goal; the rest are
+  listed in the message). The run is finished once, the lead gets the verdict,
   summary and bug ids, and QA ends after its turn. A QA agent that ends without reporting leaves
   its run `error`; a daemon restart does the same to runs left `running`.
 - **Gate** (on by default; `--qa=false` / `AGENT_OFFICE_QA=false` turns it off): the lead's goal
   report is refused unless the latest run passed, every reported sub-task's current head equals
   the head that run merged, and every bug sub-task QA filed is `review` or `done` (fixed, or closed
-  by the user).
+  by the user). Independently of QA, every sub-task of the goal must be `review` or `done`, so
+  planned work cannot disappear silently (the user closes what is not needed).
 - `GET /api/qa-runs`; runs are in the `/api/events` snapshot and `qa_run` updates.
 - The integration branch is never pushed by the daemon; worker pull requests stay the unit of
   review. QA's added tests live on the integration branch (backlog: offering it as a pull

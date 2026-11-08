@@ -57,10 +57,13 @@ Option 2 in every group.
 - **Sub-task plan fields** (migration 0008): `depends_on` (task ids of the same goal), `files`
   (repository-relative paths, directories ending in `/`, globs; clean, no `..`), `acceptance`,
   `role`. From an approved spec (ADR 0031) or the lead's `create_task`.
-- **`assign_task`** refuses a sub-task whose dependencies are not `review`/`done`, and one whose
-  declared files overlap those of a *running* sub-task of the goal when neither depends on the
-  other (transitively). Overlap errs towards overlap: equal paths, a path under a declared
-  directory, a glob matching a path, two globs whose literal prefixes nest.
+- **`assign_task`** refuses a sub-task whose dependencies are not `review`/`done` (a deleted
+  dependency no longer counts), and one whose declared files overlap those of a *running* or
+  *being assigned* sub-task of the goal when neither depends on the other (transitively); the
+  check runs after the task is marked as being assigned, so two assignments at once see each other.
+  Overlap errs towards overlap: equal paths, a path under a declared directory (written with a
+  trailing `/`), a glob matching a path, two globs (or any `**` pattern) whose literal prefixes
+  nest.
 - **Base of a sub-task's branch:** one dependency's imported head; for several, folded in order:
   one containing the other is skipped, otherwise `merge-tree` + `commit-tree` make a merge commit
   in the main repository (refused, naming the files, if they conflict); without dependencies the

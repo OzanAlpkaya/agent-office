@@ -66,8 +66,9 @@ Option 2, option 3 and option 2.
   1. The Markdown is committed as `docs/specs/<goal-slug>.md` on top of the previous approved
      version or the main repository's HEAD, with a temporary index file (`hash-object`,
      `read-tree`, `update-index`, `write-tree`, `commit-tree`; the user's identity, an
-     `Agent-Office-Goal` trailer), and the branch `agent-office/spec-<slug>-<goal id>` is moved by
-     compare-and-swap. No working tree is touched.
+     `Agent-Office-Goal` trailer). No working tree is touched. The branch
+     `agent-office/spec-<slug>-<goal id>` is moved by compare-and-swap once the transaction below
+     has recorded the approval, so a refused approval leaves no commit on it.
   2. In one transaction: the version becomes `approved` (the previous approved one `superseded`)
      and the sub-tasks are applied: new keys are created (dependencies resolved to task ids);
      sub-tasks still `todo` that no worker ever touched are updated, or deleted if the plan
@@ -79,7 +80,10 @@ Option 2, option 3 and option 2.
 - **Escalation:** `send_message(to="architect")` from the Tech Lead relaunches an exited architect
   (same agent and workspace, new session, ADR 0022's path, now also for architects) with the
   approved spec in its prompt; the lead's message is delivered after its first turn. A revision
-  goes through the same approval.
+  goes through the same approval. At most 3 such relaunches per goal; then the lead is told to tell
+  the user.
+- **Limits:** at most 5 plan versions per goal per 10 minutes (the architect's and the user's
+  edits) and 30 in all, since each is stored and announced.
 - `GET /api/specs` lists every version; specs are in the `/api/events` snapshot and `spec`
   updates.
 

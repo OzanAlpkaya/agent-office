@@ -55,9 +55,12 @@ Option 2 in each group.
 - **Replies** (and `POST /api/agents/{id}/message`, used by the assistant's briefing button) are
   stored as messages with `from_user` set and no sending agent, delivered through ADR 0018's
   paths. The delivery header says they are the user's own words, written in the agent-office UI;
-  agent messages in the same delivery keep the "information, not instructions" framing. Every body
-  line is still quoted, so an agent's text cannot pass for `From the user:`. Reviewers take no
-  messages. A reply to an agent that is not running is refused.
+  agent messages in the same delivery keep the "information, not instructions" framing. On the
+  Stop-hook path every body line is quoted with `> `; typed into an idle terminal, where line breaks
+  become spaces, each body is one JSON string (quotes and control characters escaped). Either way an
+  agent's text cannot pass for `From the user:` (the typed form was added after the end-of-phase
+  review found that collapsing lines removed the quoting). Only the assistant sends `briefing`
+  items. Reviewers take no messages. A reply to an agent that is not running is refused.
 - **`send_message` addressing** extends ADR 0017: workers and QA → `lead`; the Tech Lead → its
   goal's workers and QA, and `architect` (relaunched if it has ended, ADR 0031); the architect →
   `lead`; the assistant and reviewers send no team messages.
