@@ -101,6 +101,14 @@ func fakeClaude() int {
 			send("PostToolUse", `,"tool_name":"Bash"`)
 			send("SubagentStop", `,"agent_id":"a1b2c3"`)
 			send("Stop", `,"stop_hook_active":false`)
+		case "usage-late": // the Stop hook runs before the transcript is written, as seen in the e2e run
+			src := os.Getenv("AO_FAKE_TRANSCRIPT_SRC")
+			main, _ := os.ReadFile(filepath.Join(src, usageFixtureSession+".jsonl"))
+			send("UserPromptSubmit", `,"prompt":"SENSITIVE"`)
+			send("Stop", `,"stop_hook_active":false`)
+			time.Sleep(300 * time.Millisecond)
+			_ = os.WriteFile(transcript, main, 0o600)
+			fmt.Println("transcript written")
 		case "busy": // a turn that keeps running
 			send("UserPromptSubmit", "")
 		case "turn": // a whole turn

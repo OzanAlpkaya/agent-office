@@ -284,7 +284,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	}
 	apiLog := log.With("proxy", "api")
 	api := &sandbox.APIProxy{Token: prep.token, Upstream: s.apiUpstream, OnEvent: onEvent, Log: apiLog,
-		OnUsage: func(m usage.Message) { e.recordUsage(su, []usage.Message{m}, apiLog) },
+		OnUsage: func(m usage.Message) { e.meterUsage(su, m, apiLog) },
 		Allow:   func() error { return e.allowRequest(su) }}
 	res.api = &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = res.api.Serve(apiLn) }()

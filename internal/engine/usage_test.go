@@ -122,6 +122,81 @@ func TestHostUsageFromTranscript(t *testing.T) {
 	}
 }
 
+// The transcript is read again after a turn: Claude Code may write the
+// turn's last lines after its Stop hook ran (found in the Phase 8 e2e run).
+func TestTranscriptWrittenAfterStop(t *testing.T) {
+	saved := transcriptSettle
+	transcriptSettle = []time.Duration{time.Second, 2 * time.Second}
+	t.Cleanup(func() { transcriptSettle = saved })
+	f, _, _ := usageFixture(t)
+	e := f.engine(t)
+	log := record(t, e)
+	a, err := e.Start(context.Background(), StartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 5*time.Second, agentState(a.ID, hooks.Idle))
+	e.Input(a.ID, []byte("usage-late\n"))
+	screen(t, e, a.ID, "transcript written")
+	u := log.wait(t, 5*time.Second, func(u Update) bool { return u.Type == "usage" && u.Usage.Messages == 2 }).Usage
+	if u.CostMicroUSD != 53_848 { // the main transcript's messages A and B
+		t.Fatalf("usage %+v", u)
+	}
+}
+
+// Metered usage reaches memory at once and the database through the
+// session's background writer; the stream's Read never waits for it.
+func TestMeteredUsageIsPersisted(t *testing.T) {
+	f, _, _ := usageFixture(t)
+	e := f.engine(t)
+	ctx := context.Background()
+	if _, err := f.store.DB.Exec(`INSERT INTO agents (id, project_id, inherit_user_settings, state, started_at, sandbox)
+		VALUES ('m1', ?, 0, 'idle', ?, 'podman')`, e.project.ID, now()); err != nil {
+		t.Fatal(err)
+	}
+	su := e.newSessionUsage(launchInfo{id: "m1", sid: "s-m1", role: RoleWorker, started: now()}, SandboxPodman)
+	if err := e.q.CreateSession(ctx, db.CreateSessionParams{ID: "s-m1", AgentID: "m1", StartedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	for out := int64(1); out <= 50; out++ { // message_start, then growing deltas of one message
+		e.meterUsage(su, usage.Message{ID: "msg_1", Model: "claude-haiku-5-5", Tokens: usage.Tokens{Input: 10, Output: out}}, e.log)
+	}
+	e.meterUsage(su, usage.Message{ID: "msg_2", Model: "claude-haiku-5-5", Tokens: usage.Tokens{Output: 7}}, e.log)
+	su.mu.Lock()
+	inMemory := len(su.msgs)
+	su.mu.Unlock()
+	if inMemory != 2 {
+		t.Fatalf("in memory: %d messages", inMemory)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rows, err := e.q.ListSessionUsage(ctx, "s-m1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]int64{}
+		for _, r := range rows {
+			out[r.MessageID] = r.OutputTokens
+		}
+		if len(rows) == 2 && out["msg_1"] == 50 && out["msg_2"] == 7 {
+			break // the latest value of each message, never an earlier one
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rows %+v", rows)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestDollars(t *testing.T) {
+	for micro, want := range map[int64]string{0: "$0.0000", 1: "$0.0000", 50: "$0.0001", 68_864: "$0.0689",
+		999_949: "$0.9999", 999_950: "$1.00", 999_999: "$1.00", 1_000_000: "$1.00", 1_234_567: "$1.23", 99_995_000: "$100.00"} {
+		if got := dollars(micro); got != want {
+			t.Errorf("dollars(%d) = %s, want %s", micro, got, want)
+		}
+	}
+}
+
 // A changed price table re-prices history; an unknown model is "no price",
 // never $0.
 func TestUsageRepricedOnRead(t *testing.T) {

@@ -31,13 +31,23 @@ type Budgets struct {
 
 func (b Budgets) on() bool { return b.SessionMicroUSD > 0 || b.GoalMicroUSD > 0 }
 
-// dollars formats micro-USD for messages.
+// dollars formats micro-USD for messages: cents from $1, four decimals
+// below (like the UI), rounded half up.
 func dollars(micro int64) string {
-	return fmt.Sprintf("$%d.%02d", micro/1_000_000, micro%1_000_000/10_000)
+	if tenThousandths := (micro + 50) / 100; tenThousandths < 10_000 {
+		return fmt.Sprintf("$0.%04d", tenThousandths)
+	}
+	c := (micro + 5_000) / 10_000
+	return fmt.Sprintf("$%d.%02d", c/100, c%100)
 }
 
 // transcriptEvery bounds transcript reads during a turn (host mode).
 const transcriptEvery = 10 * time.Second
+
+// transcriptSettle is when a transcript is read again after a hook asked for
+// a read: Claude Code may run the Stop hook before it has written the turn's
+// last assistant line (seen in the Phase 8 e2e run).
+var transcriptSettle = []time.Duration{2 * time.Second, 8 * time.Second}
 
 // SessionUsage is one agent session's usage and counters, as the UI shows it.
 type SessionUsage struct {
@@ -111,14 +121,21 @@ type sessionUsage struct {
 	mu       sync.Mutex
 	msgs     map[string]usage.Message
 	order    []string
+	dirty    map[string]usage.Message // not yet persisted
+	writing  bool                     // a background writer runs (API meter)
 	pubTimer *time.Timer
 	lastPub  time.Time
+
+	flushMu sync.Mutex // one writer at a time, so a later value of a message is never overwritten by an earlier one
 
 	// Host mode: the transcript, read by one goroutine at a time.
 	readMu     sync.Mutex
 	transcript *usage.Session
-	refused    bool      // the path was refused; logged once; guarded by Engine.mu
-	lastRead   time.Time // guarded by Engine.mu
+	refused    bool        // the path was refused; logged once; guarded by Engine.mu
+	lastRead   time.Time   // guarded by Engine.mu
+	settle     *time.Timer // the next settle read; guarded by Engine.mu
+	settleStep int         // index into transcriptSettle; guarded by Engine.mu
+	ended      bool        // the process exited: the final read was done; guarded by Engine.mu
 }
 
 func (e *Engine) prices() *usage.Prices { return e.opts.Prices }
@@ -129,13 +146,17 @@ func (e *Engine) newSessionUsage(l launchInfo, sandboxMode string) *sessionUsage
 	if sandboxMode == SandboxPodman {
 		source = SourceAPI
 	}
-	su := &sessionUsage{msgs: map[string]usage.Message{}, view: SessionUsage{SessionID: l.sid, AgentID: l.id,
-		TaskID: l.taskID, Role: l.role, Sandbox: sandboxMode, Source: source, StartedAt: l.started}}
+	su := &sessionUsage{msgs: map[string]usage.Message{}, dirty: map[string]usage.Message{}, view: SessionUsage{
+		SessionID: l.sid, AgentID: l.id, TaskID: l.taskID, Role: l.role, Sandbox: sandboxMode, Source: source,
+		StartedAt: l.started}}
 	if l.taskID != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if t, err := e.q.GetTask(ctx, l.taskID); err == nil {
 			su.view.GoalID = goalOf(t)
+		} else {
+			// allowRequest looks it up again, and refuses if a goal budget is set.
+			e.log.Warn("task of a new session not readable; its goal is resolved later", "agent_id", l.id, "err", err)
 		}
 	}
 	return su
@@ -157,7 +178,7 @@ func (su *sessionUsage) snapshotLocked(p *usage.Prices) SessionUsage {
 		m := su.msgs[id]
 		v.Tokens = v.Tokens.Add(m.Tokens)
 		if c, ok := p.Cost(m); ok {
-			v.nano += c
+			v.nano = usage.AddNano(v.nano, c)
 		} else {
 			v.UnpricedTokens += m.Total()
 		}
@@ -177,30 +198,102 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
-// recordUsage stores messages of a session and schedules a live update.
+// remember puts messages into the session's memory (which the session
+// budget reads, so spend counts even if the database write fails) and marks
+// them for persisting.
+func (su *sessionUsage) remember(msgs []usage.Message) {
+	su.mu.Lock()
+	defer su.mu.Unlock()
+	for _, m := range msgs {
+		if _, ok := su.msgs[m.ID]; !ok {
+			su.order = append(su.order, m.ID)
+		}
+		su.msgs[m.ID] = m
+		su.dirty[m.ID] = m
+	}
+}
+
+// recordUsage stores messages of a session now (transcript reads, which run
+// in their own goroutine) and schedules a live update.
 func (e *Engine) recordUsage(su *sessionUsage, msgs []usage.Message, log *slog.Logger) {
 	if len(msgs) == 0 {
 		return
 	}
+	su.remember(msgs)
+	e.flushUsage(su, log)
+	e.publishUsageSoon(su)
+}
+
+// meterUsage records a message metered on the API socket. It runs inside the
+// response stream's Read, so it never waits for the database: one background
+// writer per session persists the latest value of each message.
+func (e *Engine) meterUsage(su *sessionUsage, m usage.Message, log *slog.Logger) {
+	su.remember([]usage.Message{m})
+	su.mu.Lock()
+	start := !su.writing
+	su.writing = true
+	su.mu.Unlock()
+	if start {
+		e.wg.Add(1)
+		go func() {
+			defer e.wg.Done()
+			for failures := 0; ; {
+				if e.flushUsage(su, log) {
+					failures = 0
+				} else if failures++; failures >= 5 {
+					log.Error("usage not persisted after retries; it stays in memory for the budget", "pending", su.pending())
+				} else {
+					time.Sleep(time.Duration(failures) * 200 * time.Millisecond)
+				}
+				su.mu.Lock()
+				if len(su.dirty) == 0 || failures >= 5 {
+					su.writing = false
+					su.mu.Unlock()
+					return
+				}
+				su.mu.Unlock()
+			}
+		}()
+	}
+	e.publishUsageSoon(su)
+}
+
+func (su *sessionUsage) pending() int {
+	su.mu.Lock()
+	defer su.mu.Unlock()
+	return len(su.dirty)
+}
+
+// flushUsage writes the session's unpersisted messages; false if any write
+// failed (those stay marked unless a newer value arrived meanwhile).
+func (e *Engine) flushUsage(su *sessionUsage, log *slog.Logger) bool {
+	su.flushMu.Lock()
+	defer su.flushMu.Unlock()
+	su.mu.Lock()
+	batch := su.dirty
+	su.dirty = map[string]usage.Message{}
+	su.mu.Unlock()
+	if len(batch) == 0 {
+		return true
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	t := now()
-	for _, m := range msgs {
+	t, ok := now(), true
+	for _, m := range batch {
 		if err := e.q.UpsertUsage(ctx, db.UpsertUsageParams{SessionID: su.view.SessionID, AgentID: su.view.AgentID,
 			TaskID: nullString(su.view.TaskID), Source: su.view.Source, MessageID: m.ID, RequestID: m.RequestID,
 			Model: m.Model, Speed: m.Speed, InferenceGeo: m.Geo, InputTokens: m.Input, OutputTokens: m.Output,
 			CacheRead: m.CacheRead, CacheWrite5m: m.CacheWrite5m, CacheWrite1h: m.CacheWrite1h, At: t, UpdatedAt: t}); err != nil {
 			log.Warn("persist usage", "message_id", m.ID, "err", err)
-			continue
+			ok = false
+			su.mu.Lock()
+			if _, newer := su.dirty[m.ID]; !newer {
+				su.dirty[m.ID] = m
+			}
+			su.mu.Unlock()
 		}
-		su.mu.Lock()
-		if _, ok := su.msgs[m.ID]; !ok {
-			su.order = append(su.order, m.ID)
-		}
-		su.msgs[m.ID] = m
-		su.mu.Unlock()
 	}
-	e.publishUsageSoon(su)
+	return ok
 }
 
 // countLocked adds to the session's turn and tool-call counters (main agent
@@ -290,6 +383,43 @@ func (e *Engine) transcriptHookLocked(a *agentProc, ev agent.Event, log *slog.Lo
 		defer e.wg.Done()
 		e.readTranscript(su, log)
 	}()
+	// Read again once the CLI has had time to write the turn's last lines.
+	e.stopSettleLocked(su)
+	su.settleStep = 0
+	e.armSettleLocked(su, log)
+}
+
+// stopSettleLocked cancels a pending settle read. A timer that already fired
+// runs its function, which accounts for itself in e.wg. The caller holds e.mu.
+func (e *Engine) stopSettleLocked(su *sessionUsage) {
+	if su.settle != nil && su.settle.Stop() {
+		e.wg.Done()
+	}
+	su.settle = nil
+}
+
+// armSettleLocked schedules the next settle read. The caller holds e.mu.
+func (e *Engine) armSettleLocked(su *sessionUsage, log *slog.Logger) {
+	if su.ended || su.settleStep >= len(transcriptSettle) {
+		su.settle = nil
+		return
+	}
+	d := transcriptSettle[su.settleStep]
+	if su.settleStep > 0 {
+		d -= transcriptSettle[su.settleStep-1]
+	}
+	su.settleStep++
+	e.wg.Add(1)
+	su.settle = time.AfterFunc(d, func() {
+		defer e.wg.Done()
+		e.readTranscript(su, log)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		su.settle = nil
+		if !e.closing {
+			e.armSettleLocked(su, log)
+		}
+	})
 }
 
 // readTranscript reads what was added to the session's transcript.
@@ -309,6 +439,9 @@ func (e *Engine) readTranscript(su *sessionUsage, log *slog.Logger) {
 	}
 	if r.Skipped > 0 {
 		log.Warn("transcript lines skipped", "count", r.Skipped)
+	}
+	if len(r.Messages) > 0 || r.CLICostMicroUSD != nil {
+		log.Debug("transcript read", "messages", len(r.Messages), "cli_cost", r.CLICostMicroUSD != nil)
 	}
 	if r.CLICostMicroUSD != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -348,21 +481,49 @@ func (e *Engine) allowRequest(su *sessionUsage) error {
 			return fmt.Errorf("this session's budget of %s is spent (%s estimated)", dollars(b.SessionMicroUSD), dollars(v.CostMicroUSD))
 		}
 	}
-	if b.GoalMicroUSD > 0 && su.view.GoalID != "" {
+	su.mu.Lock()
+	goal, taskID := su.view.GoalID, su.view.TaskID
+	su.mu.Unlock()
+	if b.GoalMicroUSD > 0 && goal == "" && taskID != "" {
+		// The lookup at launch failed: resolve it now, or refuse.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		t, err := e.q.GetTask(ctx, taskID)
+		cancel()
+		if err != nil {
+			return errors.New("the session's goal cannot be read; refusing while a goal budget is set")
+		}
+		goal = goalOf(t)
+		su.mu.Lock()
+		su.view.GoalID = goal
+		su.mu.Unlock()
+	}
+	if b.GoalMicroUSD > 0 && goal != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		rows, err := e.q.ListGoalUsage(ctx, nullString(su.view.GoalID))
+		rows, err := e.q.ListGoalUsage(ctx, nullString(goal))
 		if err != nil {
-			return fmt.Errorf("the goal's spend cannot be read (%v); refusing while a goal budget is set", err)
+			return errors.New("the goal's spend cannot be read; refusing while a goal budget is set")
 		}
+		// Other sessions from the database; this one from memory, which is
+		// ahead of its rows.
 		var total int64 // nano-USD
 		for _, r := range rows {
+			if r.SessionID == su.view.SessionID {
+				continue
+			}
 			c, ok := p.Cost(messageFromUsageRow(r))
 			if !ok {
 				return errUnpriced
 			}
-			total += c
+			total = usage.AddNano(total, c)
 		}
+		su.mu.Lock()
+		own := su.snapshotLocked(p)
+		su.mu.Unlock()
+		if own.UnpricedTokens > 0 {
+			return errUnpriced
+		}
+		total = usage.AddNano(total, own.nano)
 		if total >= b.GoalMicroUSD*1000 {
 			return fmt.Errorf("the goal's budget of %s is spent (%s estimated)", dollars(b.GoalMicroUSD), dollars(usage.MicroUSD(total)))
 		}
@@ -433,11 +594,11 @@ func (e *Engine) Usage(ctx context.Context) (UsageReport, error) {
 		}
 		mu.Messages++
 		mu.Tokens = mu.Tokens.Add(m.Tokens)
-		mu.nano += c
+		mu.nano = usage.AddNano(mu.nano, c)
 		models[m.Model] = true
 		rep.Totals.Messages++
 		rep.Totals.Tokens = rep.Totals.Tokens.Add(m.Tokens)
-		totalNano += c
+		totalNano = usage.AddNano(totalNano, c)
 		if !priced {
 			rep.Totals.UnpricedTokens += m.Total()
 		}
@@ -448,7 +609,7 @@ func (e *Engine) Usage(ctx context.Context) (UsageReport, error) {
 		s := &rep.Sessions[i]
 		s.Messages++
 		s.Tokens = s.Tokens.Add(m.Tokens)
-		s.nano += c
+		s.nano = usage.AddNano(s.nano, c)
 		if !priced {
 			s.UnpricedTokens += m.Total()
 		}

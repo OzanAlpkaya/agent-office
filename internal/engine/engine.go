@@ -776,6 +776,10 @@ func (e *Engine) watch(a *agentProc) {
 	e.expireAccessLocked(ctx, a.info.ID)
 	e.mu.Unlock()
 	if su := a.usage; su != nil {
+		e.mu.Lock()
+		su.ended = true
+		e.stopSettleLocked(su)
+		e.mu.Unlock()
 		e.readTranscript(su, alog) // host mode: the rest of the transcript, now complete
 		su.mu.Lock()
 		su.view.EndedAt = &t
