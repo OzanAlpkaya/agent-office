@@ -874,15 +874,31 @@ func (e *Engine) decideFollowup(ctx context.Context, prID, reviewID int64) {
 	if err != nil || row.State != PROpen || row.Head != rv.Head {
 		return // closed, merged, or a newer head is already under review
 	}
-	claimed, err := e.q.ClaimReviewFollowup(ctx, db.ClaimReviewFollowupParams{Followup: FollowupStarted, UpdatedAt: now(),
-		ID: rv.ID})
+	// The claim and the round are one transaction, so no reader sees a
+	// started follow-up whose round is not counted yet.
+	var claimed db.Review
+	skipped := false
+	err = e.st.Tx(ctx, func(q *db.Queries) error {
+		c, err := q.ClaimReviewFollowup(ctx, db.ClaimReviewFollowupParams{Followup: FollowupStarted, UpdatedAt: now(),
+			ID: rv.ID})
+		if err != nil {
+			return err // decided by someone else
+		}
+		claimed = c
+		if _, err := q.TakePullRequestRound(ctx, db.TakePullRequestRoundParams{UpdatedAt: now(), ID: row.ID,
+			MaxRounds: int64(e.opts.GitHub.Rounds)}); errors.Is(err, sql.ErrNoRows) {
+			skipped = true
+			return setFollowupQ(ctx, q, c, FollowupSkipped, fmt.Sprintf(
+				"the automatic round limit (%d) is reached; use Send to worker", e.opts.GitHub.Rounds))
+		} else if err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return // decided by someone else
+		return
 	}
-	if _, err := e.q.TakePullRequestRound(ctx, db.TakePullRequestRoundParams{UpdatedAt: now(), ID: row.ID,
-		MaxRounds: int64(e.opts.GitHub.Rounds)}); err != nil {
-		e.setFollowup(ctx, claimed, FollowupSkipped, fmt.Sprintf("the automatic round limit (%d) is reached; use Send to worker",
-			e.opts.GitHub.Rounds))
+	if skipped {
 		e.publishPRByID(ctx, row.ID)
 		return
 	}
@@ -901,20 +917,23 @@ func (e *Engine) decideFollowup(ctx context.Context, prID, reviewID int64) {
 // Phase 8: TestFollowupRoundLimitAndHumanReviews read "skipped" with an empty
 // error between the two writes).
 func (e *Engine) setFollowup(ctx context.Context, rv db.Review, followup, msg string) {
-	err := e.st.Tx(ctx, func(q *db.Queries) error {
-		cur, err := q.SetReviewFollowup(ctx, db.SetReviewFollowupParams{Followup: followup, UpdatedAt: now(), ID: rv.ID})
-		if err != nil || msg == "" {
-			return err
-		}
-		_, err = q.UpdateReview(ctx, db.UpdateReviewParams{Status: cur.Status, Verdict: cur.Verdict,
-			Summary: truncateRunes(cur.Summary, maxStoredSummary), Comments: cur.Comments, AgentID: cur.AgentID,
-			GithubReviewID: cur.GithubReviewID, Url: cur.Url, Error: truncateRunes(msg, maxErrorLen), Attempts: cur.Attempts,
-			UpdatedAt: now(), ID: cur.ID})
-		return err
-	})
+	err := e.st.Tx(ctx, func(q *db.Queries) error { return setFollowupQ(ctx, q, rv, followup, msg) })
 	if err != nil {
 		e.log.Warn("record follow-up", "review_id", rv.ID, "err", err)
 	}
+}
+
+// setFollowupQ writes a review's follow-up outcome and its reason within q.
+func setFollowupQ(ctx context.Context, q *db.Queries, rv db.Review, followup, msg string) error {
+	cur, err := q.SetReviewFollowup(ctx, db.SetReviewFollowupParams{Followup: followup, UpdatedAt: now(), ID: rv.ID})
+	if err != nil || msg == "" {
+		return err
+	}
+	_, err = q.UpdateReview(ctx, db.UpdateReviewParams{Status: cur.Status, Verdict: cur.Verdict,
+		Summary: truncateRunes(cur.Summary, maxStoredSummary), Comments: cur.Comments, AgentID: cur.AgentID,
+		GithubReviewID: cur.GithubReviewID, Url: cur.Url, Error: truncateRunes(msg, maxErrorLen), Attempts: cur.Attempts,
+		UpdatedAt: now(), ID: cur.ID})
+	return err
 }
 
 // SendToWorker gives a review to the pull request's original worker by hand
