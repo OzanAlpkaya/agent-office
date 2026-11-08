@@ -37,6 +37,7 @@ type Agent struct {
 	Sandbox             string
 	Kind                string
 	Role                string
+	ResumeState         string
 }
 
 type Event struct {
@@ -177,6 +178,7 @@ type Session struct {
 	Turns           int64
 	ToolCalls       int64
 	CliCostMicroUsd sql.NullInt64
+	ResumedFrom     string
 }
 
 type Spec struct {

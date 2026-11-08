@@ -383,7 +383,10 @@ function AgentCard({
         {a.branch}
       </div>
       <div className="small muted">
-        {a.model ? `model ${a.model}` : "default model"} · user settings {a.inherit_user_settings ? "on" : "off"}
+        {a.model ? `model ${a.model}` : "default model"} ·{" "}
+        {sandboxed
+          ? <span title="Sandboxed agents get a clean Claude Code config; your own settings never apply.">sandbox config</span>
+          : `user settings ${a.inherit_user_settings ? "on" : "off"}`}
       </div>
       {a.state === "exited" && (
         <div className="small muted">

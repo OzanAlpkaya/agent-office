@@ -27,6 +27,39 @@ func (q *Queries) AddSessionCounts(ctx context.Context, arg AddSessionCountsPara
 	return err
 }
 
+const agentUsageMessageIDs = `-- name: AgentUsageMessageIDs :many
+SELECT DISTINCT message_id FROM usage_messages WHERE agent_id = ? AND session_id != ?
+`
+
+type AgentUsageMessageIDsParams struct {
+	AgentID   string
+	SessionID string
+}
+
+// Message ids an agent's sessions recorded: a forked transcript repeats its parent's (ADR 0035).
+func (q *Queries) AgentUsageMessageIDs(ctx context.Context, arg AgentUsageMessageIDsParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, agentUsageMessageIDs, arg.AgentID, arg.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var message_id string
+		if err := rows.Scan(&message_id); err != nil {
+			return nil, err
+		}
+		items = append(items, message_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const answerInbox = `-- name: AnswerInbox :one
 UPDATE inbox SET reply = ?, answered_at = ?, read_at = COALESCE(read_at, ?) WHERE id = ?
 RETURNING id, project_id, agent_id, task_id, goal_id, role, kind, body, created_at, read_at, answered_at, reply
@@ -372,17 +405,23 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error 
 }
 
 const createSession = `-- name: CreateSession :exec
-INSERT INTO sessions (id, agent_id, started_at) VALUES (?, ?, ?)
+INSERT INTO sessions (id, agent_id, started_at, resumed_from) VALUES (?, ?, ?, ?)
 `
 
 type CreateSessionParams struct {
-	ID        string
-	AgentID   string
-	StartedAt time.Time
+	ID          string
+	AgentID     string
+	StartedAt   time.Time
+	ResumedFrom string
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) error {
-	_, err := q.db.ExecContext(ctx, createSession, arg.ID, arg.AgentID, arg.StartedAt)
+	_, err := q.db.ExecContext(ctx, createSession,
+		arg.ID,
+		arg.AgentID,
+		arg.StartedAt,
+		arg.ResumedFrom,
+	)
 	return err
 }
 
@@ -836,6 +875,26 @@ func (q *Queries) GetReview(ctx context.Context, id int64) (Review, error) {
 		&i.UpdatedAt,
 		&i.Reply,
 		&i.ReplyUrl,
+	)
+	return i, err
+}
+
+const getSession = `-- name: GetSession :one
+SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from FROM sessions WHERE id = ?
+`
+
+func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
+	row := q.db.QueryRowContext(ctx, getSession, id)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.StartedAt,
+		&i.EndedAt,
+		&i.Turns,
+		&i.ToolCalls,
+		&i.CliCostMicroUsd,
+		&i.ResumedFrom,
 	)
 	return i, err
 }
@@ -1373,6 +1432,26 @@ func (q *Queries) LatestQARun(ctx context.Context, goalID string) (QaRun, error)
 	return i, err
 }
 
+const latestSession = `-- name: LatestSession :one
+SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1
+`
+
+func (q *Queries) LatestSession(ctx context.Context, agentID string) (Session, error) {
+	row := q.db.QueryRowContext(ctx, latestSession, agentID)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.StartedAt,
+		&i.EndedAt,
+		&i.Turns,
+		&i.ToolCalls,
+		&i.CliCostMicroUsd,
+		&i.ResumedFrom,
+	)
+	return i, err
+}
+
 const listAcceptedMemory = `-- name: ListAcceptedMemory :many
 SELECT id, project_id, kind, title, body, status, source, created_at, updated_at FROM memory WHERE project_id = ? AND status = 'accepted' ORDER BY id DESC
 `
@@ -1484,6 +1563,42 @@ func (q *Queries) ListAgentMessages(ctx context.Context, arg ListAgentMessagesPa
 			&i.DeliveredAt,
 			&i.Delivery,
 			&i.FromUser,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentSessions = `-- name: ListAgentSessions :many
+SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC
+`
+
+func (q *Queries) ListAgentSessions(ctx context.Context, agentID string) ([]Session, error) {
+	rows, err := q.db.QueryContext(ctx, listAgentSessions, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Session{}
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.StartedAt,
+			&i.EndedAt,
+			&i.Turns,
+			&i.ToolCalls,
+			&i.CliCostMicroUsd,
+			&i.ResumedFrom,
 		); err != nil {
 			return nil, err
 		}
@@ -2274,7 +2389,7 @@ func (q *Queries) ListTasks(ctx context.Context, projectID string) ([]Task, erro
 }
 
 const listVisibleAgents = `-- name: ListVisibleAgents :many
-SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, agents.sandbox, agents.kind, agents.role, worktrees.path AS worktree_path, worktrees.branch AS branch,
+SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, agents.sandbox, agents.kind, agents.role, agents.resume_state, worktrees.path AS worktree_path, worktrees.branch AS branch,
        worktrees.status AS worktree_status, worktrees.kind AS worktree_kind
 FROM agents JOIN worktrees ON worktrees.agent_id = agents.id
 WHERE agents.project_id = ? AND agents.removed_at IS NULL
@@ -2297,6 +2412,7 @@ type ListVisibleAgentsRow struct {
 	Sandbox             string
 	Kind                string
 	Role                string
+	ResumeState         string
 	WorktreePath        string
 	Branch              string
 	WorktreeStatus      string
@@ -2328,6 +2444,7 @@ func (q *Queries) ListVisibleAgents(ctx context.Context, projectID string) ([]Li
 			&i.Sandbox,
 			&i.Kind,
 			&i.Role,
+			&i.ResumeState,
 			&i.WorktreePath,
 			&i.Branch,
 			&i.WorktreeStatus,
@@ -2455,10 +2572,11 @@ func (q *Queries) MarkInboxRead(ctx context.Context, arg MarkInboxReadParams) (I
 }
 
 const markUnfinishedAgentsExited = `-- name: MarkUnfinishedAgentsExited :execrows
-UPDATE agents SET state = 'exited', activity = '', exited_at = ?, exit_reason = 'daemon_restart'
+UPDATE agents SET resume_state = state, state = 'exited', activity = '', exited_at = ?, exit_reason = 'daemon_restart'
 WHERE state != 'exited'
 `
 
+// A crash: the last recorded state is what a restore resumes from (ADR 0035).
 func (q *Queries) MarkUnfinishedAgentsExited(ctx context.Context, exitedAt sql.NullTime) (int64, error) {
 	result, err := q.db.ExecContext(ctx, markUnfinishedAgentsExited, exitedAt)
 	if err != nil {
@@ -2672,6 +2790,22 @@ func (q *Queries) SetPullRequestFlagged(ctx context.Context, arg SetPullRequestF
 		&i.ConflictRounds,
 	)
 	return i, err
+}
+
+const setResumeState = `-- name: SetResumeState :exec
+
+UPDATE agents SET resume_state = ? WHERE id = ?
+`
+
+type SetResumeStateParams struct {
+	ResumeState string
+	ID          string
+}
+
+// Resume and restore (migration 0009, ADR 0035).
+func (q *Queries) SetResumeState(ctx context.Context, arg SetResumeStateParams) error {
+	_, err := q.db.ExecContext(ctx, setResumeState, arg.ResumeState, arg.ID)
+	return err
 }
 
 const setReviewFollowup = `-- name: SetReviewFollowup :one

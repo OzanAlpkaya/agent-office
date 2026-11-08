@@ -521,3 +521,45 @@ func TestMigration0008KeepsPhase8Rows(t *testing.T) {
 		t.Error("a second version 1 was accepted")
 	}
 }
+
+// Migration 0009 (Phase 9) on a database with Phase 12 rows: sandboxed agents
+// lose the daemon flag they stored (ADR 0003), host agents keep theirs, and
+// sessions and agents get empty resume fields.
+func TestMigration0009FixesSandboxedSettings(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agent-office.db")
+	v8, err := openWith(ctx, path, sourcesUpTo(t, 8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	for _, q := range []string{
+		`INSERT INTO projects (id, name, repo_path, slug, created_at) VALUES ('p1', 'linkshelf', '/repo', 'linkshelf-1', ?)`,
+		`INSERT INTO agents (id, project_id, model, inherit_user_settings, state, started_at, sandbox, kind, role) VALUES ('s1', 'p1', 'haiku', 1, 'exited', ?, 'podman', 'worker', 'worker')`,
+		`INSERT INTO agents (id, project_id, model, inherit_user_settings, state, started_at, sandbox, kind, role) VALUES ('h1', 'p1', 'haiku', 1, 'exited', ?, 'host', 'worker', 'worker')`,
+		`INSERT INTO sessions (id, agent_id, started_at) VALUES ('x1', 's1', ?)`,
+	} {
+		if _, err := v8.DB.ExecContext(ctx, q, ts); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	v8.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for id, want := range map[string]bool{"s1": false, "h1": true} {
+		var inherit bool
+		var resume string
+		if err := s.DB.QueryRow(`SELECT inherit_user_settings, resume_state FROM agents WHERE id = ?`, id).Scan(&inherit, &resume); err != nil ||
+			inherit != want || resume != "" {
+			t.Errorf("%s: inherit %v resume %q %v", id, inherit, resume, err)
+		}
+	}
+	sess, err := s.Q.GetSession(ctx, "x1")
+	if err != nil || sess.ResumedFrom != "" {
+		t.Fatalf("session %+v %v", sess, err)
+	}
+}

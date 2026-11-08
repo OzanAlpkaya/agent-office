@@ -591,10 +591,12 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	}
 
 	started := now()
+	// The effective value: sandboxed agents never load the user's settings (ADR 0003).
+	inherit := e.opts.InheritUserSettings && mode == SandboxHost
 	err = e.st.Tx(ctx, func(q *db.Queries) error {
 		if err := q.CreateAgent(ctx, db.CreateAgentParams{
 			ID: id, ProjectID: e.project.ID, TaskID: nullString(req.TaskID), Model: e.modelOf(def),
-			InheritUserSettings: e.opts.InheritUserSettings, State: string(hooks.Starting), StartedAt: started,
+			InheritUserSettings: inherit, State: string(hooks.Starting), StartedAt: started,
 			Sandbox: mode, Kind: role, Role: def.Name,
 		}); err != nil {
 			return err
@@ -603,7 +605,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 			Branch: branch, BaseCommit: base, CreatedAt: started, Kind: kind}); err != nil {
 			return err
 		}
-		if err := q.CreateSession(ctx, db.CreateSessionParams{ID: sid, AgentID: id, StartedAt: started}); err != nil {
+		if err := q.CreateSession(ctx, db.CreateSessionParams{ID: sid, AgentID: id, StartedAt: started, ResumedFrom: ""}); err != nil {
 			return err
 		}
 		if req.reviewID != 0 {
@@ -1242,7 +1244,7 @@ func (a *agentProc) view() AgentInfo {
 func infoFromRow(r db.ListVisibleAgentsRow) AgentInfo {
 	info := AgentInfo{
 		ID: r.ID, TaskID: r.TaskID.String, State: r.State, Model: r.Model,
-		InheritUserSettings: r.InheritUserSettings, Sandbox: r.Sandbox, Kind: r.Kind, Role: r.Role, Branch: r.Branch,
+		InheritUserSettings: r.InheritUserSettings && r.Sandbox == SandboxHost, Sandbox: r.Sandbox, Kind: r.Kind, Role: r.Role, Branch: r.Branch,
 		WorktreePath:  r.WorktreePath,
 		WorkspaceKind: r.WorktreeKind, WorktreeStatus: r.WorktreeStatus, StartedAt: r.StartedAt, ExitReason: r.ExitReason,
 	}
