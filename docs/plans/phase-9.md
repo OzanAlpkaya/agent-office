@@ -1,6 +1,6 @@
 # Phase 9 plan: Memory & persistence
 
-- **Status:** Done on `phase-9/memory-persistence`, waiting for Ozan's review (not merged). Written 2026-11-08 with the recommended
+- **Status:** Done on `phase-9/memory-persistence`; merged into `main` (2026-11-08). Written 2026-11-08 with the recommended
   option for every open question and executed straight away, as Ozan asked ("write the Phase 9
   plan using your recommended options, then execute it immediately without asking me anything").
   Every decision is listed in the end-of-phase summary; nothing is merged until Ozan has read it.

@@ -16,6 +16,9 @@ export default defineConfig({
     browserName: "chromium",
     headless: true,
     viewport: { width: 1440, height: 900 },
+    // The mocked daemon answers through page.route, which a service worker would
+    // bypass; the PWA test opens its own context with service workers on.
+    serviceWorkers: "block",
   },
   webServer: {
     command: `npx vite preview --host 127.0.0.1 --port ${port} --strictPort`,

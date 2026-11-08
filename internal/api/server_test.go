@@ -20,6 +20,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/OzanAlpkaya/agent-office/internal/auth"
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 )
@@ -28,12 +29,20 @@ import (
 const fakeAgent = "#!/bin/sh\necho fake-agent-ready\nexec cat\n"
 
 type fixture struct {
-	srv *httptest.Server
-	eng *engine.Engine
-	ws  string // ws:// base URL
+	srv   *httptest.Server
+	eng   *engine.Engine
+	ws    string // ws:// base URL
+	auth  *auth.Manager
+	token string // a paired device's token; do() sends it unless the test sets Authorization
 }
 
 func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	return newFixtureWith(t, nil)
+}
+
+// newFixtureWith lets a test change the API options (e.g. remote hosts).
+func newFixtureWith(t *testing.T, change func(*Options)) *fixture {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "ao-api-") // short: unix socket path limit
 	if err != nil {
@@ -77,12 +86,29 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	_, port, _ := net.SplitHostPort(l.Addr().String())
-	srv := httptest.NewUnstartedServer(New(eng, ui, Options{Port: port, Version: "test", Logger: log}))
+	am, err := auth.New(context.Background(), st.Q, auth.Options{Logger: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, _, err := am.CreateToken(context.Background(), "tests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{Port: port, Version: "test", Logger: log, Auth: am}
+	if change != nil {
+		change(&opts)
+	}
+	srv := httptest.NewUnstartedServer(New(eng, ui, opts))
 	srv.Listener.Close()
 	srv.Listener = l
 	srv.Start()
 	t.Cleanup(func() { srv.Close(); eng.Shutdown() })
-	return &fixture{srv: srv, eng: eng, ws: "ws" + strings.TrimPrefix(srv.URL, "http")}
+	return &fixture{srv: srv, eng: eng, ws: "ws" + strings.TrimPrefix(srv.URL, "http"), auth: am, token: tok}
+}
+
+// dialOpts authenticates a WebSocket as the fixture's device.
+func (f *fixture) dialOpts() *websocket.DialOptions {
+	return &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + f.token}}}
 }
 
 func (f *fixture) do(t *testing.T, method, path string, hdr map[string]string) *http.Response {
@@ -97,9 +123,14 @@ func (f *fixture) doBody(t *testing.T, method, path string, hdr map[string]strin
 		rd = strings.NewReader(body)
 	}
 	req, _ := http.NewRequest(method, f.srv.URL+path, rd)
+	if _, set := hdr["Authorization"]; !set {
+		req.Header.Set("Authorization", "Bearer "+f.token)
+	}
 	for k, v := range hdr {
 		if k == "Host" {
 			req.Host = v
+		} else if v == "" {
+			req.Header.Del(k)
 		} else {
 			req.Header.Set(k, v)
 		}
@@ -280,7 +311,7 @@ func TestTerminalRoundTripAndExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	c, _, err := websocket.Dial(ctx, f.ws+"/api/agents/"+a.ID+"/terminal", nil)
+	c, _, err := websocket.Dial(ctx, f.ws+"/api/agents/"+a.ID+"/terminal", f.dialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +334,7 @@ func TestTerminalRoundTripAndExit(t *testing.T) {
 	}
 
 	// Re-attaching to an exited agent replays its output, then closes.
-	c2, _, err := websocket.Dial(ctx, f.ws+"/api/agents/"+a.ID+"/terminal", nil)
+	c2, _, err := websocket.Dial(ctx, f.ws+"/api/agents/"+a.ID+"/terminal", f.dialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +349,7 @@ func TestCrossOriginWebSocketRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, resp, err := websocket.Dial(ctx, f.ws+"/api/events", &websocket.DialOptions{
-		HTTPHeader: http.Header{"Origin": []string{"https://evil.example"}},
+		HTTPHeader: http.Header{"Origin": []string{"https://evil.example"}, "Authorization": []string{"Bearer " + f.token}},
 	})
 	if err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin WS: err=%v resp=%v", err, resp)
@@ -330,7 +361,7 @@ func TestEventsSnapshotAndUpdates(t *testing.T) {
 	a := f.start(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, f.ws+"/api/events", nil)
+	c, _, err := websocket.Dial(ctx, f.ws+"/api/events", f.dialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +606,7 @@ func TestTeamWorkflowAPI(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, f.ws+"/api/events", nil)
+	c, _, err := websocket.Dial(ctx, f.ws+"/api/events", f.dialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}

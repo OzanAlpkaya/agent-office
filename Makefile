@@ -8,7 +8,7 @@ SQLC_VERSION ?= v1.31.1
 DEV_ROOT ?= $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/agent-office-dev
 DEV_DATA_DIR ?= $(DEV_ROOT)/data
 
-.PHONY: build web test web-test ui-test lint check dev serve clean generate e2e sandbox-test worker-image
+.PHONY: pair build web test web-test ui-test lint check dev serve clean generate e2e sandbox-test worker-image
 
 # Static (CGO_ENABLED=0): the same binary is mounted into worker containers, whose
 # glibc may be older than the host's (Spike F).
@@ -74,6 +74,10 @@ ui-test: web
 serve: build
 	@test -n "$(REPO)" || (echo "set REPO to a git repository"; exit 1)
 	./bin/agent-office serve --data-dir "$(DEV_DATA_DIR)" --repo "$(REPO)" $(ARGS)
+
+# Pair a browser with the daemon of `make serve` (ADR 0039); prints a one-time code and link.
+pair:
+	./bin/agent-office pair --data-dir "$(DEV_DATA_DIR)"
 
 # Development: run the daemon with --dev and Vite with hot reload.
 #   terminal 1: make serve REPO=<path> ARGS=--dev

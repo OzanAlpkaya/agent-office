@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   type AccessRequest, type Agent, type InboxItem, type MemoryEntry, type Message, type PullRequest, type QARun,
-  type SandboxEvent, type SessionUsage, type Spec, type Task, api, parseEventMessage, wsURL,
+  type SandboxEvent, type SessionUsage, type Spec, type Task, api, parseEventMessage, signalUnauthorized, statusSignedOut, wsURL,
 } from "./api";
 import { totalTokens } from "./usage";
 
@@ -224,9 +224,15 @@ export function useWorld(): World {
             break;
         }
       };
-      ws.onclose = () => {
+      ws.onclose = (e) => {
         setConnection("closed");
         if (disposed) return;
+        // Signed out (4401), or a refused handshake (1006): ask whether this
+        // browser is still paired; the app shows its pairing screen if not.
+        if (e.code === statusSignedOut) signalUnauthorized();
+        else if (e.code === 1006) {
+          void api.authSession().then((s) => { if (!s.authenticated) signalUnauthorized(); }, () => undefined);
+        }
         const delay = Math.min(5000, 500 * 2 ** retry++);
         timer = window.setTimeout(connect, delay);
       };

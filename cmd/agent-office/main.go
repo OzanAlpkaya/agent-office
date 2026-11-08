@@ -7,6 +7,7 @@
 //	agent-office worker-image          build the worker container image with podman
 //	agent-office pack list|check       list stack packs, validate a pack directory (ADR 0023)
 //	agent-office role list|check       list team roles, validate a role directory (ADR 0029)
+//	agent-office pair [--token <name>]  pair a browser with the running daemon (ADR 0039)
 //	agent-office version               print the version
 package main
 
@@ -31,6 +32,7 @@ import (
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
 	"github.com/OzanAlpkaya/agent-office/internal/api"
+	"github.com/OzanAlpkaya/agent-office/internal/auth"
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
 	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
@@ -74,6 +76,8 @@ func main() {
 		os.Exit(packCommand(os.Args[2:], os.Stdout, os.Stderr))
 	case "role":
 		os.Exit(roleCommand(os.Args[2:], os.Stdout, os.Stderr))
+	case "pair":
+		os.Exit(pairCommand(os.Args[2:], os.Stdout, os.Stderr))
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -100,6 +104,8 @@ commands:
   pack check <dir>...     validate stack pack directories and print every problem
   role list               list the built-in and your team roles
   role check <dir>...     validate role directories and print every problem
+  pair [--data-dir <dir>] print a one-time code that pairs a browser or phone with the running daemon
+  pair --token <name>     print a device token for scripts (Authorization: Bearer)
   version   print the version
 `)
 }
@@ -249,8 +255,10 @@ type serveConfig struct {
 	logFormat           string  // text | json
 	rolesDir            string  // user roles (ADR 0029)
 	roleModels          map[string]string
-	qa                  bool // a goal's report needs a passing QA run (ADR 0033)
-	restoreAgents       bool // resume the agents the previous run's stop interrupted (ADR 0035)
+	qa                  bool     // a goal's report needs a passing QA run (ADR 0033)
+	restoreAgents       bool     // resume the agents the previous run's stop interrupted (ADR 0035)
+	remoteHosts         []string // tailnet names tailscale serve forwards here (ADR 0038)
+	remoteUsers         []string // Tailscale logins allowed through them; empty = every tailnet user
 }
 
 func parseServe(args []string) (serveConfig, error) {
@@ -357,6 +365,12 @@ func parseServe(args []string) (serveConfig, error) {
 	if err != nil {
 		return c, err
 	}
+	remoteHosts := fs.String("remote-host", os.Getenv("AGENT_OFFICE_REMOTE_HOSTS"),
+		"this machine's Tailscale name(s), comma-separated (e.g. box.tail1234.ts.net), when `tailscale serve` "+
+			"forwards HTTPS to the daemon; see docs/remote.md [AGENT_OFFICE_REMOTE_HOSTS]")
+	remoteUsers := fs.String("remote-users", os.Getenv("AGENT_OFFICE_REMOTE_USERS"),
+		"Tailscale logins (e.g. you@github), comma-separated, whose devices may reach the daemon through "+
+			"--remote-host; empty = every user of the tailnet [AGENT_OFFICE_REMOTE_USERS]")
 	fs.IntVar(&c.eventRetentionDays, "event-retention-days", retention,
 		"delete agent activity events older than this; 0 = keep [AGENT_OFFICE_EVENT_RETENTION_DAYS]")
 	if err := fs.Parse(args); err != nil {
@@ -369,6 +383,15 @@ func parseServe(args []string) (serveConfig, error) {
 	})
 	if c.repo == "" {
 		return c, errors.New("--repo is required")
+	}
+	if c.remoteHosts, err = parseRemoteHosts(*remoteHosts); err != nil {
+		return c, err
+	}
+	if c.remoteUsers, err = parseRemoteUsers(*remoteUsers); err != nil {
+		return c, err
+	}
+	if len(c.remoteUsers) > 0 && len(c.remoteHosts) == 0 {
+		return c, errors.New("--remote-users needs --remote-host")
 	}
 	if c.roleModels, err = role.ParseModels(*roleModels); err != nil {
 		return c, err
@@ -449,7 +472,7 @@ func parseServe(args []string) (serveConfig, error) {
 		return c, fmt.Errorf("--addr: %w", err)
 	}
 	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		return c, fmt.Errorf("--addr must be a loopback address, got %q (remote access is a later phase)", c.addr)
+		return c, fmt.Errorf("--addr must be a loopback address, got %q (for remote access use tailscale serve and --remote-host, docs/remote.md)", c.addr)
 	}
 	return c, nil
 }
@@ -568,19 +591,43 @@ func serve(args []string) error {
 	if cfg.dev {
 		devOrigins = []string{"localhost:5173", "127.0.0.1:5173"}
 	}
+	devices, err := auth.New(context.Background(), st.Q, auth.Options{Logger: log})
+	if err != nil {
+		eng.Shutdown()
+		return err
+	}
 	_, port, _ := net.SplitHostPort(cfg.addr)
 	srv := &http.Server{
-		Addr:              cfg.addr,
-		Handler:           api.New(eng, ui, api.Options{Port: port, DevOrigins: devOrigins, Version: version, Logger: log}),
+		Addr: cfg.addr,
+		Handler: api.New(eng, ui, api.Options{Port: port, DevOrigins: devOrigins, Version: version, Logger: log,
+			Auth: devices, RemoteHosts: cfg.remoteHosts, RemoteUsers: cfg.remoteUsers}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	// The control socket hands out the first pairing code (agent-office pair, ADR 0039).
+	ctlPath := controlSocketPath(runtimeDir, cfg.dataDir)
+	ctlListener, err := listenControl(ctlPath)
+	if err != nil {
+		eng.Shutdown()
+		return err
+	}
+	ctl := &http.Server{
+		Handler:           api.NewControl(devices, api.ControlInfo{LocalURL: "http://" + cfg.addr + "/", RemoteHosts: cfg.remoteHosts}, log),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = ctl.Serve(ctlListener) }()
+	defer func() { _ = ctl.Close(); _ = os.Remove(ctlPath) }()
 
 	log.Info("agent-office starting", "version", version, "addr", "http://"+cfg.addr, "repo", eng.Project().RepoPath,
 		"data_dir", cfg.dataDir, "max_agents", cfg.maxAgents, "git_version", gitVersion,
 		"claude", ci.path, "claude_version", ci.version, "sandbox", cfg.sandbox, "model", cfg.model,
 		"inherit_user_settings", cfg.inheritUserSettings, "github", cfg.github, "ui_built", built, "dev", cfg.dev,
 		"prices_as_of", prices.AsOf, "prices_file", prices.File, "budget_session_usd", cfg.budgetSessionUSD,
-		"budget_goal_usd", cfg.budgetGoalUSD, "event_retention_days", cfg.eventRetentionDays)
+		"budget_goal_usd", cfg.budgetGoalUSD, "event_retention_days", cfg.eventRetentionDays,
+		"remote_hosts", strings.Join(cfg.remoteHosts, ","), "remote_users", len(cfg.remoteUsers),
+		"paired_devices", len(devices.Devices()))
+	if len(devices.Devices()) == 0 {
+		log.Info("no device is paired yet: run `agent-office pair --data-dir " + cfg.dataDir + "` to pair this browser")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -601,17 +648,33 @@ func serve(args []string) error {
 }
 
 // runtimeDir returns a private directory for sockets and settings files.
+// Without XDG_RUNTIME_DIR it falls back to /tmp, where another user could
+// plant the directory or a symlink first: every level agent-office creates
+// must be a real directory owned by the user (found in the Phase 10 review).
 func runtimeDir() (string, error) {
 	base := os.Getenv("XDG_RUNTIME_DIR")
+	dirs := []string{}
 	if base == "" {
 		base = filepath.Join(os.TempDir(), "agent-office-"+strconv.Itoa(os.Getuid()))
+		dirs = append(dirs, base)
 	}
 	dir := filepath.Join(base, "agent-office")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("runtime dir: %w", err)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return "", fmt.Errorf("runtime dir: %w", err)
+	dirs = append(dirs, dir)
+	for _, d := range dirs {
+		if err := os.Mkdir(d, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return "", fmt.Errorf("runtime dir: %w", err)
+		}
+		fi, err := os.Lstat(d)
+		if err != nil {
+			return "", fmt.Errorf("runtime dir: %w", err)
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !fi.IsDir() || !ok || int(st.Uid) != os.Getuid() {
+			return "", fmt.Errorf("runtime dir %s must be a directory owned by you (not a symlink)", d)
+		}
+		if err := os.Chmod(d, 0o700); err != nil {
+			return "", fmt.Errorf("runtime dir: %w", err)
+		}
 	}
 	return dir, nil
 }

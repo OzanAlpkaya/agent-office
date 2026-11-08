@@ -467,3 +467,17 @@ UPDATE agents SET resume_state = '' WHERE project_id = ? AND resume_state != '';
 -- A resumed session whose CLI could not load the conversation (ADR 0035): it never ran, and a later
 -- resume must continue the session before it.
 DELETE FROM sessions WHERE id = ?;
+
+-- Paired devices (migration 0011, ADR 0039).
+
+-- name: CreateDevice :exec
+INSERT INTO devices (id, name, kind, token_hash, paired_via, paired_by, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: ListDevices :many
+SELECT * FROM devices ORDER BY created_at, id;
+
+-- name: TouchDevice :exec
+UPDATE devices SET last_seen_at = ? WHERE id = ?;
+
+-- name: DeleteDevice :execrows
+DELETE FROM devices WHERE id = ?;

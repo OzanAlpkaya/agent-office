@@ -20,6 +20,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/OzanAlpkaya/agent-office/internal/auth"
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
 	"github.com/OzanAlpkaya/agent-office/internal/git"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -35,6 +36,16 @@ type Options struct {
 	DevOrigins []string
 	Version    string
 	Logger     *slog.Logger
+	// Auth holds the paired devices (ADR 0039). Required: every route that is
+	// not public needs one of its devices.
+	Auth *auth.Manager
+	// RemoteHosts are the tailnet names `tailscale serve` forwards to this
+	// daemon (e.g. "box.tail1234.ts.net", ADR 0038). Their requests arrive
+	// over HTTPS on 443 and must come from a tailnet user, never Funnel.
+	RemoteHosts []string
+	// RemoteUsers, when set, are the only Tailscale logins whose devices may
+	// reach the daemon through RemoteHosts (e.g. "ozan@github").
+	RemoteUsers []string
 }
 
 const (
@@ -55,59 +66,90 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	if opts.Auth == nil {
+		panic("api: Options.Auth is required")
+	}
 	s := &server{eng: eng, opts: opts, log: opts.Logger, ui: ui}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/health", s.health)
-	mux.HandleFunc("GET /api/project", s.getProject)
-	mux.HandleFunc("GET /api/status", s.getStatus)
-	mux.HandleFunc("GET /api/roles", s.listRoles)
-	mux.HandleFunc("GET /api/usage", s.getUsage)
-	mux.HandleFunc("GET /api/agents", s.listAgents)
-	mux.HandleFunc("POST /api/agents", s.startAgent)
-	mux.HandleFunc("POST /api/agents/{id}/stop", s.stopAgent)
-	mux.HandleFunc("POST /api/agents/{id}/discard", s.discardAgent)
-	mux.HandleFunc("POST /api/agents/{id}/import", s.importAgent)
-	mux.HandleFunc("POST /api/agents/{id}/save-work", s.saveWork)
-	mux.HandleFunc("GET /api/agents/{id}/events", s.agentEvents)
-	mux.HandleFunc("GET /api/agents/{id}/messages", s.agentMessages)
-	mux.HandleFunc("DELETE /api/agents/{id}", s.removeAgent)
-	mux.HandleFunc("GET /api/agents/{id}/terminal", s.terminalWS)
-	mux.HandleFunc("GET /api/tasks", s.listTasks)
-	mux.HandleFunc("POST /api/tasks", s.createTask)
-	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTask)
-	mux.HandleFunc("DELETE /api/tasks/{id}", s.deleteTask)
-	mux.HandleFunc("GET /api/access-requests", s.listAccess)
-	mux.HandleFunc("POST /api/access-requests/{id}/approve", s.decideAccess(true))
-	mux.HandleFunc("POST /api/access-requests/{id}/deny", s.decideAccess(false))
-	mux.HandleFunc("GET /api/pull-requests", s.listPullRequests)
-	mux.HandleFunc("POST /api/tasks/{id}/pull-request", s.openPullRequest)
-	mux.HandleFunc("POST /api/tasks/{id}/resolve-conflict", s.resolveConflict)
-	mux.HandleFunc("POST /api/pull-requests/{id}/review", s.prAction(s.requestReview))
-	mux.HandleFunc("POST /api/pull-requests/{id}/follow-up", s.prAction(s.followUp))
-	mux.HandleFunc("POST /api/pull-requests/{id}/accept", s.prAction(s.acceptFlagged))
-	mux.HandleFunc("POST /api/agents/{id}/message", s.messageAgent)
-	mux.HandleFunc("POST /api/agents/{id}/resume", s.resumeAgent)
-	mux.HandleFunc("GET /api/agents/{id}/sessions", s.agentSessions)
-	mux.HandleFunc("GET /api/agents/{id}/sessions/{sid}/terminal", s.sessionTerminal)
-	mux.HandleFunc("GET /api/inbox", s.listInbox)
-	mux.HandleFunc("GET /api/specs", s.listSpecs)
-	mux.HandleFunc("GET /api/qa-runs", s.listQARuns)
-	mux.HandleFunc("GET /api/memory", s.listMemory)
-	mux.HandleFunc("GET /api/memory/export", s.exportMemory)
-	mux.HandleFunc("POST /api/memory", s.addMemory)
-	mux.HandleFunc("PATCH /api/memory/{id}", s.memoryAction("patch"))
-	mux.HandleFunc("POST /api/memory/{id}/accept", s.memoryAction("accept"))
-	mux.HandleFunc("DELETE /api/memory/{id}", s.memoryAction("delete"))
-	mux.HandleFunc("POST /api/assistant/briefing", s.askBriefing)
-	mux.HandleFunc("PUT /api/specs/{id}", s.specAction(false))
-	mux.HandleFunc("POST /api/specs/{id}/approve", s.specAction(true))
-	mux.HandleFunc("POST /api/inbox/{id}/read", s.inboxAction(false))
-	mux.HandleFunc("POST /api/inbox/{id}/reply", s.inboxAction(true))
-	mux.HandleFunc("GET /api/events", s.eventsWS)
+	for _, rt := range s.routes() {
+		h := rt.handler
+		if !rt.public {
+			h = s.requireDevice(h)
+		}
+		mux.HandleFunc(rt.pattern, h)
+	}
 	if ui != nil {
 		mux.HandleFunc("GET /", s.serveUI)
 	}
-	return s.logRequests(s.guard(mux))
+	return s.logRequests(s.securityHeaders(s.guard(mux)))
+}
+
+// routes is every route of the API. Each one needs a paired device (ADR 0039)
+// unless it is marked public; TestEveryRouteNeedsADevice walks this table.
+func (s *server) routes() []route {
+	return []route{
+		{pattern: "GET /api/health", handler: s.health, public: true},
+		{pattern: "GET /api/project", handler: s.getProject},
+		{pattern: "GET /api/status", handler: s.getStatus},
+		{pattern: "GET /api/roles", handler: s.listRoles},
+		{pattern: "GET /api/usage", handler: s.getUsage},
+		{pattern: "GET /api/agents", handler: s.listAgents},
+		{pattern: "POST /api/agents", handler: s.startAgent},
+		{pattern: "POST /api/agents/{id}/stop", handler: s.stopAgent},
+		{pattern: "POST /api/agents/{id}/discard", handler: s.discardAgent},
+		{pattern: "POST /api/agents/{id}/import", handler: s.importAgent},
+		{pattern: "POST /api/agents/{id}/save-work", handler: s.saveWork},
+		{pattern: "GET /api/agents/{id}/events", handler: s.agentEvents},
+		{pattern: "GET /api/agents/{id}/messages", handler: s.agentMessages},
+		{pattern: "DELETE /api/agents/{id}", handler: s.removeAgent},
+		{pattern: "GET /api/agents/{id}/terminal", handler: s.terminalWS},
+		{pattern: "GET /api/tasks", handler: s.listTasks},
+		{pattern: "POST /api/tasks", handler: s.createTask},
+		{pattern: "PATCH /api/tasks/{id}", handler: s.updateTask},
+		{pattern: "DELETE /api/tasks/{id}", handler: s.deleteTask},
+		{pattern: "GET /api/access-requests", handler: s.listAccess},
+		{pattern: "POST /api/access-requests/{id}/approve", handler: s.decideAccess(true)},
+		{pattern: "POST /api/access-requests/{id}/deny", handler: s.decideAccess(false)},
+		{pattern: "GET /api/pull-requests", handler: s.listPullRequests},
+		{pattern: "POST /api/tasks/{id}/pull-request", handler: s.openPullRequest},
+		{pattern: "POST /api/tasks/{id}/resolve-conflict", handler: s.resolveConflict},
+		{pattern: "POST /api/pull-requests/{id}/review", handler: s.prAction(s.requestReview)},
+		{pattern: "POST /api/pull-requests/{id}/follow-up", handler: s.prAction(s.followUp)},
+		{pattern: "POST /api/pull-requests/{id}/accept", handler: s.prAction(s.acceptFlagged)},
+		{pattern: "POST /api/agents/{id}/message", handler: s.messageAgent},
+		{pattern: "POST /api/agents/{id}/resume", handler: s.resumeAgent},
+		{pattern: "GET /api/agents/{id}/sessions", handler: s.agentSessions},
+		{pattern: "GET /api/agents/{id}/sessions/{sid}/terminal", handler: s.sessionTerminal},
+		{pattern: "GET /api/inbox", handler: s.listInbox},
+		{pattern: "GET /api/specs", handler: s.listSpecs},
+		{pattern: "GET /api/qa-runs", handler: s.listQARuns},
+		{pattern: "GET /api/memory", handler: s.listMemory},
+		{pattern: "GET /api/memory/export", handler: s.exportMemory},
+		{pattern: "POST /api/memory", handler: s.addMemory},
+		{pattern: "PATCH /api/memory/{id}", handler: s.memoryAction("patch")},
+		{pattern: "POST /api/memory/{id}/accept", handler: s.memoryAction("accept")},
+		{pattern: "DELETE /api/memory/{id}", handler: s.memoryAction("delete")},
+		{pattern: "POST /api/assistant/briefing", handler: s.askBriefing},
+		{pattern: "PUT /api/specs/{id}", handler: s.specAction(false)},
+		{pattern: "POST /api/specs/{id}/approve", handler: s.specAction(true)},
+		{pattern: "POST /api/inbox/{id}/read", handler: s.inboxAction(false)},
+		{pattern: "POST /api/inbox/{id}/reply", handler: s.inboxAction(true)},
+		{pattern: "GET /api/events", handler: s.eventsWS},
+		{pattern: "GET /api/auth/session", handler: s.authSession, public: true},
+		{pattern: "POST /api/auth/pair", handler: s.authPair, public: true},
+		{pattern: "POST /api/auth/logout", handler: s.authLogout},
+		{pattern: "GET /api/devices", handler: s.listDevices},
+		{pattern: "POST /api/devices/pairing-codes", handler: s.newPairingCode},
+		{pattern: "DELETE /api/devices/{id}", handler: s.revokeDevice},
+		{pattern: "POST /api/devices/sign-out-others", handler: s.signOutOthers},
+	}
+}
+
+// route is one API route; public routes need no paired device.
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+	public  bool
 }
 
 // logRequests gives every request an id, returned as X-Request-Id and logged
@@ -141,15 +183,34 @@ func (s *statusWriter) WriteHeader(code int) {
 
 func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
-// guard rejects requests whose Host is not this daemon on loopback, and
-// state-changing requests from other origins.
+// guard rejects requests whose Host is not this daemon (on loopback, or one
+// of its tailnet names through tailscale serve), requests through Tailscale
+// Funnel, and state-changing requests from other origins.
 func (s *server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.allowedHost(r.Host) {
+		local, remote := s.hostKind(r.Host)
+		if !local && !remote {
 			http.Error(w, "forbidden host", http.StatusForbidden)
 			return
 		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.allowedOrigin(r) {
+		if remote {
+			// tailscale serve marks Funnel requests and sends identity headers only for
+			// tailnet users; it strips client-supplied copies of both (ADR 0038).
+			if r.Header.Get("Tailscale-Funnel-Request") != "" {
+				http.Error(w, "agent-office refuses requests through Tailscale Funnel", http.StatusForbidden)
+				return
+			}
+			login := r.Header.Get("Tailscale-User-Login")
+			if login == "" {
+				http.Error(w, "agent-office accepts remote requests only from a tailnet user's device", http.StatusForbidden)
+				return
+			}
+			if len(s.opts.RemoteUsers) > 0 && !slices.ContainsFunc(s.opts.RemoteUsers, func(u string) bool { return strings.EqualFold(u, login) }) {
+				http.Error(w, "this Tailscale user may not use this agent-office (--remote-users)", http.StatusForbidden)
+				return
+			}
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.allowedOrigin(r, remote) {
 			http.Error(w, "forbidden origin", http.StatusForbidden)
 			return
 		}
@@ -157,17 +218,30 @@ func (s *server) guard(next http.Handler) http.Handler {
 	})
 }
 
-func (s *server) allowedHost(hostport string) bool {
+// hostKind says whether a Host header names this daemon on loopback (with
+// its port) or one of its tailnet names (HTTPS on the default port).
+func (s *server) hostKind(hostport string) (local, remote bool) {
 	host, port, err := net.SplitHostPort(hostport)
-	if err != nil || port != s.opts.Port {
-		return false
+	if err != nil {
+		host, port = hostport, ""
 	}
-	return host == "127.0.0.1" || host == "localhost" || host == "::1"
+	if port == s.opts.Port && (host == "127.0.0.1" || host == "localhost" || host == "::1") {
+		return true, false
+	}
+	if port == "" || port == "443" {
+		for _, h := range s.opts.RemoteHosts {
+			if strings.EqualFold(host, h) {
+				return false, true
+			}
+		}
+	}
+	return false, false
 }
 
 // allowedOrigin accepts requests without an Origin (curl, same-origin GETs
-// from older browsers) and same-host or dev origins.
-func (s *server) allowedOrigin(r *http.Request) bool {
+// from older browsers) and same-host or dev origins; a remote host's origin
+// must be https.
+func (s *server) allowedOrigin(r *http.Request, remote bool) bool {
 	o := r.Header.Get("Origin")
 	if o == "" {
 		return true
@@ -176,10 +250,18 @@ func (s *server) allowedOrigin(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
+	if remote {
+		return u.Scheme == "https" && strings.EqualFold(u.Host, r.Host)
+	}
 	return u.Host == r.Host || slices.Contains(s.opts.DevOrigins, u.Host)
 }
 
-func (s *server) health(w http.ResponseWriter, _ *http.Request) {
+// health is public; only a paired device learns the version.
+func (s *server) health(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.device(r); !ok {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.opts.Version})
 }
 
@@ -653,8 +735,18 @@ func (s *server) listRoles(w http.ResponseWriter, _ *http.Request) {
 
 // getStatus reports the sandbox mode, the worker image and warnings (e.g. an
 // untested Claude Code version) for the UI.
+// statusView is the engine's status plus the daemon's tailnet names.
+type statusView struct {
+	engine.Status
+	RemoteHosts []string `json:"remote_hosts"`
+}
+
 func (s *server) getStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.eng.Status())
+	hosts := s.opts.RemoteHosts
+	if hosts == nil {
+		hosts = []string{}
+	}
+	writeJSON(w, http.StatusOK, statusView{Status: s.eng.Status(), RemoteHosts: hosts})
 }
 
 // getUsage is every session's token usage and estimated cost (ADR 0026).
@@ -789,7 +881,10 @@ func (s *server) terminalWS(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	log := s.log.With("agent_id", id)
 
-	ctx, cancel := context.WithCancel(r.Context())
+	// Reads and writes do not use the request's context: coder/websocket drops
+	// the connection when a read's context ends, and a revoked device must get
+	// the StatusSignedOut close frame first (closeIfSignedOut).
+	ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
 	defer cancel()
 	snapshot, sub, running := term.Attach()
 	if len(snapshot) > 0 {
@@ -806,6 +901,9 @@ func (s *server) terminalWS(w http.ResponseWriter, r *http.Request) {
 	go s.readTerminalInput(ctx, cancel, c, id, term, log)
 	for {
 		select {
+		case <-r.Context().Done():
+			closeIfSignedOut(c, r)
+			return
 		case <-ctx.Done():
 			return
 		case chunk, ok := <-sub.C:
@@ -876,40 +974,41 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	defer unsubscribe()
 	tasks, err := s.eng.ListTasks(r.Context())
 	if err != nil {
-		c.Close(websocket.StatusInternalError, "could not load tasks")
+		closeFailed(c, r, "could not load tasks")
 		return
 	}
 	access, err := s.eng.AccessRequests(r.Context())
 	if err != nil {
-		c.Close(websocket.StatusInternalError, "could not load access requests")
+		closeFailed(c, r, "could not load access requests")
 		return
 	}
 	prs, err := s.eng.PullRequests(r.Context())
 	if err != nil {
-		c.Close(websocket.StatusInternalError, "could not load pull requests")
+		closeFailed(c, r, "could not load pull requests")
 		return
 	}
 	inbox, err := s.eng.Inbox(r.Context())
 	if err != nil {
-		c.Close(websocket.StatusInternalError, "could not load the inbox")
+		closeFailed(c, r, "could not load the inbox")
 		return
 	}
 	specs, err := s.eng.Specs(r.Context())
 	if err != nil {
-		c.Close(websocket.StatusInternalError, "could not load the plans")
+		closeFailed(c, r, "could not load the plans")
 		return
 	}
 	qaRuns, err := s.eng.QARuns(r.Context())
 	if err != nil {
-		c.Close(websocket.StatusInternalError, "could not load the QA runs")
+		closeFailed(c, r, "could not load the QA runs")
 		return
 	}
 	memory, err := s.eng.Memory(r.Context())
 	if err != nil {
-		c.Close(websocket.StatusInternalError, "could not load the project memory")
+		closeFailed(c, r, "could not load the project memory")
 		return
 	}
-	ctx := c.CloseRead(r.Context())
+	// Not the request's context, as in terminalWS: a revoked device gets StatusSignedOut.
+	ctx := c.CloseRead(context.WithoutCancel(r.Context()))
 
 	write := func(v any) error {
 		b, _ := json.Marshal(v)
@@ -924,6 +1023,9 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	}
 	for {
 		select {
+		case <-r.Context().Done():
+			closeIfSignedOut(c, r)
+			return
 		case <-ctx.Done():
 			return
 		case u, ok := <-updates:
@@ -947,8 +1049,18 @@ func (s *server) serveUI(w http.ResponseWriter, r *http.Request) {
 	if _, err := fs.Stat(s.ui, name); err != nil {
 		name = "index.html"
 	}
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Referrer-Policy", "no-referrer")
+	// The PWA (ADR 0040): the page, the service worker and the manifest are
+	// revalidated, so a new daemon's UI is picked up at once; Vite's hashed
+	// assets never change.
+	switch {
+	case strings.HasPrefix(name, "assets/"):
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	default:
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	if path.Ext(name) == ".webmanifest" {
+		w.Header().Set("Content-Type", "application/manifest+json")
+	}
 	http.ServeFileFS(w, r, s.ui, name)
 }
 

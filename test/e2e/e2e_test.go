@@ -43,6 +43,7 @@ type agentInfo struct {
 	WorktreeStatus string `json:"worktree_status"`
 	HasTerminal    bool   `json:"has_terminal"`
 	ExitReason     string `json:"exit_reason"`
+	ResumedFrom    string `json:"resumed_from"`
 }
 
 type taskInfo struct {
@@ -76,11 +77,45 @@ func (d *daemon) start() {
 	for time.Now().Before(deadline) {
 		if resp, err := http.Get(d.base + "/api/health"); err == nil {
 			resp.Body.Close()
+			d.pair()
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	d.t.Fatalf("daemon did not become healthy; log: %s", d.logPath)
+}
+
+// tokens holds each daemon's device token by base URL (ADR 0039), for the
+// WebSocket helpers that only get the base. Entries are never deleted: a
+// test's own cleanups still talk to its daemon, and a later daemon on a reused
+// port overwrites its entry when it starts.
+var tokens sync.Map
+
+// pair gets a device token for scripts from the daemon each time it starts.
+func (d *daemon) pair() {
+	d.t.Helper()
+	dataDir := ""
+	for i, a := range d.args {
+		if a == "--data-dir" && i+1 < len(d.args) {
+			dataDir = d.args[i+1]
+		}
+	}
+	cmd := exec.Command(d.bin, "pair", "--data-dir", dataDir, "--token", "e2e")
+	cmd.Env = os.Environ()
+	out, err := cmd.Output()
+	if err != nil {
+		d.t.Fatalf("agent-office pair --token: %v", err)
+	}
+	tokens.Store(d.base, strings.TrimSpace(string(out)))
+}
+
+// authHeader authenticates a request to the daemon at base.
+func authHeader(base string) http.Header {
+	h := http.Header{}
+	if tok, ok := tokens.Load(base); ok {
+		h.Set("Authorization", "Bearer "+tok.(string))
+	}
+	return h
 }
 
 func (d *daemon) signal(sig syscall.Signal) {
@@ -107,6 +142,7 @@ func (d *daemon) do(method, path string, body any) (int, []byte) {
 		rd = bytes.NewReader(b)
 	}
 	req, _ := http.NewRequest(method, d.base+path, rd)
+	req.Header = authHeader(d.base)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -141,7 +177,7 @@ type watcher struct {
 
 func watch(t *testing.T, ctx context.Context, base string) *watcher {
 	w := &watcher{history: map[string][]string{}, changed: make(chan struct{}, 1)}
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/events", nil)
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/events", &websocket.DialOptions{HTTPHeader: authHeader(base)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +274,7 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\
 
 func attach(t *testing.T, ctx context.Context, base, id string) *term {
 	t.Helper()
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/agents/"+id+"/terminal", nil)
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/agents/"+id+"/terminal", &websocket.DialOptions{HTTPHeader: authHeader(base)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,10 +548,7 @@ func TestEndToEnd(t *testing.T) {
 	// 7b. Resume C (ADR 0035): same agent and worktree, a new session that
 	// continues the conversation, so it still knows the codeword.
 	w = watch(t, ctx, d.base)
-	var cr struct {
-		agentInfo
-		ResumedFrom string `json:"resumed_from"`
-	}
+	var cr agentInfo
 	d.json("POST", "/api/agents/"+c.ID+"/resume", map[string]string{
 		"prompt": "What is the codeword of your task? Reply with only the codeword."}, 200, &cr)
 	if cr.ResumedFrom != c.SessionID || cr.SessionID == c.SessionID || cr.WorktreePath != c.WorktreePath {
@@ -538,21 +571,9 @@ func TestEndToEnd(t *testing.T) {
 	d.signal(syscall.SIGKILL)
 	d.args = baseArgs
 	d.start()
-	var restored agentInfo
-	for deadline := time.Now().Add(time.Minute); ; time.Sleep(500 * time.Millisecond) {
-		var list []agentInfo
-		d.json("GET", "/api/agents", nil, 200, &list)
-		for _, ag := range list {
-			if ag.ID == c.ID {
-				restored = ag
-			}
-		}
-		if restored.HasTerminal && restored.SessionID != cr.SessionID {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("C was not restored: %+v", restored)
-		}
+	restored := waitRestored(t, d, c.ID, cr.SessionID)
+	if restored.ResumedFrom != cr.SessionID {
+		t.Errorf("first restore continued %s, want %s", restored.ResumedFrom, cr.SessionID)
 	}
 	var inbox []struct {
 		AgentID string `json:"agent_id"`
@@ -562,6 +583,63 @@ func TestEndToEnd(t *testing.T) {
 	d.json("GET", "/api/inbox", nil, 200, &inbox)
 	if len(inbox) == 0 || inbox[0].AgentID != "" || !strings.Contains(inbox[0].Body, "Resumed with their conversations") {
 		t.Errorf("restore notice %+v", inbox)
+	}
+
+	// 7d. Restore twice (Ozan's test: "resume failed" after a second restart).
+	// C was restored idle, without a prompt, so Claude Code wrote no
+	// conversation for that fork; the next restore must continue cr's. Wait
+	// until it is idle: an agent still starting at a shutdown is not restored.
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(500 * time.Millisecond) {
+		var list []agentInfo
+		d.json("GET", "/api/agents", nil, 200, &list)
+		idle := false
+		for _, ag := range list {
+			idle = idle || (ag.ID == c.ID && ag.State == "idle")
+		}
+		if idle {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("C did not become idle after its restore: %+v", list)
+		}
+	}
+	d.signal(syscall.SIGTERM)
+	d.start()
+	again := waitRestored(t, d, c.ID, restored.SessionID)
+	t.Logf("restore 1: session %.8s continues %.8s; restore 2: session %.8s continues %.8s (original conversation %.8s)",
+		restored.SessionID, restored.ResumedFrom, again.SessionID, again.ResumedFrom, cr.SessionID)
+	if again.ResumedFrom != cr.SessionID {
+		t.Errorf("second restore continued %s, want %s (the empty fork %s skipped)", again.ResumedFrom, cr.SessionID,
+			restored.SessionID)
+	}
+	time.Sleep(3 * time.Second) // a failed resume exits within a second
+	var list []agentInfo
+	d.json("GET", "/api/agents", nil, 200, &list)
+	for _, ag := range list {
+		if ag.ID == c.ID && (ag.State == "exited" || ag.ExitReason == "resume_failed") {
+			t.Fatalf("C after the second restore: %+v", ag)
+		}
+	}
+	// And the conversation is still there: a resume with a question recalls the codeword.
+	d.json("POST", "/api/agents/"+c.ID+"/stop", nil, 200, nil)
+	w = watch(t, ctx, d.base)
+	var cr2 agentInfo
+	d.json("POST", "/api/agents/"+c.ID+"/resume", map[string]string{
+		"prompt": "What is the codeword of your task? Reply with only the codeword."}, 200, &cr2)
+	if cr2.ResumedFrom != cr.SessionID {
+		t.Errorf("resume after two restores continued %s, want %s", cr2.ResumedFrom, cr.SessionID)
+	}
+	w.waitFor(t, c.ID, "the turn after two restores", 2*time.Minute, func(h []string) bool {
+		return len(h) > 0 && h[len(h)-1] == "idle" && strings.Contains(strings.Join(h, ","), "working")
+	})
+	tc4 := attach(t, ctx, d.base, c.ID)
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline) && strings.Count(tc4.text(), codeword) < 1; {
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !strings.Contains(tc4.text(), codeword) {
+		t.Errorf("after two restores the conversation lost the codeword:\n%s", tail(tc4.text(), 30))
+	} else {
+		t.Logf("after two restores, resume %.8s (from %.8s) recalled the codeword %s", cr2.SessionID, cr2.ResumedFrom, codeword)
 	}
 	d.json("POST", "/api/agents/"+c.ID+"/stop", nil, 200, nil)
 
@@ -603,6 +681,27 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 	fmt.Println("e2e: all steps passed")
+}
+
+// waitRestored waits until the daemon restored agent id into a session other than prev.
+func waitRestored(t *testing.T, d *daemon, id, prev string) agentInfo {
+	t.Helper()
+	var restored agentInfo
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(500 * time.Millisecond) {
+		var list []agentInfo
+		d.json("GET", "/api/agents", nil, 200, &list)
+		for _, ag := range list {
+			if ag.ID == id {
+				restored = ag
+			}
+		}
+		if restored.HasTerminal && restored.SessionID != prev {
+			return restored
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s was not restored: %+v", id, restored)
+		}
+	}
 }
 
 // cleanup leaves the repository as it was even if the test failed half-way:

@@ -50,7 +50,24 @@ func fakeClaude() int {
 	if d := os.Getenv("AO_FAKE_TRANSCRIPT_DIR"); d != "" {
 		transcript = filepath.Join(d, sid+".jsonl")
 	}
+	// AO_FAKE_CONV_DIR models where Claude Code keeps conversations (checked
+	// against 2.1.319): a session has one once it gets a message (its initial
+	// prompt or a submitted prompt); a fork that was only shown has none, and
+	// --resume of a session without one fails.
+	convDir := os.Getenv("AO_FAKE_CONV_DIR")
+	hasConversation := func(id string) bool {
+		_, err := os.Stat(filepath.Join(convDir, id))
+		return convDir == "" || err == nil
+	}
+	markConversation := func() {
+		if convDir != "" {
+			_ = os.WriteFile(filepath.Join(convDir, sid), nil, 0o600)
+		}
+	}
 	send := func(event string, extra string) {
+		if event == "UserPromptSubmit" {
+			markConversation()
+		}
 		if transcript != "" {
 			extra += fmt.Sprintf(`,"transcript_path":%q`, transcript)
 		}
@@ -69,7 +86,7 @@ func fakeClaude() int {
 		sid = "00000000-0000-4000-8000-000000000000"
 	}
 	if resume != "" {
-		if _, err := os.Stat(".fake-no-conversation"); err == nil {
+		if _, err := os.Stat(".fake-no-conversation"); err == nil || !hasConversation(resume) {
 			// What Claude Code 2.1.319 does for an unknown session: no SessionStart.
 			fmt.Println("No conversation found with session ID: " + resume)
 			return 1
@@ -77,6 +94,9 @@ func fakeClaude() int {
 		fmt.Println("RESUMED:" + resume)
 	}
 	fmt.Println("fake claude ready")
+	if n := len(os.Args); n >= 2 && os.Args[n-2] == "--" {
+		markConversation() // the initial prompt is the conversation's first message
+	}
 	if n := len(os.Args); os.Getenv("AO_FAKE_PROMPT") == "1" && n >= 2 && os.Args[n-2] == "--" {
 		// The initial prompt, on one line, so tests can look for it on screen.
 		fmt.Println("PROMPT:" + strings.ReplaceAll(os.Args[n-1], "\n", " | "))
@@ -252,7 +272,8 @@ func newFixture(t *testing.T, extraEnv ...string) *fixture {
 	f.opts = Options{
 		Repo: f.repo, WorktreeRoot: f.root, Store: f.store, MaxAgents: 3,
 		ClaudeBin: os.Args[0], HookCommand: "true", RuntimeDir: runtime,
-		BaseEnv:     append([]string{"AO_FAKE_CLAUDE=1", "PATH=" + os.Getenv("PATH")}, extraEnv...),
+		BaseEnv: append([]string{"AO_FAKE_CLAUDE=1", "PATH=" + os.Getenv("PATH"), "AO_FAKE_CONV_DIR=" + t.TempDir()},
+			extraEnv...),
 		StopTimeout: time.Second, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		AgentOfficeBin: os.Args[0],
 	}

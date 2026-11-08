@@ -1,9 +1,11 @@
 import { type JSX, Suspense, lazy, useEffect, useState } from "react";
 import {
-  type AccessRequest, type Agent, type AgentState, ApiError, type ApproveResult, type ImportInfo, type Kind, type Message,
+  type AccessRequest, type Agent, type AgentState, ApiError, type ApproveResult, type AuthSession, type ImportInfo, type Kind, type Message,
   type Project, type Role, type RoleInfo, type SandboxEvent, type Spec, type Status, type Task, type TaskStatus, api,
 } from "./api";
 import { Board } from "./Board";
+import { DevicesPanel } from "./Devices";
+import { narrowQuery, useMedia } from "./useMedia";
 import { InboxPanel, MemoryPanel } from "./Team";
 import { unread } from "./workflow";
 import { TerminalView } from "./TerminalView";
@@ -81,13 +83,15 @@ const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
 // How long an agent may stay in "starting" before the UI flags it.
 const stuckAfterMs = 20_000;
 
-type View = { kind: "board" } | { kind: "office" } | { kind: "usage" } | { kind: "agent"; id: string };
+// "agents" is the phone layout's tab for the agent list (the sidebar on wider screens, ADR 0040).
+type View = { kind: "board" } | { kind: "office" } | { kind: "usage" } | { kind: "agents" } | { kind: "agent"; id: string };
 
-export function App(): JSX.Element {
+export function App({ session, onSignedOut }: { session: AuthSession; onSignedOut: () => void }): JSX.Element {
   const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, connection } =
     useWorld();
   const [roles, setRoles] = useState<RoleInfo[]>([]);
-  const [panel, setPanel] = useState<"inbox" | "memory">();
+  const [panel, setPanel] = useState<"inbox" | "memory" | "devices">();
+  const narrow = useMedia(narrowQuery);
   const [view, setView] = useState<View>({ kind: "board" });
   const [project, setProject] = useState<Project>();
   const [version, setVersion] = useState("");
@@ -112,10 +116,11 @@ export function App(): JSX.Element {
     if (connection === "open") void api.roles().then(setRoles, () => setRoles([]));
   }, [connection]);
 
-  // Fall back to the board if the open agent disappears.
+  // Fall back to the board if the open agent disappears, or the agents tab on a wide screen.
   useEffect(() => {
     if (view.kind === "agent" && !agents.some((a) => a.id === view.id)) setView({ kind: "board" });
-  }, [agents, view]);
+    if (view.kind === "agents" && !narrow) setView({ kind: "board" });
+  }, [agents, view, narrow]);
 
   // run executes an API call from a click handler and shows its error. It
   // never rejects, so callers can discard the promise with `void`.
@@ -150,7 +155,7 @@ export function App(): JSX.Element {
   const unreadCount = unread(inbox);
   const proposed = memory.filter((m) => m.status === "proposed").length;
   const ok = async (fn: () => Promise<unknown>): Promise<boolean> => (await run(fn)) !== undefined;
-  const togglePanel = (p: "inbox" | "memory"): void => setPanel((cur) => (cur === p ? undefined : p));
+  const togglePanel = (p: "inbox" | "memory" | "devices"): void => setPanel((cur) => (cur === p ? undefined : p));
 
   // approveSpec approves a plan (ADR 0031); a Tech Lead that could not start is shown as an error.
   const approveSpec = async (s: Spec): Promise<ApproveResult> => {
@@ -209,6 +214,10 @@ export function App(): JSX.Element {
             title="Notes every agent starts with (ADR 0034)">
             Memory{proposed > 0 && ` · ${proposed} proposed`}
           </button>
+          <button className="badge" aria-expanded={panel === "devices"} onClick={() => togglePanel("devices")}
+            title={`Paired browsers and phones${session.device ? `; this one: ${session.device.name}` : ""} (ADR 0039)`}>
+            Devices
+          </button>
           <button className="badge" title="Ask the assistant for a briefing (starts it if needed)"
             onClick={() => void run(async () => { await api.askBriefing(); setPanel("inbox"); return true; })}>
             Briefing
@@ -241,6 +250,9 @@ export function App(): JSX.Element {
           onAccept={(m) => void run(() => api.acceptMemory(m.id))}
           onDelete={(m) => void run(async () => { await api.deleteMemory(m.id); return true; })} />
       )}
+      {panel === "devices" && (
+        <DevicesPanel remoteHosts={status?.remote_hosts ?? []} run={run} onSignedOut={onSignedOut} />
+      )}
       {status?.warnings.map((w) => <div key={w} className="banner warn">{w}</div>)}
       {pending.length > 0 && (
         <Approvals requests={pending} agents={agents} taskTitle={taskTitle}
@@ -249,7 +261,7 @@ export function App(): JSX.Element {
         />
       )}
       <main>
-        <aside>
+        {(!narrow || view.kind === "agents") && <aside className={narrow ? "agents-pane" : undefined}>
           <button className="primary" onClick={() => void startAgent()}>Start agent (no task)</button>
           <p className="muted small">{running} running</p>
           {error && <p className="error">{error}</p>}
@@ -271,9 +283,15 @@ export function App(): JSX.Element {
             ))}
           </ul>
           {agents.length === 0 && <p className="muted">No agents yet.</p>}
-        </aside>
-        <section className="main-pane">
+          {narrow && <AgentsTabNav onBoard={() => setView({ kind: "board" })} />}
+        </aside>}
+        {(!narrow || view.kind !== "agents") && <section className="main-pane">
           <nav className="tabs">
+            {narrow && (
+              <button onClick={() => setView({ kind: "agents" })} title="Agents and their actions">
+                Agents · {running}
+              </button>
+            )}
             <button className={view.kind === "board" ? "active" : ""} onClick={() => setView({ kind: "board" })}>
               Board
             </button>
@@ -327,10 +345,15 @@ export function App(): JSX.Element {
             <TerminalView key={`${current.id}-${current.session_id ?? ""}`} agent={current}
               onResume={() => void run(() => api.resumeAgent(current.id))} />
           )}
-        </section>
+        </section>}
       </main>
     </div>
   );
+}
+
+// AgentsTabNav leads back from the phone layout's agent list.
+function AgentsTabNav({ onBoard }: { onBoard: () => void }): JSX.Element {
+  return <button className="link" onClick={onBoard}>← Board</button>;
 }
 
 interface CardProps {

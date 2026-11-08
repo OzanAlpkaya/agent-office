@@ -1,6 +1,9 @@
 // The Pixi scene of the office (ADR 0024). It draws an OfficeModel and
 // animates poses; it holds no state of its own beyond what is on screen and
 // has no actions except telling its owner which agent was clicked.
+// The daemon's Content-Security-Policy has no unsafe-eval (ADR 0040); this pixi.js module
+// replaces its generated shader and uniform code with eval-free versions.
+import "pixi.js/unsafe-eval";
 import { Application, Container, Graphics, Rectangle, Sprite, type Texture, TilingSprite } from "pixi.js";
 import type { TaskStatus } from "../api";
 import * as art from "./art";
