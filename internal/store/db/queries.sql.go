@@ -413,6 +413,35 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error 
 	return err
 }
 
+const createDevice = `-- name: CreateDevice :exec
+
+INSERT INTO devices (id, name, kind, token_hash, paired_via, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+`
+
+type CreateDeviceParams struct {
+	ID         string
+	Name       string
+	Kind       string
+	TokenHash  string
+	PairedVia  string
+	CreatedAt  time.Time
+	LastSeenAt time.Time
+}
+
+// Paired devices (migration 0011, ADR 0039).
+func (q *Queries) CreateDevice(ctx context.Context, arg CreateDeviceParams) error {
+	_, err := q.db.ExecContext(ctx, createDevice,
+		arg.ID,
+		arg.Name,
+		arg.Kind,
+		arg.TokenHash,
+		arg.PairedVia,
+		arg.CreatedAt,
+		arg.LastSeenAt,
+	)
+	return err
+}
+
 const createSession = `-- name: CreateSession :exec
 INSERT INTO sessions (id, agent_id, started_at, resumed_from) VALUES (?, ?, ?, ?)
 `
@@ -559,6 +588,18 @@ func (q *Queries) DecideAccessRequest(ctx context.Context, arg DecideAccessReque
 		&i.DecidedBy,
 	)
 	return i, err
+}
+
+const deleteDevice = `-- name: DeleteDevice :execrows
+DELETE FROM devices WHERE id = ?
+`
+
+func (q *Queries) DeleteDevice(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteDevice, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteEventsBefore = `-- name: DeleteEventsBefore :execrows
@@ -1673,6 +1714,41 @@ func (q *Queries) ListChildTasks(ctx context.Context, parentTaskID sql.NullStrin
 			&i.SpecKey,
 			&i.Conflicts,
 			&i.ConflictsCheckedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDevices = `-- name: ListDevices :many
+SELECT id, name, kind, token_hash, paired_via, created_at, last_seen_at FROM devices ORDER BY created_at, id
+`
+
+func (q *Queries) ListDevices(ctx context.Context) ([]Device, error) {
+	rows, err := q.db.QueryContext(ctx, listDevices)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Device{}
+	for rows.Next() {
+		var i Device
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Kind,
+			&i.TokenHash,
+			&i.PairedVia,
+			&i.CreatedAt,
+			&i.LastSeenAt,
 		); err != nil {
 			return nil, err
 		}
@@ -3134,6 +3210,20 @@ func (q *Queries) TakePullRequestRound(ctx context.Context, arg TakePullRequestR
 		&i.ConflictRounds,
 	)
 	return i, err
+}
+
+const touchDevice = `-- name: TouchDevice :exec
+UPDATE devices SET last_seen_at = ? WHERE id = ?
+`
+
+type TouchDeviceParams struct {
+	LastSeenAt time.Time
+	ID         string
+}
+
+func (q *Queries) TouchDevice(ctx context.Context, arg TouchDeviceParams) error {
+	_, err := q.db.ExecContext(ctx, touchDevice, arg.LastSeenAt, arg.ID)
+	return err
 }
 
 const unclaimMessage = `-- name: UnclaimMessage :exec

@@ -40,6 +40,16 @@ type Agent struct {
 	ResumeState         string
 }
 
+type Device struct {
+	ID         string
+	Name       string
+	Kind       string
+	TokenHash  string
+	PairedVia  string
+	CreatedAt  time.Time
+	LastSeenAt time.Time
+}
+
 type Event struct {
 	ID        int64
 	AgentID   string
