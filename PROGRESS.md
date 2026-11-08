@@ -1,7 +1,7 @@
 # Progress
 
-**Current phase:** Phase 10 (Remote access) done on `phase-10/remote-access`, waiting for review (the check on
-Ozan's own phone is open); next: Phase 11
+**Current phase:** Phase 10 (Remote access) merged into `main` (the check on Ozan's own phone is open);
+next: Phase 11
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -212,3 +212,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   restart: forks resumed without a prompt have no transcript, so resumes now continue the latest
   session with a conversation (ADR 0035 amended). `TestRestoreTwice`, OSC 52 UI tests, host e2e
   step 7d (two restores, codeword recalled); `make check`, `make ui-test` (41) and the host e2e pass.
+- 2026-11-08: Phase 10 review: all decisions and fixes approved. Ozan checked by hand that copy works
+  in a sandboxed fullscreen session (plain selection, and Shift+drag with Ctrl+Shift+C) and that
+  a4fc81 resumes again. Merged into `main` (`--no-ff`). Open: installing the app on his phone over
+  his tailnet.

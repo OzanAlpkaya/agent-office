@@ -1,7 +1,7 @@
 # Phase 10 plan: Remote access (PWA over Tailscale)
 
-- **Status:** Done on `phase-10/remote-access`, waiting for Ozan's review (not merged); the live
-  check on Ozan's own phone is open. Written 2026-11-08 with the recommended option
+- **Status:** Done on `phase-10/remote-access`; approved by Ozan and merged into `main` (2026-11-08).
+  The live check on Ozan's own phone over his tailnet is still open. Written 2026-11-08 with the recommended option
   for every open question and executed straight away, as Ozan asked ("Write the Phase 10 plan to
   docs/plans/phase-10.md using your recommended options, then execute it immediately without asking
   me anything"). Every decision is listed in the end-of-phase summary; nothing is merged until Ozan
