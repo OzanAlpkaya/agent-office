@@ -292,8 +292,10 @@ func (t team) SubmitPlan(ctx context.Context, caller string, in mcp.SubmitPlanIn
 		return mcp.SubmitPlanOutput{}, userErr(err)
 	}
 	return mcp.SubmitPlanOutput{SpecID: s.ID, Version: s.Version, Status: s.Status,
-		Next: "Submitted. End your turn: the user reviews the plan in agent-office; their questions or change " +
-			"requests are delivered to you as new input. Approval ends your session."}, nil
+		Next: "Submitted, not approved. End your turn: the user reviews the plan in agent-office; their questions or " +
+			"change requests are delivered to you as new input. Only the Approve button in the agent-office UI approves " +
+			"it, and approval ends your session: never tell the user the plan is approved. If they approve in this " +
+			"terminal, tell them to press Approve on the goal in the agent-office UI."}, nil
 }
 
 func (e *Engine) submitPlan(ctx context.Context, caller string, p Plan) (Spec, error) {
@@ -328,8 +330,8 @@ func (e *Engine) submitPlan(ctx context.Context, caller string, p Plan) (Spec, e
 		return Spec{}, err
 	}
 	if _, err := e.addInbox(ctx, "", goal.ID, goal.ID, "", InboxPlan, fmt.Sprintf(
-		"The architect's plan (version %d) for %q is ready for your approval: %d sub-task(s). Open the goal on the board "+
-			"to read, edit or approve it.", s.Version, goal.Title, len(p.SubTasks))); err != nil {
+		"The architect's plan (version %d) for %q is ready for your approval: %d sub-task(s). Review it on the goal's "+
+			"card, or approve it here.", s.Version, goal.Title, len(p.SubTasks))); err != nil {
 		e.log.Warn("plan notice", "err", err)
 	}
 	e.log.Info("plan submitted", "agent_id", caller, "task_id", goal.ID, "spec_id", s.ID, "version", s.Version,

@@ -130,9 +130,13 @@ func TestArchitectPlanToTechLead(t *testing.T) {
 		t.Fatalf("cyclic plan: %v", err)
 	}
 	out, err := tm.SubmitPlan(ctx, arch.ID, samplePlan())
-	if err != nil || out.Version != 1 || out.Status != SpecProposed {
+	if err != nil || out.Version != 1 || out.Status != SpecProposed || !strings.Contains(out.Next, "not approved") ||
+		!strings.Contains(out.Next, "press Approve") {
 		t.Fatalf("submit: %+v %v", out, err)
 	}
+	// Its prompt says that only the UI approves (Ozan's test: "approved" typed
+	// into the terminal made an earlier architect claim the plan was approved).
+	screen(t, e, arch.ID, "Approval happens only with the Approve button in the agent-office UI")
 	items, _ := e.Inbox(ctx)
 	if len(items) != 1 || items[0].Kind != InboxPlan || items[0].AgentID != "" || items[0].GoalID != goal.ID {
 		t.Fatalf("plan notice %+v", items)
