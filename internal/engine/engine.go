@@ -712,12 +712,13 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 	}
 	e.mu.Lock()
 	e.registerLocked(a, l)
+	view := a.view() // under the lock: the agent's first hook may already be changing its state
 	e.mu.Unlock()
 	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "pid", term.Pid(),
 		"branch", branch, "worktree", wtPath, "model", e.opts.Model, "inherit_user_settings", e.opts.InheritUserSettings)
 	e.wg.Add(1)
 	go e.watch(a)
-	return a.view(), nil
+	return view, nil
 }
 
 // watch marks the agent exited when its process ends, whether or not a

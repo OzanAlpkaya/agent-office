@@ -348,13 +348,14 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	}
 	e.mu.Lock()
 	e.registerLocked(a, l)
+	view := a.view() // under the lock: the agent's first hook may already be changing its state
 	e.mu.Unlock()
 	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "sandbox", SandboxPodman, "branch", branch,
 		"workspace", wsPath, "container", res.container, "image", s.Image, "pack", packName(s.Pack),
 		"secrets", secretNames(prep.secrets), "model", e.opts.Model)
 	e.wg.Add(1)
 	go e.watch(a)
-	return a.view(), nil
+	return view, nil
 }
 
 // closeSandbox stops the proxies, removes the container if it is still there
