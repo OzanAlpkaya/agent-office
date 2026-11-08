@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f1115" />
+    <title>agent-office: not reachable</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #0f1115; color: #e6e8ee; }
+      body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; box-sizing: border-box; }
+      main { max-width: 26rem; background: #171a21; border: 1px solid #2a2f3a; border-radius: 10px; padding: 1.25rem; }
+      h1 { font-size: 1.2rem; margin: 0 0 0.5rem; }
+      li { margin: 0.25rem 0; color: #8a92a6; }
+      button { margin-top: 0.75rem; min-height: 44px; padding: 0 1rem; background: #6aa3ff; color: #0b1020; border: 0; border-radius: 6px; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>agent-office is not reachable</h1>
+      <p>Check that:</p>
+      <ul>
+        <li>the daemon is running (<code>agent-office serve</code>),</li>
+        <li>this device is connected to your tailnet (the Tailscale app is on),</li>
+        <li><code>tailscale serve</code> still forwards to the daemon.</li>
+      </ul>
+      <button onclick="location.reload()">Try again</button>
+    </main>
+  </body>
+</html>
