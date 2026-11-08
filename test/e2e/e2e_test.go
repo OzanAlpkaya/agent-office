@@ -76,11 +76,49 @@ func (d *daemon) start() {
 	for time.Now().Before(deadline) {
 		if resp, err := http.Get(d.base + "/api/health"); err == nil {
 			resp.Body.Close()
+			d.pair()
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	d.t.Fatalf("daemon did not become healthy; log: %s", d.logPath)
+}
+
+// tokens holds each daemon's device token by base URL (ADR 0039), for the
+// WebSocket helpers that only get the base.
+var tokens sync.Map
+
+// pair gets a device token for scripts from the running daemon once; it is
+// stored in the data dir, so it survives restarts.
+func (d *daemon) pair() {
+	d.t.Helper()
+	if _, ok := tokens.Load(d.base); ok {
+		return
+	}
+	dataDir := ""
+	for i, a := range d.args {
+		if a == "--data-dir" && i+1 < len(d.args) {
+			dataDir = d.args[i+1]
+		}
+	}
+	cmd := exec.Command(d.bin, "pair", "--data-dir", dataDir, "--token", "e2e")
+	cmd.Env = os.Environ()
+	out, err := cmd.Output()
+	if err != nil {
+		d.t.Fatalf("agent-office pair --token: %v", err)
+	}
+	tok := strings.TrimSpace(string(out))
+	tokens.Store(d.base, tok)
+	d.t.Cleanup(func() { tokens.Delete(d.base) })
+}
+
+// authHeader authenticates a request to the daemon at base.
+func authHeader(base string) http.Header {
+	h := http.Header{}
+	if tok, ok := tokens.Load(base); ok {
+		h.Set("Authorization", "Bearer "+tok.(string))
+	}
+	return h
 }
 
 func (d *daemon) signal(sig syscall.Signal) {
@@ -107,6 +145,7 @@ func (d *daemon) do(method, path string, body any) (int, []byte) {
 		rd = bytes.NewReader(b)
 	}
 	req, _ := http.NewRequest(method, d.base+path, rd)
+	req.Header = authHeader(d.base)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -141,7 +180,7 @@ type watcher struct {
 
 func watch(t *testing.T, ctx context.Context, base string) *watcher {
 	w := &watcher{history: map[string][]string{}, changed: make(chan struct{}, 1)}
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/events", nil)
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/events", &websocket.DialOptions{HTTPHeader: authHeader(base)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +277,7 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\
 
 func attach(t *testing.T, ctx context.Context, base, id string) *term {
 	t.Helper()
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/agents/"+id+"/terminal", nil)
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/agents/"+id+"/terminal", &websocket.DialOptions{HTTPHeader: authHeader(base)})
 	if err != nil {
 		t.Fatal(err)
 	}
