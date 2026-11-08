@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -81,7 +82,7 @@ func TestAssistantBriefingAndMemory(t *testing.T) {
 	if err != nil || p.Status != MemoryProposed {
 		t.Fatalf("propose %+v %v", p, err)
 	}
-	if s := e.memorySection(ctx); s != "" {
+	if s := e.memorySection(ctx, RoleWorker, nil, true); s != "" {
 		t.Fatalf("a proposal reached the prompts: %q", s)
 	}
 	task, _ := e.CreateTask(ctx, TaskInput{Title: "Fix bug"})
@@ -114,7 +115,7 @@ func TestAssistantBriefingAndMemory(t *testing.T) {
 	if err := e.DeleteMemory(ctx, own.ID); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(e.memorySection(ctx), "SQLite only") {
+	if strings.Contains(e.memorySection(ctx, RoleWorker, nil, true), "SQLite only") {
 		t.Fatal("a deleted note stays in the prompts")
 	}
 
@@ -136,8 +137,95 @@ func TestMemorySectionIsCapped(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s := e.memorySection(ctx)
-	if len(s) > maxMemoryPrompt+100 || !strings.Contains(s, "older note(s) left out") {
+	s := e.memorySection(ctx, RoleWorker, nil, true)
+	if len(s) > maxMemoryPrompt+100 || !strings.Contains(s, "more note(s) left out for length; list_memory shows every note") {
 		t.Fatalf("section of %d bytes", len(s))
+	}
+}
+
+// Relevant memory (ADR 0037): entries scoped to a role or to files reach only
+// agents they apply to, before the unscoped ones; list_memory shows every
+// accepted entry to every behaviour but reviewers, marked whether it applies.
+func TestMemoryRelevance(t *testing.T) {
+	f := newFixture(t, "AO_FAKE_PROMPT=1")
+	e := f.engine(t)
+	log := record(t, e)
+	ctx := context.Background()
+	add := func(title string, roles, paths []string) MemoryEntry {
+		t.Helper()
+		m, err := e.AddMemory(ctx, MemoryInput{Kind: MemoryConvention, Title: title, Body: title + " body.", Roles: &roles, Paths: &paths})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	add("General", nil, nil)
+	add("For QA", []string{RoleQA}, nil)
+	add("Store code", nil, []string{"internal/store/"})
+	add("Workers on the web", []string{RoleWorker}, []string{"web/**"})
+	if _, err := e.AddMemory(ctx, MemoryInput{Kind: MemoryLesson, Title: "x", Body: "y", Roles: &[]string{"no-such-role"}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown role: %v", err)
+	}
+	if _, err := e.AddMemory(ctx, MemoryInput{Kind: MemoryLesson, Title: "x", Body: "y", Paths: &[]string{"../etc"}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("bad path: %v", err)
+	}
+
+	s := e.memorySection(ctx, RoleWorker, []string{"internal/store/db.go"}, true)
+	if !strings.Contains(s, "Store code") || !strings.Contains(s, "General") || strings.Contains(s, "For QA") ||
+		strings.Contains(s, "Workers on the web") || strings.Index(s, "Store code") > strings.Index(s, "General") ||
+		!strings.Contains(s, "2 note(s) for other roles or files not shown; list_memory shows every note") {
+		t.Fatalf("store worker's section:\n%s", s)
+	}
+	if s := e.memorySection(ctx, RoleWorker, []string{"web/src/App.tsx"}, false); !strings.Contains(s, "Workers on the web") ||
+		strings.Contains(s, "list_memory") {
+		t.Fatalf("web worker's section:\n%s", s)
+	}
+	if s := e.memorySection(ctx, RoleQA, nil, true); !strings.Contains(s, "For QA") || strings.Contains(s, "Store code") {
+		t.Fatalf("QA's section:\n%s", s)
+	}
+
+	// A sub-task's declared files pick its notes at start.
+	goal, _ := e.CreateTask(ctx, TaskInput{Title: "Goal"})
+	sub, err := e.createTask(ctx, TaskInput{Title: "Store work", Files: []string{"internal/store/queries.sql"}}, goal.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := e.Start(ctx, StartRequest{TaskID: sub.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
+	scr := screen(t, e, w.ID, "PROMPT:")
+	if !strings.Contains(scr, "Store code body.") || strings.Contains(scr, "For QA body.") {
+		t.Fatalf("sub-task prompt:\n%s", scr)
+	}
+	tm := team{e}
+	list, err := tm.ListMemory(ctx, w.ID)
+	if err != nil || len(list.Entries) != 4 {
+		t.Fatalf("worker's list_memory %+v %v", list, err)
+	}
+	for _, m := range list.Entries {
+		want := m.Title == "General" || m.Title == "Store code"
+		if m.AppliesToYou != want || m.Status != MemoryAccepted {
+			t.Errorf("%s: applies %v", m.Title, m.AppliesToYou)
+		}
+	}
+
+	// Export: accepted entries as Markdown, with their scope.
+	md, err := e.MemoryMarkdown(ctx)
+	if err != nil || !strings.Contains(md, "## Conventions") || !strings.Contains(md, "### Store code") ||
+		!strings.Contains(md, "_Applies to files: internal/store/._") || !strings.Contains(md, "roles: worker; files: web/**") {
+		t.Fatalf("export:\n%s %v", md, err)
+	}
+
+	// PATCH keeps an absent scope and clears an empty one.
+	m := add("Scoped", []string{RoleWorker}, nil)
+	m2, err := e.UpdateMemory(ctx, m.ID, MemoryInput{Body: "Changed."})
+	if err != nil || len(m2.Roles) != 1 {
+		t.Fatalf("scope kept %+v %v", m2, err)
+	}
+	m3, err := e.UpdateMemory(ctx, m.ID, MemoryInput{Roles: &[]string{}})
+	if err != nil || len(m3.Roles) != 0 {
+		t.Fatalf("scope cleared %+v %v", m3, err)
 	}
 }

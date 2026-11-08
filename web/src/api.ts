@@ -334,9 +334,14 @@ export interface MemoryEntry {
   body: string;
   status: "proposed" | "accepted";
   source?: string;
+  roles?: string[]; // only agents of these roles get it; empty: every role (ADR 0037)
+  paths?: string[]; // only agents whose task touches these files; empty: every task
   created_at: string;
   updated_at: string;
 }
+
+// MemoryDraft is what the user writes or changes in a memory entry.
+export type MemoryDraft = Pick<MemoryEntry, "kind" | "title" | "body"> & { roles: string[]; paths: string[] };
 
 // Message between agents (ADR 0018). from is absent for agent-office itself.
 // The body is written by an agent: render it as text only.
@@ -672,10 +677,8 @@ export const api = {
   editSpec: (id: number, plan: Plan): Promise<Spec> => request("PUT", `/api/specs/${id}`, plan),
   approveSpec: (id: number): Promise<ApproveResult> => request("POST", `/api/specs/${id}/approve`),
   resolveConflict: (taskId: string): Promise<void> => request("POST", `/api/tasks/${taskId}/resolve-conflict`),
-  addMemory: (kind: MemoryEntry["kind"], title: string, body: string): Promise<MemoryEntry> =>
-    request("POST", "/api/memory", { kind, title, body }),
-  editMemory: (id: number, patch: Partial<Pick<MemoryEntry, "kind" | "title" | "body">>): Promise<MemoryEntry> =>
-    request("PATCH", `/api/memory/${id}`, patch),
+  addMemory: (d: MemoryDraft): Promise<MemoryEntry> => request("POST", "/api/memory", d),
+  editMemory: (id: number, patch: Partial<MemoryDraft>): Promise<MemoryEntry> => request("PATCH", `/api/memory/${id}`, patch),
   acceptMemory: (id: number): Promise<MemoryEntry> => request("POST", `/api/memory/${id}/accept`),
   deleteMemory: (id: number): Promise<void> => request("DELETE", `/api/memory/${id}`),
   askBriefing: (): Promise<Agent> => request("POST", "/api/assistant/briefing"),

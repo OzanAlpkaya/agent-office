@@ -55,7 +55,7 @@ function workflow(): World {
       summary: "The filter ignores case.", bugs: [{ title: "Filter is case-sensitive", description: "?tag=Go misses go", bug_task_id: "t00000000009" }],
     }],
     memory: [{ id: 1, kind: "convention", title: "Errors are wrapped", body: "Wrap errors with %w.", status: "proposed",
-      source: "f00000000001", created_at: at, updated_at: at }],
+      source: "f00000000001", roles: ["worker"], paths: ["internal/store/"], created_at: at, updated_at: at }],
   };
 }
 
@@ -161,6 +161,14 @@ test("project memory proposals wait for the user", async ({ page }) => {
   const panel = page.getByRole("region", { name: "Project memory" });
   await expect(panel).toContainText("Errors are wrapped");
   await expect(panel).toContainText("proposed by f00000");
+  await expect(panel.getByTestId("memory-scope")).toHaveText("For roles worker · files internal/store/");
+  await expect(panel.getByRole("link", { name: "Export as Markdown" })).toHaveAttribute("href", "/api/memory/export");
+  await panel.getByRole("button", { name: "Edit" }).click();
+  await panel.getByLabel("Only for roles").fill("worker, qa");
+  await panel.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => daemon.requests.find((r) => r.startsWith("PATCH /api/memory/1")))
+    .toContain('"roles":["worker","qa"],"paths":["internal/store/"]');
+  await panel.getByRole("button", { name: "Cancel" }).click();
   await panel.getByRole("button", { name: "Accept" }).click();
   await expect.poll(() => daemon.requests).toContain("POST /api/memory/1/accept");
   daemon.memoryEntry({ ...workflow().memory![0], status: "accepted" });

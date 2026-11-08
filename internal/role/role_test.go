@@ -239,6 +239,7 @@ func TestBehaviourTools(t *testing.T) {
 		mcp.ToolCreateTask: {Lead}, mcp.ToolAssignTask: {Lead}, mcp.ToolStartQA: {Lead},
 		mcp.ToolSubmitPlan: {Architect}, mcp.ToolReportQA: {QA}, mcp.ToolSubmitReview: {Reviewer},
 		mcp.ToolReportNoChange: {Worker}, mcp.ToolGetBriefing: {Assistant}, mcp.ToolProposeMemory: {Assistant},
+		mcp.ToolListMemory: {Architect, Lead, Worker, QA, Assistant}, // not reviewers (ADR 0037)
 	}
 	for tool, allowed := range only {
 		for _, b := range Behaviours {

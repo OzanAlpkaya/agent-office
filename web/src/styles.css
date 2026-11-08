@@ -211,3 +211,7 @@ button.badge.pack { background: none; color: #ffd580; cursor: pointer; font: inh
 .task .row select, .task .row button { font-size: 0.8rem; padding: 0.2rem 0.45rem; }
 .inbox-item .row button.primary { width: auto; }
 article.task:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* A link that looks like a button (memory export, Phase 9). */
+.button-link { display: inline-block; padding: 0.3rem 0.7rem; border: 1px solid #3a4150; border-radius: 6px; color: inherit; text-decoration: none; font-size: 0.85rem; }
+.button-link:hover { border-color: #6b7486; }

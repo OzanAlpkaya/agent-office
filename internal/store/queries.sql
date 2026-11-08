@@ -412,8 +412,8 @@ RETURNING *;
 -- Project memory (migration 0008, ADR 0034).
 
 -- name: InsertMemory :one
-INSERT INTO memory (project_id, kind, title, body, status, source, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO memory (project_id, kind, title, body, status, source, created_at, updated_at, roles, paths)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetMemory :one
@@ -429,7 +429,7 @@ SELECT * FROM memory WHERE project_id = ? AND status = 'accepted' ORDER BY id DE
 SELECT count(*) FROM memory WHERE project_id = ? AND status = 'proposed';
 
 -- name: UpdateMemory :one
-UPDATE memory SET kind = ?, title = ?, body = ?, status = ?, updated_at = ? WHERE id = ?
+UPDATE memory SET kind = ?, title = ?, body = ?, status = ?, updated_at = ?, roles = ?, paths = ? WHERE id = ?
 RETURNING *;
 
 -- name: DeleteMemory :execrows

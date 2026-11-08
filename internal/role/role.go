@@ -74,14 +74,16 @@ type spec struct {
 // behaviours holds what each behaviour may have. This table is the ceiling a
 // role can only narrow.
 var behaviours = map[Behaviour]spec{
-	Architect: {tools: []string{mcp.ToolListTasks, mcp.ToolSendMessage, mcp.ToolMessageUser, mcp.ToolSubmitPlan},
+	Architect: {tools: []string{mcp.ToolListTasks, mcp.ToolSendMessage, mcp.ToolMessageUser, mcp.ToolSubmitPlan, mcp.ToolListMemory},
 		reportsTo: []string{ToUser}, readOnly: true},
 	Lead: {tools: []string{mcp.ToolCreateTask, mcp.ToolAssignTask, mcp.ToolListTasks, mcp.ToolSendMessage,
-		mcp.ToolMessageUser, mcp.ToolStartQA, mcp.ToolReportDone, mcp.ToolRequestAccess},
+		mcp.ToolMessageUser, mcp.ToolStartQA, mcp.ToolReportDone, mcp.ToolRequestAccess, mcp.ToolListMemory},
 		reportsTo: []string{ToArchitect, ToUser}, readOnly: true},
 	Worker: {tools: []string{mcp.ToolListTasks, mcp.ToolSendMessage, mcp.ToolMessageUser, mcp.ToolReportDone,
-		mcp.ToolReportNoChange, mcp.ToolRequestAccess}, reportsTo: []string{ToLead}},
-	QA: {tools: []string{mcp.ToolListTasks, mcp.ToolSendMessage, mcp.ToolReportQA, mcp.ToolRequestAccess},
+		mcp.ToolReportNoChange, mcp.ToolRequestAccess, mcp.ToolListMemory}, reportsTo: []string{ToLead}},
+	// list_memory: accepted entries only for everyone but the assistant (ADR 0037); reviewers read the
+	// most injectable input there is and get no more than their prompt.
+	QA: {tools: []string{mcp.ToolListTasks, mcp.ToolSendMessage, mcp.ToolReportQA, mcp.ToolRequestAccess, mcp.ToolListMemory},
 		reportsTo: []string{ToLead}},
 	Reviewer:  {tools: []string{mcp.ToolListTasks, mcp.ToolSubmitReview}, reportsTo: []string{ToNone}},
 	Assistant: {tools: []string{mcp.ToolGetBriefing, mcp.ToolMessageUser, mcp.ToolListMemory, mcp.ToolProposeMemory}, reportsTo: []string{ToUser}, readOnly: true},

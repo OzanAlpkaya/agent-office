@@ -90,6 +90,8 @@ type Memory struct {
 	Source    string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	Roles     string
+	Paths     string
 }
 
 type Message struct {

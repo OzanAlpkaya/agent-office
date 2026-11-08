@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -92,6 +93,7 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("GET /api/specs", s.listSpecs)
 	mux.HandleFunc("GET /api/qa-runs", s.listQARuns)
 	mux.HandleFunc("GET /api/memory", s.listMemory)
+	mux.HandleFunc("GET /api/memory/export", s.exportMemory)
 	mux.HandleFunc("POST /api/memory", s.addMemory)
 	mux.HandleFunc("PATCH /api/memory/{id}", s.memoryAction("patch"))
 	mux.HandleFunc("POST /api/memory/{id}/accept", s.memoryAction("accept"))
@@ -337,6 +339,20 @@ func (s *server) sessionTerminal(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+// exportMemory downloads the accepted project memory as Markdown (ADR 0037).
+func (s *server) exportMemory(w http.ResponseWriter, r *http.Request) {
+	md, err := s.eng.MemoryMarkdown(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="memory.md"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, md)
 }
 
 func (s *server) listMemory(w http.ResponseWriter, r *http.Request) {

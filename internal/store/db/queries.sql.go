@@ -783,7 +783,7 @@ func (q *Queries) GetInbox(ctx context.Context, id int64) (Inbox, error) {
 }
 
 const getMemory = `-- name: GetMemory :one
-SELECT id, project_id, kind, title, body, status, source, created_at, updated_at FROM memory WHERE id = ?
+SELECT id, project_id, kind, title, body, status, source, created_at, updated_at, roles, paths FROM memory WHERE id = ?
 `
 
 func (q *Queries) GetMemory(ctx context.Context, id int64) (Memory, error) {
@@ -799,6 +799,8 @@ func (q *Queries) GetMemory(ctx context.Context, id int64) (Memory, error) {
 		&i.Source,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Roles,
+		&i.Paths,
 	)
 	return i, err
 }
@@ -1144,9 +1146,9 @@ func (q *Queries) InsertInbox(ctx context.Context, arg InsertInboxParams) (Inbox
 
 const insertMemory = `-- name: InsertMemory :one
 
-INSERT INTO memory (project_id, kind, title, body, status, source, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, kind, title, body, status, source, created_at, updated_at
+INSERT INTO memory (project_id, kind, title, body, status, source, created_at, updated_at, roles, paths)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, kind, title, body, status, source, created_at, updated_at, roles, paths
 `
 
 type InsertMemoryParams struct {
@@ -1158,6 +1160,8 @@ type InsertMemoryParams struct {
 	Source    string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	Roles     string
+	Paths     string
 }
 
 // Project memory (migration 0008, ADR 0034).
@@ -1171,6 +1175,8 @@ func (q *Queries) InsertMemory(ctx context.Context, arg InsertMemoryParams) (Mem
 		arg.Source,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.Roles,
+		arg.Paths,
 	)
 	var i Memory
 	err := row.Scan(
@@ -1183,6 +1189,8 @@ func (q *Queries) InsertMemory(ctx context.Context, arg InsertMemoryParams) (Mem
 		&i.Source,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Roles,
+		&i.Paths,
 	)
 	return i, err
 }
@@ -1462,7 +1470,7 @@ func (q *Queries) LatestSession(ctx context.Context, agentID string) (Session, e
 }
 
 const listAcceptedMemory = `-- name: ListAcceptedMemory :many
-SELECT id, project_id, kind, title, body, status, source, created_at, updated_at FROM memory WHERE project_id = ? AND status = 'accepted' ORDER BY id DESC
+SELECT id, project_id, kind, title, body, status, source, created_at, updated_at, roles, paths FROM memory WHERE project_id = ? AND status = 'accepted' ORDER BY id DESC
 `
 
 func (q *Queries) ListAcceptedMemory(ctx context.Context, projectID string) ([]Memory, error) {
@@ -1484,6 +1492,8 @@ func (q *Queries) ListAcceptedMemory(ctx context.Context, projectID string) ([]M
 			&i.Source,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Roles,
+			&i.Paths,
 		); err != nil {
 			return nil, err
 		}
@@ -1886,7 +1896,7 @@ func (q *Queries) ListInbox(ctx context.Context, arg ListInboxParams) ([]Inbox, 
 }
 
 const listMemory = `-- name: ListMemory :many
-SELECT id, project_id, kind, title, body, status, source, created_at, updated_at FROM memory WHERE project_id = ? ORDER BY id DESC
+SELECT id, project_id, kind, title, body, status, source, created_at, updated_at, roles, paths FROM memory WHERE project_id = ? ORDER BY id DESC
 `
 
 func (q *Queries) ListMemory(ctx context.Context, projectID string) ([]Memory, error) {
@@ -1908,6 +1918,8 @@ func (q *Queries) ListMemory(ctx context.Context, projectID string) ([]Memory, e
 			&i.Source,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Roles,
+			&i.Paths,
 		); err != nil {
 			return nil, err
 		}
@@ -3139,8 +3151,8 @@ func (q *Queries) UpdateAgentState(ctx context.Context, arg UpdateAgentStatePara
 }
 
 const updateMemory = `-- name: UpdateMemory :one
-UPDATE memory SET kind = ?, title = ?, body = ?, status = ?, updated_at = ? WHERE id = ?
-RETURNING id, project_id, kind, title, body, status, source, created_at, updated_at
+UPDATE memory SET kind = ?, title = ?, body = ?, status = ?, updated_at = ?, roles = ?, paths = ? WHERE id = ?
+RETURNING id, project_id, kind, title, body, status, source, created_at, updated_at, roles, paths
 `
 
 type UpdateMemoryParams struct {
@@ -3149,6 +3161,8 @@ type UpdateMemoryParams struct {
 	Body      string
 	Status    string
 	UpdatedAt time.Time
+	Roles     string
+	Paths     string
 	ID        int64
 }
 
@@ -3159,6 +3173,8 @@ func (q *Queries) UpdateMemory(ctx context.Context, arg UpdateMemoryParams) (Mem
 		arg.Body,
 		arg.Status,
 		arg.UpdatedAt,
+		arg.Roles,
+		arg.Paths,
 		arg.ID,
 	)
 	var i Memory
@@ -3172,6 +3188,8 @@ func (q *Queries) UpdateMemory(ctx context.Context, arg UpdateMemoryParams) (Mem
 		&i.Source,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Roles,
+		&i.Paths,
 	)
 	return i, err
 }

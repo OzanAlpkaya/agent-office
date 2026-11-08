@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
 
@@ -150,7 +152,10 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 
 	prompt := r.prompt
 	if prompt != "" && !r.resume {
-		prompt += e.memorySection(ctx) // ADR 0034; a resumed conversation already has it
+		// ADR 0034, 0037; a resumed conversation already has it.
+		roleName, files := e.agentScope(ctx, info.Role, info.TaskID)
+		def := e.roleOf(info.Role, info.Kind)
+		prompt += e.memorySection(ctx, roleName, files, slices.Contains(def.TeamTools, mcp.ToolListMemory))
 	}
 	l := launchInfo{id: id, sid: sid, role: info.Kind, def: e.roleOf(info.Role, info.Kind), branch: info.Branch,
 		path: info.WorktreePath, base: a.baseCommit,

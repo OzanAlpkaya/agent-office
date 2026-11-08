@@ -657,7 +657,12 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		prompt = e.initialPrompt(ctx, def, task, branch)
 	}
 	if prompt != "" {
-		prompt += e.memorySection(ctx) // ADR 0034: accepted notes only
+		var files []string
+		if task != nil {
+			files = jsonList(task.Files)
+		}
+		// ADR 0034, 0037: accepted notes whose scope includes this agent.
+		prompt += e.memorySection(ctx, def.Name, files, slices.Contains(def.TeamTools, mcp.ToolListMemory))
 	}
 	l := launchInfo{id: id, sid: sid, role: role, def: def, branch: branch, path: wtPath, base: base, taskID: req.TaskID,
 		started: started, prompt: prompt, reviewID: req.reviewID}

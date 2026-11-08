@@ -236,7 +236,7 @@ export function App(): JSX.Element {
       )}
       {panel === "memory" && (
         <MemoryPanel entries={memory}
-          onAdd={(k, t, b) => ok(() => api.addMemory(k, t, b))}
+          onAdd={(d) => ok(() => api.addMemory(d))}
           onEdit={(m, patch) => ok(() => api.editMemory(m.id, patch))}
           onAccept={(m) => void run(() => api.acceptMemory(m.id))}
           onDelete={(m) => void run(async () => { await api.deleteMemory(m.id); return true; })} />

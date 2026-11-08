@@ -544,6 +544,20 @@ func TestTeamWorkflowAPI(t *testing.T) {
 	if r.StatusCode != http.StatusOK || m.Body != "Only SQLite, via modernc." {
 		t.Fatalf("edit memory %d %+v", r.StatusCode, m)
 	}
+	r = f.doBody(t, "PATCH", "/api/memory/"+strconv.FormatInt(m.ID, 10), ct, `{"roles":["worker"],"paths":["internal/store/"]}`)
+	decode(r, &m)
+	if r.StatusCode != http.StatusOK || len(m.Roles) != 1 || len(m.Paths) != 1 {
+		t.Fatalf("scope memory %d %+v", r.StatusCode, m)
+	}
+	if r := f.doBody(t, "PATCH", "/api/memory/"+strconv.FormatInt(m.ID, 10), ct, `{"roles":["boss"]}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown role in scope: %d", r.StatusCode)
+	}
+	r = f.do(t, "GET", "/api/memory/export", nil)
+	md, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusOK || !strings.HasPrefix(r.Header.Get("Content-Type"), "text/markdown") ||
+		!strings.Contains(r.Header.Get("Content-Disposition"), "attachment") || !strings.Contains(string(md), "### SQLite") {
+		t.Fatalf("export %d %q", r.StatusCode, md)
+	}
 	if r := f.do(t, "DELETE", "/api/memory/"+strconv.FormatInt(m.ID, 10), nil); r.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete memory %d", r.StatusCode)
 	}
