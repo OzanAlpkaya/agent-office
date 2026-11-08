@@ -4,7 +4,7 @@
 // types, so a change to them shows up here.
 import type { Page, WebSocketRoute } from "@playwright/test";
 import type {
-  AccessRequest, Agent, AgentState, InboxItem, Kind, MemoryEntry, Message, ModelUsage, QARun, RoleInfo, SessionUsage, Spec,
+  AccessRequest, Agent, AgentState, Device, InboxItem, Kind, MemoryEntry, Message, ModelUsage, QARun, RoleInfo, SessionUsage, Spec,
   Status, Task, TaskStatus, Tokens, UsageReport,
 } from "../src/api";
 import { defaultRole } from "../src/api";
@@ -134,14 +134,23 @@ export function team(n = 10): World {
 export const status: Status = {
   sandbox: "podman", image: "localhost/agent-office-pack-go:02150a97ddc8", egress: ["proxy.golang.org"],
   pack: { name: "go", description: "Go 1.27", source: "builtin", egress: ["proxy.golang.org"], secrets: [], skills: ["go-sandbox"], mcp_servers: [] },
-  warnings: [],
+  warnings: [], remote_hosts: ["box.tail1234.ts.net"],
 };
+
+// The pairing code the mock accepts (ADR 0039).
+export const mockCode = "ABCD-EFGH";
 
 // MockDaemon serves one world to the page.
 export class MockDaemon {
   private events?: WebSocketRoute;
   readonly terminals: string[] = []; // agent ids whose terminal was opened
   readonly requests: string[] = []; // "METHOD path body" of every write the page sent
+  readonly terminalInput: string[] = []; // text frames the page sent to terminals
+  paired = true; // whether this browser is paired (ADR 0039)
+  devices: Device[] = [
+    { id: "d1", name: "Chrome on Linux", kind: "browser", paired_via: "local", created_at: iso(0), last_seen_at: iso(30) },
+    { id: "d2", name: "Pixel 9", kind: "browser", paired_via: "tailscale:ozan@github", created_at: iso(5), last_seen_at: iso(20) },
+  ];
 
   constructor(readonly world: World) {}
 
@@ -150,12 +159,40 @@ export class MockDaemon {
     await page.route("**/api/**", async (route) => {
       const url = new URL(route.request().url());
       const p = url.pathname;
+      const method = route.request().method();
+      const me = this.devices[0];
+      if (p === "/api/auth/session") {
+        return route.fulfill(json(this.paired ? { authenticated: true, device: me, remote: false } : { authenticated: false, remote: false }));
+      }
+      if (p === "/api/auth/pair") {
+        const body = route.request().postDataJSON() as { code: string; name: string };
+        this.requests.push(`POST ${p} ${body.name}`);
+        if (body.code.replace("-", "").toUpperCase() !== mockCode.replace("-", "")) {
+          return route.fulfill({ status: 401, contentType: "application/json", body: '{"error":"the pairing code is wrong or has expired"}' });
+        }
+        this.paired = true;
+        return route.fulfill({ ...json({ authenticated: true, device: { ...me, name: body.name }, remote: false }), status: 201 });
+      }
+      if (!this.paired && p !== "/api/health") {
+        return route.fulfill({ status: 401, contentType: "application/json", body: '{"error":"not paired"}' });
+      }
+      if (p === "/api/devices") return route.fulfill(json(this.devices.map((d) => ({ ...d, current: d.id === me.id }))));
+      if (p === "/api/devices/pairing-codes") {
+        return route.fulfill({ ...json({ code: "WXYZ-2345", expires_at: new Date(Date.now() + 300_000).toISOString(),
+          remote_urls: ["https://box.tail1234.ts.net/"] }), status: 201 });
+      }
+      const dev = /^\/api\/devices\/([^/]+)$/.exec(p);
+      if (dev && method === "DELETE") {
+        this.requests.push(`DELETE ${p}`);
+        this.devices = this.devices.filter((d) => d.id !== dev[1]);
+        if (dev[1] === me.id) this.paired = false;
+        return route.fulfill({ status: 204 });
+      }
       if (p === "/api/health") return route.fulfill(json({ status: "ok", version: "phase-7-test" }));
       if (p === "/api/project") return route.fulfill(json({ id: "p1", name: "linkshelf", repo_path: "/home/dev/linkshelf", slug: "linkshelf" }));
       if (p === "/api/status") return route.fulfill(json(status));
       if (p === "/api/usage") return route.fulfill(json(report(this.world)));
       if (p === "/api/roles") return route.fulfill(json(roles));
-      const method = route.request().method();
       if (method !== "GET") {
         this.requests.push(`${method} ${p} ${route.request().postData() ?? ""}`.trim());
         if (/^\/api\/inbox\/\d+\/(reply|read)$/.test(p)) {
@@ -207,6 +244,10 @@ export class MockDaemon {
       return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `mock: no route for ${p}` }) });
     });
     await page.routeWebSocket("**/api/events", (ws) => {
+      if (!this.paired) {
+        void ws.close({ code: 4401, reason: "signed out" });
+        return;
+      }
       this.events = ws;
       ws.send(JSON.stringify({
         type: "snapshot", agents: this.world.agents, tasks: this.world.tasks,
@@ -218,13 +259,19 @@ export class MockDaemon {
       const id = /\/api\/agents\/([^/]+)\/terminal$/.exec(ws.url())?.[1] ?? "";
       this.terminals.push(id);
       ws.send(Buffer.from(`\x1b[32mmock terminal of ${id}\x1b[0m\r\n> `));
-      ws.onMessage(() => undefined);
+      ws.onMessage((m) => { this.terminalInput.push(String(m)); });
       // An exited agent's terminal replays its scrollback, then closes like the daemon's.
       if (this.world.agents.find((a) => a.id === id)?.state === "exited") {
         ws.send(Buffer.from("Resume this session with:\r\nclaude --resume 00000000-0000-4000-8000-000000000000\r\n"));
         void ws.close({ code: 1000, reason: "process exited" });
       }
     });
+  }
+
+  // signOut ends this browser's pairing the way a revoke from another device does.
+  signOut(): void {
+    this.paired = false;
+    void this.events?.close({ code: 4401, reason: "signed out" });
   }
 
   private send(msg: object): void {

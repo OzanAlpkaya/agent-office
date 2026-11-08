@@ -90,6 +90,42 @@ export interface Status {
   prices?: PriceInfo;
   budgets?: Budgets;
   qa?: boolean; // goals need a passing QA run (ADR 0033)
+  remote_hosts?: string[]; // tailnet names tailscale serve forwards to the daemon (ADR 0038)
+}
+
+// Paired devices (ADR 0039). A device never carries its token.
+export interface Device {
+  id: string;
+  name: string;
+  kind: "browser" | "token";
+  paired_via: string; // "local" or "tailscale:<login>"
+  created_at: string;
+  last_seen_at: string;
+  current?: boolean; // the device making the request
+}
+
+export interface AuthSession {
+  authenticated: boolean;
+  device?: Device;
+  remote: boolean; // the request came through tailscale serve
+}
+
+export interface PairingCode {
+  code: string; // ABCD-EFGH
+  expires_at: string;
+  remote_urls: string[];
+}
+
+// unauthorizedEvent is dispatched on window when the daemon refuses this
+// browser (401, or a WebSocket closed as signed out); the app then shows its
+// pairing screen.
+export const unauthorizedEvent = "agent-office:unauthorized";
+
+// StatusSignedOut is the WebSocket close code of a revoked device.
+export const statusSignedOut = 4401;
+
+export function signalUnauthorized(): void {
+  window.dispatchEvent(new Event(unauthorizedEvent));
 }
 
 // Token usage (ADR 0026). Money is integer micro-USD (1 USD = 1 000 000), never a float.
@@ -614,6 +650,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
   const res = await fetch(path, init);
   if (!res.ok) {
+    if (res.status === 401 && !path.startsWith("/api/auth/")) signalUnauthorized();
     const data: unknown = await res.json().catch(() => undefined);
     const msg = isObj(data) && typeof data.error === "string" ? data.error : `${method} ${path}: ${res.status}`;
     throw new ApiError(msg, res.status, data);
@@ -645,6 +682,7 @@ export const api = {
   // The bytes one session's terminal received, to replay into a read-only terminal.
   sessionTerminal: async (id: string, sid: string): Promise<Uint8Array> => {
     const res = await fetch(`/api/agents/${id}/sessions/${sid}/terminal`, { headers: { Accept: "application/octet-stream" } });
+    if (res.status === 401) signalUnauthorized();
     if (!res.ok) throw new ApiError(`GET saved terminal: ${res.status}`, res.status, undefined);
     return new Uint8Array(await res.arrayBuffer());
   },
@@ -682,6 +720,13 @@ export const api = {
   acceptMemory: (id: number): Promise<MemoryEntry> => request("POST", `/api/memory/${id}/accept`),
   deleteMemory: (id: number): Promise<void> => request("DELETE", `/api/memory/${id}`),
   askBriefing: (): Promise<Agent> => request("POST", "/api/assistant/briefing"),
+  // Phase 10 (ADR 0039).
+  authSession: (): Promise<AuthSession> => request("GET", "/api/auth/session"),
+  pair: (code: string, name: string): Promise<AuthSession> => request("POST", "/api/auth/pair", { code, name }),
+  signOut: (): Promise<void> => request("POST", "/api/auth/logout"),
+  devices: (): Promise<Device[]> => request("GET", "/api/devices"),
+  newPairingCode: (): Promise<PairingCode> => request("POST", "/api/devices/pairing-codes"),
+  revokeDevice: (id: string): Promise<void> => request("DELETE", `/api/devices/${id}`),
 };
 
 export function wsURL(path: string): string {
