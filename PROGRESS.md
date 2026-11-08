@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 12 (Team workflow), not started; Phase 8 merged
+**Current phase:** Phase 12 (Team workflow and roles), in progress on `phase-12/team-workflow`
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -21,7 +21,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [ ] Phase 9: Memory & persistence
 - [ ] Phase 10: Remote access (PWA over Tailscale)
 - [ ] Phase 11: Portfolio polish
-- [ ] Phase 12: Team workflow
+- [ ] Phase 12: Team workflow and roles
 - [ ] Phase 13: Office v2
 
 ## Log
@@ -142,3 +142,6 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   `docs/screenshots/usage.png`. Backlog in `docs/plan.md`: the intermittent `TestTeamAuthorization`
   failure under load (Phase 12) and the "user settings" label flipping on sandboxed agents after a
   restart (Phase 9). Merged into `main` (`--no-ff`).
+- 2026-11-08: Phase 12 expanded by Ozan into "Team workflow and roles" (roles as data, Architect,
+  Tech Lead, QA, Assistant, escalation chain, model per role, conflict handling). Plan written with
+  the recommended options and started on `phase-12/team-workflow` (`docs/plans/phase-12.md`).

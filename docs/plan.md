@@ -330,40 +330,48 @@ derived from Claude Code hooks.
 
 ---
 
-## Phase 12: Team workflow
+## Phase 12: Team workflow and roles
 
-Added after Ozan's end-to-end test (2026-11-08). Appended rather than inserted so that the phase
-numbers ADRs refer to stay valid; it can run before Phases 10 and 11.
+Added after Ozan's end-to-end test (2026-11-08) and expanded by him before planning (2026-11-08)
+into "Team workflow and roles". Appended rather than inserted so that the phase numbers ADRs refer
+to stay valid.
 
-**Goal:** A team run that holds up on real work: the lead stays available for follow-ups,
-parallel work does not silently collide, and every agent can reach the user.
+**Goal:** A team run that holds up on real work: roles are data, an Architect agrees the plan with
+the user, a Tech Lead executes it in dependency order and stays for follow-ups, QA integrates and
+tests the result, an Assistant keeps the user briefed, parallel work does not silently collide,
+and every agent reaches the user or the agent above it.
 
-**Scope**
-- **The lead stays until the goal is done.** Today the lead exits right after reporting the goal
-  done. Instead it stays idle until the goal is marked done (or the user stops it), so the user
-  can review the result and give it follow-up work. Decide whether an idle lead keeps its
-  `--max-agents` slot, or exits and is resumed for follow-ups once Phase 9 can resume sessions.
-- **Conflicts between parallel workers.** Two workers on one goal produced conflicting branches
-  (both edited `internal/httpapi/handler.go`).
-  - Detect conflicts on `report_done`: `git merge-tree` of the branch against the default branch
-    and the other open agent branches, run in the main repository on imported branches (never in
-    an agent repository, ADR 0014); show them in the UI on the task and the PR.
-  - Let the lead plan dependent sub-tasks sequentially (a sub-task waits for the ones it depends
-    on), and tell it in its prompt to do so when sub-tasks touch the same files.
-  - After another PR merges, relaunch the worker whose branch now conflicts to resolve the
-    conflict (the ADR 0022 relaunch path), within a round limit.
-- **Messages to the user.** A worker without a lead tried to send a correction to a lead that did
-  not exist. Agents (with or without a lead) can send a message to the user; it is shown on the
-  task card, rendered as text, with the ADR 0018 limits.
+**Scope** (see `docs/plans/phase-12.md`, sub-phases 12.1–12.7)
+- Roles as data (role packs: prompt, team tools, denied tools, model, read-only or read-write
+  workspace, reports-to) over six engine behaviours; model per role.
+- Architect (read-only) produces a plan (design, sub-tasks, dependencies, files, acceptance
+  criteria), editable and approvable in the UI and committed as `docs/specs/<goal>.md`; optional.
+- Tech Lead (the lead, renamed) executes the approved plan and stays until the goal is done.
+- QA merges reported branches into an integration branch in the sandbox, tests, files bugs as
+  sub-tasks; the goal report needs a passing run.
+- Assistant: briefings, pending decisions, suggestions, project memory (accepted by the user).
+- Escalation chain worker → Tech Lead → Architect → user; messages to the user on the task card.
+- Conflicts: dependencies and file ownership enforced on assignment, `git merge-tree` checks on
+  `report_done`, relaunch to resolve after a PR merges.
 
 **Definition of Done**
+- [ ] Roles are YAML (built-in and user-owned); a new worker-behaviour role (e.g. `docs`) runs
+      without code changes, with its own prompt, model, tools and workspace mode.
 - [ ] A lead that reported its goal stays idle until the goal is marked done or stopped, and
       takes follow-up work typed into its terminal.
+- [ ] An Architect's plan is shown, edited and approved in the UI; approval commits
+      `docs/specs/<goal>.md` and creates the sub-tasks; the Tech Lead starts on it.
+- [ ] A lead can make a sub-task depend on others; it starts only after they are done, from
+      their work; overlapping files without a dependency are refused.
 - [ ] Conflicts with the default branch and other open agent branches are detected on
       `report_done` and shown in the UI (tested with two branches editing the same lines).
-- [ ] A lead can make a sub-task depend on others; it starts only after they are done.
 - [ ] After a merge, a worker whose branch conflicts can be relaunched to resolve it.
-- [ ] Any agent can message the user; the message appears on its task card.
+- [ ] QA merges the reported branches, reports pass or fail with bugs as sub-tasks, and gates
+      the goal report.
+- [ ] Any agent without someone above it can message the user; the message appears on its task
+      card and in the inbox, and the user's reply reaches the agent.
+- [ ] The Assistant gives a briefing from daemon data and proposes memory that reaches other
+      agents only once the user accepts it.
 
 **Backlog** (from the Phase 8 review, 2026-11-08)
 - Investigate the intermittent `TestTeamAuthorization` failure (`internal/engine`): it failed once
