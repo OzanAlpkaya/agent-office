@@ -146,7 +146,26 @@ func fakeClaude() int {
 				}
 			}
 			fmt.Println("committed more")
+		case "commitall": // commit everything written with "write"
+			for _, args := range [][]string{{"add", "-A"}, {"-c", "user.name=t", "-c", "user.email=t@example.com",
+				"commit", "-q", "-m", "feat: work"}} {
+				if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+					fmt.Printf("git failed: %v %s\n", err, out)
+				}
+			}
+			fmt.Println("committed all")
 		default:
+			if rest, ok := strings.CutPrefix(strings.TrimSpace(in.Text()), "write "); ok {
+				// write <path> <text>: the file's whole content becomes <text> plus a newline
+				name, text, _ := strings.Cut(rest, " ")
+				_ = os.MkdirAll(filepath.Dir(name), 0o755)
+				if err := os.WriteFile(name, []byte(text+"\n"), 0o644); err != nil {
+					fmt.Println("write failed:", err)
+				} else {
+					fmt.Println("wrote " + name)
+				}
+				continue
+			}
 			if l := strings.TrimSpace(in.Text()); l != "" {
 				fmt.Println("INPUT:" + l) // what the agent read, e.g. a message typed by the daemon
 			}

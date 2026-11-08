@@ -26,8 +26,8 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 		err = fmt.Errorf("agent %s: %w", id, ErrStillRunning)
 	case a.busy:
 		err = invalid("agent %s is being removed or relaunched", id)
-	case a.info.Kind != KindWorker:
-		err = invalid("only workers are relaunched, not a %s", a.info.Role)
+	case a.info.Kind != KindWorker && a.info.Kind != KindArchitect:
+		err = invalid("only workers and architects are relaunched, not a %s", a.info.Role)
 	case a.info.WorktreeStatus == WorktreeRemoved:
 		err = invalid("agent %s's workspace was removed", id)
 	case (a.info.Sandbox == SandboxPodman) != (e.opts.Sandbox != nil):

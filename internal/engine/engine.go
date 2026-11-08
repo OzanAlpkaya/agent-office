@@ -206,6 +206,7 @@ type Update struct {
 	PullRequest   *PullRequest   `json:"pull_request,omitempty"`
 	Usage         *SessionUsage  `json:"usage,omitempty"` // a running session's usage (ADR 0026)
 	Inbox         *InboxItem     `json:"inbox,omitempty"` // a message to the user (ADR 0030)
+	Spec          *Spec          `json:"spec,omitempty"`  // a version of a goal's plan (ADR 0031)
 }
 
 type agentProc struct {
@@ -538,6 +539,13 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		branch = fmt.Sprintf("%sreview-pr%d-%s", git.BranchPrefix, req.reviewPR, id[:6])
 	case KindArchitect, KindQA, KindAssistant:
 		branch = git.BranchName(role+" "+title, id)
+	}
+	if req.base == "" && role == KindWorker && task != nil && task.ParentTaskID.Valid {
+		// A sub-task starts from its goal's work: its dependencies, or the
+		// approved spec (ADR 0031, 0032).
+		if req.base, err = e.subTaskBase(ctx, *task); err != nil {
+			return AgentInfo{}, err
+		}
 	}
 	var base string
 	if req.base != "" {

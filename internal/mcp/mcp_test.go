@@ -78,6 +78,11 @@ func (f *fakeTeam) SubmitReview(_ context.Context, caller string, in SubmitRevie
 	return SubmitReviewOutput{ReviewID: 5, Posted: true, Next: "end your turn"}, f.err
 }
 
+func (f *fakeTeam) SubmitPlan(_ context.Context, caller string, in SubmitPlanInput) (SubmitPlanOutput, error) {
+	f.record(caller, ToolSubmitPlan, in)
+	return SubmitPlanOutput{SpecID: 1, Version: 1, Status: "proposed"}, f.err
+}
+
 func (f *fakeTeam) MessageUser(_ context.Context, caller string, in MessageUserInput) (MessageUserOutput, error) {
 	f.record(caller, ToolMessageUser, in)
 	return MessageUserOutput{MessageID: 9, Status: "shown"}, f.err

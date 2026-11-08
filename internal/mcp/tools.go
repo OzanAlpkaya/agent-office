@@ -49,6 +49,34 @@ type Team interface {
 	RequestAccess(ctx context.Context, caller string, in RequestAccessInput) (RequestAccessOutput, error)
 	SubmitReview(ctx context.Context, caller string, in SubmitReviewInput) (SubmitReviewOutput, error)
 	MessageUser(ctx context.Context, caller string, in MessageUserInput) (MessageUserOutput, error)
+	SubmitPlan(ctx context.Context, caller string, in SubmitPlanInput) (SubmitPlanOutput, error)
+}
+
+// PlanSubTask is one sub-task of an architect's plan (ADR 0031).
+type PlanSubTask struct {
+	Key         string   `json:"key" jsonschema:"Short id of the sub-task, used in depends_on: lower-case letters, digits and -, e.g. api."`
+	Title       string   `json:"title" jsonschema:"Short title (1-200 characters)."`
+	Description string   `json:"description" jsonschema:"What the worker must do, where, and how to check it (at most 20000 characters)."`
+	Role        string   `json:"role,omitempty" jsonschema:"The worker role that builds it, e.g. docs or security; empty: worker."`
+	DependsOn   []string `json:"depends_on,omitempty" jsonschema:"Keys of the sub-tasks whose work this one needs; it starts after them, from their work."`
+	Files       []string `json:"files,omitempty" jsonschema:"Files it changes: repository-relative paths, directories ending in /, or globs such as internal/api/*.go."`
+	Acceptance  []string `json:"acceptance,omitempty" jsonschema:"Acceptance criteria a test can check, one per item."`
+}
+
+// SubmitPlanInput is submit_plan's input: the plan for the goal (ADR 0031).
+type SubmitPlanInput struct {
+	Summary  string        `json:"summary" jsonschema:"The goal as agreed with the user, in two or three sentences (1-2000 characters)."`
+	Design   string        `json:"design" jsonschema:"How it will work, in Markdown: components, data, interfaces, the reasons for the main choices (at most 20000 characters)."`
+	SubTasks []PlanSubTask `json:"sub_tasks" jsonschema:"The sub-tasks (1-20), each done by one worker on its own branch."`
+	Risks    string        `json:"risks,omitempty" jsonschema:"What could go wrong and how the plan deals with it (at most 4000 characters)."`
+}
+
+// SubmitPlanOutput is submit_plan's result.
+type SubmitPlanOutput struct {
+	SpecID  int64  `json:"spec_id"`
+	Version int64  `json:"version"`
+	Status  string `json:"status"`
+	Next    string `json:"next"`
 }
 
 // MessageUserInput is message_user's input (ADR 0030).
@@ -66,8 +94,12 @@ type MessageUserOutput struct {
 
 // CreateTaskInput is create_task's input.
 type CreateTaskInput struct {
-	Title       string `json:"title" jsonschema:"Short title of the sub-task (1-200 characters)."`
-	Description string `json:"description,omitempty" jsonschema:"What the worker must do and how to tell it is done (at most 20000 characters)."`
+	Title       string   `json:"title" jsonschema:"Short title of the sub-task (1-200 characters)."`
+	Description string   `json:"description,omitempty" jsonschema:"What the worker must do and how to tell it is done (at most 20000 characters)."`
+	DependsOn   []string `json:"depends_on,omitempty" jsonschema:"Ids of sub-tasks of your goal whose work this one needs; it starts only after they are reported, from their work."`
+	Files       []string `json:"files,omitempty" jsonschema:"Files it changes: repository-relative paths, directories ending in /, or globs. Sub-tasks with overlapping files cannot run at the same time unless one depends on the other."`
+	Acceptance  []string `json:"acceptance,omitempty" jsonschema:"Acceptance criteria QA tests, one per item."`
+	Role        string   `json:"role,omitempty" jsonschema:"The worker role that builds it (agent-office lists them in list_tasks); empty: worker."`
 }
 
 // AgentRef is an agent as the tools show it.
@@ -81,17 +113,30 @@ type AgentRef struct {
 
 // TaskInfo is a task as the tools show it.
 type TaskInfo struct {
-	ID           string     `json:"id"`
-	Title        string     `json:"title"`
-	Description  string     `json:"description,omitempty"`
-	Status       string     `json:"status"`
-	ParentTaskID string     `json:"parent_task_id,omitempty"`
-	Agents       []AgentRef `json:"agents,omitempty"`
+	ID           string         `json:"id"`
+	Title        string         `json:"title"`
+	Description  string         `json:"description,omitempty"`
+	Status       string         `json:"status"`
+	ParentTaskID string         `json:"parent_task_id,omitempty"`
+	DependsOn    []string       `json:"depends_on,omitempty"`
+	Files        []string       `json:"files,omitempty"`
+	Acceptance   []string       `json:"acceptance,omitempty"`
+	Role         string         `json:"role,omitempty"`
+	Conflicts    []ConflictInfo `json:"conflicts,omitempty"`
+	Agents       []AgentRef     `json:"agents,omitempty"`
+}
+
+// ConflictInfo is a conflict found when a sub-task was reported (ADR 0032).
+type ConflictInfo struct {
+	With   string   `json:"with,omitempty"` // the other sub-task; empty: the base branch
+	Branch string   `json:"branch"`
+	Files  []string `json:"files"`
 }
 
 // AssignTaskInput is assign_task's input.
 type AssignTaskInput struct {
 	TaskID string `json:"task_id" jsonschema:"Id of a sub-task of your goal, in status todo or blocked."`
+	Role   string `json:"role,omitempty" jsonschema:"The worker role to start (see worker_roles in list_tasks); empty: the sub-task's role, else worker."`
 }
 
 // AssignTaskOutput is assign_task's result.
@@ -101,13 +146,14 @@ type AssignTaskOutput struct {
 	Branch  string `json:"branch"`
 }
 
-// ListTasksOutput is list_tasks's result: for a lead its goal and sub-tasks,
-// for a worker its own task and its lead.
+// ListTasksOutput is list_tasks's result: for a lead or an architect its goal
+// and sub-tasks, for a worker its own task and its lead.
 type ListTasksOutput struct {
-	You   AgentRef   `json:"you"`
-	Goal  *TaskInfo  `json:"goal,omitempty"`
-	Tasks []TaskInfo `json:"tasks"`
-	Lead  *AgentRef  `json:"lead,omitempty"`
+	You         AgentRef   `json:"you"`
+	Goal        *TaskInfo  `json:"goal,omitempty"`
+	Tasks       []TaskInfo `json:"tasks"`
+	Lead        *AgentRef  `json:"lead,omitempty"`
+	WorkerRoles []string   `json:"worker_roles,omitempty"` // leads: the roles assign_task and create_task accept
 }
 
 // SendMessageInput is send_message's input.
@@ -262,6 +308,13 @@ func NewServer(team Team, caller string, tools []string, version string, log *sl
 				return team.ReportNoChange(ctx, caller, in)
 			})
 	}
+	add(s, t, &sdk.Tool{Name: ToolSubmitPlan, Description: "Submit the plan for your goal (architects only). " +
+		"agent-office validates it, shows it to the user in the UI and waits for the user's approval; approval commits " +
+		"it as docs/specs/<goal>.md, creates the sub-tasks and starts a Tech Lead. Submitting again replaces a plan " +
+		"that is not approved yet."},
+		func(ctx context.Context, in SubmitPlanInput) (SubmitPlanOutput, error) {
+			return team.SubmitPlan(ctx, caller, in)
+		})
 	add(s, t, &sdk.Tool{Name: ToolMessageUser, Description: "Send a message to the human user; it appears in the " +
 		"agent-office inbox and on your task card. Only agents with nobody above them may do this (the architect, the " +
 		"assistant, a Tech Lead without an architect, a worker without a lead); others are told whom to ask. For a " +

@@ -96,6 +96,9 @@ func (e *Engine) initialPrompt(ctx context.Context, def *role.Role, task *db.Tas
 	case KindLead:
 		if task != nil {
 			b.WriteString("\n\n" + goalSection(task))
+			if p := e.planSection(ctx, task); p != "" {
+				b.WriteString("\n" + p)
+			}
 		}
 	case KindArchitect:
 		if task != nil {
@@ -138,10 +141,4 @@ func (e *Engine) Roles() []RoleInfo {
 // 0033); filled in with QA. Without --qa it always passes.
 func (e *Engine) qaGate(ctx context.Context, goal db.Task, children []db.Task) error {
 	return nil
-}
-
-// relaunchArchitect starts an exited architect again for an escalation (ADR
-// 0031); filled in with specs.
-func (e *Engine) relaunchArchitect(ctx context.Context, id, lead string) (string, error) {
-	return "", invalid("your goal's architect has ended; tell the user with message_user")
 }

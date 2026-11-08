@@ -87,8 +87,12 @@ func (e *Engine) agentRefLocked(a *agentProc) mcp.AgentRef {
 }
 
 func (e *Engine) taskInfoLocked(t db.Task) mcp.TaskInfo {
+	v := taskFromRow(t)
 	ti := mcp.TaskInfo{ID: t.ID, Title: t.Title, Description: t.Description, Status: t.Status,
-		ParentTaskID: t.ParentTaskID.String}
+		ParentTaskID: t.ParentTaskID.String, DependsOn: v.DependsOn, Files: v.Files, Acceptance: v.Acceptance, Role: v.Role}
+	for _, c := range v.Conflicts {
+		ti.Conflicts = append(ti.Conflicts, mcp.ConflictInfo{With: c.With, Branch: c.Branch, Files: c.Files})
+	}
 	for _, id := range e.order {
 		if a := e.agents[id]; a.info.TaskID == t.ID {
 			ti.Agents = append(ti.Agents, e.agentRefLocked(a))
@@ -132,13 +136,18 @@ func (t team) CreateTask(ctx context.Context, caller string, in mcp.CreateTaskIn
 	if n >= MaxSubTasks {
 		return mcp.TaskInfo{}, userErr(fmt.Errorf("%w: a goal has at most %d sub-tasks", ErrLimit, MaxSubTasks))
 	}
-	task, err := e.createTask(ctx, TaskInput{Title: in.Title, Description: in.Description}, goal.ID, caller)
+	ti, err := e.subTaskInput(ctx, goal, in)
+	if err != nil {
+		return mcp.TaskInfo{}, userErr(err)
+	}
+	task, err := e.createTask(ctx, ti, goal.ID, caller)
 	if err != nil {
 		return mcp.TaskInfo{}, userErr(err)
 	}
 	e.log.Info("sub-task created", "agent_id", caller, "task_id", task.ID, "goal", goal.ID)
 	return mcp.TaskInfo{ID: task.ID, Title: task.Title, Description: task.Description, Status: task.Status,
-		ParentTaskID: task.ParentTaskID}, nil
+		ParentTaskID: task.ParentTaskID, DependsOn: task.DependsOn, Files: task.Files, Acceptance: task.Acceptance,
+		Role: task.Role}, nil
 }
 
 func (t team) AssignTask(ctx context.Context, caller string, in mcp.AssignTaskInput) (mcp.AssignTaskOutput, error) {
@@ -156,6 +165,26 @@ func (t team) AssignTask(ctx context.Context, caller string, in mcp.AssignTaskIn
 	}
 	if task.Status != StatusTodo && task.Status != StatusBlocked {
 		return mcp.AssignTaskOutput{}, userErr(invalid("task %s is %s; only todo or blocked tasks can be assigned", task.ID, task.Status))
+	}
+	roleName := task.Role
+	if in.Role != "" {
+		if roleName, err = e.workerRole(strings.TrimSpace(in.Role)); err != nil {
+			return mcp.AssignTaskOutput{}, userErr(err)
+		}
+	}
+	if roleName == "" {
+		roleName = RoleWorker
+	}
+	// ADR 0032: dependencies first, and no two running sub-tasks on the same
+	// files unless one depends on the other.
+	if unmet, err := e.unmetDependencies(ctx, task); err != nil {
+		return mcp.AssignTaskOutput{}, err
+	} else if len(unmet) > 0 {
+		return mcp.AssignTaskOutput{}, userErr(invalid("task %s waits for the sub-tasks it depends on: %s; assign it once "+
+			"they are reported", task.ID, strings.Join(unmet, ", ")))
+	}
+	if err := e.checkFileOverlap(ctx, task); err != nil {
+		return mcp.AssignTaskOutput{}, userErr(err)
 	}
 	e.mu.Lock()
 	busy := e.assigning[task.ID]
@@ -183,7 +212,7 @@ func (t team) AssignTask(ctx context.Context, caller string, in mcp.AssignTaskIn
 			return mcp.AssignTaskOutput{}, err
 		}
 	}
-	a, err := e.Start(ctx, StartRequest{TaskID: task.ID, Role: RoleWorker})
+	a, err := e.Start(ctx, StartRequest{TaskID: task.ID, Role: roleName})
 	if errors.Is(err, ErrTooManyAgents) {
 		return mcp.AssignTaskOutput{}, userErr(fmt.Errorf("%w (at most %d agents run at once, you included): "+
 			"wait for a worker's report, then assign this task", ErrTooManyAgents, e.opts.MaxAgents))
@@ -214,7 +243,7 @@ func (t team) ListTasks(ctx context.Context, caller string) (mcp.ListTasksOutput
 		if own, err = e.getTask(ctx, taskID); err != nil {
 			return mcp.ListTasksOutput{}, userErr(fmt.Errorf("your task: %w", err))
 		}
-		if role == KindLead {
+		if role == KindLead || role == KindArchitect {
 			if children, err = e.q.ListChildTasks(ctx, nullString(own.ID)); err != nil {
 				return mcp.ListTasksOutput{}, err
 			}
@@ -225,9 +254,15 @@ func (t team) ListTasks(ctx context.Context, caller string) (mcp.ListTasksOutput
 	out.You = e.agentRefLocked(a)
 	switch {
 	case taskID == "":
-	case role == KindLead:
+	case role == KindLead || role == KindArchitect:
 		g := e.taskInfoLocked(own)
 		out.Goal = &g
+		if role == KindLead {
+			out.WorkerRoles = e.workerRoles()
+		} else if l := e.leadOfGoalLocked(own.ID); l != nil {
+			ref := e.agentRefLocked(l)
+			out.Lead = &ref
+		}
 		for _, c := range children {
 			out.Tasks = append(out.Tasks, e.taskInfoLocked(c))
 		}

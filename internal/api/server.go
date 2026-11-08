@@ -85,6 +85,9 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/pull-requests/{id}/accept", s.prAction(s.acceptFlagged))
 	mux.HandleFunc("POST /api/agents/{id}/message", s.messageAgent)
 	mux.HandleFunc("GET /api/inbox", s.listInbox)
+	mux.HandleFunc("GET /api/specs", s.listSpecs)
+	mux.HandleFunc("PUT /api/specs/{id}", s.specAction(false))
+	mux.HandleFunc("POST /api/specs/{id}/approve", s.specAction(true))
 	mux.HandleFunc("POST /api/inbox/{id}/read", s.inboxAction(false))
 	mux.HandleFunc("POST /api/inbox/{id}/reply", s.inboxAction(true))
 	mux.HandleFunc("GET /api/events", s.eventsWS)
@@ -271,6 +274,46 @@ func (s *server) messageAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, m)
+}
+
+func (s *server) listSpecs(w http.ResponseWriter, r *http.Request) {
+	specs, err := s.eng.Specs(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, specs)
+}
+
+// specAction saves the user's edit of a plan as a new version (PUT), or
+// approves a proposed version (ADR 0031).
+func (s *server) specAction(approve bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id < 1 {
+			writeError(w, http.StatusBadRequest, "invalid spec id")
+			return
+		}
+		if approve {
+			res, err := s.eng.ApproveSpec(r.Context(), id)
+			if err != nil {
+				s.engineError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, res)
+			return
+		}
+		var p engine.Plan
+		if !decodeJSON(w, r, &p) {
+			return
+		}
+		spec, err := s.eng.EditSpec(r.Context(), id, p)
+		if err != nil {
+			s.engineError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, spec)
+	}
 }
 
 func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
@@ -697,6 +740,11 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusInternalError, "could not load the inbox")
 		return
 	}
+	specs, err := s.eng.Specs(r.Context())
+	if err != nil {
+		c.Close(websocket.StatusInternalError, "could not load the plans")
+		return
+	}
 	ctx := c.CloseRead(r.Context())
 
 	write := func(v any) error {
@@ -706,7 +754,8 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		return c.Write(wctx, websocket.MessageText, b)
 	}
 	if err := write(map[string]any{"type": "snapshot", "agents": s.eng.List(), "tasks": tasks,
-		"access_requests": access, "pull_requests": prs, "inbox": inbox}); err != nil {
+		"access_requests": access, "pull_requests": prs, "inbox": inbox,
+		"specs": specs}); err != nil {
 		return
 	}
 	for {
