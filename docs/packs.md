@@ -9,7 +9,7 @@ agent-office worker-image --pack go     # once, and after the pack changes (need
 agent-office serve --repo ~/src/myproject --pack go
 ```
 
-Without `--pack`, agents get the **base image** (Debian with git, curl, ripgrep and CA
+Without `--pack`, agents get the **base image** (Debian with git, curl, ripgrep, python3 and CA
 certificates, no language toolchain) and the default allowlist (`proxy.golang.org`,
 `sum.golang.org`, `registry.npmjs.org`). Packs need sandbox mode; `--pack` with `--sandbox host` is
 refused.

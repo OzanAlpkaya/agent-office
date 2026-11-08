@@ -152,8 +152,9 @@ func expectLines(t *testing.T, out string, want ...string) {
 	}
 }
 
-// TestWorkerImageAndInit runs the base image (no toolchain, ADR 0023); the
-// pack toolchains are tested in internal/engine (TestSandboxedPackToolchains).
+// TestWorkerImageAndInit runs the base image (no toolchain, ADR 0023; python3
+// and packages from a pinned Debian snapshot, ADR 0041); the pack toolchains
+// are tested in internal/engine (TestSandboxedPackToolchains).
 func TestWorkerImageAndInit(t *testing.T) {
 	script := `
 echo "uid=$(id -u) gid=$(id -g)"
@@ -163,6 +164,9 @@ command -v go >/dev/null && echo go=present || echo go=absent
 command -v node >/dev/null && echo node=present || echo node=absent
 git --version >/dev/null && echo git=ok
 rg --version >/dev/null && echo rg=ok
+python3 -c 'import json, re, pathlib; print("python3=ok")'
+grep -c '^URIs: http://snapshot.debian.org/archive/' /etc/apt/sources.list.d/debian.sources | sed 's/^/apt-snapshot-sources=/'
+dpkg-query -W -f='${Version}\n' git | sed 's/^/git-version=/'
 command -v ssh >/dev/null && echo ssh=present || echo ssh=absent
 test -s /etc/ssl/certs/ca-certificates.crt && echo certs=ok
 test -w / && echo rootfs=writable || echo rootfs=ro
@@ -177,7 +181,7 @@ curl -s -o /dev/null -w 'api-noauth=%{http_code}\n' -X POST http://127.0.0.1:808
 	out, events := workerRun(t, script)
 	expectLines(t, out,
 		"uid=1000 gid=1000", "CapEff: 0000000000000000", "NoNewPrivs: 1", "net=lo ",
-		"go=absent", "node=absent", "git=ok", "rg=ok", "ssh=absent", "certs=ok", "rootfs=ro",
+		"go=absent", "node=absent", "git=ok", "rg=ok", "python3=ok", "apt-snapshot-sources=2", "git-version=1:2.47.3-0+deb13u1", "ssh=absent", "certs=ok", "rootfs=ro",
 		"token="+Placeholder, "tmpdir=own", "init-vars-leaked=0",
 		"author=Ozan <ozan@example.com>", "Co-Authored-By: worker-e2e (agent-office) <noreply@agent-office.invalid>",
 		"api-models=403", "api-noauth=401")

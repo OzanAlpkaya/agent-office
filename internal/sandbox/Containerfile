@@ -9,10 +9,31 @@
 # Deliberately absent: openssh-client (no SSH; pushing is the daemon's job, ADR 0014).
 FROM docker.io/library/debian:trixie-slim@sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392
 
+# Reproducible packages (ADR 0041): apt reads a fixed snapshot of the Debian archive, the one
+# the base image was built from (its sources file names it), and every package is pinned to the
+# version in that snapshot. Pack images inherit these sources, so their packages come from the
+# same snapshot. To update: pick a newer snapshot (and base image digest), then the versions
+# (`apt-cache policy <pkg>` in a container with these sources) in this file and the packs'.
+# Signatures are still checked; Check-Valid-Until is off because a snapshot's Release file
+# expires by design.
+ARG DEBIAN_SNAPSHOT=20261104T212339Z
+RUN sed -i \
+      -e "s#^URIs: http://deb.debian.org/debian\$#URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}#" \
+      -e "s#^URIs: http://deb.debian.org/debian-security\$#URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}#" \
+      /etc/apt/sources.list.d/debian.sources \
+ && grep -q "snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" /etc/apt/sources.list.d/debian.sources \
+ && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99agent-office-snapshot
+
 # ca-certificates is not in Debian slim; git and curl need it for HTTPS through the CONNECT
-# proxy. --no-install-recommends keeps git's recommended openssh-client out.
+# proxy. --no-install-recommends keeps git's recommended openssh-client out. python3 (with its
+# standard library, no pip): agents reach for it to edit files and run small scripts.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git curl ripgrep \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates=20250419+deb13u1 \
+      git=1:2.47.3-0+deb13u1 \
+      curl=8.14.1-2+deb13u7 \
+      ripgrep=14.1.1-1+b4 \
+      python3=3.13.5-1 \
  && rm -rf /var/lib/apt/lists/*
 
 LABEL io.agent-office.image=worker

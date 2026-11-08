@@ -3,8 +3,9 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
+# Versions pinned in the base image's Debian snapshot (ADR 0041).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends nodejs npm \
+ && apt-get install -y --no-install-recommends nodejs=20.19.2+dfsg-1+deb13u3 npm=9.2.0~ds1-3 \
  && rm -rf /var/lib/apt/lists/*
 
 # HOME is a tmpfs (/tmp/home); npm's cache lives there. No update checks, funding or audit
