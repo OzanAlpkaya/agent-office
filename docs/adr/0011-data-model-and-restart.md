@@ -1,6 +1,7 @@
 # 0011. Data model and restart semantics
 
-- **Status:** Accepted; event retention decided in ADR 0028, session counters added in ADR 0026
+- **Status:** Accepted; event retention decided in ADR 0028, session counters added in ADR 0026; restart
+  semantics amended by ADR 0035 (interrupted agents are restored with their conversations)
 - **Date:** 2026-11-07
 
 ## Context
@@ -30,7 +31,8 @@ other task status changes are made by the user.
 
 **Restart:** at startup, every agent not yet `exited` is marked `exited` with reason
 `daemon_restart`. Its terminal is gone (there is no scrollback to replay), and its worktree and
-branch stay as they were. Tasks are untouched. Resuming sessions (`claude --resume`) is Phase 9.
+branch stay as they were. Tasks are untouched. Resuming sessions (`claude --resume`) is Phase 9: since ADR 0035 the next start
+restores these agents with their conversations (`--restore-agents`).
 
 **Limits:** at most `--max-agents` (default 4) agents run at the same time.
 

@@ -1,6 +1,6 @@
 # 0034. The assistant: briefings from daemon facts, project memory the user accepts
 
-- **Status:** Accepted
+- **Status:** Accepted; what reaches a prompt and who may list memory amended by ADR 0037
 - **Date:** 2026-11-08
 
 ## Context

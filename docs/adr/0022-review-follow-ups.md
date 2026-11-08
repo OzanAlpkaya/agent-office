@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-11-07
 - **Amends:** ADR 0017 ("workers that reported are gone, so follow-up work is a new sub-task")
+- **Amended by:** ADR 0035 (the same path resumes conversations; relaunches stay fresh)
 - **Amended:** 2026-11-07 (Phase 6, decided by Ozan): a follow-up round needs a new commit or an
   explicit "no change needed" (below)
 

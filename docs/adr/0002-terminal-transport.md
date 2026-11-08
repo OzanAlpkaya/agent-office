@@ -1,6 +1,6 @@
 # 0002. Terminal transport: PTY + WebSocket, sessions outlive connections
 
-- **Status:** Accepted
+- **Status:** Accepted; scrollback saved per session since ADR 0036
 - **Date:** 2026-11-06
 
 ## Context
