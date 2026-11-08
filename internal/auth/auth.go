@@ -78,6 +78,7 @@ type Device struct {
 	Name       string    `json:"name"`
 	Kind       string    `json:"kind"`       // browser | token
 	PairedVia  string    `json:"paired_via"` // "local", or "tailscale:<login>"
+	PairedBy   string    `json:"paired_by"`  // the device whose code paired it; "" = agent-office pair
 	CreatedAt  time.Time `json:"created_at"`
 	LastSeenAt time.Time `json:"last_seen_at"`
 }
@@ -102,6 +103,7 @@ type entry struct {
 type code struct {
 	value   string // normalized, without the dash
 	expires time.Time
+	by      string // the device that created it; "" = the control socket
 }
 
 // Manager holds the paired devices and the open pairing codes.
@@ -147,12 +149,13 @@ func New(ctx context.Context, st Store, opts Options) (*Manager, error) {
 }
 
 func fromRow(r db.Device) Device {
-	return Device{ID: r.ID, Name: r.Name, Kind: r.Kind, PairedVia: r.PairedVia, CreatedAt: r.CreatedAt.UTC(),
+	return Device{ID: r.ID, Name: r.Name, Kind: r.Kind, PairedVia: r.PairedVia, PairedBy: r.PairedBy, CreatedAt: r.CreatedAt.UTC(),
 		LastSeenAt: r.LastSeenAt.UTC()}
 }
 
-// NewCode creates a pairing code.
-func (m *Manager) NewCode() (Code, error) {
+// NewCode creates a pairing code. by is the paired device asking for it, or
+// "" for the control socket; devices paired with the code are revoked with it.
+func (m *Manager) NewCode(by string) (Code, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
@@ -170,7 +173,7 @@ func (m *Manager) NewCode() (Code, error) {
 		v[i] = codeAlphabet[bits&31]
 		bits >>= 5
 	}
-	c := code{value: string(v), expires: now.Add(CodeTTL)}
+	c := code{value: string(v), expires: now.Add(CodeTTL), by: by}
 	m.codes = append(m.codes, c)
 	return Code{Value: c.value[:4] + "-" + c.value[4:], ExpiresAt: c.expires.UTC()}, nil
 }
@@ -228,19 +231,21 @@ func (m *Manager) Pair(ctx context.Context, rawCode, name, via string) (string, 
 	if err != nil {
 		return "", Device{}, err
 	}
-	if err := m.useCode(rawCode); err != nil {
+	by, err := m.useCode(rawCode)
+	if err != nil {
 		return "", Device{}, err
 	}
-	return m.create(ctx, name, KindBrowser, via)
+	return m.create(ctx, name, KindBrowser, via, by)
 }
 
-func (m *Manager) useCode(raw string) error {
+// useCode consumes a code and returns the device that created it.
+func (m *Manager) useCode(raw string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
 	m.pruneLocked(now)
 	if len(m.failures) >= MaxFailures {
-		return ErrTooManyAttempts
+		return "", ErrTooManyAttempts
 	}
 	want := NormalizeCode(raw)
 	found := -1
@@ -255,12 +260,13 @@ func (m *Manager) useCode(raw string) error {
 		if len(m.failures) >= MaxFailures {
 			m.codes = nil
 			m.log.Warn("pairing refused after too many wrong codes; open codes dropped", "failures", len(m.failures))
-			return ErrTooManyAttempts
+			return "", ErrTooManyAttempts
 		}
-		return ErrInvalidCode
+		return "", ErrInvalidCode
 	}
+	by := m.codes[found].by
 	m.codes = append(m.codes[:found], m.codes[found+1:]...) // single use
-	return nil
+	return by, nil
 }
 
 // CreateToken creates a device for a script: a bearer token without a
@@ -270,10 +276,10 @@ func (m *Manager) CreateToken(ctx context.Context, name string) (string, Device,
 	if err != nil {
 		return "", Device{}, err
 	}
-	return m.create(ctx, name, KindToken, "local")
+	return m.create(ctx, name, KindToken, "local", "")
 }
 
-func (m *Manager) create(ctx context.Context, name, kind, via string) (string, Device, error) {
+func (m *Manager) create(ctx context.Context, name, kind, via, by string) (string, Device, error) {
 	var tb [32]byte
 	if _, err := rand.Read(tb[:]); err != nil {
 		return "", Device{}, err
@@ -286,15 +292,24 @@ func (m *Manager) create(ctx context.Context, name, kind, via string) (string, D
 	hash := HashToken(token)
 	now := m.now().UTC()
 	via = cleanVia(via)
-	d := Device{ID: hex.EncodeToString(ib[:]), Name: name, Kind: kind, PairedVia: via, CreatedAt: now, LastSeenAt: now}
+	d := Device{ID: hex.EncodeToString(ib[:]), Name: name, Kind: kind, PairedVia: via, PairedBy: by, CreatedAt: now, LastSeenAt: now}
+	m.mu.Lock()
+	// A code whose device was revoked meanwhile pairs nothing.
+	if by != "" && m.idLocked(by) == nil {
+		m.mu.Unlock()
+		return "", Device{}, ErrInvalidCode
+	}
+	m.mu.Unlock()
 	if err := m.st.CreateDevice(ctx, db.CreateDeviceParams{ID: d.ID, Name: d.Name, Kind: d.Kind, TokenHash: hash,
-		PairedVia: d.PairedVia, CreatedAt: now, LastSeenAt: now}); err != nil {
+		PairedVia: d.PairedVia, PairedBy: by, CreatedAt: now, LastSeenAt: now}); err != nil {
 		return "", Device{}, fmt.Errorf("auth: store device: %w", err)
 	}
 	m.mu.Lock()
 	m.byHash[hash] = &entry{dev: d, touched: now}
 	m.mu.Unlock()
-	m.log.Info("device paired", "device_id", d.ID, "kind", kind, "via", via)
+	// The Tailscale login is personal data: the log says only how the device was paired.
+	how, _, _ := strings.Cut(via, ":")
+	m.log.Info("device paired", "device_id", d.ID, "kind", kind, "via", how, "paired_by", by)
 	return token, d, nil
 }
 
@@ -321,7 +336,8 @@ func (m *Manager) Authenticate(ctx context.Context, token string) (Device, bool)
 	}
 	if now.Sub(e.dev.LastSeenAt) > IdleExpiry {
 		m.mu.Unlock()
-		if err := m.Revoke(ctx, e.dev.ID); err != nil && !errors.Is(err, ErrNotFound) {
+		// Only this device: the ones it paired were used more recently.
+		if err := m.revoke(ctx, []string{e.dev.ID}); err != nil {
 			m.log.Error("delete expired device", "device_id", e.dev.ID, "err", err)
 		}
 		return Device{}, false
@@ -358,30 +374,103 @@ func (m *Manager) Devices() []Device {
 	return out
 }
 
-// Revoke deletes a device and cancels the contexts of its open connections.
+// Revoke deletes a device, every device paired with a code it created (and
+// theirs), and the codes it created, and cancels their open connections.
 func (m *Manager) Revoke(ctx context.Context, id string) error {
-	n, err := m.st.DeleteDevice(ctx, id)
-	if err != nil {
-		return fmt.Errorf("auth: delete device: %w", err)
-	}
 	m.mu.Lock()
-	found := false
-	for h, e := range m.byHash {
-		if e.dev.ID == id {
-			delete(m.byHash, h)
-			found = true
+	ids := m.lineageLocked(id)
+	m.mu.Unlock()
+	if len(ids) == 0 {
+		// Not known in memory; a row may still exist (it cannot authenticate anyway).
+		n, err := m.st.DeleteDevice(ctx, id)
+		if err != nil {
+			return fmt.Errorf("auth: delete device: %w", err)
+		}
+		if n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}
+	return m.revoke(ctx, ids)
+}
+
+// RevokeOthers signs out every device except keep. It returns how many.
+func (m *Manager) RevokeOthers(ctx context.Context, keep string) (int, error) {
+	m.mu.Lock()
+	var ids []string
+	for _, e := range m.byHash {
+		if e.dev.ID != keep {
+			ids = append(ids, e.dev.ID)
 		}
 	}
-	ws := m.watchers[id]
-	delete(m.watchers, id)
 	m.mu.Unlock()
-	for _, cancel := range ws {
+	return len(ids), m.revoke(ctx, ids)
+}
+
+func (m *Manager) revoke(ctx context.Context, ids []string) error {
+	for _, id := range ids {
+		if _, err := m.st.DeleteDevice(ctx, id); err != nil {
+			return fmt.Errorf("auth: delete device: %w", err)
+		}
+	}
+	gone := map[string]bool{}
+	for _, id := range ids {
+		gone[id] = true
+	}
+	var cancels []context.CancelCauseFunc
+	m.mu.Lock()
+	for h, e := range m.byHash {
+		if gone[e.dev.ID] {
+			delete(m.byHash, h)
+		}
+	}
+	codes := m.codes[:0]
+	for _, c := range m.codes {
+		if !gone[c.by] {
+			codes = append(codes, c)
+		}
+	}
+	m.codes = codes
+	for id := range gone {
+		for _, cancel := range m.watchers[id] {
+			cancels = append(cancels, cancel)
+		}
+		delete(m.watchers, id)
+	}
+	m.mu.Unlock()
+	for _, cancel := range cancels {
 		cancel(ErrRevoked)
 	}
-	if n == 0 && !found {
-		return ErrNotFound
+	for _, id := range ids {
+		m.log.Info("device signed out", "device_id", id)
 	}
-	m.log.Info("device signed out", "device_id", id)
+	return nil
+}
+
+// lineageLocked is id and every device paired, directly or not, through it.
+func (m *Manager) lineageLocked(id string) []string {
+	if m.idLocked(id) == nil {
+		return nil
+	}
+	out := []string{id}
+	seen := map[string]bool{id: true}
+	for i := 0; i < len(out); i++ {
+		for _, e := range m.byHash {
+			if e.dev.PairedBy == out[i] && !seen[e.dev.ID] {
+				seen[e.dev.ID] = true
+				out = append(out, e.dev.ID)
+			}
+		}
+	}
+	return out
+}
+
+func (m *Manager) idLocked(id string) *entry {
+	for _, e := range m.byHash {
+		if e.dev.ID == id {
+			return e
+		}
+	}
 	return nil
 }
 
@@ -391,14 +480,7 @@ func (m *Manager) Revoke(ctx context.Context, id string) error {
 func (m *Manager) Watch(parent context.Context, id string) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(parent)
 	m.mu.Lock()
-	known := false
-	for _, e := range m.byHash {
-		if e.dev.ID == id {
-			known = true
-			break
-		}
-	}
-	if !known {
+	if m.idLocked(id) == nil {
 		m.mu.Unlock()
 		cancel(ErrRevoked)
 		return ctx, func() {}

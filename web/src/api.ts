@@ -727,6 +727,7 @@ export const api = {
   devices: (): Promise<Device[]> => request("GET", "/api/devices"),
   newPairingCode: (): Promise<PairingCode> => request("POST", "/api/devices/pairing-codes"),
   revokeDevice: (id: string): Promise<void> => request("DELETE", `/api/devices/${id}`),
+  signOutOthers: (): Promise<{ signed_out: number }> => request("POST", "/api/devices/sign-out-others"),
 };
 
 export function wsURL(path: string): string {

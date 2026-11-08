@@ -415,7 +415,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error 
 
 const createDevice = `-- name: CreateDevice :exec
 
-INSERT INTO devices (id, name, kind, token_hash, paired_via, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO devices (id, name, kind, token_hash, paired_via, paired_by, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateDeviceParams struct {
@@ -424,6 +424,7 @@ type CreateDeviceParams struct {
 	Kind       string
 	TokenHash  string
 	PairedVia  string
+	PairedBy   string
 	CreatedAt  time.Time
 	LastSeenAt time.Time
 }
@@ -436,6 +437,7 @@ func (q *Queries) CreateDevice(ctx context.Context, arg CreateDeviceParams) erro
 		arg.Kind,
 		arg.TokenHash,
 		arg.PairedVia,
+		arg.PairedBy,
 		arg.CreatedAt,
 		arg.LastSeenAt,
 	)
@@ -1729,7 +1731,7 @@ func (q *Queries) ListChildTasks(ctx context.Context, parentTaskID sql.NullStrin
 }
 
 const listDevices = `-- name: ListDevices :many
-SELECT id, name, kind, token_hash, paired_via, created_at, last_seen_at FROM devices ORDER BY created_at, id
+SELECT id, name, kind, token_hash, paired_via, paired_by, created_at, last_seen_at FROM devices ORDER BY created_at, id
 `
 
 func (q *Queries) ListDevices(ctx context.Context) ([]Device, error) {
@@ -1747,6 +1749,7 @@ func (q *Queries) ListDevices(ctx context.Context) ([]Device, error) {
 			&i.Kind,
 			&i.TokenHash,
 			&i.PairedVia,
+			&i.PairedBy,
 			&i.CreatedAt,
 			&i.LastSeenAt,
 		); err != nil {

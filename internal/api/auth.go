@@ -92,7 +92,7 @@ func closeFailed(c *websocket.Conn, r *http.Request, reason string) {
 func (s *server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		h.Set("Content-Security-Policy", s.csp(r))
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
@@ -101,6 +101,21 @@ func (s *server) securityHeaders(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// csp limits the UI to this daemon's own scripts, styles, images and
+// connections, so a rendering slip with agent-written text cannot load or
+// send anything elsewhere. Inline styles stay allowed (React style props,
+// xterm.js); PixiJS runs without eval (pixi.js/unsafe-eval). The WebSocket
+// origin is named explicitly, for browsers whose 'self' does not cover ws:.
+func (s *server) csp(r *http.Request) string {
+	connect := "'self'"
+	if local, remote := s.hostKind(r.Host); local || remote {
+		connect += " ws://" + r.Host + " wss://" + r.Host
+	}
+	return "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+		"font-src 'self' data:; connect-src " + connect + "; worker-src 'self' blob:; manifest-src 'self'; " +
+		"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 }
 
 // isRemote says whether a request came through one of the tailnet names.
@@ -204,8 +219,10 @@ type codeView struct {
 	RemoteURLs []string `json:"remote_urls"`
 }
 
-func (s *server) newPairingCode(w http.ResponseWriter, _ *http.Request) {
-	c, err := s.opts.Auth.NewCode()
+func (s *server) newPairingCode(w http.ResponseWriter, r *http.Request) {
+	me, _ := s.device(r)
+	// Devices paired with this code are signed out with the device that made it.
+	c, err := s.opts.Auth.NewCode(me.ID)
 	if errors.Is(err, auth.ErrTooManyCodes) {
 		writeError(w, http.StatusTooManyRequests, err.Error())
 		return
@@ -236,6 +253,19 @@ func (s *server) revokeDevice(w http.ResponseWriter, r *http.Request) {
 		s.setSessionCookie(w, r, "", -1)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// signOutOthers signs out every device but the caller (a lost phone, a
+// device nobody recognises).
+func (s *server) signOutOthers(w http.ResponseWriter, r *http.Request) {
+	me, _ := s.device(r)
+	n, err := s.opts.Auth.RevokeOthers(context.WithoutCancel(r.Context()), me.ID)
+	if err != nil {
+		s.log.Error("sign out other devices", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not sign the other devices out")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"signed_out": n})
 }
 
 // RemoteURLs are the https URLs of the daemon's tailnet names.

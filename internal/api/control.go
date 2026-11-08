@@ -37,7 +37,7 @@ func NewControl(m *auth.Manager, info ControlInfo, log *slog.Logger) http.Handle
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /pairing-codes", func(w http.ResponseWriter, _ *http.Request) {
-		c, err := m.NewCode()
+		c, err := m.NewCode("")
 		if errors.Is(err, auth.ErrTooManyCodes) {
 			writeError(w, http.StatusTooManyRequests, err.Error())
 			return

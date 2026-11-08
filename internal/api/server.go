@@ -43,6 +43,9 @@ type Options struct {
 	// daemon (e.g. "box.tail1234.ts.net", ADR 0038). Their requests arrive
 	// over HTTPS on 443 and must come from a tailnet user, never Funnel.
 	RemoteHosts []string
+	// RemoteUsers, when set, are the only Tailscale logins whose devices may
+	// reach the daemon through RemoteHosts (e.g. "ozan@github").
+	RemoteUsers []string
 }
 
 const (
@@ -138,6 +141,7 @@ func (s *server) routes() []route {
 		{pattern: "GET /api/devices", handler: s.listDevices},
 		{pattern: "POST /api/devices/pairing-codes", handler: s.newPairingCode},
 		{pattern: "DELETE /api/devices/{id}", handler: s.revokeDevice},
+		{pattern: "POST /api/devices/sign-out-others", handler: s.signOutOthers},
 	}
 }
 
@@ -196,8 +200,13 @@ func (s *server) guard(next http.Handler) http.Handler {
 				http.Error(w, "agent-office refuses requests through Tailscale Funnel", http.StatusForbidden)
 				return
 			}
-			if r.Header.Get("Tailscale-User-Login") == "" {
+			login := r.Header.Get("Tailscale-User-Login")
+			if login == "" {
 				http.Error(w, "agent-office accepts remote requests only from a tailnet user's device", http.StatusForbidden)
+				return
+			}
+			if len(s.opts.RemoteUsers) > 0 && !slices.ContainsFunc(s.opts.RemoteUsers, func(u string) bool { return strings.EqualFold(u, login) }) {
+				http.Error(w, "this Tailscale user may not use this agent-office (--remote-users)", http.StatusForbidden)
 				return
 			}
 		}

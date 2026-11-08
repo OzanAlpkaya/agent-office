@@ -30,7 +30,14 @@ export function DevicesPanel({ remoteHosts, onSignedOut, run }: {
         <button onClick={() => void run(async () => { setCode(await api.newPairingCode()); return true; })}>
           Pair a device
         </button>
+        {devices.length > 1 && (
+          <button className="danger" title="A lost phone, a device you do not recognise: everything but this browser"
+            onClick={() => void run(async () => { await api.signOutOthers(); await reload(); return true; })}>
+            Sign out all other devices
+          </button>
+        )}
       </div>
+      <p className="muted small">Signing a device out also signs out the devices it paired.</p>
       {code && left > 0 && (
         <div className="pair-code" data-testid="pairing-code">
           <div>Code <span className="mono code">{code.code}</span> <span className="muted small">· {left} s left, works once</span></div>

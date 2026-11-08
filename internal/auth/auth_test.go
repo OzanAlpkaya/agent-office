@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,7 +41,7 @@ func newManager(t *testing.T) (*Manager, *store.Store, *clock) {
 func TestPairWithCode(t *testing.T) {
 	ctx := context.Background()
 	m, st, c := newManager(t)
-	code, err := m.NewCode()
+	code, err := m.NewCode("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,20 +92,20 @@ func TestPairWithCode(t *testing.T) {
 func TestCodesExpireAndAreLimited(t *testing.T) {
 	ctx := context.Background()
 	m, _, c := newManager(t)
-	first, _ := m.NewCode()
+	first, _ := m.NewCode("")
 	for i := 1; i < MaxCodes; i++ {
-		if _, err := m.NewCode(); err != nil {
+		if _, err := m.NewCode(""); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := m.NewCode(); !errors.Is(err, ErrTooManyCodes) {
+	if _, err := m.NewCode(""); !errors.Is(err, ErrTooManyCodes) {
 		t.Fatalf("code %d: %v", MaxCodes+1, err)
 	}
 	c.add(CodeTTL)
 	if _, _, err := m.Pair(ctx, first.Value, "late", "local"); !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("expired code: %v", err)
 	}
-	if _, err := m.NewCode(); err != nil {
+	if _, err := m.NewCode(""); err != nil {
 		t.Fatalf("after expiry: %v", err)
 	}
 }
@@ -112,7 +113,7 @@ func TestCodesExpireAndAreLimited(t *testing.T) {
 func TestWrongCodesLockPairing(t *testing.T) {
 	ctx := context.Background()
 	m, _, c := newManager(t)
-	good, _ := m.NewCode()
+	good, _ := m.NewCode("")
 	for i := 1; i < MaxFailures; i++ {
 		if _, _, err := m.Pair(ctx, "0000-0000", "x", "local"); !errors.Is(err, ErrInvalidCode) {
 			t.Fatalf("attempt %d: %v", i, err)
@@ -129,7 +130,7 @@ func TestWrongCodesLockPairing(t *testing.T) {
 	if _, _, err := m.Pair(ctx, good.Value, "x", "local"); !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("dropped code after lockout: %v", err)
 	}
-	fresh, _ := m.NewCode()
+	fresh, _ := m.NewCode("")
 	if _, _, err := m.Pair(ctx, fresh.Value, "x", "local"); err != nil {
 		t.Fatalf("new code after lockout: %v", err)
 	}
@@ -252,5 +253,79 @@ func TestRevokeCancelsWatchers(t *testing.T) {
 	}
 	if ds := m.Devices(); len(ds) != 1 || ds[0].ID != other.ID {
 		t.Fatalf("devices %+v", ds)
+	}
+}
+
+// TestRevokeTakesThePairedDevicesAlong: a stolen phone that paired another
+// browser cannot leave it behind (found in the Phase 10 review).
+func TestRevokeTakesThePairedDevicesAlong(t *testing.T) {
+	ctx := context.Background()
+	m, st, c := newManager(t)
+	pairWith := func(by, name string) (string, Device) {
+		t.Helper()
+		code, err := m.NewCode(by)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tok, d, err := m.Pair(ctx, code.Value, name, "local")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok, d
+	}
+	_, laptop := pairWith("", "laptop")
+	_, phone := pairWith(laptop.ID, "phone")
+	attackerTok, attacker := pairWith(phone.ID, "attacker")
+	_, other := pairWith(laptop.ID, "tablet")
+	if attacker.PairedBy != phone.ID {
+		t.Fatalf("paired by %q", attacker.PairedBy)
+	}
+	open, _ := m.NewCode(phone.ID) // a code the phone made but nobody used yet
+	wctx, done := m.Watch(ctx, attacker.ID)
+	defer done()
+
+	if err := m.Revoke(ctx, phone.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Authenticate(ctx, attackerTok); ok {
+		t.Fatal("a device the revoked phone paired still works")
+	}
+	if wctx.Err() == nil {
+		t.Fatal("its connections stay open")
+	}
+	if _, _, err := m.Pair(ctx, open.Value, "late", "local"); !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("the revoked phone's open code: %v", err)
+	}
+	names := []string{}
+	for _, d := range m.Devices() {
+		names = append(names, d.Name)
+	}
+	slices.Sort(names)
+	if strings.Join(names, ",") != "laptop,tablet" || other.ID == "" {
+		t.Fatalf("left %v", names)
+	}
+	if rows, _ := st.Q.ListDevices(ctx); len(rows) != 2 {
+		t.Fatalf("rows left %d", len(rows))
+	}
+
+	// Idle expiry ends only the idle device: the tablet it paired was used.
+	tabletTok, tablet := pairWith(laptop.ID, "tablet 2")
+	_ = tablet
+	c.add(IdleExpiry - time.Hour)
+	m.Authenticate(ctx, tabletTok)
+	c.add(2 * time.Hour)
+	// The laptop's token is not at hand; its expiry is found at the next start.
+	m2, err := New(ctx, st.Q, Options{Logger: m.log, Now: c.now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m2.Authenticate(ctx, tabletTok); !ok {
+		t.Fatal("the tablet ended with the idle laptop that paired it")
+	}
+
+	// Sign out every other device.
+	n, err := m2.RevokeOthers(ctx, tablet.ID)
+	if err != nil || len(m2.Devices()) != 1 || m2.Devices()[0].ID != tablet.ID {
+		t.Fatalf("revoke others: %d %v %+v", n, err, m2.Devices())
 	}
 }

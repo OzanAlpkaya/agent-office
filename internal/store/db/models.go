@@ -46,6 +46,7 @@ type Device struct {
 	Kind       string
 	TokenHash  string
 	PairedVia  string
+	PairedBy   string
 	CreatedAt  time.Time
 	LastSeenAt time.Time
 }

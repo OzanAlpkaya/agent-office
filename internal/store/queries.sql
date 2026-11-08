@@ -471,7 +471,7 @@ DELETE FROM sessions WHERE id = ?;
 -- Paired devices (migration 0011, ADR 0039).
 
 -- name: CreateDevice :exec
-INSERT INTO devices (id, name, kind, token_hash, paired_via, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO devices (id, name, kind, token_hash, paired_via, paired_by, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListDevices :many
 SELECT * FROM devices ORDER BY created_at, id;

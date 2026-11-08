@@ -181,6 +181,12 @@ export class MockDaemon {
         return route.fulfill({ ...json({ code: "WXYZ-2345", expires_at: new Date(Date.now() + 300_000).toISOString(),
           remote_urls: ["https://box.tail1234.ts.net/"] }), status: 201 });
       }
+      if (p === "/api/devices/sign-out-others") {
+        this.requests.push(`POST ${p}`);
+        const n = this.devices.length - 1;
+        this.devices = [me];
+        return route.fulfill(json({ signed_out: n }));
+      }
       const dev = /^\/api\/devices\/([^/]+)$/.exec(p);
       if (dev && method === "DELETE") {
         this.requests.push(`DELETE ${p}`);

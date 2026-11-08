@@ -8,6 +8,9 @@ CREATE TABLE devices (
     kind         TEXT NOT NULL CHECK (kind IN ('browser', 'token')),
     token_hash   TEXT NOT NULL UNIQUE CHECK (length(token_hash) = 64),
     paired_via   TEXT NOT NULL DEFAULT '' CHECK (length(paired_via) <= 200),
+    -- The device whose code paired this one ('' = agent-office pair on this machine); revoking a
+    -- device revokes the devices it paired, so a stolen phone cannot leave a device behind.
+    paired_by    TEXT NOT NULL DEFAULT '',
     created_at   DATETIME NOT NULL,
     last_seen_at DATETIME NOT NULL
 );
