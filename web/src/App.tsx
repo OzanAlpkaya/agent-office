@@ -1,7 +1,7 @@
 import { type JSX, Suspense, lazy, useEffect, useState } from "react";
 import {
-  type AccessRequest, type Agent, type AgentState, ApiError, type ImportInfo, type Kind, type Message, type Project,
-  type Role, type RoleInfo, type SandboxEvent, type Status, type Task, type TaskStatus, api,
+  type AccessRequest, type Agent, type AgentState, ApiError, type ApproveResult, type ImportInfo, type Kind, type Message,
+  type Project, type Role, type RoleInfo, type SandboxEvent, type Spec, type Status, type Task, type TaskStatus, api,
 } from "./api";
 import { Board } from "./Board";
 import { InboxPanel, MemoryPanel } from "./Team";
@@ -150,6 +150,23 @@ export function App(): JSX.Element {
   const proposed = memory.filter((m) => m.status === "proposed").length;
   const ok = async (fn: () => Promise<unknown>): Promise<boolean> => (await run(fn)) !== undefined;
   const togglePanel = (p: "inbox" | "memory"): void => setPanel((cur) => (cur === p ? undefined : p));
+
+  // approveSpec approves a plan (ADR 0031); a Tech Lead that could not start is shown as an error.
+  const approveSpec = async (s: Spec): Promise<ApproveResult> => {
+    const res = await api.approveSpec(s.id);
+    if (res.lead_error) setError(`Plan approved; the Tech Lead did not start: ${res.lead_error}`);
+    return res;
+  };
+
+  // reviewPlan opens the board at the goal's card, whose plan is open while it waits for approval.
+  const reviewPlan = (goalId: string): void => {
+    setView({ kind: "board" });
+    window.setTimeout(() => {
+      const card = document.getElementById(`task-${goalId}`);
+      card?.scrollIntoView({ block: "center" });
+      card?.focus({ preventScroll: true });
+    }, 0);
+  };
   const pending = accessRequests.filter((r) => r.status === "pending");
   const current = view.kind === "agent" ? agents.find((a) => a.id === view.id) : undefined;
   const taskTitle = (id?: string): string | undefined => tasks.find((t) => t.id === id)?.title;
@@ -206,9 +223,15 @@ export function App(): JSX.Element {
       )}
       {showPack && status?.sandbox === "podman" && <PackPanel status={status} />}
       {panel === "inbox" && (
-        <InboxPanel items={inbox} tasks={tasks} onOpenAgent={(id) => setView({ kind: "agent", id })}
+        <InboxPanel items={inbox} tasks={tasks} specs={specs} onOpenAgent={(id) => setView({ kind: "agent", id })}
           onRead={(i) => void run(() => api.readInbox(i.id))}
-          onReply={(i, body) => ok(() => api.replyInbox(i.id, body))} />
+          onReply={(i, body) => ok(() => api.replyInbox(i.id, body))}
+          onReviewPlan={reviewPlan}
+          onApprovePlan={(s, i) => void run(async () => {
+            const res = await approveSpec(s);
+            if (!i.read_at) await api.readInbox(i.id);
+            return res;
+          })} />
       )}
       {panel === "memory" && (
         <MemoryPanel entries={memory}
@@ -292,11 +315,7 @@ export function App(): JSX.Element {
               roles={roles} specs={specs} qaRuns={qaRuns} inbox={inbox} architectRunning={architectRunning}
               onStartRole={(t, role) => void startAgent(t.id, role)}
               onSaveSpec={(s, plan) => ok(() => api.editSpec(s.id, plan))}
-              onApproveSpec={(s) => void run(async () => {
-                const res = await api.approveSpec(s.id);
-                if (res.lead_error) setError(`Plan approved; the Tech Lead did not start: ${res.lead_error}`);
-                return res;
-              })}
+              onApproveSpec={(s) => void run(() => approveSpec(s))}
               onResolve={(t) => void run(async () => { await api.resolveConflict(t.id); return true; })}
               onReadInbox={(i) => void run(() => api.readInbox(i.id))}
               onReplyInbox={(i, body) => ok(() => api.replyInbox(i.id, body))}

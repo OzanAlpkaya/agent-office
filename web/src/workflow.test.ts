@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { InboxItem, Plan, QARun, Spec, Task } from "./api";
 import {
-  currentSpec, fromForm, inboxFor, latestQA, needsAnswer, newSubTask, specsOf, splitList, toForm, unread, waitsFor,
+  currentSpec, fromForm, inboxFor, latestQA, needsAnswer, newSubTask, proposedSpec, specsOf, splitList, toForm, unread,
+  waitsFor,
 } from "./workflow";
 
 const at = "2026-11-08T10:00:00Z";
@@ -40,6 +41,8 @@ describe("plans", () => {
     expect(currentSpec(specs, "g")?.id).toBe(3);
     expect(currentSpec(specs.slice(0, 2), "g")?.id).toBe(2);
     expect(currentSpec(specs, "nope")).toBeUndefined();
+    expect(proposedSpec(specs, "g")?.id).toBe(3);
+    expect(proposedSpec(specs.slice(0, 2), "g")).toBeUndefined(); // only an approved version: nothing to approve
   });
   it("round-trips through the editor form", () => {
     const f = toForm(plan);

@@ -29,6 +29,11 @@ export function currentSpec(specs: readonly Spec[], goalId: string): Spec | unde
   return own.find((s) => s.status === "proposed") ?? own.find((s) => s.status === "approved");
 }
 
+// proposedSpec is the goal's plan version waiting for approval, if any.
+export function proposedSpec(specs: readonly Spec[], goalId: string): Spec | undefined {
+  return specsOf(specs, goalId).find((s) => s.status === "proposed");
+}
+
 // latestQA is a goal's newest QA run.
 export function latestQA(runs: readonly QARun[], goalId: string): QARun | undefined {
   return runs.filter((r) => r.goal_id === goalId).sort((a, b) => b.id - a.id)[0];

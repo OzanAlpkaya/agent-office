@@ -136,7 +136,7 @@ function TaskCard(p: CardProps): JSX.Element {
   // Unanswered or unread messages to you about this task (ADR 0030).
   const notes = inboxFor(p.inbox ?? [], task).filter((i) => !i.read_at || (!i.answered_at && i.kind === "question")).slice(0, 3);
   return (
-    <article className="task">
+    <article className="task" id={`task-${task.id}`} tabIndex={-1}>
       {(goal || task.created_by) && (
         <div className="row small muted">
           {goal && <span title={goal.title}>sub-task of “{goal.title}”</span>}

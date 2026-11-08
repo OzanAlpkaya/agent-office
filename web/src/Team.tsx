@@ -3,7 +3,9 @@
 // that agents wrote is rendered as text, never as HTML.
 import { type FormEvent, type JSX, useState } from "react";
 import type { Agent, InboxItem, MemoryEntry, Plan, QARun, RoleInfo, Spec, Task } from "./api";
-import { type PlanForm, type SubTaskForm, fromForm, needsAnswer, newSubTask, toForm, waitsFor } from "./workflow";
+import {
+  type PlanForm, type SubTaskForm, fromForm, needsAnswer, newSubTask, proposedSpec, toForm, waitsFor,
+} from "./workflow";
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
 
@@ -32,12 +34,15 @@ function ReplyBox({ label, onSend }: { label: string; onSend: (body: string) => 
 }
 
 // InboxEntry is one message to the user, with a reply box when it asks something.
-export function InboxEntry({ item: i, taskTitle, onRead, onReply, onOpenAgent }: {
+export function InboxEntry({ item: i, taskTitle, onRead, onReply, onOpenAgent, plan, onReviewPlan, onApprovePlan }: {
   item: InboxItem;
   taskTitle?: string;
   onRead: (i: InboxItem) => void;
   onReply: (i: InboxItem, body: string) => Promise<boolean>;
   onOpenAgent: (id: string) => void;
+  plan?: Spec; // for a plan notice: the goal's plan version waiting for approval, if any
+  onReviewPlan?: (goalId: string) => void;
+  onApprovePlan?: (spec: Spec, item: InboxItem) => void;
 }): JSX.Element {
   return (
     <li className={`inbox-item kind-${i.kind} ${i.read_at ? "read" : "unread"}`}>
@@ -55,6 +60,22 @@ export function InboxEntry({ item: i, taskTitle, onRead, onReply, onOpenAgent }:
       {i.agent_id && !i.reply && (needsAnswer(i) || i.kind === "briefing") && (
         <ReplyBox label={i.kind === "briefing" ? "Ask the assistant" : "Answer"} onSend={(b) => onReply(i, b)} />
       )}
+      {i.kind === "plan" && i.goal_id && (onReviewPlan || (plan && onApprovePlan)) && (
+        <div className="row">
+          {onReviewPlan && (
+            <button onClick={() => onReviewPlan(i.goal_id ?? "")} title="Open the goal's card with its plan">
+              Review plan
+            </button>
+          )}
+          {plan && onApprovePlan && (
+            <button className="primary" onClick={() => onApprovePlan(plan, i)}
+              title="Commit the spec, create the sub-tasks and start a Tech Lead">
+              Approve plan v{plan.version}
+            </button>
+          )}
+          {!plan && <span className="muted small">No plan is waiting for approval any more.</span>}
+        </div>
+      )}
     </li>
   );
 }
@@ -62,9 +83,12 @@ export function InboxEntry({ item: i, taskTitle, onRead, onReply, onOpenAgent }:
 export function InboxPanel(p: {
   items: InboxItem[];
   tasks: Task[];
+  specs: Spec[];
   onRead: (i: InboxItem) => void;
   onReply: (i: InboxItem, body: string) => Promise<boolean>;
   onOpenAgent: (id: string) => void;
+  onReviewPlan: (goalId: string) => void;
+  onApprovePlan: (spec: Spec, item: InboxItem) => void;
 }): JSX.Element {
   const title = (id?: string): string | undefined => p.tasks.find((t) => t.id === id)?.title;
   return (
@@ -78,7 +102,8 @@ export function InboxPanel(p: {
       <ul>
         {p.items.map((i) => (
           <InboxEntry key={i.id} item={i} taskTitle={title(i.task_id)} onRead={p.onRead} onReply={p.onReply}
-            onOpenAgent={p.onOpenAgent} />
+            onOpenAgent={p.onOpenAgent} onReviewPlan={p.onReviewPlan} onApprovePlan={p.onApprovePlan}
+            plan={i.kind === "plan" && i.goal_id ? proposedSpec(p.specs, i.goal_id) : undefined} />
         ))}
       </ul>
     </section>

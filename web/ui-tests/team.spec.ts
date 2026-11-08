@@ -92,6 +92,24 @@ test("the inbox shows the team's questions and sends the answer", async ({ page 
   expect(errors).toEqual([]);
 });
 
+test("the plan notice in the inbox reviews or approves the plan directly", async ({ page }) => {
+  const daemon = new MockDaemon(workflow());
+  const errors = await open(page, daemon);
+  await page.getByRole("button", { name: /^Inbox/ }).click();
+  const notice = page.getByRole("region", { name: "Inbox" }).locator("li.inbox-item.kind-plan");
+  await expect(notice).toContainText("ready for your approval");
+  await notice.getByRole("button", { name: "Review plan" }).click();
+  const goal = card(page, "Add tags to saved links");
+  await expect(goal).toBeFocused();
+  await expect(goal).toBeInViewport();
+  await expect(goal.locator("details.plan")).toHaveAttribute("open", "");
+  await notice.getByRole("button", { name: "Approve plan v2" }).click();
+  await expect.poll(() => daemon.requests).toContain("POST /api/specs/1/approve");
+  await expect.poll(() => daemon.requests).toContain("POST /api/inbox/2/read");
+  await page.screenshot({ path: `${screens}/team-inbox-plan.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
 test("a proposed plan is shown on the goal and approved by the user", async ({ page }) => {
   const daemon = new MockDaemon(workflow());
   const errors = await open(page, daemon);
