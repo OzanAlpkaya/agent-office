@@ -52,6 +52,82 @@ type Team interface {
 	SubmitPlan(ctx context.Context, caller string, in SubmitPlanInput) (SubmitPlanOutput, error)
 	StartQA(ctx context.Context, caller string) (StartQAOutput, error)
 	ReportQA(ctx context.Context, caller string, in ReportQAInput) (ReportQAOutput, error)
+	GetBriefing(ctx context.Context, caller string) (Briefing, error)
+	ListMemory(ctx context.Context, caller string) (ListMemoryOutput, error)
+	ProposeMemory(ctx context.Context, caller string, in ProposeMemoryInput) (ProposeMemoryOutput, error)
+}
+
+// Briefing is get_briefing's result: facts computed by agent-office (ADR
+// 0034). Text quoted from agents (questions) is marked as theirs.
+type Briefing struct {
+	At           string       `json:"at"` // UTC, RFC 3339
+	Goals        []GoalBrief  `json:"goals"`
+	WaitingOnYou []string     `json:"waiting_on_user"` // decisions and answers the user owes, one line each
+	Blocked      []string     `json:"blocked"`         // tasks that cannot move, and why
+	Running      []AgentBrief `json:"running"`
+	Cost         CostBrief    `json:"cost"`
+	Memory       MemoryCounts `json:"memory"`
+}
+
+// GoalBrief is one goal in a briefing.
+type GoalBrief struct {
+	ID       string         `json:"id"`
+	Title    string         `json:"title"`
+	Status   string         `json:"status"`
+	SubTasks map[string]int `json:"sub_tasks"`      // by status
+	Plan     string         `json:"plan,omitempty"` // e.g. "version 2 approved", "version 1 waiting for approval"
+	QA       string         `json:"qa,omitempty"`   // the last QA run: passed, failed, running, error
+	Lead     string         `json:"lead,omitempty"` // the Tech Lead's state
+}
+
+// AgentBrief is a running agent in a briefing.
+type AgentBrief struct {
+	ID    string `json:"id"`
+	Role  string `json:"role"`
+	State string `json:"state"`
+	Task  string `json:"task,omitempty"`
+}
+
+// CostBrief is the estimated spend (micro-USD, ADR 0026).
+type CostBrief struct {
+	TotalMicroUSD int64 `json:"total_micro_usd"`
+	TodayMicroUSD int64 `json:"today_micro_usd"` // sessions started today (UTC)
+	Sessions      int   `json:"sessions"`
+	GoalBudget    int64 `json:"goal_budget_micro_usd,omitempty"`
+}
+
+// MemoryCounts counts project memory entries.
+type MemoryCounts struct {
+	Accepted int `json:"accepted"`
+	Proposed int `json:"proposed"`
+}
+
+// MemoryEntry is a project memory entry as the assistant sees it.
+type MemoryEntry struct {
+	ID     int64  `json:"id"`
+	Kind   string `json:"kind"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+	Status string `json:"status"` // accepted (every agent gets it) or proposed (waits for the user)
+}
+
+// ListMemoryOutput is list_memory's result.
+type ListMemoryOutput struct {
+	Entries []MemoryEntry `json:"entries"`
+}
+
+// ProposeMemoryInput is propose_memory's input.
+type ProposeMemoryInput struct {
+	Kind  string `json:"kind" jsonschema:"decision (something decided and why), convention (how things are done here) or lesson (something learned the hard way)."`
+	Title string `json:"title" jsonschema:"Short title (1-200 characters)."`
+	Body  string `json:"body" jsonschema:"A few sentences every agent should know (1-2000 characters)."`
+}
+
+// ProposeMemoryOutput is propose_memory's result.
+type ProposeMemoryOutput struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"`
+	Next   string `json:"next"`
 }
 
 // StartQAOutput is start_qa's result (ADR 0033).
@@ -359,6 +435,19 @@ func NewServer(team Team, caller string, tools []string, version string, log *sl
 		"tells the Tech Lead and ends your session after this turn."},
 		func(ctx context.Context, in ReportQAInput) (ReportQAOutput, error) {
 			return team.ReportQA(ctx, caller, in)
+		})
+	add(s, t, &sdk.Tool{Name: ToolGetBriefing, Description: "The facts for a briefing (assistant only), computed by " +
+		"agent-office: goals and their sub-tasks, what waits on the user, what is blocked, running agents, cost and " +
+		"project memory. Exact; use its numbers as they are.", Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true}},
+		func(ctx context.Context, _ struct{}) (Briefing, error) { return team.GetBriefing(ctx, caller) })
+	add(s, t, &sdk.Tool{Name: ToolListMemory, Description: "List the project memory (assistant only): accepted entries, " +
+		"which every agent starts with, and proposals waiting for the user.", Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true}},
+		func(ctx context.Context, _ struct{}) (ListMemoryOutput, error) { return team.ListMemory(ctx, caller) })
+	add(s, t, &sdk.Tool{Name: ToolProposeMemory, Description: "Propose a project memory entry (assistant only): a " +
+		"decision, convention or lesson every agent should start with. The user accepts, edits or deletes it in " +
+		"agent-office; nobody sees it before that."},
+		func(ctx context.Context, in ProposeMemoryInput) (ProposeMemoryOutput, error) {
+			return team.ProposeMemory(ctx, caller, in)
 		})
 	add(s, t, &sdk.Tool{Name: ToolMessageUser, Description: "Send a message to the human user; it appears in the " +
 		"agent-office inbox and on your task card. Only agents with nobody above them may do this (the architect, the " +

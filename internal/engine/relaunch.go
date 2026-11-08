@@ -99,6 +99,9 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 		return AgentInfo{}, fmt.Errorf("record relaunch: %w", err)
 	}
 
+	if prompt != "" {
+		prompt += e.memorySection(ctx) // ADR 0034
+	}
 	l := launchInfo{id: id, sid: sid, role: info.Kind, def: e.roleOf(info.Role, info.Kind), branch: info.Branch,
 		path: info.WorktreePath, base: a.baseCommit,
 		taskID: info.TaskID, started: started, prompt: prompt, prev: a, followup: fu}

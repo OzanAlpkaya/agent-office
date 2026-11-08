@@ -93,6 +93,21 @@ func (f *fakeTeam) ReportQA(_ context.Context, caller string, in ReportQAInput) 
 	return ReportQAOutput{RunID: 1, Status: "passed"}, f.err
 }
 
+func (f *fakeTeam) GetBriefing(_ context.Context, caller string) (Briefing, error) {
+	f.record(caller, ToolGetBriefing, nil)
+	return Briefing{}, f.err
+}
+
+func (f *fakeTeam) ListMemory(_ context.Context, caller string) (ListMemoryOutput, error) {
+	f.record(caller, ToolListMemory, nil)
+	return ListMemoryOutput{}, f.err
+}
+
+func (f *fakeTeam) ProposeMemory(_ context.Context, caller string, in ProposeMemoryInput) (ProposeMemoryOutput, error) {
+	f.record(caller, ToolProposeMemory, in)
+	return ProposeMemoryOutput{ID: 1, Status: "proposed"}, f.err
+}
+
 func (f *fakeTeam) MessageUser(_ context.Context, caller string, in MessageUserInput) (MessageUserOutput, error) {
 	f.record(caller, ToolMessageUser, in)
 	return MessageUserOutput{MessageID: 9, Status: "shown"}, f.err

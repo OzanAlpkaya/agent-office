@@ -104,6 +104,8 @@ func (e *Engine) initialPrompt(ctx context.Context, def *role.Role, task *db.Tas
 		if task != nil {
 			b.WriteString("\n\n" + goalSection(task))
 		}
+	case KindAssistant:
+		b.WriteString("\n\nStart now: call get_briefing and send the user your first briefing with message_user.")
 	case KindWorker:
 		if task == nil {
 			return "" // a user's own agent without a task starts at the prompt

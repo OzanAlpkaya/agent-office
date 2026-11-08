@@ -195,7 +195,7 @@ type AgentInfo struct {
 // Update is one change broadcast to subscribers.
 type Update struct {
 	// "agent" | "agent_removed" | "task" | "task_deleted" | "sandbox_event" | "message" | "access_request" |
-	// "pull_request" | "usage" | "inbox" | "spec" | "qa_run" | "memory"
+	// "pull_request" | "usage" | "inbox" | "spec" | "qa_run" | "memory" | "memory_deleted"
 	Type          string         `json:"type"`
 	Agent         *AgentInfo     `json:"agent,omitempty"`
 	Task          *Task          `json:"task,omitempty"`
@@ -208,6 +208,7 @@ type Update struct {
 	Inbox         *InboxItem     `json:"inbox,omitempty"`  // a message to the user (ADR 0030)
 	Spec          *Spec          `json:"spec,omitempty"`   // a version of a goal's plan (ADR 0031)
 	QARun         *QARun         `json:"qa_run,omitempty"` // a QA run (ADR 0033)
+	Memory        *MemoryEntry   `json:"memory,omitempty"` // a project memory entry (ADR 0034)
 }
 
 type agentProc struct {
@@ -632,6 +633,9 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	prompt := req.prompt
 	if prompt == "" {
 		prompt = e.initialPrompt(ctx, def, task, branch)
+	}
+	if prompt != "" {
+		prompt += e.memorySection(ctx) // ADR 0034: accepted notes only
 	}
 	l := launchInfo{id: id, sid: sid, role: role, def: def, branch: branch, path: wtPath, base: base, taskID: req.TaskID,
 		started: started, prompt: prompt, reviewID: req.reviewID}

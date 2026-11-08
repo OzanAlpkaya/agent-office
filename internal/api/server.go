@@ -88,6 +88,12 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("GET /api/inbox", s.listInbox)
 	mux.HandleFunc("GET /api/specs", s.listSpecs)
 	mux.HandleFunc("GET /api/qa-runs", s.listQARuns)
+	mux.HandleFunc("GET /api/memory", s.listMemory)
+	mux.HandleFunc("POST /api/memory", s.addMemory)
+	mux.HandleFunc("PATCH /api/memory/{id}", s.memoryAction("patch"))
+	mux.HandleFunc("POST /api/memory/{id}/accept", s.memoryAction("accept"))
+	mux.HandleFunc("DELETE /api/memory/{id}", s.memoryAction("delete"))
+	mux.HandleFunc("POST /api/assistant/briefing", s.askBriefing)
 	mux.HandleFunc("PUT /api/specs/{id}", s.specAction(false))
 	mux.HandleFunc("POST /api/specs/{id}/approve", s.specAction(true))
 	mux.HandleFunc("POST /api/inbox/{id}/read", s.inboxAction(false))
@@ -286,6 +292,72 @@ func (s *server) messageAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, m)
+}
+
+func (s *server) listMemory(w http.ResponseWriter, r *http.Request) {
+	m, err := s.eng.Memory(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+func (s *server) addMemory(w http.ResponseWriter, r *http.Request) {
+	var in engine.MemoryInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	m, err := s.eng.AddMemory(r.Context(), in)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, m)
+}
+
+// memoryAction edits, accepts or deletes a project memory entry (ADR 0034).
+func (s *server) memoryAction(op string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id < 1 {
+			writeError(w, http.StatusBadRequest, "invalid memory id")
+			return
+		}
+		var m engine.MemoryEntry
+		switch op {
+		case "delete":
+			if err := s.eng.DeleteMemory(r.Context(), id); err != nil {
+				s.engineError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case "accept":
+			m, err = s.eng.UpdateMemory(r.Context(), id, engine.MemoryInput{Status: engine.MemoryAccepted})
+		default:
+			var in engine.MemoryInput
+			if !decodeJSON(w, r, &in) {
+				return
+			}
+			m, err = s.eng.UpdateMemory(r.Context(), id, in)
+		}
+		if err != nil {
+			s.engineError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, m)
+	}
+}
+
+// askBriefing asks the assistant for a briefing, starting it if needed.
+func (s *server) askBriefing(w http.ResponseWriter, r *http.Request) {
+	a, err := s.eng.AskBriefing(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
 }
 
 func (s *server) listQARuns(w http.ResponseWriter, r *http.Request) {
@@ -771,6 +843,11 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusInternalError, "could not load the QA runs")
 		return
 	}
+	memory, err := s.eng.Memory(r.Context())
+	if err != nil {
+		c.Close(websocket.StatusInternalError, "could not load the project memory")
+		return
+	}
 	ctx := c.CloseRead(r.Context())
 
 	write := func(v any) error {
@@ -781,7 +858,7 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := write(map[string]any{"type": "snapshot", "agents": s.eng.List(), "tasks": tasks,
 		"access_requests": access, "pull_requests": prs, "inbox": inbox,
-		"specs": specs, "qa_runs": qaRuns}); err != nil {
+		"specs": specs, "qa_runs": qaRuns, "memory": memory}); err != nil {
 		return
 	}
 	for {
