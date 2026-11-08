@@ -260,3 +260,8 @@ article.task:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tabs { flex: none; }
 .terminal-col, .terminal-wrap { min-height: 0; }
 .terminal { min-height: 0; overflow: hidden; }
+/* Terminal copy and paste (ADR 0040): the right-click menu and the failure notice. */
+.term-menu { position: absolute; z-index: 5; display: flex; flex-direction: column; min-width: 9rem; padding: 0.25rem; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5); }
+.term-menu button { text-align: left; border: none; background: none; padding: 0.4rem 0.6rem; border-radius: 4px; }
+.term-menu button:hover:not(:disabled), .term-menu button:focus-visible { background: #1d2230; outline: none; }
+.copy-notice { position: absolute; top: 0.5rem; right: 0.75rem; z-index: 4; pointer-events: none; max-width: calc(100% - 1.5rem); padding: 0.35rem 0.6rem; font-size: 0.8rem; color: #ffb454; background: #2a2116; border: 1px solid #ffb454; border-radius: 6px; }

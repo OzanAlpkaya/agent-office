@@ -12,6 +12,14 @@ describe("keyAction", () => {
     // A layout where the key is not C still copies on the physical C key.
     expect(keyAction(k("J", { ctrl: true, shift: true }, "KeyC"))).toBe("copy");
   });
+  it("leaves F12 and the devtools shortcuts to the browser", () => {
+    expect(keyAction(k("F12", {}, "F12"))).toBe("browser");
+    expect(keyAction(k("F12", { shift: true }, "F12"))).toBe("browser");
+    expect(keyAction(k("I", { ctrl: true, shift: true }, "KeyI"))).toBe("browser");
+    expect(keyAction(k("J", { ctrl: true, shift: true }, "KeyJ"))).toBe("browser");
+    expect(keyAction(k("F11", {}, "F11"))).toBe("pass");
+    expect(keyAction(k("i", { ctrl: true }, "KeyI"))).toBe("pass"); // Ctrl+I is Tab for the agent
+  });
   it("leaves Ctrl+C, Ctrl+V and everything else to the agent", () => {
     expect(keyAction(k("c", { ctrl: true }, "KeyC"))).toBe("pass");
     expect(keyAction(k("v", { ctrl: true }, "KeyV"))).toBe("pass");

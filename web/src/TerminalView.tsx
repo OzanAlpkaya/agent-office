@@ -3,7 +3,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { type Agent, type SessionInfo, api, signalUnauthorized, statusSignedOut, wsURL } from "./api";
-import { barKeys, keyAction } from "./terminalKeys";
+import { barKeys } from "./terminalKeys";
+import { TerminalOverlay, useTerminalClipboard } from "./TerminalClipboard";
 
 interface Props {
   agent: Agent;
@@ -17,13 +18,6 @@ const termOptions = {
   fontSize: 13,
   theme: { background: "#0f1115" },
 };
-
-// copyText writes to the clipboard; it needs a secure context (loopback or
-// https through tailscale serve). A refusal (no focus, no permission) is ignored.
-function copyText(text: string): void {
-  if (!text || !navigator.clipboard) return;
-  navigator.clipboard.writeText(text).catch(() => undefined);
-}
 
 // TerminalView shows an agent's terminal: the live one while its process
 // runs, else a saved session's output, read-only (ADR 0036). A picker lists
@@ -92,23 +86,15 @@ function LiveTerminal({ agent, onResume }: Props): JSX.Element {
   const [attempt, setAttempt] = useState(0);
   // The key bar's way into the live terminal (ADR 0040).
   const io = useRef<{ term: Terminal; input: (data: string) => void }>(undefined);
+  // Copy and paste (ADR 0040): Ctrl+Shift+C/V, copy when a selection ends, a right-click menu.
+  const pasteInto = useRef<(text: string) => void>(undefined);
+  const clip = useTerminalClipboard(pasteInto);
 
   useEffect(() => {
     if (!host.current) return;
     const term = new Terminal({ ...termOptions, cursorBlink: true });
-    // Copy and paste like a desktop terminal (ADR 0040): Ctrl+Shift+C copies the
-    // selection, Ctrl+Shift+V lets the browser's paste event reach xterm, and a
-    // selection is copied as it is made. Ctrl+C still goes to the agent.
-    term.attachCustomKeyEventHandler((e) => {
-      const action = keyAction(e);
-      if (action === "copy") {
-        e.preventDefault(); // not devtools
-        if (e.type === "keydown") copyText(term.getSelection());
-        return false;
-      }
-      return action !== "paste";
-    });
-    const selection = term.onSelectionChange(() => { if (term.hasSelection()) copyText(term.getSelection()); });
+    const detach = clip.attach(term, host.current);
+    pasteInto.current = (text) => { term.paste(text); term.focus(); };
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host.current);
@@ -153,7 +139,8 @@ function LiveTerminal({ agent, onResume }: Props): JSX.Element {
     return () => {
       observer.disconnect();
       input.dispose();
-      selection.dispose();
+      detach();
+      pasteInto.current = undefined;
       term.textarea?.removeEventListener("focus", onFocus);
       io.current = undefined;
       ws.onclose = null;
@@ -166,15 +153,11 @@ function LiveTerminal({ agent, onResume }: Props): JSX.Element {
     io.current?.input(data);
     io.current?.term.focus();
   };
-  const paste = (): void => {
-    const cur = io.current;
-    if (!cur || !navigator.clipboard) return;
-    navigator.clipboard.readText().then((t) => { if (t) cur.term.paste(t); cur.term.focus(); }, () => undefined);
-  };
   return (
     <div className="terminal-live">
     <div className="terminal-wrap">
       <div className="terminal" ref={host} />
+      <TerminalOverlay clip={clip} canPaste={status.kind === "live"} onDone={() => io.current?.term.focus()} />
       {status.kind === "closed" && (
         <div className="terminal-banner">
           {status.exited ? (
@@ -197,7 +180,7 @@ function LiveTerminal({ agent, onResume }: Props): JSX.Element {
             {k.label}
           </button>
         ))}
-        <button title="Paste from the clipboard" onPointerDown={(e) => e.preventDefault()} onClick={paste}>Paste</button>
+        <button title="Paste from the clipboard" onPointerDown={(e) => e.preventDefault()} onClick={clip.paste}>Paste</button>
       </div>
     )}
     </div>
@@ -218,9 +201,11 @@ function ResumeNote({ agent }: { agent: Agent }): JSX.Element {
 function SavedTerminal({ agentId, sid, agent, onResume }: { agentId: string; sid: string } & Props): JSX.Element {
   const host = useRef<HTMLDivElement>(null);
   const [error, setError] = useState("");
+  const clip = useTerminalClipboard(); // copy only: a saved session takes no input
   useEffect(() => {
     if (!host.current) return;
     const term = new Terminal({ ...termOptions, disableStdin: true, cursorBlink: false });
+    const detach = clip.attach(term, host.current);
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host.current);
@@ -235,12 +220,14 @@ function SavedTerminal({ agentId, sid, agent, onResume }: { agentId: string; sid
     return () => {
       alive = false;
       observer.disconnect();
+      detach();
       term.dispose();
     };
   }, [agentId, sid]);
   return (
     <div className="terminal-wrap" data-testid="saved-terminal">
       <div className="terminal" ref={host} />
+      <TerminalOverlay clip={clip} canPaste={false} onDone={() => undefined} />
       {(error || agent.resumable) && (
         <div className="terminal-banner">
           <span>

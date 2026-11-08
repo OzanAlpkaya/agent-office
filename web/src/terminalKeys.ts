@@ -1,7 +1,8 @@
 // Terminal keys (ADR 0040): copy and paste like a desktop terminal, and the
 // phone key bar. Pure functions, unit-tested.
 
-export type KeyAction = "copy" | "paste" | "pass";
+// browser: the key is the browser's (devtools), neither the agent's nor ours.
+export type KeyAction = "copy" | "paste" | "browser" | "pass";
 
 export interface KeyLike {
   key: string;
@@ -14,12 +15,20 @@ export interface KeyLike {
 
 // keyAction decides what a key event in the terminal means. Ctrl+Shift+C
 // copies (and must not reach the browser, which would open devtools);
-// Ctrl+Shift+V pastes through the browser's paste event; everything else,
-// Ctrl+C included, goes to the agent.
+// Ctrl+Shift+V pastes through the browser's paste event; F12 and
+// Ctrl+Shift+I / J open devtools as on any page (Ozan's manual test: F12
+// reached the agent); everything else, Ctrl+C included, goes to the agent.
 export function keyAction(e: KeyLike): KeyAction {
+  if (e.key === "F12" && !e.ctrlKey && !e.altKey && !e.metaKey) return "browser";
   if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return "pass";
-  const k = e.code === "KeyC" || e.key.toLowerCase() === "c" ? "c" : e.code === "KeyV" || e.key.toLowerCase() === "v" ? "v" : "";
-  return k === "c" ? "copy" : k === "v" ? "paste" : "pass";
+  // The physical key decides when the browser says which (any keyboard layout), else the character.
+  const letter = e.code?.startsWith("Key") ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
+  switch (letter) {
+    case "c": return "copy";
+    case "v": return "paste";
+    case "i": case "j": return "browser";
+    default: return "pass";
+  }
 }
 
 export interface BarKey {

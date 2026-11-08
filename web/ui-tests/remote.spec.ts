@@ -1,6 +1,6 @@
 // Remote access (ADR 0038-0040) against a mocked daemon: pairing, devices, the
 // phone layout, the terminal key bar, copy and paste, and the PWA.
-import { type BrowserContextOptions, type Page, devices, expect, test } from "@playwright/test";
+import { type BrowserContext, type BrowserContextOptions, type Page, devices, expect, test } from "@playwright/test";
 import { MockDaemon, mockCode, team } from "./daemon";
 
 const screens = "test-results/screens";
@@ -192,38 +192,118 @@ test("the terminal in use sets the size", async ({ page }) => {
   await expect.poll(resizes).toBeGreaterThan(before);
 });
 
-test("copy and paste in the terminal", async ({ page, context }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+// The clipboard as in a browser profile that denies the async write (Ozan's
+// manual test: copying silently did nothing). Only clipboard-read is granted,
+// to read back what landed there; setClipboard grants write for a moment.
+async function clipboardPage(page: Page, context: BrowserContext): Promise<{
+  clip: () => Promise<string>;
+  setClipboard: (t: string) => Promise<void>;
+  inputs: () => string[];
+  daemon: MockDaemon;
+}> {
+  await context.grantPermissions(["clipboard-read"]);
   const daemon = new MockDaemon(team(4));
   await open(page, daemon);
   await page.locator("aside .card", { hasText: worker }).click();
-  const screen = page.locator(".xterm-screen");
   await expect(page.locator(".xterm")).toContainText(`mock terminal of ${worker}`);
-  const clip = (): Promise<string> => page.evaluate(() => navigator.clipboard.readText());
-  const inputs = (): string[] => daemon.terminalInput.filter((m) => m.includes('"input"'));
+  return {
+    daemon,
+    clip: () => page.evaluate(() => navigator.clipboard.readText()),
+    setClipboard: async (t: string) => {
+      await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+      await page.evaluate((x) => navigator.clipboard.writeText(x), t);
+      await context.clearPermissions();
+      await context.grantPermissions(["clipboard-read"]);
+    },
+    inputs: () => daemon.terminalInput.filter((m) => m.includes('"input"')),
+  };
+}
 
-  // Selecting copies.
-  const box = (await screen.boundingBox())!;
-  await page.mouse.move(box.x + 2, box.y + 8);
+async function selectFirstRow(page: Page): Promise<void> {
+  const box = (await page.locator(".xterm-screen").boundingBox())!;
+  await page.mouse.move(box.x + 1, box.y + 6);
   await page.mouse.down();
-  await page.mouse.move(box.x + 150, box.y + 8, { steps: 5 });
+  await page.mouse.move(box.x + box.width - 4, box.y + 6, { steps: 6 });
   await page.mouse.up();
-  await expect.poll(clip).toContain("mock terminal");
+}
 
-  // Ctrl+Shift+C copies and sends nothing to the agent.
-  await page.evaluate(() => navigator.clipboard.writeText("old"));
+const firstRow = `mock terminal of ${worker}`;
+
+test("copied text lands in the clipboard without the clipboard-write permission", async ({ page, context }) => {
+  const { clip, setClipboard, inputs } = await clipboardPage(page, context);
+  // The condition of the bug: the async Clipboard API is refused.
+  const refused = await page.evaluate(() => navigator.clipboard.writeText("x").then(() => "", (e: Error) => e.message));
+  expect(refused).toContain("Write permission denied");
+
+  // A mouse selection is copied when it ends.
+  await selectFirstRow(page);
+  await expect.poll(async () => (await clip()).trim()).toBe(firstRow);
+
+  // Ctrl+Shift+C copies the selection and sends nothing to the agent.
+  await setClipboard("old");
   await page.keyboard.press("Control+Shift+C");
-  await expect.poll(clip).toContain("mock terminal");
+  await expect.poll(async () => (await clip()).trim()).toBe(firstRow);
   expect(inputs(), "Ctrl+Shift+C reached the agent").toEqual([]);
+
+  // The right-click menu copies too.
+  await setClipboard("old");
+  const box = (await page.locator(".xterm-screen").boundingBox())!;
+  await page.mouse.click(box.x + 40, box.y + 6, { button: "right" });
+  const menu = page.getByRole("menu", { name: "Terminal" });
+  await expect(menu).toBeVisible();
+  await menu.getByRole("menuitem", { name: "Copy" }).click();
+  await expect(menu).toBeHidden();
+  await expect.poll(async () => (await clip()).trim()).toBe(firstRow);
+  await expect(page.getByRole("status")).toHaveCount(0); // no failure notice
+  expect(inputs()).toEqual([]);
+});
+
+test("paste from the menu and Ctrl+Shift+V; Ctrl+C interrupts; F12 is the browser's", async ({ page, context }) => {
+  const { setClipboard, inputs } = await clipboardPage(page, context);
+  const box = (await page.locator(".xterm-screen").boundingBox())!;
+
+  await setClipboard("pasted-by-menu");
+  await page.mouse.click(box.x + 40, box.y + 30, { button: "right" });
+  const menu = page.getByRole("menu", { name: "Terminal" });
+  await expect(menu.getByRole("menuitem", { name: "Copy" })).toBeDisabled(); // nothing selected
+  await menu.getByRole("menuitem", { name: "Paste" }).click();
+  await expect.poll(inputs).toEqual([JSON.stringify({ type: "input", data: "pasted-by-menu" })]);
+
   // Ctrl+Shift+V pastes through the browser's paste event (not ^V).
-  await page.evaluate(() => navigator.clipboard.writeText("pasted-text"));
+  await setClipboard("pasted-text");
+  await page.locator(".xterm").click();
   await page.keyboard.press("Control+Shift+V");
-  await expect.poll(inputs).toEqual([JSON.stringify({ type: "input", data: "pasted-text" })]);
-  // Ctrl+C still interrupts.
+  await expect.poll(inputs).toContain(JSON.stringify({ type: "input", data: "pasted-text" }));
+
+  // F12 and Ctrl+Shift+I go to the browser, not to the agent (no \x1b[24~ or Tab).
+  const before = inputs().length;
+  await page.keyboard.press("F12");
+  await page.keyboard.press("Control+Shift+I");
+  // Ctrl+C still interrupts, and is the only thing sent.
   await page.keyboard.press("Control+c");
-  await expect.poll(inputs).toEqual([
-    JSON.stringify({ type: "input", data: "pasted-text" }), JSON.stringify({ type: "input", data: "\x03" }),
-  ]);
+  await expect.poll(() => inputs().slice(before)).toEqual([JSON.stringify({ type: "input", data: "\x03" })]);
+});
+
+test("a copy that fails says why", async ({ page, context }) => {
+  // A browser that refuses both ways of copying.
+  await context.addInitScript(() => {
+    document.execCommand = () => false;
+    navigator.clipboard.writeText = () => Promise.reject(new DOMException(
+      "Failed to execute 'writeText' on 'Clipboard': Write permission denied.", "NotAllowedError"));
+  });
+  const { inputs } = await clipboardPage(page, context);
+  await page.locator(".xterm").click();
+  await page.keyboard.press("Control+Shift+C");
+  await expect(page.getByRole("status")).toHaveText("Copy failed: nothing is selected");
+  // The drag ends under the notice and outside the terminal: it is still copied.
+  const box = (await page.locator(".xterm-screen").boundingBox())!;
+  await page.mouse.move(box.x + 1, box.y + 6);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width + 30, box.y + 6, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.getByRole("status")).toHaveText("Copy failed: Write permission denied.");
+  await page.screenshot({ path: `${screens}/copy-failed.png` });
+  expect(inputs()).toEqual([]);
 });
 
 test("Paste on the phone key bar pastes the clipboard", async ({ browser }) => {
