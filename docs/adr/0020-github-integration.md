@@ -1,6 +1,6 @@
 # 0020. GitHub integration: a token file, daemon pushes over SSH, polled pull requests
 
-- **Status:** Accepted
+- **Status:** Accepted; the commit-message residual closed in Phase 11 (closing keywords flagged at push time)
 - **Date:** 2026-11-07
 
 ## Context
@@ -78,8 +78,12 @@ Option 2 in each group.
 - **Text sent to GitHub:** agent-written text (titles, summaries, sub-task descriptions, review
   comments) has `@mentions`, issue-closing keywords (`fixes #12`) and Markdown images neutralized with
   a zero-width joiner, so an agent cannot notify people, close issues when a human merges, or make
-  GitHub fetch a URL carrying data. Commit messages are pushed as they are (residual: a closing
-  keyword in a commit message closes an issue when the PR is merged).
+  GitHub fetch a URL carrying data. Commit messages cannot be changed after the fact (imports never
+  rewrite history), so a commit whose message carries a closing reference (`fixes #12`,
+  `closes owner/repo#3`, an issue URL) is flagged at push time like the gates below (Phase 11,
+  2026-11-08; `github.ClosingReferences`, `TestClosingKeywordsBlockPush`). GitHub closes those
+  issues when the commit reaches the default branch by any merge method, so rewriting the merge
+  message would not have been enough. The task prompt asks agents not to write them.
 - **Push gates:** commits failing ADR 0014's identity check, and any change under `.github/`
   (push-triggered workflows run agent-written code with the repository's secrets), block the push
   until the user accepts exactly those commits (the head, for `.github/`) in the UI.

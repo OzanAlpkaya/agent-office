@@ -1,7 +1,7 @@
 #!/bin/sh
 # Turns the recorded team run into the README's GIF (docs/demo.md): from the "lead started"
 # marker to the end, sped up to about TARGET seconds, 800 px wide, 6 fps, 64 colours (about 6 MB
-# for a one-minute run; GitHub shows GIFs up to 10 MB inline).
+# for a one-minute run, small enough for the README to load quickly).
 #   web/demo/to-gif.sh <out dir of record-team-run.ts> <gif> [target seconds, default 35]
 set -eu
 dir=$1
