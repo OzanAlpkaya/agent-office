@@ -1,0 +1,31 @@
+# Built-in price table for cost estimates (ADR 0026). USD per million tokens, Anthropic first-party
+# API rates. Override or add models in $XDG_CONFIG_HOME/agent-office/prices.yaml
+# (AGENT_OFFICE_PRICES_FILE), same format; see docs/usage.md.
+#
+# fast: multiplier for fast mode (usage.speed "fast"); geo_us: multiplier for US-only inference
+# (usage.inference_geo "us"). long_context: different prices for prompts over `above` tokens
+# (input, cache reads and cache writes count).
+as_of: "2026-11-08"
+source: https://platform.claude.com/docs/en/about-claude/pricing
+models:
+  claude-fable-5-1:    {input: 10, cache_write_5m: 12.50, cache_write_1h: 20, cache_read: 0.25, output: 50, geo_us: 1.1}
+  claude-mythos-5-1:   {input: 10, cache_write_5m: 12.50, cache_write_1h: 20, cache_read: 0.25, output: 50, geo_us: 1.1}
+  claude-fable-5:      {input: 10, cache_write_5m: 12.50, cache_write_1h: 20, cache_read: 1,    output: 50, geo_us: 1.1}
+  claude-mythos-5:     {input: 10, cache_write_5m: 12.50, cache_write_1h: 20, cache_read: 1,    output: 50, geo_us: 1.1}
+  claude-opus-5-5:     {input: 4,  cache_write_5m: 5,     cache_write_1h: 8,  cache_read: 0.20, output: 20, fast: 2, geo_us: 1.1}
+  claude-opus-5:       {input: 5,  cache_write_5m: 6.25,  cache_write_1h: 10, cache_read: 0.50, output: 25, fast: 2, geo_us: 1.1}
+  claude-opus-4-8:     {input: 5,  cache_write_5m: 6.25,  cache_write_1h: 10, cache_read: 0.50, output: 25, fast: 2, geo_us: 1.1}
+  claude-opus-4-7:     {input: 5,  cache_write_5m: 6.25,  cache_write_1h: 10, cache_read: 0.50, output: 25, geo_us: 1.1}
+  claude-opus-4-6:     {input: 5,  cache_write_5m: 6.25,  cache_write_1h: 10, cache_read: 0.50, output: 25, geo_us: 1.1}
+  claude-opus-4-5:     {input: 5,  cache_write_5m: 6.25,  cache_write_1h: 10, cache_read: 0.50, output: 25}
+  claude-opus-4-1:     {input: 15, cache_write_5m: 18.75, cache_write_1h: 30, cache_read: 1.50, output: 75}
+  claude-opus-4:       {input: 15, cache_write_5m: 18.75, cache_write_1h: 30, cache_read: 1.50, output: 75}
+  claude-sonnet-5-5:   {input: 2,  cache_write_5m: 2.50,  cache_write_1h: 4,  cache_read: 0.10, output: 10, geo_us: 1.1}
+  claude-sonnet-5:     {input: 2,  cache_write_5m: 2.50,  cache_write_1h: 4,  cache_read: 0.20, output: 10, geo_us: 1.1}
+  claude-sonnet-4-6:   {input: 3,  cache_write_5m: 3.75,  cache_write_1h: 6,  cache_read: 0.30, output: 15, geo_us: 1.1}
+  claude-sonnet-4-5:   {input: 3,  cache_write_5m: 3.75,  cache_write_1h: 6,  cache_read: 0.30, output: 15}
+  claude-sonnet-4:     {input: 3,  cache_write_5m: 3.75,  cache_write_1h: 6,  cache_read: 0.30, output: 15}
+  claude-haiku-5-5:
+    {input: 0.10, cache_write_5m: 0.125, cache_write_1h: 0.20, cache_read: 0.01, output: 0.50, geo_us: 1.1,
+     long_context: {above: 100000, input: 0.50, cache_write_5m: 0.625, cache_write_1h: 1, cache_read: 0.05, output: 2.50}}
+  claude-haiku-4-5:    {input: 1,  cache_write_5m: 1.25,  cache_write_1h: 2,  cache_read: 0.10, output: 5}

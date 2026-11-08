@@ -1,6 +1,6 @@
 # 0013. Refuse newer database schemas; back up before migrating
 
-- **Status:** Accepted
+- **Status:** Accepted; backup cleanup (the newest 3 are kept) decided in ADR 0028
 - **Date:** 2026-11-07
 
 ## Context

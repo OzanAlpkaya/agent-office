@@ -10,6 +10,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"time"
+
+	"github.com/OzanAlpkaya/agent-office/internal/usage"
 )
 
 // Placeholder is the credential a sandboxed Claude Code gets instead of the
@@ -33,9 +35,21 @@ type APIProxy struct {
 	Upstream  *url.URL          // nil: AnthropicAPI
 	Transport http.RoundTripper // nil: NewAPITransport()
 	OnEvent   func(Event)
-	Log       *slog.Logger // carries the agent id
+	Log       *slog.Logger // carries the agent and session ids (ADR 0028)
 	MaxBody   int64        // 0: MaxAPIRequestBody
+
+	// OnUsage, if set, receives the token usage of every successful response
+	// as it streams through (ADR 0026): numbers and ids only.
+	OnUsage func(usage.Message)
+	// Allow, if set, is asked before a request is forwarded; an error refuses
+	// it with a 403 and its message (budgets, ADR 0027). It must not block.
+	Allow func() error
 }
+
+// reqInfo carries what the response side learns to the request's log line.
+type reqInfo struct{ requestID string }
+
+type reqInfoKey struct{}
 
 // NewAPITransport returns the upstream transport: bounded dial, TLS and
 // response-header times, but no overall timeout, since responses are long
@@ -72,6 +86,29 @@ func (p *APIProxy) Handler() http.Handler {
 			r.Out.Host = up.Host
 			r.Out.Header.Del("X-Api-Key")
 			r.Out.Header.Set("Authorization", "Bearer "+p.Token.Reveal())
+			// Without the client's Accept-Encoding, Go's transport negotiates
+			// gzip itself and decompresses, so the meter reads plain text.
+			r.Out.Header.Del("Accept-Encoding")
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			rid := sanitizeID(resp.Header.Get("Request-Id"))
+			if info, ok := resp.Request.Context().Value(reqInfoKey{}).(*reqInfo); ok {
+				info.requestID = rid
+			}
+			if p.OnUsage != nil && resp.StatusCode == http.StatusOK && resp.Header.Get("Content-Encoding") != "" {
+				// Not expected (Accept-Encoding is dropped), but never silent: this
+				// response's spend is not counted.
+				p.event(APIMeter, resp.Request.Method+" "+resp.Request.URL.Path+": encoded response not metered")
+				p.Log.Warn("api usage not metered: encoded response", "request_id", rid,
+					"encoding", sanitize(resp.Header.Get("Content-Encoding")))
+			}
+			if p.OnUsage != nil && resp.StatusCode == http.StatusOK && resp.Header.Get("Content-Encoding") == "" {
+				resp.Body = usage.MeterBody(resp.Body, resp.Header.Get("Content-Type"), rid, p.OnUsage, func(err error) {
+					p.event(APIMeter, resp.Request.Method+" "+resp.Request.URL.Path)
+					p.Log.Warn("api usage not readable", "request_id", rid, "err", err)
+				})
+			}
+			return nil
 		},
 		Transport:     tr,
 		FlushInterval: -1, // stream every write straight through
@@ -93,9 +130,11 @@ func (p *APIProxy) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		info := &reqInfo{}
+		r = r.WithContext(context.WithValue(r.Context(), reqInfoKey{}, info))
 		defer func() {
 			p.Log.Debug("api request", "method", sanitize(r.Method), "path", sanitize(r.URL.Path),
-				"status", sw.status, "duration_ms", time.Since(start).Milliseconds())
+				"status", sw.status, "duration_ms", time.Since(start).Milliseconds(), "request_id", info.requestID)
 		}()
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
 			p.event(APIRejected, r.Method+" "+r.URL.Path)
@@ -114,6 +153,13 @@ func (p *APIProxy) Handler() http.Handler {
 			apiError(sw, http.StatusRequestEntityTooLarge, "request_too_large", "request body too large")
 			return
 		}
+		if p.Allow != nil {
+			if err := p.Allow(); err != nil {
+				p.event(APIBudget, err.Error())
+				apiError(sw, http.StatusForbidden, "permission_error", "agent-office: "+err.Error())
+				return
+			}
+		}
 		r.Body = http.MaxBytesReader(sw, r.Body, maxBody) // undeclared (chunked) bodies
 		rp.ServeHTTP(sw, r)
 	})
@@ -125,6 +171,19 @@ func (p *APIProxy) event(kind EventKind, detail string) {
 	if p.OnEvent != nil {
 		p.OnEvent(Event{Kind: kind, Detail: detail, At: time.Now().UTC()})
 	}
+}
+
+// sanitizeID keeps an upstream id header only if it looks like an id.
+func sanitizeID(s string) string {
+	if len(s) > 128 {
+		return ""
+	}
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return ""
+		}
+	}
+	return s
 }
 
 // apiError writes an error in the Anthropic API's JSON shape, so the client

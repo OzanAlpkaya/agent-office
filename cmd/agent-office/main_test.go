@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
+	"github.com/OzanAlpkaya/agent-office/internal/engine"
+	pricing "github.com/OzanAlpkaya/agent-office/internal/usage"
 )
 
 func TestParseServe(t *testing.T) {
@@ -137,5 +139,56 @@ func TestMCPBridgeFailsWhenDaemonDown(t *testing.T) {
 	t.Setenv("AGENT_OFFICE_MCP_SOCKET", "")
 	if code := mcpBridge(); code == 0 {
 		t.Fatal("exit code 0 without socket env")
+	}
+}
+
+func TestObservabilityFlags(t *testing.T) {
+	for _, k := range []string{"AGENT_OFFICE_BUDGET_SESSION_USD", "AGENT_OFFICE_BUDGET_GOAL_USD", "AGENT_OFFICE_EVENT_RETENTION_DAYS",
+		"AGENT_OFFICE_LOG_FORMAT", "AGENT_OFFICE_PRICES_FILE"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("XDG_CONFIG_HOME", "/cfg")
+	c, err := parseServe([]string{"--repo", "/tmp"})
+	if err != nil || c.budgetSessionUSD != 0 || c.budgetGoalUSD != 0 || c.eventRetentionDays != 30 || c.logFormat != "text" ||
+		c.pricesFile != "/cfg/agent-office/prices.yaml" || c.pricesRequired {
+		t.Fatalf("defaults (budgets off, optional price file): %+v %v", c, err)
+	}
+	t.Setenv("AGENT_OFFICE_BUDGET_GOAL_USD", "2.5")
+	t.Setenv("AGENT_OFFICE_LOG_FORMAT", "json")
+	c, err = parseServe([]string{"--repo", "/tmp", "--budget-session-usd", "0.5", "--prices", "/p/prices.yaml", "--event-retention-days", "0"})
+	if err != nil || c.budgetSessionUSD != 0.5 || c.budgetGoalUSD != 2.5 || c.logFormat != "json" || !c.pricesRequired ||
+		c.pricesFile != "/p/prices.yaml" || c.eventRetentionDays != 0 {
+		t.Fatalf("flags and env: %+v %v", c, err)
+	}
+	for _, args := range [][]string{
+		{"--budget-session-usd", "-1"},
+		{"--budget-goal-usd", "NaN"},
+		{"--log-format", "xml"},
+		{"--event-retention-days", "-1"},
+		{"--budget-goal-usd", "0.0000001"},
+	} {
+		if _, err := parseServe(append([]string{"--repo", "/tmp"}, args...)); err == nil {
+			t.Errorf("parseServe(%v) accepted", args)
+		}
+	}
+	t.Setenv("AGENT_OFFICE_BUDGET_GOAL_USD", "lots")
+	if _, err := parseServe([]string{"--repo", "/tmp"}); err == nil {
+		t.Error("bad env budget accepted")
+	}
+}
+
+func TestCheckBudgetModel(t *testing.T) {
+	p := pricing.Builtin()
+	on := engine.Budgets{GoalMicroUSD: 1_000_000}
+	if err := checkBudgetModel(on, "claude-unknown-9", p); err == nil {
+		t.Error("unpriced full model id accepted with a budget")
+	}
+	for _, m := range []string{"claude-haiku-5-5", "claude-haiku-4-5-20251001", "haiku", ""} {
+		if err := checkBudgetModel(on, m, p); err != nil {
+			t.Errorf("%q: %v", m, err)
+		}
+	}
+	if err := checkBudgetModel(engine.Budgets{}, "claude-unknown-9", p); err != nil {
+		t.Errorf("no budget: %v", err)
 	}
 }

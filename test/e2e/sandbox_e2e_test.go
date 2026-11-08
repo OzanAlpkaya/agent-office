@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -162,6 +163,9 @@ func TestSandboxEndToEnd(t *testing.T) {
 	if got := gitOut(t, repo, "show", a.Branch+":race.txt"); e2ePack() == "go" && strings.TrimSpace(got) != "race-ok" {
 		t.Errorf("race.txt on the imported branch: %q", got)
 	}
+	// Phase 8: the API socket metered every message of the transcript.
+	checkSandboxUsage(t, data, a.ID, a.SessionID)
+
 	// The pack's skill sits in the agent's config dir. Whether Claude Code
 	// listed it is visible only in its own files there (logged, not asserted:
 	// the transcript format is not ours).
@@ -227,6 +231,9 @@ func TestSandboxEndToEnd(t *testing.T) {
 	if !containerExists(a.ID) {
 		t.Log("the worker container ended with the daemon; the restart has no orphan to remove")
 	}
+	// The restarted daemon has a tiny session budget (ADR 0027): agent B's first
+	// request may pass, a later one is refused on the API socket.
+	d.args = append(d.args, "--budget-session-usd", "0.000001")
 	d.start()
 	var after agentInfoImport
 	deadline := time.Now().Add(time.Minute)
@@ -258,6 +265,36 @@ func TestSandboxEndToEnd(t *testing.T) {
 	d.json("POST", "/api/agents", map[string]string{}, 201, &b)
 	agentIDs = append(agentIDs, b.ID)
 	w.waitFor(t, b.ID, "B to become idle", 2*time.Minute, func(h []string) bool { return len(h) > 0 && h[len(h)-1] == "idle" })
+	tb := attach(t, ctx, d.base, b.ID)
+	time.Sleep(2 * time.Second)
+	refused := false
+	for i, word := range []string{"one", "two", "three"} {
+		m := w.mark(b.ID)
+		tb.typeLine(ctx, "Reply with the single word "+word+". Do not use any tools.")
+		w.waitFor(t, b.ID, fmt.Sprintf("B's turn %d to end", i+1), 2*time.Minute, reachedAfter(m, "idle"))
+		var evs []struct{ Kind, Detail string }
+		d.json("GET", "/api/agents/"+b.ID+"/events", nil, 200, &evs)
+		for _, e := range evs {
+			if e.Kind == "api_budget" {
+				refused = true
+				t.Logf("budget refusal after turn %d: %s", i+1, e.Detail)
+			}
+		}
+		if refused {
+			break
+		}
+	}
+	if !refused {
+		t.Error("a session budget of $0.000001 never refused a request")
+	} else {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) && !strings.Contains(tb.text(), "budget") {
+			time.Sleep(500 * time.Millisecond)
+		}
+		if !strings.Contains(tb.text(), "budget") {
+			t.Errorf("Claude Code did not show the budget refusal:\n%s", tail(tb.text(), 20))
+		}
+	}
 	d.json("POST", "/api/agents/"+b.ID+"/stop", nil, 200, nil)
 	if containerExists(b.ID) {
 		t.Error("worker container still exists after stop")
@@ -298,7 +335,7 @@ func TestSandboxEndToEnd(t *testing.T) {
 	// Nothing refused on the API socket: Claude Code needed only POST /v1/messages.
 	logData, _ = os.ReadFile(d.logPath)
 	for _, line := range strings.Split(string(logData), "\n") {
-		if strings.Contains(line, "api request refused") {
+		if strings.Contains(line, "api request refused") && !strings.Contains(line, "api_budget") {
 			t.Errorf("API socket refused a request: %s", line)
 		}
 		if strings.Contains(line, "egress refused") {

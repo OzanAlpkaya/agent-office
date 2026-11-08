@@ -11,6 +11,22 @@ import (
 	"time"
 )
 
+const addSessionCounts = `-- name: AddSessionCounts :exec
+UPDATE sessions SET turns = turns + ?1, tool_calls = tool_calls + ?2
+WHERE id = ?3
+`
+
+type AddSessionCountsParams struct {
+	Turns     int64
+	ToolCalls int64
+	ID        string
+}
+
+func (q *Queries) AddSessionCounts(ctx context.Context, arg AddSessionCountsParams) error {
+	_, err := q.db.ExecContext(ctx, addSessionCounts, arg.Turns, arg.ToolCalls, arg.ID)
+	return err
+}
+
 const claimMessages = `-- name: ClaimMessages :many
 UPDATE messages SET delivered_at = ?1, delivery = ?2
 WHERE id IN (
@@ -330,6 +346,20 @@ func (q *Queries) DecideAccessRequest(ctx context.Context, arg DecideAccessReque
 		&i.DecidedBy,
 	)
 	return i, err
+}
+
+const deleteEventsBefore = `-- name: DeleteEventsBefore :execrows
+
+DELETE FROM events WHERE at < ?
+`
+
+// Retention (ADR 0028).
+func (q *Queries) DeleteEventsBefore(ctx context.Context, at time.Time) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteEventsBefore, at)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const endSessions = `-- name: EndSessions :exec
@@ -955,6 +985,55 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event
 	return items, nil
 }
 
+const listGoalUsage = `-- name: ListGoalUsage :many
+SELECT u.id, u.session_id, u.agent_id, u.task_id, u.source, u.message_id, u.request_id, u.model, u.speed, u.inference_geo, u.input_tokens, u.output_tokens, u.cache_read, u.cache_write_5m, u.cache_write_1h, u.at, u.updated_at FROM usage_messages u LEFT JOIN tasks t ON t.id = u.task_id
+WHERE u.task_id = ?1 OR t.parent_task_id = ?1
+ORDER BY u.id
+`
+
+// Everything recorded under a goal: its own agents (the lead), its sub-tasks' workers and
+// their reviewers (ADR 0027).
+func (q *Queries) ListGoalUsage(ctx context.Context, goalID sql.NullString) ([]UsageMessage, error) {
+	rows, err := q.db.QueryContext(ctx, listGoalUsage, goalID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UsageMessage{}
+	for rows.Next() {
+		var i UsageMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.AgentID,
+			&i.TaskID,
+			&i.Source,
+			&i.MessageID,
+			&i.RequestID,
+			&i.Model,
+			&i.Speed,
+			&i.InferenceGeo,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheRead,
+			&i.CacheWrite5m,
+			&i.CacheWrite1h,
+			&i.At,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listImports = `-- name: ListImports :many
 SELECT id, agent_id, "trigger", outcome, branch, head, previous, commits, flagged, at FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT ?
 `
@@ -984,6 +1063,110 @@ func (q *Queries) ListImports(ctx context.Context, arg ListImportsParams) ([]Imp
 			&i.Commits,
 			&i.Flagged,
 			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectSessions = `-- name: ListProjectSessions :many
+SELECT s.id, s.agent_id, s.started_at, s.ended_at, s.turns, s.tool_calls, s.cli_cost_micro_usd,
+       a.role, a.sandbox, a.task_id, a.model, a.removed_at
+FROM sessions s JOIN agents a ON a.id = s.agent_id
+WHERE a.project_id = ? ORDER BY s.started_at
+`
+
+type ListProjectSessionsRow struct {
+	ID              string
+	AgentID         string
+	StartedAt       time.Time
+	EndedAt         sql.NullTime
+	Turns           int64
+	ToolCalls       int64
+	CliCostMicroUsd sql.NullInt64
+	Role            string
+	Sandbox         string
+	TaskID          sql.NullString
+	Model           string
+	RemovedAt       sql.NullTime
+}
+
+func (q *Queries) ListProjectSessions(ctx context.Context, projectID string) ([]ListProjectSessionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listProjectSessions, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectSessionsRow{}
+	for rows.Next() {
+		var i ListProjectSessionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.StartedAt,
+			&i.EndedAt,
+			&i.Turns,
+			&i.ToolCalls,
+			&i.CliCostMicroUsd,
+			&i.Role,
+			&i.Sandbox,
+			&i.TaskID,
+			&i.Model,
+			&i.RemovedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectUsage = `-- name: ListProjectUsage :many
+SELECT u.id, u.session_id, u.agent_id, u.task_id, u.source, u.message_id, u.request_id, u.model, u.speed, u.inference_geo, u.input_tokens, u.output_tokens, u.cache_read, u.cache_write_5m, u.cache_write_1h, u.at, u.updated_at FROM usage_messages u JOIN agents a ON a.id = u.agent_id
+WHERE a.project_id = ? ORDER BY u.id
+`
+
+func (q *Queries) ListProjectUsage(ctx context.Context, projectID string) ([]UsageMessage, error) {
+	rows, err := q.db.QueryContext(ctx, listProjectUsage, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UsageMessage{}
+	for rows.Next() {
+		var i UsageMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.AgentID,
+			&i.TaskID,
+			&i.Source,
+			&i.MessageID,
+			&i.RequestID,
+			&i.Model,
+			&i.Speed,
+			&i.InferenceGeo,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheRead,
+			&i.CacheWrite5m,
+			&i.CacheWrite1h,
+			&i.At,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1176,6 +1359,51 @@ func (q *Queries) ListSandboxEvents(ctx context.Context, arg ListSandboxEventsPa
 			&i.Detail,
 			&i.State,
 			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSessionUsage = `-- name: ListSessionUsage :many
+SELECT id, session_id, agent_id, task_id, source, message_id, request_id, model, speed, inference_geo, input_tokens, output_tokens, cache_read, cache_write_5m, cache_write_1h, at, updated_at FROM usage_messages WHERE session_id = ? ORDER BY id
+`
+
+func (q *Queries) ListSessionUsage(ctx context.Context, sessionID string) ([]UsageMessage, error) {
+	rows, err := q.db.QueryContext(ctx, listSessionUsage, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UsageMessage{}
+	for rows.Next() {
+		var i UsageMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.AgentID,
+			&i.TaskID,
+			&i.Source,
+			&i.MessageID,
+			&i.RequestID,
+			&i.Model,
+			&i.Speed,
+			&i.InferenceGeo,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheRead,
+			&i.CacheWrite5m,
+			&i.CacheWrite1h,
+			&i.At,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1639,6 +1867,20 @@ func (q *Queries) SetReviewReply(ctx context.Context, arg SetReviewReplyParams) 
 	return i, err
 }
 
+const setSessionCLICost = `-- name: SetSessionCLICost :exec
+UPDATE sessions SET cli_cost_micro_usd = ? WHERE id = ?
+`
+
+type SetSessionCLICostParams struct {
+	CliCostMicroUsd sql.NullInt64
+	ID              string
+}
+
+func (q *Queries) SetSessionCLICost(ctx context.Context, arg SetSessionCLICostParams) error {
+	_, err := q.db.ExecContext(ctx, setSessionCLICost, arg.CliCostMicroUsd, arg.ID)
+	return err
+}
+
 const setWorktreeStatus = `-- name: SetWorktreeStatus :exec
 UPDATE worktrees SET status = ?, removed_at = ? WHERE agent_id = ?
 `
@@ -1995,4 +2237,59 @@ func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestPa
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const upsertUsage = `-- name: UpsertUsage :exec
+
+INSERT INTO usage_messages (session_id, agent_id, task_id, source, message_id, request_id, model, speed,
+    inference_geo, input_tokens, output_tokens, cache_read, cache_write_5m, cache_write_1h, at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (session_id, message_id) DO UPDATE SET
+    request_id = CASE WHEN excluded.request_id != '' THEN excluded.request_id ELSE usage_messages.request_id END,
+    model = excluded.model, speed = excluded.speed, inference_geo = excluded.inference_geo,
+    input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
+    cache_read = excluded.cache_read, cache_write_5m = excluded.cache_write_5m,
+    cache_write_1h = excluded.cache_write_1h, updated_at = excluded.updated_at
+`
+
+type UpsertUsageParams struct {
+	SessionID    string
+	AgentID      string
+	TaskID       sql.NullString
+	Source       string
+	MessageID    string
+	RequestID    string
+	Model        string
+	Speed        string
+	InferenceGeo string
+	InputTokens  int64
+	OutputTokens int64
+	CacheRead    int64
+	CacheWrite5m int64
+	CacheWrite1h int64
+	At           time.Time
+	UpdatedAt    time.Time
+}
+
+// Token usage (migration 0007, ADR 0026).
+func (q *Queries) UpsertUsage(ctx context.Context, arg UpsertUsageParams) error {
+	_, err := q.db.ExecContext(ctx, upsertUsage,
+		arg.SessionID,
+		arg.AgentID,
+		arg.TaskID,
+		arg.Source,
+		arg.MessageID,
+		arg.RequestID,
+		arg.Model,
+		arg.Speed,
+		arg.InferenceGeo,
+		arg.InputTokens,
+		arg.OutputTokens,
+		arg.CacheRead,
+		arg.CacheWrite5m,
+		arg.CacheWrite1h,
+		arg.At,
+		arg.UpdatedAt,
+	)
+	return err
 }

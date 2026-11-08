@@ -895,14 +895,24 @@ func (e *Engine) decideFollowup(ctx context.Context, prID, reviewID int64) {
 	e.publishPRByID(ctx, row.ID)
 }
 
+// setFollowup records a review's follow-up outcome and its reason in one
+// transaction, so no reader sees the outcome without its reason (found in
+// Phase 8: TestFollowupRoundLimitAndHumanReviews read "skipped" with an empty
+// error between the two writes).
 func (e *Engine) setFollowup(ctx context.Context, rv db.Review, followup, msg string) {
-	if _, err := e.q.SetReviewFollowup(ctx, db.SetReviewFollowupParams{Followup: followup, UpdatedAt: now(), ID: rv.ID}); err != nil {
-		e.log.Warn("record follow-up", "review_id", rv.ID, "err", err)
-	}
-	if msg != "" {
-		if cur, err := e.q.GetReview(ctx, rv.ID); err == nil {
-			_, _ = e.updateReview(ctx, cur, cur.Status, msg)
+	err := e.st.Tx(ctx, func(q *db.Queries) error {
+		cur, err := q.SetReviewFollowup(ctx, db.SetReviewFollowupParams{Followup: followup, UpdatedAt: now(), ID: rv.ID})
+		if err != nil || msg == "" {
+			return err
 		}
+		_, err = q.UpdateReview(ctx, db.UpdateReviewParams{Status: cur.Status, Verdict: cur.Verdict,
+			Summary: truncateRunes(cur.Summary, maxStoredSummary), Comments: cur.Comments, AgentID: cur.AgentID,
+			GithubReviewID: cur.GithubReviewID, Url: cur.Url, Error: truncateRunes(msg, maxErrorLen), Attempts: cur.Attempts,
+			UpdatedAt: now(), ID: cur.ID})
+		return err
+	})
+	if err != nil {
+		e.log.Warn("record follow-up", "review_id", rv.ID, "err", err)
 	}
 }
 

@@ -378,6 +378,13 @@ func TestEndToEnd(t *testing.T) {
 			return n >= 2 && h[n-1] == "idle" && strings.Contains(strings.Join(h, ","), "working")
 		})
 	}
+	// Phase 8: usage in agent-office equals the session files.
+	var sessionIDs []string
+	for _, a := range created {
+		sessionIDs = append(sessionIDs, a.SessionID)
+	}
+	checkHostUsage(t, d, sessionIDs)
+
 	var listed []taskInfo
 	d.json("GET", "/api/tasks", nil, 200, &listed)
 	for _, task := range listed {
@@ -474,6 +481,12 @@ func TestEndToEnd(t *testing.T) {
 	d.json("GET", "/api/tasks", nil, 200, &listed)
 	if len(listed) != 3 {
 		t.Fatalf("tasks after restart: %+v", listed)
+	}
+	// The cost history survives the restart.
+	for _, sid := range sessionIDs {
+		if u := usageOf(t, d)[sid]; u.Messages == 0 || u.CostMicroUSD == 0 {
+			t.Errorf("usage of session %s after restart: %+v", sid, u)
+		}
 	}
 
 	// 8. Removal never loses work: A has an untracked file -> kept until

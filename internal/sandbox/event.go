@@ -17,6 +17,8 @@ const (
 	APIRejected  EventKind = "api_rejected"  // method/path not forwarded by the API socket
 	APIAuth      EventKind = "api_auth"      // unexpected credentials on the API socket
 	APIError     EventKind = "api_error"     // upstream error while proxying
+	APIBudget    EventKind = "api_budget"    // refused: a budget is spent (ADR 0027)
+	APIMeter     EventKind = "api_meter"     // a response's usage could not be read (ADR 0026)
 
 	// Import of the agent's branch into the main repository (ADR 0014).
 	ImportDiverged EventKind = "import_diverged" // rewritten history went to a new -rewrite-N branch

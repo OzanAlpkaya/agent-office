@@ -6,9 +6,11 @@ import {
 import { Board } from "./Board";
 import { TerminalView } from "./TerminalView";
 import { useWorld } from "./useAgents";
+import { type UsageRow, formatMoney, formatTokens, sessionList, totalTokens, usageBy } from "./usage";
 
 // The office pulls in PixiJS; load it only when its tab opens (ADR 0024).
 const Office = lazy(() => import("./office/Office"));
+const Usage = lazy(() => import("./Usage"));
 
 const stateLabel: Record<AgentState, string> = {
   starting: "Starting",
@@ -55,6 +57,8 @@ const eventLabel: Record<string, string> = {
   import_diverged: "History rewritten",
   commit_flagged: "Commit flagged",
   import_failed: "Import failed",
+  api_budget: "Budget spent",
+  api_meter: "Usage not readable",
 };
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
@@ -62,10 +66,10 @@ const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
 // How long an agent may stay in "starting" before the UI flags it.
 const stuckAfterMs = 20_000;
 
-type View = { kind: "board" } | { kind: "office" } | { kind: "agent"; id: string };
+type View = { kind: "board" } | { kind: "office" } | { kind: "usage" } | { kind: "agent"; id: string };
 
 export function App(): JSX.Element {
-  const { agents, tasks, events, messages, accessRequests, pullRequests, connection } = useWorld();
+  const { agents, tasks, events, messages, accessRequests, pullRequests, usage, connection } = useWorld();
   const [view, setView] = useState<View>({ kind: "board" });
   const [project, setProject] = useState<Project>();
   const [version, setVersion] = useState("");
@@ -125,6 +129,10 @@ export function App(): JSX.Element {
   const pending = accessRequests.filter((r) => r.status === "pending");
   const current = view.kind === "agent" ? agents.find((a) => a.id === view.id) : undefined;
   const taskTitle = (id?: string): string | undefined => tasks.find((t) => t.id === id)?.title;
+  const sessions = sessionList(usage);
+  const usageByAgent = usageBy(sessions, (s) => s.agent_id);
+  const usageByTask = usageBy(sessions, (s) => s.task_id);
+  const usageByGoal = usageBy(sessions, (s) => s.goal_id);
 
   return (
     <div className="app">
@@ -183,6 +191,7 @@ export function App(): JSX.Element {
                 onSaveWork={() => void run(() => api.saveWork(a.id))}
                 events={events[a.id] ?? []}
                 messages={messages[a.id] ?? []}
+                usage={usageByAgent.get(a.id)}
               />
             ))}
           </ul>
@@ -196,6 +205,9 @@ export function App(): JSX.Element {
             <button className={view.kind === "office" ? "active" : ""} onClick={() => setView({ kind: "office" })}>
               Office
             </button>
+            <button className={view.kind === "usage" ? "active" : ""} onClick={() => setView({ kind: "usage" })}>
+              Usage
+            </button>
             {agents.filter((a) => a.has_terminal).map((a) => (
               <button key={a.id} className={current?.id === a.id ? "active" : ""}
                 onClick={() => setView({ kind: "agent", id: a.id })}>
@@ -208,8 +220,14 @@ export function App(): JSX.Element {
               <Office agents={agents} tasks={tasks} messages={messages} accessRequests={accessRequests}
                 onOpenAgent={(id) => setView({ kind: "agent", id })} />
             </Suspense>
+          ) : view.kind === "usage" ? (
+            <Suspense fallback={<div className="empty">Loading usage…</div>}>
+              <Usage usage={usage} agents={agents} tasks={tasks} status={status}
+                onOpenAgent={(id) => setView({ kind: "agent", id })} />
+            </Suspense>
           ) : view.kind === "board" || !current ? (
-            <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning}
+            <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask}
+              usageByGoal={usageByGoal}
               onStartLead={(t) => void startAgent(t.id, "lead")}
               onCreate={async (title, description) => (await run(() => api.createTask(title, description))) !== undefined}
               onStatus={(t: Task, status: TaskStatus) => void run(() => api.updateTask(t.id, { status }))}
@@ -246,10 +264,11 @@ interface CardProps {
   onSaveWork: () => void;
   events: SandboxEvent[];
   messages: Message[];
+  usage?: UsageRow; // all of the agent's sessions (ADR 0026)
 }
 
 function AgentCard({
-  agent: a, taskTitle, nowMs, selected, onSelect, onStop, onRemove, onDiscard, onImport, onSaveWork, events, messages,
+  agent: a, taskTitle, nowMs, selected, onSelect, onStop, onRemove, onDiscard, onImport, onSaveWork, events, messages, usage,
 }: CardProps): JSX.Element {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const stuck = a.state === "starting" && nowMs - Date.parse(a.started_at) > stuckAfterMs;
@@ -272,6 +291,7 @@ function AgentCard({
       </div>
       {taskTitle && <div className="small">{taskTitle}</div>}
       {a.activity && <div className="small">Tool: <span className="mono">{a.activity}</span></div>}
+      {usage && <UsageLine usage={usage} />}
       {a.state === "starting" && (
         <div className={`small hint ${stuck ? "stuck" : ""}`}>
           {stuck ? "⚠ Still starting after 20 s. " : "Still starting? "}
@@ -493,6 +513,16 @@ function PackPanel({ status }: { status: Status }) {
           give agents test or read-only credentials only.
         </p>
       )}
+    </div>
+  );
+}
+
+// UsageLine is an agent's or task's tokens and estimated cost (ADR 0026).
+export function UsageLine({ usage: u }: { usage: UsageRow }): JSX.Element {
+  return (
+    <div className="small muted usage-line" title="estimated from token counts; see the Usage tab">
+      {formatTokens(totalTokens(u.tokens))} tokens · {formatMoney(u.costMicroUSD)}
+      {u.unpricedTokens > 0 && <span className="hint"> + unpriced</span>}
     </div>
   );
 }

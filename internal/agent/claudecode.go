@@ -252,6 +252,7 @@ type claudeHook struct {
 	NotificationType string `json:"notification_type"`
 	AgentID          string `json:"agent_id"`
 	StopHookActive   bool   `json:"stop_hook_active"`
+	TranscriptPath   string `json:"transcript_path"`
 }
 
 // ErrInvalidPayload is returned for hook payloads that cannot be used.
@@ -272,6 +273,7 @@ func ParseClaudeHook(raw []byte) (Event, error) {
 		Tool:           enum(h.ToolName),
 		Subagent:       h.AgentID != "",
 		StopHookActive: h.StopHookActive,
+		TranscriptPath: transcriptPath(h.TranscriptPath),
 	}
 	switch h.HookEventName {
 	case "SessionStart":
@@ -308,6 +310,20 @@ func ParseClaudeHook(raw []byte) (Event, error) {
 		ev.Kind = Other
 	}
 	return ev, nil
+}
+
+// transcriptPath keeps a plausible transcript path: absolute, a .jsonl file,
+// bounded, printable. The engine validates it further before reading it.
+func transcriptPath(p string) string {
+	if len(p) > 4096 || !strings.HasPrefix(p, "/") || !strings.HasSuffix(p, ".jsonl") {
+		return ""
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return ""
+		}
+	}
+	return p
 }
 
 // enum keeps a value only if it looks like an identifier (letters, digits,

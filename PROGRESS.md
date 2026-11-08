@@ -1,6 +1,9 @@
 # Progress
 
-**Current phase:** Phase 8 (Observability & cost), not started; Phase 7 merged
+**Current phase:** Phase 12 (Team workflow), not started; Phase 8 merged
+
+**Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
+as they are, so ADRs and plans that refer to them stay valid.
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 
@@ -14,7 +17,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 5: GitHub loop + pluggable code review
 - [x] Phase 6: Stack packs
 - [x] Phase 7: Pixel office UI
-- [ ] Phase 8: Observability & cost
+- [x] Phase 8: Observability & cost
 - [ ] Phase 9: Memory & persistence
 - [ ] Phase 10: Remote access (PWA over Tailscale)
 - [ ] Phase 11: Portfolio polish
@@ -117,3 +120,25 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   Team workflow (the lead stays until the goal is done, conflict detection and sequential
   sub-tasks, messages to the user) and Phase 13 Office v2 (walking characters, rooms). Merged into
   `main` (`--no-ff`).
+- 2026-11-08: Phase order from here on set by Ozan: 8, 12, 9, 10, 11, 13. Phase 8 plan written with
+  the recommended options and started on `phase-8/observability-cost` (`docs/plans/phase-8.md`).
+- 2026-11-08: Phase 8 done on `phase-8/observability-cost`; plan written with the recommended options
+  and executed without a separate approval, as Ozan asked (`docs/plans/phase-8.md`). ADRs 0026
+  (usage and cost), 0027 (budgets), 0028 (correlation ids, log format, retention). New package
+  `usage`; migration 0007. No new dependencies. Sandboxed agents are metered on their API socket,
+  host-mode agents read from their transcripts; one row per API message, priced on read from a
+  built-in table (pricing page, 2026-11-08) plus an optional user `prices.yaml`; money is integer
+  (nano-USD inside, micro-USD in the API). A Usage tab (by goal, task, agent, session, model) and
+  usage on agent and task cards. Optional budgets per session and per goal, refused on the API
+  socket. Every log line about an agent carries its session id (`--log-format json`); events older
+  than 30 days are pruned; the newest 3 migration backups are kept. Backlog: exited agents'
+  terminals explain the "Resume this session" line (Phase 9 makes it work). The real e2e run found
+  that Claude Code writes a turn's last transcript line after its Stop hook (fixed with re-reads);
+  an independent review led to 5 fixes (budgets fail closed on write errors, no SQLite write on the
+  stream path, saturating money math, ...). A pre-existing two-step write in review follow-ups
+  (`setFollowup`) is now one transaction. `make check`, `make ui-test`, `make sandbox-test` and
+  `make e2e` (host, sandbox with a real budget refusal, team) pass.
+- 2026-11-08: Phase 8 review: all decisions approved. The live Usage tab screenshot is in
+  `docs/screenshots/usage.png`. Backlog in `docs/plan.md`: the intermittent `TestTeamAuthorization`
+  failure under load (Phase 12) and the "user settings" label flipping on sandboxed agents after a
+  restart (Phase 9). Merged into `main` (`--no-ff`).

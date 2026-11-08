@@ -4,6 +4,9 @@ Each phase has a goal, a scope and a Definition of Done (DoD). Every phase start
 approved plan and ends with an updated `PROGRESS.md` and a plain-language summary. Later phases are
 intentionally coarser; their DoD is refined at the start of the phase.
 
+**Order** (decided 2026-11-08): phases run 0–8, then 12, 9, 10, 11, 13. Numbers are kept, so
+references in ADRs and plans stay valid.
+
 ---
 
 ## Phase 0: Research & design
@@ -221,15 +224,31 @@ derived from Claude Code hooks.
 
 **Goal:** See what agents are doing and what they cost.
 
-**Scope**
-- Token usage and cost parsed from Claude Code session files.
-- Per agent / task / session metrics; structured logs with correlation ids.
-- Dashboard in the UI.
+**Scope** (see ADRs 0026–0028, `docs/usage.md` and `docs/plans/phase-8.md`)
+- Token usage per API message: metered on a sandboxed agent's API socket, read from a host-mode
+  agent's session files (transcript and subagent files); priced when read from a configurable
+  price table (integer money).
+- Per agent / task / goal / session / model usage, turns and tool calls; optional budgets per
+  session and per goal, refused on the API socket; structured logs with the session id as the
+  correlation id; event retention.
+- Usage tab in the UI; usage on agent and task cards.
 
 **Definition of Done**
-- [ ] Token usage per agent and task is shown and matches the session files (tested with fixtures).
-- [ ] Cost estimates use a configurable price table.
-- [ ] Logs can be followed across daemon, agent and hook events via a correlation id.
+- [x] Token usage per agent and task is shown and matches the session files (tested with fixtures):
+      the same messages as a redacted transcript and as API responses give identical usage, and the
+      price table reproduces the transcript's own cost (`TestTranscriptMatchesAPIResponses`); the
+      engine turns a host transcript into the same totals (`TestHostUsageFromTranscript`,
+      `TestTranscriptWrittenAfterStop`); the UI shows them per agent, task, goal, session and model
+      (Playwright `usage.spec.ts`). Live: in `make e2e`, three real host sessions equalled their
+      transcripts, and every message of a sandboxed session's transcript was metered on its API
+      socket with the same tokens.
+- [x] Cost estimates use a configurable price table: built in from the pricing page (2026-11-08),
+      overridden per model by a user-owned `prices.yaml` (`TestPricesUserFile`, `TestPricesInvalid`),
+      re-priced on read (`TestUsageRepricedOnRead`).
+- [x] Logs can be followed across daemon, agent and hook events via a correlation id: every record
+      naming an agent carries its `session_id` and `task_id`, from start and hooks through team
+      tool calls and API requests (with Anthropic's request id) to exit (`TestLogsFollowOneSession`);
+      `--log-format json`.
 
 **Backlog** (from Ozan's end-to-end test, 2026-11-08)
 - When an agent stops, Claude Code prints "Resume this session with: claude --resume …", which
@@ -254,7 +273,14 @@ derived from Claude Code hooks.
 
 **Backlog** (from Ozan's end-to-end test, 2026-11-08)
 - Make the "Resume this session" line meaningful: resume a stopped agent's session from
-  agent-office (same agent, workspace and sandbox), then drop the Phase 8 interim that hides it.
+  agent-office (same agent, workspace and sandbox), then drop the Phase 8 note that explains it
+  under exited agents' terminals.
+
+**Backlog** (from the Phase 8 review, 2026-11-08)
+- After a daemon restart, a sandboxed agent's card switches from "user settings off" to "user
+  settings on". The setting does not apply to sandboxed agents (ADR 0003), so the label is wrong,
+  not the behaviour: restore the value the agent ran with (or hide the label for sandboxed agents)
+  when agents are loaded from the database.
 
 ---
 
@@ -338,6 +364,13 @@ parallel work does not silently collide, and every agent can reach the user.
 - [ ] A lead can make a sub-task depend on others; it starts only after they are done.
 - [ ] After a merge, a worker whose branch conflicts can be relaunched to resolve it.
 - [ ] Any agent can message the user; the message appears on its task card.
+
+**Backlog** (from the Phase 8 review, 2026-11-08)
+- Investigate the intermittent `TestTeamAuthorization` failure (`internal/engine`): it failed once
+  in a full `make check` under load during Phase 8, then passed 15 of 15 on its own and in every
+  later full run. Reproduce under load (e.g. `go test -race -count=50 -run TestTeamAuthorization`
+  next to other packages, or `-cpu 1,2,8`), capture the failure message and fix the race or the
+  test's timing assumption. Placed here because Phase 12 reworks the team code it tests.
 
 ---
 

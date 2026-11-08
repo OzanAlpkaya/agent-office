@@ -464,3 +464,22 @@ func TestPullRequestsAPIWithoutGitHub(t *testing.T) {
 		t.Fatalf("cross-origin POST: %d", r.StatusCode)
 	}
 }
+
+func TestUsageAPI(t *testing.T) {
+	f := newFixture(t)
+	f.start(t)
+	r := f.doBody(t, "GET", "/api/usage", nil, "")
+	if r.StatusCode != http.StatusOK || r.Header.Get("X-Request-Id") == "" {
+		t.Fatalf("usage %d, request id %q", r.StatusCode, r.Header.Get("X-Request-Id"))
+	}
+	var rep engine.UsageReport
+	if err := json.NewDecoder(r.Body).Decode(&rep); err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Sessions) != 1 || rep.Sessions[0].Models == nil || rep.Models == nil || rep.Prices.AsOf == "" {
+		t.Fatalf("report %+v", rep)
+	}
+	if r2 := f.doBody(t, "GET", "/api/usage", nil, ""); r2.Header.Get("X-Request-Id") == r.Header.Get("X-Request-Id") {
+		t.Fatal("request ids repeat")
+	}
+}

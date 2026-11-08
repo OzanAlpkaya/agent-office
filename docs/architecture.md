@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 0 design, updated through Phase 7 (pixel office UI), based on the spikes in `spikes/` and
+Status: Phase 0 design, updated through Phase 8 (observability & cost), based on the spikes in `spikes/` and
 the ADRs in `docs/adr/`. Parts marked *(later)* belong to later phases and will be detailed then.
 
 ## Overview
@@ -66,7 +66,8 @@ flowchart LR
 | `review` | Pluggable `Reviewer` interface (`Request`, `Poll`) with the internal reviewer agent and CodeRabbit behind it; one `Feedback` shape (ADR 0021). |
 | `secret` | Redacting `Secret` type and the user-only token-file reader (OAuth and GitHub tokens, ADR 0015, 0020). |
 | `pack` | Stack packs (ADR 0023): strict YAML loader and validation, built-in `go` and `node` packs, user packs from a user-owned directory, build files for the pack image, skills, secret files. |
-| `api` | HTTP + WebSocket for the UI; serves the embedded UI build. |
+| `usage` | Token usage and cost (ADR 0026): transcript reader and API response meter (numbers and ids only), the price table (built in plus a user file; integer nano-USD). |
+| `api` | HTTP + WebSocket for the UI; serves the embedded UI build; request ids. |
 
 ## Key flows
 
@@ -260,6 +261,39 @@ characters at desks, from the same `/api/events` stream as the board; the daemon
 - Tests: Vitest for the pure modules (`make check`); Playwright against a mocked daemon
   (`make ui-test`), including clicks on the canvas and the frame rate with 10 and 20 agents.
 
+**Usage, cost and logs (Phase 8, ADR 0026–0028).** One row per API message (`usage_messages`),
+priced when read, so a price change re-prices history; money is integer (nano-USD inside, micro-USD
+in the API).
+
+```mermaid
+flowchart LR
+  subgraph Sandboxed
+    CC1[Claude Code] -- POST /v1/messages --> AS[API socket proxy]
+  end
+  AS -- budget check --> ENG[engine]
+  AS -- stream passes through, meter reads usage --> ENG
+  subgraph Host mode
+    CC2[Claude Code] -- writes --> TR[(transcript .jsonl<br/>+ subagent files)]
+    CC2 -- hooks carry transcript_path --> ENG
+  end
+  ENG -- reads new lines after turns --> TR
+  ENG --> DB[(usage_messages, sessions counters)]
+  ENG -- live "usage" updates --> UI[Usage tab, cards]
+  DB -- GET /api/usage, priced on read --> UI
+```
+
+- Sandboxed: the API proxy wraps each successful response in a meter that reads `message_start` /
+  `message_delta` usage as the bytes pass (no buffering); the client's `Accept-Encoding` is dropped
+  so the meter sees plain text. Before forwarding, the engine checks the optional session and goal
+  budgets (ADR 0027) and refuses with a 403 once one is spent.
+- Host mode: the transcript path from the hooks is validated (`<session-id>.jsonl`, a regular file of
+  the user, no symlink) and read incrementally; Claude Code's own `cost-state` figure is kept next
+  to agent-office's estimate.
+- Logs: every record naming an agent gets its `session_id` and `task_id` (a wrapping `slog` handler
+  plus per-session loggers), so one `jq` filter follows a session through hooks, team tool calls,
+  API requests (with Anthropic's `request-id`), delivery and imports. `--log-format json`.
+- Retention: events older than 30 days are deleted daily; the newest 3 migration backups are kept.
+
 **Isolation (Phase 3).** Each sandboxed worker is a rootless Podman container with
 `--network none`, a read-only rootfs and no capabilities (ADR 0007). It mounts its own shared
 clone (the main repository's objects read-only), its per-agent sockets and the read-only
@@ -291,7 +325,8 @@ events: logged, stored (rate-limited), pushed to the UI live and listed by
 | Entity | Key fields | Notes |
 |---|---|---|
 | **Agent** | id, role (lead / worker / reviewer), sandbox, state, task_id, current_session_id | One live session at a time; at most one running lead (ADR 0017); a worker can be relaunched in its workspace with a new session (ADR 0022). |
-| **Session** | id (= CLI session UUID), agent_id, started_at, ended_at, end_reason, transcript_path, cost_usd, tokens | One per CLI process; cost comes from the transcript (Phase 8). |
+| **Session** | id (= CLI session UUID), agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd | One per CLI process; the correlation id of its logs (ADR 0028). |
+| **UsageMessage** | session_id, message_id, agent_id, task_id, source (api / transcript), request_id, model, speed, inference_geo, input / output / cache read / cache write 5m / 1h tokens | One per API message, upserted; priced when read (ADR 0026). |
 | **Task** | id, title, description, status (todo / in_progress / review / done / blocked), parent_task_id, created_by | A goal is a top-level task; the lead creates its sub-tasks through MCP. Agents point to their task (`agents.task_id`). |
 | **Worktree** | id, repo_path, path, branch, base_ref, kind (worktree / clone), created_at, removed_at | One per worker agent; sandboxed agents get a shared clone (ADR 0014). |
 | **Import** | id, agent_id, trigger, outcome, branch, head, previous, commits, flagged, at | One per import of a sandboxed agent's branch (migration 0003). |
@@ -325,10 +360,10 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Host tools (shell prompt, editor, file manager) run git in an agent repository and trigger agent-written config | Agent repositories are owned by a subordinate uid; git's `safe.directory` check refuses before reading their config (measured, ADR 0014). Residual: tools that offer to mark the repo safe, or read files without git; the UI and docs warn not to open agent repositories | 3 |
 | Container escape (kernel or runtime bug) | Rootless Podman, a subordinate uid on the host, no capabilities, `no-new-privileges`, read-only rootfs. Residual: kernel and container-runtime vulnerabilities; keep the kernel and Podman updated | 3 |
 | Agent exhausts host resources | Per-worker memory and pids limits (`--sandbox-memory`, `--sandbox-pids`); sandbox events rate-limited per agent; API request bodies size-limited | 3 |
-| Agent spends inference without limit through the API socket | Phase 4 bounds the number of sessions (below); token budgets on the API socket (deterministic, outside the model) come with cost tracking | 8 |
+| Agent spends inference without limit through the API socket | Phase 4 bounds the number of sessions (below); optional budgets per session and per goal in estimated USD, refused on the API socket by deterministic code, failing closed for unpriced models (ADR 0027). Tested: `TestBudgets`, `TestAPIProxyMetersUsageAndBudget`. Residual: off by default; requests in flight finish; host-mode agents are not limited; estimates follow the price table | 4, 8 |
 | Agent escalates its own permissions | `request_access` only creates a pending row; a human decides in the UI (same-origin POST); the grant is made by the engine, for that agent's run only, domains only (ADR 0019). Tested: `TestAccessRequests` (no grant before approval, grant reaches this agent only, decided once, expiry on exit), `TestRestartExpiresAccessRequests`, `TestAccessRequestsAPI`, `TestEgressGrants`. Team authority comes from the caller's socket and role (ADR 0017); `TestTeamAuthorization`, `TestToolsPerRole` | 4 |
 | A prompt-injected lead spawns workers or floods the team | Lead authority is limited to its goal: 20 sub-tasks, assignments only within `--max-agents`, no human-free path to anything else; reported workers end and free their slot. Tested: `TestTeamLimits`, `TestAssignTaskIsExclusive` | 4 |
-| Runaway cost / loops (agents keep each other busy) | Stop-hook loop guard (`stop_hook_active`: no delivery on that Stop); 30 messages per sender per 10 minutes, 50 undelivered per sender and recipient (report notices and agent-office's own messages are exempt, so a flood cannot block them); messages to agents that reported are refused. Residual: within those limits two agents can keep answering each other; budgets come in Phase 8. Tested: `TestStopHookDeliveryExactlyOnce`, `TestTeamLimits`, `TestQueueCapIsPerSender` | 4, 8 |
+| Runaway cost / loops (agents keep each other busy) | Stop-hook loop guard (`stop_hook_active`: no delivery on that Stop); 30 messages per sender per 10 minutes, 50 undelivered per sender and recipient (report notices and agent-office's own messages are exempt, so a flood cannot block them); messages to agents that reported are refused; a goal budget bounds a whole team in money (ADR 0027), and the Usage tab shows the spend live. Residual: within those limits (and with budgets off) two agents can keep answering each other. Tested: `TestStopHookDeliveryExactlyOnce`, `TestTeamLimits`, `TestQueueCapIsPerSender` | 4, 8 |
 | Prompt injection between agents (a compromised agent's message steers another) | Messages are framed as information from other agents, not instructions, with every body line quoted so it cannot forge a header (`TestQueueCapIsPerSender`); workers can reach only their lead and the lead only its workers; the recipient's own task and authorization are unchanged by any message. Residual: the recipient model may still follow a persuasive message within its own permissions | 4 |
 | Terminal injection through message delivery (escape sequences, Esc / Ctrl-C typed into another agent's PTY) | Stored bodies lose control characters except newline and tab; the PTY line loses all of them; delivery goes through the engine's input path (ADR 0008, 0018). Tested: `TestIdleDeliveryOverPTY`, `TestPTYLine` | 4 |
 | Agent-written text in the UI (messages, access reasons, task titles, tool names) | Rendered as text by React, never as HTML; message lists and the approval queue label it as the agent's words; the office shows titles and tool names only in HTML nameplates and tooltips, never through the canvas | 4, 7 |
@@ -341,4 +376,5 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Repository content or an agent widens the sandbox (hosts, secrets, image) | Stack packs come only from the binary or a user-owned directory with no group/other write and no symlinks, never from the repository; one pack per run, chosen with `--pack`, never auto-detected; validated strictly at startup (`TestLoadInvalid`, `TestLoadDirChecksTheTree`, `TestFindAndList`). A pack image must build `FROM ${BASE_IMAGE}`. Residual: whoever can write the user's config directory controls the pack (same as the token files) | 6 |
 | Pack secrets leak to places other than the agent | Values only in user-only files, read at each launch; served once on a per-agent socket to `sandbox-init`, which sets them in the agent CLI's environment only; never argv, `-e`, container config, files, logs, DB or UI; only workers get them (not leads or reviewers); reserved names cannot override the sandbox's variables or hand agents a GitHub token. Tested: `TestSandboxedPackLaunch` (canary absent from sandbox-init, `podman inspect`, runtime dir, logs, DB; a second fetch is refused), `TestSecretsServedOnceToInit`, `TestFetchSecretsRefusesBadReplies`, `TestReservedEnv` | 6 |
 | Agent exfiltrates a pack secret | Residual by design: an agent can send a secret it holds to any allowed host (TLS hides contents from the proxy). Packs should hold test or read-only credentials; the UI and `docs/packs.md` say so | 6 |
-| Sensitive data in captured payloads | Store reduced events only; raw hook payloads and transcripts are never persisted or sent to the UI in full | 1, 8 |
+| Sensitive data in captured payloads | Store reduced events only; raw hook payloads and transcripts are never persisted or sent to the UI in full. Usage is decoded field by field (numbers, ids, two enums); transcript paths are never logged or stored, and read errors drop the path. Tested with marked fixtures: `TestTranscriptFixture`, `TestHostUsageFromTranscript`, `TestLogsFollowOneSession`, `TestAPIProxyMetersUsageAndBudget` | 1, 8 |
+| A hook payload points the daemon at a file to read (host mode) | The transcript path must be `<session-id>.jsonl`, absolute and clean, a regular file owned by the user, opened without following symlinks, read in bounded chunks with capped lines; only numbers are kept. Host agents already run as the user, so they gain nothing they could not read themselves | 8 |

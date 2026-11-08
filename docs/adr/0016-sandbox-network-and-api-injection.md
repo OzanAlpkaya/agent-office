@@ -4,7 +4,8 @@
 - **Date:** 2026-11-07
 - **Amends:** ADR 0007 (internal network + shared proxy container); **supersedes the delivery part
   of ADR 0015** (the token file and its checks stay; socket delivery is kept as a fallback)
-- **Amended by:** ADR 0023 (with a stack pack, the pack's hosts replace the default allowlist)
+- **Amended by:** ADR 0023 (with a stack pack, the pack's hosts replace the default allowlist), ADR 0026
+  (the API socket meters token usage), ADR 0027 (it refuses requests once a budget is spent)
 
 ## Context
 

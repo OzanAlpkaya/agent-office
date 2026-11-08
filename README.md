@@ -5,9 +5,10 @@ A lead agent plans the work and assigns tasks; each worker agent gets its own gi
 sandbox; a web UI shows a task board, live terminals and, later, a pixel-art office where you can
 watch the team at work.
 
-> **Status:** in development; Phases 0–7 are done: sandboxed Claude Code agents (rootless Podman),
+> **Status:** in development; Phases 0–8 are done: sandboxed Claude Code agents (rootless Podman),
 > a lead that plans and delegates through a team MCP server, a GitHub PR loop with code review,
-> stack packs, and a pixel-art office. See [PROGRESS.md](PROGRESS.md).
+> stack packs, a pixel-art office, and token usage, cost estimates and budgets
+> ([docs/usage.md](docs/usage.md)). See [PROGRESS.md](PROGRESS.md).
 
 ![The Office tab: agents at their desks, the lead's whiteboard with sub-tasks, two agents waiting for approval](docs/screenshots/office.png)
 

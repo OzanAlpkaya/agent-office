@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -57,6 +59,7 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/project", s.getProject)
 	mux.HandleFunc("GET /api/status", s.getStatus)
+	mux.HandleFunc("GET /api/usage", s.getUsage)
 	mux.HandleFunc("GET /api/agents", s.listAgents)
 	mux.HandleFunc("POST /api/agents", s.startAgent)
 	mux.HandleFunc("POST /api/agents/{id}/stop", s.stopAgent)
@@ -83,8 +86,39 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	if ui != nil {
 		mux.HandleFunc("GET /", s.serveUI)
 	}
-	return s.guard(mux)
+	return s.logRequests(s.guard(mux))
 }
+
+// logRequests gives every request an id, returned as X-Request-Id and logged
+// with method, path, status and duration (ADR 0028). Debug level: the UI
+// makes many small requests.
+func (s *server) logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b [8]byte
+		_, _ = rand.Read(b[:])
+		id := hex.EncodeToString(b[:])
+		w.Header().Set("X-Request-Id", id)
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		next.ServeHTTP(sw, r)
+		s.log.Debug("http request", "request_id", id, "method", r.Method, "path", r.URL.Path, "status", sw.status,
+			"duration_ms", time.Since(start).Milliseconds())
+	})
+}
+
+// statusWriter records the status. Unwrap lets the WebSocket upgrade reach
+// the connection's Hijacker.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 // guard rejects requests whose Host is not this daemon on loopback, and
 // state-changing requests from other origins.
@@ -360,6 +394,17 @@ func (s *server) getProject(w http.ResponseWriter, _ *http.Request) {
 // untested Claude Code version) for the UI.
 func (s *server) getStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.eng.Status())
+}
+
+// getUsage is every session's token usage and estimated cost (ADR 0026).
+func (s *server) getUsage(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.eng.Usage(r.Context())
+	if err != nil {
+		s.log.Error("usage report", "err", err)
+		writeError(w, http.StatusInternalServerError, "usage report failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 func (s *server) listTasks(w http.ResponseWriter, r *http.Request) {
