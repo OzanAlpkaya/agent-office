@@ -459,3 +459,6 @@ SELECT * FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC;
 -- name: AgentUsageMessageIDs :many
 -- Message ids an agent's sessions recorded: a forked transcript repeats its parent's (ADR 0035).
 SELECT DISTINCT message_id FROM usage_messages WHERE agent_id = ? AND session_id != ?;
+
+-- name: ClearResumeStates :exec
+UPDATE agents SET resume_state = '' WHERE project_id = ? AND resume_state != '';

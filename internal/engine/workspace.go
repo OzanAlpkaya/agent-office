@@ -339,8 +339,10 @@ func (e *Engine) reconcileSandbox(ctx context.Context, interrupted []string) {
 	}
 	for _, id := range interrupted {
 		e.wg.Add(1)
+		e.restartImports.Add(1) // a restore waits for them (ADR 0035)
 		go func() {
 			defer e.wg.Done()
+			defer e.restartImports.Done()
 			ictx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 			_, _ = e.importAgent(ictx, id, TriggerRestart)

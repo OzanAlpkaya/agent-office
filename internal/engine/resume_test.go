@@ -206,3 +206,165 @@ func TestResumeDeliversQueuedMessages(t *testing.T) {
 	}
 	screen(t, e, a.ID, "the build is green")
 }
+
+// eventually polls cond for up to 10 s.
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		if cond() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func resumeStateOf(t *testing.T, f *fixture, id string) string {
+	t.Helper()
+	var st string
+	if err := f.store.DB.QueryRow(`SELECT resume_state FROM agents WHERE id = ?`, id).Scan(&st); err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// A clean shutdown records what each agent was doing; the next start resumes
+// them (ADR 0035): coordinators first, a mid-turn worker with agent-office's
+// prompt, an idle one without, within --max-agents, and one notice says what
+// came back and what did not.
+func TestRestoreAfterShutdown(t *testing.T) {
+	f := newFixture(t, "AO_FAKE_PROMPT=1")
+	f.opts.RestoreAgents = true
+	ctx := context.Background()
+	e1, err := New(ctx, f.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := record(t, e1)
+	busy, err := e1.Start(ctx, StartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 5*time.Second, agentState(busy.ID, hooks.Idle))
+	typeLine(t, e1, busy.ID, "busy")
+	log.wait(t, 5*time.Second, agentState(busy.ID, hooks.Working))
+	idle, err := e1.Start(ctx, StartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal, _ := e1.CreateTask(ctx, TaskInput{Title: "Goal"})
+	lead, err := e1.Start(ctx, StartRequest{TaskID: goal.ID, Role: RoleTechLead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 5*time.Second, agentState(idle.ID, hooks.Idle))
+	log.wait(t, 5*time.Second, agentState(lead.ID, hooks.Idle))
+	e1.Shutdown()
+	for id, want := range map[string]string{busy.ID: "working", idle.ID: "idle", lead.ID: "idle"} {
+		if got := resumeStateOf(t, f, id); got != want {
+			t.Fatalf("%s: resume state %q, want %q", id, got, want)
+		}
+	}
+
+	f.opts.MaxAgents = 2
+	e2 := f.engine(t)
+	eventually(t, "the restore notice", func() bool {
+		items, _ := e2.Inbox(ctx)
+		return len(items) == 1
+	})
+	items, _ := e2.Inbox(ctx)
+	notice := items[0].Body
+	if items[0].AgentID != "" || items[0].Kind != InboxInfo || !strings.Contains(notice, "Resumed with their conversations") ||
+		!strings.Contains(notice, agentName(idle.ID)+" (worker): no free agent slot") {
+		t.Fatalf("notice %+v", items[0])
+	}
+	for _, id := range []string{lead.ID, busy.ID} {
+		got, _ := e2.Get(id)
+		if !got.HasTerminal || got.ResumedFrom == "" {
+			t.Fatalf("%s not restored: %+v", id, got)
+		}
+	}
+	if got, _ := e2.Get(idle.ID); got.HasTerminal || !got.Resumable {
+		t.Fatalf("idle worker beyond the slot limit: %+v", got)
+	}
+	out := screen(t, e2, busy.ID, "RESUMED:"+busy.SessionID)
+	if !strings.Contains(out, "PROMPT:[agent-office] agent-office was restarted while you were working") {
+		t.Fatalf("the mid-turn worker got no restart prompt:\n%s", out)
+	}
+	if out := screen(t, e2, lead.ID, "RESUMED:"+lead.SessionID); strings.Contains(out, "PROMPT:") {
+		t.Fatalf("the idle lead got a prompt:\n%s", out)
+	}
+	for _, id := range []string{busy.ID, idle.ID, lead.ID} {
+		if st := resumeStateOf(t, f, id); st != "" {
+			t.Fatalf("%s: resume state %q left after the restore", id, st)
+		}
+	}
+}
+
+// After a crash the row's last state counts; an agent that never got as far
+// as its conversation is not resumed.
+func TestRestoreAfterCrash(t *testing.T) {
+	f := newFixture(t, "AO_FAKE_PROMPT=1")
+	f.opts.RestoreAgents = true
+	ctx := context.Background()
+	e1, err := New(ctx, f.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := record(t, e1)
+	w, _ := e1.Start(ctx, StartRequest{})
+	s, _ := e1.Start(ctx, StartRequest{})
+	log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
+	log.wait(t, 5*time.Second, agentState(s.ID, hooks.Idle))
+	e1.Shutdown()
+	// Simulate a crash: the rows still say what the agents were doing.
+	for id, st := range map[string]string{w.ID: "waiting_permission", s.ID: "starting"} {
+		if _, err := f.store.DB.Exec(`UPDATE agents SET state = ?, exited_at = NULL, exit_reason = '', resume_state = '' WHERE id = ?`,
+			st, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e2 := f.engine(t)
+	eventually(t, "the restore notice", func() bool { items, _ := e2.Inbox(ctx); return len(items) == 1 })
+	screen(t, e2, w.ID, "PROMPT:[agent-office] agent-office was restarted")
+	items, _ := e2.Inbox(ctx)
+	if !strings.Contains(items[0].Body, agentName(s.ID)+" (worker): it had not started its conversation yet") {
+		t.Fatalf("notice %q", items[0].Body)
+	}
+	if got, _ := e2.Get(s.ID); got.HasTerminal || got.ExitReason != ExitDaemonRestart {
+		t.Fatalf("starting agent %+v", got)
+	}
+}
+
+// --restore-agents=false: nobody is resumed, and the states are forgotten,
+// so a later start with restore on does not bring back old agents.
+func TestRestoreOff(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	e1, err := New(ctx, f.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := record(t, e1)
+	w, _ := e1.Start(ctx, StartRequest{})
+	log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
+	e1.Shutdown()
+	e2, err := New(ctx, f.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the states cleared", func() bool { return resumeStateOf(t, f, w.ID) == "" })
+	e2.Shutdown()
+	if got, _ := e2.Get(w.ID); got.HasTerminal {
+		t.Fatalf("resumed with restore off: %+v", got)
+	}
+	f.opts.RestoreAgents = true
+	e3 := f.engine(t)
+	time.Sleep(300 * time.Millisecond)
+	if got, _ := e3.Get(w.ID); got.HasTerminal {
+		t.Fatalf("an older stop was restored: %+v", got)
+	}
+	if items, _ := e3.Inbox(ctx); len(items) != 0 {
+		t.Fatalf("notice without a restore: %+v", items)
+	}
+}

@@ -250,6 +250,7 @@ type serveConfig struct {
 	rolesDir            string  // user roles (ADR 0029)
 	roleModels          map[string]string
 	qa                  bool // a goal's report needs a passing QA run (ADR 0033)
+	restoreAgents       bool // resume the agents the previous run's stop interrupted (ADR 0035)
 }
 
 func parseServe(args []string) (serveConfig, error) {
@@ -346,6 +347,12 @@ func parseServe(args []string) (serveConfig, error) {
 		return c, err
 	}
 	fs.BoolVar(&c.qa, "qa", qa, "a goal is reported only after QA passed on its sub-tasks' current work [AGENT_OFFICE_QA]")
+	restore, err := envBool("AGENT_OFFICE_RESTORE_AGENTS", true)
+	if err != nil {
+		return c, err
+	}
+	fs.BoolVar(&c.restoreAgents, "restore-agents", restore,
+		"at start, resume the conversations of the agents the previous run's stop interrupted [AGENT_OFFICE_RESTORE_AGENTS]")
 	retention, err := envInt("AGENT_OFFICE_EVENT_RETENTION_DAYS", 30)
 	if err != nil {
 		return c, err
@@ -549,7 +556,7 @@ func serve(args []string) error {
 		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
 		Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version, GitHub: ghOpts,
-		Roles: roles, QA: cfg.qa,
+		Roles: roles, QA: cfg.qa, RestoreAgents: cfg.restoreAgents,
 		Prices: prices, Budgets: budgets, EventRetention: time.Duration(cfg.eventRetentionDays) * 24 * time.Hour,
 	})
 	if err != nil {

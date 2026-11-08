@@ -229,6 +229,8 @@ func (e *Engine) startGitHub(ctx context.Context) error {
 			if err != nil || row.State != PROpen || row.Head != rv.Head {
 				continue
 			}
+			// Its worker is not restored without the round (ADR 0035): Send to worker starts one.
+			e.noRestore[row.AgentID] = "its review follow-up ended with the daemon; use Send to worker"
 			if _, err := e.q.SetReviewFollowup(ctx, db.SetReviewFollowupParams{Followup: FollowupRefused, UpdatedAt: now(),
 				ID: rv.ID}); err == nil {
 				_, _ = e.updateReview(ctx, rv, rv.Status, "the daemon restarted before the worker pushed a fix; use Send to worker")

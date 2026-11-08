@@ -127,6 +127,7 @@ type Options struct {
 	Prices              *usage.Prices   // cost estimates (ADR 0026); nil: the built-in table
 	Budgets             Budgets         // sandboxed agents' spend limits (ADR 0027); zero: off
 	EventRetention      time.Duration   // reduced events older than this are deleted (ADR 0028); 0: kept
+	RestoreAgents       bool            // resume the agents the previous run's stop interrupted (ADR 0035)
 
 	// Message delivery timing (ADR 0018); zero values get the defaults. Tests
 	// shorten them.
@@ -273,6 +274,9 @@ type Engine struct {
 	stopBG   context.CancelFunc // retention loop (ADR 0028)
 	ids      *sessionIDs        // running agents' sessions, for log lines (ADR 0028)
 	closing  bool               // Shutdown began: no agent starts any more; guarded by mu
+
+	restartImports sync.WaitGroup    // sandbox imports after a restart; a restore waits for them
+	noRestore      map[string]string // agent id -> why a restore leaves it exited (set before the restore runs)
 }
 
 // New validates opts, registers the repository as a project, reconciles state
@@ -363,6 +367,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		subs:         map[chan Update]struct{}{},
 		assigning:    map[string]bool{},
 		startingKind: map[string]bool{},
+		noRestore:    map[string]string{},
 	}
 	if opts.Sandbox != nil {
 		if err := e.prepareSandbox(); err != nil {
@@ -381,6 +386,11 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	e.stopBG = cancel
 	e.wg.Add(1)
 	go e.retentionLoop(bg)
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.restore(bg) // after reconciliation and GitHub's restart rules (ADR 0035)
+	}()
 	return e, nil
 }
 
@@ -1223,7 +1233,9 @@ func (e *Engine) Shutdown() {
 		e.mu.Lock()
 	}
 	ids := slices.Clone(e.order)
+	resume := e.resumeStatesLocked()
 	e.mu.Unlock()
+	e.saveResumeStates(resume)
 	var wg sync.WaitGroup
 	for _, id := range ids {
 		wg.Add(1)

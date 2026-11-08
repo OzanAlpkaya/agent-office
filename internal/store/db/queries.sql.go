@@ -234,6 +234,15 @@ func (q *Queries) ClaimReviewFollowup(ctx context.Context, arg ClaimReviewFollow
 	return i, err
 }
 
+const clearResumeStates = `-- name: ClearResumeStates :exec
+UPDATE agents SET resume_state = '' WHERE project_id = ? AND resume_state != ''
+`
+
+func (q *Queries) ClearResumeStates(ctx context.Context, projectID string) error {
+	_, err := q.db.ExecContext(ctx, clearResumeStates, projectID)
+	return err
+}
+
 const countAgentSessions = `-- name: CountAgentSessions :one
 SELECT count(*) FROM sessions WHERE agent_id = ?
 `
