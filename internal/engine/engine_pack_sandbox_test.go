@@ -115,7 +115,7 @@ func TestSandboxedPackLaunch(t *testing.T) {
 
 	// A lead plans; it gets no secrets.
 	goal, _ := e.CreateTask(ctx, TaskInput{Title: "Ship it"})
-	lead, err := e.Start(ctx, StartRequest{TaskID: goal.ID, Role: RoleLead})
+	lead, err := e.Start(ctx, StartRequest{TaskID: goal.ID, Role: RoleTechLead})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestSandboxedPackLaunch(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(secrets, "DEMO_SECRET"), []byte(canary+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for role, want := range map[string]int{RoleWorker: 1, RoleReviewer: 0, RoleLead: 0} {
+	for role, want := range map[string]int{KindWorker: 1, KindReviewer: 0, KindLead: 0} {
 		prep, err := e.prepareSandboxStart(ctx, "agent-x", role)
 		if err != nil || len(prep.secrets) != want {
 			t.Errorf("%s gets %d secrets (%v), want %d", role, len(prep.secrets), err, want)

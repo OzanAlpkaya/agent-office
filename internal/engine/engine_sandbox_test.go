@@ -670,7 +670,7 @@ func TestSandboxedTeamWorker(t *testing.T) {
 	log := record(t, e)
 	ctx := context.Background()
 	goal, _ := e.CreateTask(ctx, TaskInput{Title: "Ship tags"})
-	lead, err := e.Start(ctx, StartRequest{TaskID: goal.ID, Role: RoleLead})
+	lead, err := e.Start(ctx, StartRequest{TaskID: goal.ID, Role: RoleTechLead})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +766,7 @@ func TestSandboxedReviewLoop(t *testing.T) {
 	log.wait(t, 30*time.Second, agentState(w.ID, hooks.Exited))
 
 	r := log.wait(t, 60*time.Second, func(u Update) bool {
-		return u.Type == "agent" && u.Agent.Role == RoleReviewer && u.Agent.State == string(hooks.Idle)
+		return u.Type == "agent" && u.Agent.Kind == KindReviewer && u.Agent.State == string(hooks.Idle)
 	}).Agent
 	screen(t, e, r.ID, "review-prompt=ok")
 	type_(r.ID, `mcp submit_review {"verdict":"changes_requested","summary":"add a test","comments":[{"path":"agent-1.txt","line":1,"body":"why?"}]}`)

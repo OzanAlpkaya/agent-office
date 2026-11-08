@@ -166,7 +166,30 @@ func (e *Engine) UpdateTask(ctx context.Context, id string, p TaskPatch) (Task, 
 	}
 	v := taskFromRow(row)
 	e.publish(Update{Type: "task", Task: &v})
+	if row.Status == StatusDone && cur.Status != StatusDone && !row.ParentTaskID.Valid {
+		e.endGoal(row.ID)
+	}
 	return v, nil
+}
+
+// endGoal ends the agents that coordinate a goal the user marked done: its
+// Tech Lead, architect and QA (exit reason goal_done). Workers are left alone:
+// they end when they report, and one still working may hold work.
+func (e *Engine) endGoal(goalID string) {
+	e.mu.Lock()
+	var ids []string
+	for _, a := range e.agents {
+		if a.info.TaskID == goalID && a.running() &&
+			(a.info.Kind == KindLead || a.info.Kind == KindArchitect || a.info.Kind == KindQA) {
+			ids = append(ids, a.info.ID)
+		}
+	}
+	e.mu.Unlock()
+	for _, id := range ids {
+		e.log.Info("goal done: ending its agent", "agent_id", id, "task_id", goalID)
+		e.wg.Add(1)
+		go func() { defer e.wg.Done(); _ = e.stop(id, ExitGoalDone) }()
+	}
 }
 
 // DeleteTask deletes a task. Agents that worked on it keep running history but

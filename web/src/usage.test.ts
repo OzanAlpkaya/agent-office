@@ -3,7 +3,7 @@ import type { SessionUsage } from "./api";
 import { formatMoney, formatTokens, groupSessions, sessionList, share, totalTokens, usageBy, zeroTokens } from "./usage";
 
 const session = (over: Partial<SessionUsage>): SessionUsage => ({
-  session_id: "s1", agent_id: "a1", role: "worker", sandbox: "podman", source: "api", started_at: "2026-11-08T10:00:00Z",
+  session_id: "s1", agent_id: "a1", kind: "worker", role: "worker", sandbox: "podman", source: "api", started_at: "2026-11-08T10:00:00Z",
   turns: 1, tool_calls: 2, messages: 3, tokens: { ...zeroTokens, input: 10, output: 20 }, cost_micro_usd: 1000,
   unpriced_tokens: 0, models: ["claude-haiku-5-5"], ...over,
 });

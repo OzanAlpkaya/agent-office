@@ -387,7 +387,7 @@ func TestStartRoleAPI(t *testing.T) {
 	_ = json.NewDecoder(r.Body).Decode(&task)
 	r = f.doBody(t, "POST", "/api/agents", ct, `{"task_id":"`+task.ID+`","role":"lead"}`)
 	var a engine.AgentInfo
-	if err := json.NewDecoder(r.Body).Decode(&a); err != nil || r.StatusCode != http.StatusCreated || a.Role != engine.RoleLead {
+	if err := json.NewDecoder(r.Body).Decode(&a); err != nil || r.StatusCode != http.StatusCreated || a.Role != engine.RoleTechLead || a.Kind != engine.KindLead {
 		t.Fatalf("start lead: %d %+v %v", r.StatusCode, a, err)
 	}
 	r = f.doBody(t, "GET", "/api/agents/"+a.ID+"/messages", nil, "")

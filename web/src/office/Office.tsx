@@ -153,7 +153,7 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
               onClick={() => onOpenAgent(a.id)}>
               <span className="dot" />
               <span className="nameplate-text">
-                <span className="mono">{a.role === "worker" ? "" : `${a.role} `}{a.id.slice(0, 6)}</span>
+                <span className="mono">{a.kind === "worker" ? "" : `${a.role} `}{a.id.slice(0, 6)}</span>
                 {s.taskTitle && <span className="nameplate-task">{s.taskTitle}</span>}
               </span>
             </button>

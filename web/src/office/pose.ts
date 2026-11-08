@@ -16,7 +16,7 @@ export const poseLabel: Record<Pose, string> = {
 // poseOf maps an agent's state and role to its pose. pendingAccess is true
 // while the agent has an access request waiting for the user (ADR 0019),
 // which is waiting for the user just like a permission prompt.
-export function poseOf(a: Pick<Agent, "state" | "role">, pendingAccess: boolean): Pose {
+export function poseOf(a: Pick<Agent, "state" | "kind">, pendingAccess: boolean): Pose {
   if (a.state === "exited") return "away";
   if (a.state === "waiting_permission" || pendingAccess) return "waiting";
   switch (a.state) {
@@ -25,7 +25,7 @@ export function poseOf(a: Pick<Agent, "state" | "role">, pendingAccess: boolean)
     case "idle":
       return "idle";
     case "working":
-      return a.role === "reviewer" ? "reviewing" : "typing";
+      return a.kind === "reviewer" ? "reviewing" : "typing";
   }
 }
 

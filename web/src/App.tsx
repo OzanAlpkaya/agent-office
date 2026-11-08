@@ -125,7 +125,7 @@ export function App(): JSX.Element {
     );
 
   const running = agents.filter((a) => a.state !== "exited").length;
-  const leadRunning = agents.some((a) => a.role === "lead" && a.state !== "exited");
+  const leadRunning = agents.some((a) => a.kind === "lead" && a.state !== "exited");
   const pending = accessRequests.filter((r) => r.status === "pending");
   const current = view.kind === "agent" ? agents.find((a) => a.id === view.id) : undefined;
   const taskTitle = (id?: string): string | undefined => tasks.find((t) => t.id === id)?.title;
@@ -281,9 +281,9 @@ function AgentCard({
         <span className={`badge state-${a.state}`}>{stateLabel[a.state]}</span>
       </div>
       <div className="row">
-        <span className={`chip role-${a.role}`} title={a.role === "lead"
+        <span className={`chip role-${a.kind}`} title={a.kind === "lead"
           ? "Plans the goal and assigns sub-tasks to workers"
-          : a.role === "reviewer" ? "Reviews one pull request; never edits, pushes or merges"
+          : a.kind === "reviewer" ? "Reviews one pull request; never edits, pushes or merges"
           : "Works on one task on its own branch"}>{a.role}</span>
         {sandboxed
           ? <span className="chip sandboxed" title="Rootless Podman worker; permission prompts off inside it">sandboxed</span>

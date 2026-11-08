@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { AgentState, Role } from "../api";
+import type { AgentState, Kind } from "../api";
 import { hairColors, hairStyles, skins } from "./art";
 import { hash, lookOf, poseOf } from "./pose";
 
 describe("poseOf", () => {
-  const cases: [AgentState, Role, boolean, string][] = [
+  const cases: [AgentState, Kind, boolean, string][] = [
     ["starting", "worker", false, "booting"],
     ["idle", "worker", false, "idle"],
     ["working", "worker", false, "typing"],
@@ -21,8 +21,8 @@ describe("poseOf", () => {
     ["exited", "worker", false, "away"],
     ["exited", "worker", true, "away"],
   ];
-  it.each(cases)("%s %s (pending access: %s) is %s", (state, role, pending, want) => {
-    expect(poseOf({ state, role }, pending)).toBe(want);
+  it.each(cases)("%s %s (pending access: %s) is %s", (state, kind, pending, want) => {
+    expect(poseOf({ state, kind }, pending)).toBe(want);
   });
 });
 

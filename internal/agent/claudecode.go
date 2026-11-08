@@ -95,9 +95,10 @@ func ScrubEnv(env []string) []string {
 }
 
 // HookSettings returns a Claude Code settings document that sends every
-// registered event to hookCommand (e.g. "'/usr/bin/agent-office' hook").
-func HookSettings(hookCommand string) ([]byte, error) {
-	return settings(hookCommand, nil)
+// registered event to hookCommand (e.g. "'/usr/bin/agent-office' hook") and
+// denies the permission rules in deny (a role's, ADR 0029).
+func HookSettings(hookCommand string, deny []string) ([]byte, error) {
+	return settings(hookCommand, deny, nil)
 }
 
 // TestedClaudeCodeVersion is the Claude Code version the pre-seeded config
@@ -120,8 +121,10 @@ func ParseVersion(out string) (string, error) {
 // SandboxSettings is HookSettings plus the keys that skip the theme picker and
 // the bypass-permissions warning in a fresh config dir (ADR 0016). Only
 // sandboxed workers get it.
-func SandboxSettings(hookCommand string) ([]byte, error) {
-	return settings(hookCommand, map[string]any{"theme": "dark", "skipDangerousModePermissionPrompt": true})
+// Deny rules hold under --dangerously-skip-permissions: checked with 2.1.319,
+// a denied tool is not offered to the model at all (Phase 12 plan).
+func SandboxSettings(hookCommand string, deny []string) ([]byte, error) {
+	return settings(hookCommand, deny, map[string]any{"theme": "dark", "skipDangerousModePermissionPrompt": true})
 }
 
 // SeedConfig is the .claude.json written into a worker's fresh
@@ -212,7 +215,7 @@ func MCPConfig(command, socket string, extra map[string]MCPServer) ([]byte, erro
 	return json.MarshalIndent(map[string]any{"mcpServers": servers}, "", "  ")
 }
 
-func settings(hookCommand string, extra map[string]any) ([]byte, error) {
+func settings(hookCommand string, deny []string, extra map[string]any) ([]byte, error) {
 	type hook struct {
 		Type    string `json:"type"`
 		Command string `json:"command"`
@@ -228,7 +231,11 @@ func settings(hookCommand string, extra map[string]any) ([]byte, error) {
 	// The team tools are pre-allowed: the daemon authorizes every call itself
 	// (ADR 0017), so a host-mode permission prompt would add nothing. Every
 	// other tool still prompts in host mode.
-	doc := map[string]any{"hooks": hooks, "permissions": map[string]any{"allow": []string{"mcp__" + mcp.ServerName}}}
+	perms := map[string]any{"allow": []string{"mcp__" + mcp.ServerName}}
+	if len(deny) > 0 {
+		perms["deny"] = deny
+	}
+	doc := map[string]any{"hooks": hooks, "permissions": perms}
 	for k, v := range extra {
 		doc[k] = v
 	}

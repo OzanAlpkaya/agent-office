@@ -422,10 +422,10 @@ class DeskNode {
     this.mug.visible = seat !== undefined;
     this.bubble.visible = false;
     if (!seat) this.setHover(false);
-    if (seat && (prev?.agent.id !== seat.agent.id || prev.agent.role !== seat.agent.role)) {
+    if (seat && (prev?.agent.id !== seat.agent.id || prev.agent.kind !== seat.agent.kind)) {
       const l = seat.look;
-      const palette = art.personPalette(art.skins[l.skin], art.hairColors[l.hair], art.shirts[seat.agent.role]);
-      const key = `${l.skin}-${l.hair}-${seat.agent.role}`;
+      const palette = art.personPalette(art.skins[l.skin], art.hairColors[l.hair], art.shirts[seat.agent.kind]);
+      const key = `${l.skin}-${l.hair}-${seat.agent.kind}`;
       this.bodyTextures = [
         this.textures.get(`body-${key}`, art.body, palette),
         this.textures.get(`blink-${key}`, art.bodyBlink, palette),

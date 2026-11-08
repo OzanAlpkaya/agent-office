@@ -11,9 +11,9 @@ const pending = (agentId: string, status: AccessRequest["status"] = "pending"): 
 describe("buildOffice", () => {
   it("seats every agent with its pose and task title", () => {
     const m = buildOffice(emptyAssignment, [
-      agent("L", { role: "lead", task_id: "g", state: "idle" }),
+      agent("L", { kind: "lead", task_id: "g", state: "idle" }),
       agent("w", { task_id: "t1", started_at: "2026-11-08T10:01:00Z" }),
-      agent("r", { role: "reviewer", started_at: "2026-11-08T10:02:00Z" }),
+      agent("r", { kind: "reviewer", started_at: "2026-11-08T10:02:00Z" }),
       agent("x", { state: "exited", started_at: "2026-11-08T10:03:00Z" }),
     ], [task("g", { title: "Goal" }), task("t1", { title: "Fix it", parent_task_id: "g" })], []);
     expect(m.seats.map((s) => [s.agent.id, s.slot.kind, s.pose, s.taskTitle])).toEqual([
@@ -33,7 +33,7 @@ describe("buildOffice", () => {
   it("puts the lead's sub-tasks on the whiteboard in creation order", () => {
     const sub = (id: string, min: number, status: "todo" | "done") =>
       task(id, { parent_task_id: "g", status, created_at: `2026-11-08T10:0${min}:00Z` });
-    const m = buildOffice(emptyAssignment, [agent("L", { role: "lead", task_id: "g" })],
+    const m = buildOffice(emptyAssignment, [agent("L", { kind: "lead", task_id: "g" })],
       [task("g"), sub("b", 2, "done"), sub("a", 1, "todo"), task("other")], []);
     expect(m.goal?.notes.map((n) => [n.id, n.status])).toEqual([["a", "todo"], ["b", "done"]]);
   });
@@ -44,7 +44,7 @@ describe("buildOffice", () => {
 
   it("caps the whiteboard", () => {
     const subs = Array.from({ length: maxNotes + 5 }, (_, i) => task(`s${i}`, { parent_task_id: "g" }));
-    const m = buildOffice(emptyAssignment, [agent("L", { role: "lead", task_id: "g" })], [task("g"), ...subs], []);
+    const m = buildOffice(emptyAssignment, [agent("L", { kind: "lead", task_id: "g" })], [task("g"), ...subs], []);
     expect(m.goal?.notes).toHaveLength(maxNotes);
   });
 

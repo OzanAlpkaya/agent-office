@@ -27,6 +27,84 @@ func (q *Queries) AddSessionCounts(ctx context.Context, arg AddSessionCountsPara
 	return err
 }
 
+const answerInbox = `-- name: AnswerInbox :one
+UPDATE inbox SET reply = ?, answered_at = ?, read_at = COALESCE(read_at, ?) WHERE id = ?
+RETURNING id, project_id, agent_id, task_id, goal_id, role, kind, body, created_at, read_at, answered_at, reply
+`
+
+type AnswerInboxParams struct {
+	Reply      string
+	AnsweredAt sql.NullTime
+	ReadAt     sql.NullTime
+	ID         int64
+}
+
+func (q *Queries) AnswerInbox(ctx context.Context, arg AnswerInboxParams) (Inbox, error) {
+	row := q.db.QueryRowContext(ctx, answerInbox,
+		arg.Reply,
+		arg.AnsweredAt,
+		arg.ReadAt,
+		arg.ID,
+	)
+	var i Inbox
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.GoalID,
+		&i.Role,
+		&i.Kind,
+		&i.Body,
+		&i.CreatedAt,
+		&i.ReadAt,
+		&i.AnsweredAt,
+		&i.Reply,
+	)
+	return i, err
+}
+
+const approveSpec = `-- name: ApproveSpec :one
+UPDATE specs SET status = 'approved', branch = ?, commit_sha = ?, path = ?, approved_at = ?
+WHERE id = ? AND status = 'proposed'
+RETURNING id, goal_id, version, status, author, "plan", markdown, branch, commit_sha, path, created_at, approved_at
+`
+
+type ApproveSpecParams struct {
+	Branch     string
+	CommitSha  string
+	Path       string
+	ApprovedAt sql.NullTime
+	ID         int64
+}
+
+// Approves a proposed version once; the approved version before it is superseded.
+func (q *Queries) ApproveSpec(ctx context.Context, arg ApproveSpecParams) (Spec, error) {
+	row := q.db.QueryRowContext(ctx, approveSpec,
+		arg.Branch,
+		arg.CommitSha,
+		arg.Path,
+		arg.ApprovedAt,
+		arg.ID,
+	)
+	var i Spec
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.Version,
+		&i.Status,
+		&i.Author,
+		&i.Plan,
+		&i.Markdown,
+		&i.Branch,
+		&i.CommitSha,
+		&i.Path,
+		&i.CreatedAt,
+		&i.ApprovedAt,
+	)
+	return i, err
+}
+
 const claimMessages = `-- name: ClaimMessages :many
 UPDATE messages SET delivered_at = ?1, delivery = ?2
 WHERE id IN (
@@ -34,7 +112,7 @@ WHERE id IN (
     WHERE m.to_agent_id = ?3 AND m.delivered_at IS NULL AND m.created_at >= ?4
     ORDER BY m.id LIMIT 10
 )
-RETURNING id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery
+RETURNING id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery, from_user
 `
 
 type ClaimMessagesParams struct {
@@ -70,6 +148,7 @@ func (q *Queries) ClaimMessages(ctx context.Context, arg ClaimMessagesParams) ([
 			&i.CreatedAt,
 			&i.DeliveredAt,
 			&i.Delivery,
+			&i.FromUser,
 		); err != nil {
 			return nil, err
 		}
@@ -128,6 +207,22 @@ SELECT count(*) FROM tasks WHERE parent_task_id = ?
 
 func (q *Queries) CountChildTasks(ctx context.Context, parentTaskID sql.NullString) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countChildTasks, parentTaskID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countInboxFromSince = `-- name: CountInboxFromSince :one
+SELECT count(*) FROM inbox WHERE agent_id = ? AND created_at >= ?
+`
+
+type CountInboxFromSinceParams struct {
+	AgentID   sql.NullString
+	CreatedAt time.Time
+}
+
+func (q *Queries) CountInboxFromSince(ctx context.Context, arg CountInboxFromSinceParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countInboxFromSince, arg.AgentID, arg.CreatedAt)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -192,9 +287,31 @@ func (q *Queries) CountPendingMessagesFrom(ctx context.Context, arg CountPending
 	return count, err
 }
 
+const countProposedMemory = `-- name: CountProposedMemory :one
+SELECT count(*) FROM memory WHERE project_id = ? AND status = 'proposed'
+`
+
+func (q *Queries) CountProposedMemory(ctx context.Context, projectID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countProposedMemory, projectID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countUnreadInboxFrom = `-- name: CountUnreadInboxFrom :one
+SELECT count(*) FROM inbox WHERE agent_id = ? AND read_at IS NULL
+`
+
+func (q *Queries) CountUnreadInboxFrom(ctx context.Context, agentID sql.NullString) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countUnreadInboxFrom, agentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAgent = `-- name: CreateAgent :exec
-INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, role)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, kind, role)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateAgentParams struct {
@@ -206,6 +323,7 @@ type CreateAgentParams struct {
 	State               string
 	StartedAt           time.Time
 	Sandbox             string
+	Kind                string
 	Role                string
 }
 
@@ -219,6 +337,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error 
 		arg.State,
 		arg.StartedAt,
 		arg.Sandbox,
+		arg.Kind,
 		arg.Role,
 	)
 	return err
@@ -240,9 +359,10 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) er
 }
 
 const createTask = `-- name: CreateTask :one
-INSERT INTO tasks (id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by
+INSERT INTO tasks (id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by,
+    depends_on, files, acceptance, role, spec_key)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by, depends_on, files, acceptance, role, spec_key, conflicts, conflicts_checked_at
 `
 
 type CreateTaskParams struct {
@@ -255,6 +375,11 @@ type CreateTaskParams struct {
 	UpdatedAt    time.Time
 	ParentTaskID sql.NullString
 	CreatedBy    string
+	DependsOn    string
+	Files        string
+	Acceptance   string
+	Role         string
+	SpecKey      string
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
@@ -268,6 +393,11 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		arg.UpdatedAt,
 		arg.ParentTaskID,
 		arg.CreatedBy,
+		arg.DependsOn,
+		arg.Files,
+		arg.Acceptance,
+		arg.Role,
+		arg.SpecKey,
 	)
 	var i Task
 	err := row.Scan(
@@ -280,6 +410,13 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.UpdatedAt,
 		&i.ParentTaskID,
 		&i.CreatedBy,
+		&i.DependsOn,
+		&i.Files,
+		&i.Acceptance,
+		&i.Role,
+		&i.SpecKey,
+		&i.Conflicts,
+		&i.ConflictsCheckedAt,
 	)
 	return i, err
 }
@@ -356,6 +493,18 @@ DELETE FROM events WHERE at < ?
 // Retention (ADR 0028).
 func (q *Queries) DeleteEventsBefore(ctx context.Context, at time.Time) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteEventsBefore, at)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteMemory = `-- name: DeleteMemory :execrows
+DELETE FROM memory WHERE id = ?
+`
+
+func (q *Queries) DeleteMemory(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteMemory, id)
 	if err != nil {
 		return 0, err
 	}
@@ -467,6 +616,51 @@ func (q *Queries) FindPendingAccessRequest(ctx context.Context, arg FindPendingA
 	return i, err
 }
 
+const finishQARun = `-- name: FinishQARun :one
+UPDATE qa_runs SET status = ?, head = ?, summary = ?, bugs = ?, error = ?, updated_at = ?
+WHERE id = ? AND status = 'running'
+RETURNING id, goal_id, agent_id, status, branch, head, merged, summary, bugs, error, created_at, updated_at
+`
+
+type FinishQARunParams struct {
+	Status    string
+	Head      string
+	Summary   string
+	Bugs      string
+	Error     string
+	UpdatedAt time.Time
+	ID        int64
+}
+
+// Ends a running QA run once.
+func (q *Queries) FinishQARun(ctx context.Context, arg FinishQARunParams) (QaRun, error) {
+	row := q.db.QueryRowContext(ctx, finishQARun,
+		arg.Status,
+		arg.Head,
+		arg.Summary,
+		arg.Bugs,
+		arg.Error,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i QaRun
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.AgentID,
+		&i.Status,
+		&i.Branch,
+		&i.Head,
+		&i.Merged,
+		&i.Summary,
+		&i.Bugs,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getAccessRequest = `-- name: GetAccessRequest :one
 SELECT id, agent_id, kind, value, reason, status, created_at, decided_at, decided_by FROM access_requests WHERE id = ?
 `
@@ -488,8 +682,53 @@ func (q *Queries) GetAccessRequest(ctx context.Context, id int64) (AccessRequest
 	return i, err
 }
 
+const getInbox = `-- name: GetInbox :one
+SELECT id, project_id, agent_id, task_id, goal_id, role, kind, body, created_at, read_at, answered_at, reply FROM inbox WHERE id = ?
+`
+
+func (q *Queries) GetInbox(ctx context.Context, id int64) (Inbox, error) {
+	row := q.db.QueryRowContext(ctx, getInbox, id)
+	var i Inbox
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.GoalID,
+		&i.Role,
+		&i.Kind,
+		&i.Body,
+		&i.CreatedAt,
+		&i.ReadAt,
+		&i.AnsweredAt,
+		&i.Reply,
+	)
+	return i, err
+}
+
+const getMemory = `-- name: GetMemory :one
+SELECT id, project_id, kind, title, body, status, source, created_at, updated_at FROM memory WHERE id = ?
+`
+
+func (q *Queries) GetMemory(ctx context.Context, id int64) (Memory, error) {
+	row := q.db.QueryRowContext(ctx, getMemory, id)
+	var i Memory
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Kind,
+		&i.Title,
+		&i.Body,
+		&i.Status,
+		&i.Source,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getPullRequest = `-- name: GetPullRequest :one
-SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at FROM pull_requests WHERE id = ?
+SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at, conflict_rounds FROM pull_requests WHERE id = ?
 `
 
 func (q *Queries) GetPullRequest(ctx context.Context, id int64) (PullRequest, error) {
@@ -511,6 +750,31 @@ func (q *Queries) GetPullRequest(ctx context.Context, id int64) (PullRequest, er
 		&i.PendingFlagged,
 		&i.AcceptedFlagged,
 		&i.Rounds,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ConflictRounds,
+	)
+	return i, err
+}
+
+const getQARun = `-- name: GetQARun :one
+SELECT id, goal_id, agent_id, status, branch, head, merged, summary, bugs, error, created_at, updated_at FROM qa_runs WHERE id = ?
+`
+
+func (q *Queries) GetQARun(ctx context.Context, id int64) (QaRun, error) {
+	row := q.db.QueryRowContext(ctx, getQARun, id)
+	var i QaRun
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.AgentID,
+		&i.Status,
+		&i.Branch,
+		&i.Head,
+		&i.Merged,
+		&i.Summary,
+		&i.Bugs,
 		&i.Error,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -548,8 +812,32 @@ func (q *Queries) GetReview(ctx context.Context, id int64) (Review, error) {
 	return i, err
 }
 
+const getSpec = `-- name: GetSpec :one
+SELECT id, goal_id, version, status, author, "plan", markdown, branch, commit_sha, path, created_at, approved_at FROM specs WHERE id = ?
+`
+
+func (q *Queries) GetSpec(ctx context.Context, id int64) (Spec, error) {
+	row := q.db.QueryRowContext(ctx, getSpec, id)
+	var i Spec
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.Version,
+		&i.Status,
+		&i.Author,
+		&i.Plan,
+		&i.Markdown,
+		&i.Branch,
+		&i.CommitSha,
+		&i.Path,
+		&i.CreatedAt,
+		&i.ApprovedAt,
+	)
+	return i, err
+}
+
 const getTask = `-- name: GetTask :one
-SELECT id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by FROM tasks WHERE id = ?
+SELECT id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by, depends_on, files, acceptance, role, spec_key, conflicts, conflicts_checked_at FROM tasks WHERE id = ?
 `
 
 func (q *Queries) GetTask(ctx context.Context, id string) (Task, error) {
@@ -565,6 +853,13 @@ func (q *Queries) GetTask(ctx context.Context, id string) (Task, error) {
 		&i.UpdatedAt,
 		&i.ParentTaskID,
 		&i.CreatedBy,
+		&i.DependsOn,
+		&i.Files,
+		&i.Acceptance,
+		&i.Role,
+		&i.SpecKey,
+		&i.Conflicts,
+		&i.ConflictsCheckedAt,
 	)
 	return i, err
 }
@@ -703,10 +998,103 @@ func (q *Queries) InsertImport(ctx context.Context, arg InsertImportParams) (Imp
 	return i, err
 }
 
+const insertInbox = `-- name: InsertInbox :one
+
+INSERT INTO inbox (project_id, agent_id, task_id, goal_id, role, kind, body, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, agent_id, task_id, goal_id, role, kind, body, created_at, read_at, answered_at, reply
+`
+
+type InsertInboxParams struct {
+	ProjectID string
+	AgentID   sql.NullString
+	TaskID    sql.NullString
+	GoalID    sql.NullString
+	Role      string
+	Kind      string
+	Body      string
+	CreatedAt time.Time
+}
+
+// Messages to the user (migration 0008, ADR 0030).
+func (q *Queries) InsertInbox(ctx context.Context, arg InsertInboxParams) (Inbox, error) {
+	row := q.db.QueryRowContext(ctx, insertInbox,
+		arg.ProjectID,
+		arg.AgentID,
+		arg.TaskID,
+		arg.GoalID,
+		arg.Role,
+		arg.Kind,
+		arg.Body,
+		arg.CreatedAt,
+	)
+	var i Inbox
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.GoalID,
+		&i.Role,
+		&i.Kind,
+		&i.Body,
+		&i.CreatedAt,
+		&i.ReadAt,
+		&i.AnsweredAt,
+		&i.Reply,
+	)
+	return i, err
+}
+
+const insertMemory = `-- name: InsertMemory :one
+
+INSERT INTO memory (project_id, kind, title, body, status, source, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, kind, title, body, status, source, created_at, updated_at
+`
+
+type InsertMemoryParams struct {
+	ProjectID string
+	Kind      string
+	Title     string
+	Body      string
+	Status    string
+	Source    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Project memory (migration 0008, ADR 0034).
+func (q *Queries) InsertMemory(ctx context.Context, arg InsertMemoryParams) (Memory, error) {
+	row := q.db.QueryRowContext(ctx, insertMemory,
+		arg.ProjectID,
+		arg.Kind,
+		arg.Title,
+		arg.Body,
+		arg.Status,
+		arg.Source,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i Memory
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Kind,
+		&i.Title,
+		&i.Body,
+		&i.Status,
+		&i.Source,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertMessage = `-- name: InsertMessage :one
-INSERT INTO messages (project_id, from_agent_id, to_agent_id, body, created_at)
-VALUES (?, ?, ?, ?, ?)
-RETURNING id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery
+INSERT INTO messages (project_id, from_agent_id, to_agent_id, body, created_at, from_user)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery, from_user
 `
 
 type InsertMessageParams struct {
@@ -715,6 +1103,7 @@ type InsertMessageParams struct {
 	ToAgentID   string
 	Body        string
 	CreatedAt   time.Time
+	FromUser    bool
 }
 
 func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (Message, error) {
@@ -724,6 +1113,7 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (M
 		arg.ToAgentID,
 		arg.Body,
 		arg.CreatedAt,
+		arg.FromUser,
 	)
 	var i Message
 	err := row.Scan(
@@ -735,6 +1125,51 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (M
 		&i.CreatedAt,
 		&i.DeliveredAt,
 		&i.Delivery,
+		&i.FromUser,
+	)
+	return i, err
+}
+
+const insertQARun = `-- name: InsertQARun :one
+
+INSERT INTO qa_runs (goal_id, agent_id, status, branch, merged, created_at, updated_at)
+VALUES (?, ?, 'running', ?, ?, ?, ?)
+RETURNING id, goal_id, agent_id, status, branch, head, merged, summary, bugs, error, created_at, updated_at
+`
+
+type InsertQARunParams struct {
+	GoalID    string
+	AgentID   sql.NullString
+	Branch    string
+	Merged    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// QA runs (migration 0008, ADR 0033).
+func (q *Queries) InsertQARun(ctx context.Context, arg InsertQARunParams) (QaRun, error) {
+	row := q.db.QueryRowContext(ctx, insertQARun,
+		arg.GoalID,
+		arg.AgentID,
+		arg.Branch,
+		arg.Merged,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i QaRun
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.AgentID,
+		&i.Status,
+		&i.Branch,
+		&i.Head,
+		&i.Merged,
+		&i.Summary,
+		&i.Bugs,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -797,6 +1232,73 @@ func (q *Queries) InsertReview(ctx context.Context, arg InsertReviewParams) (Rev
 	return i, err
 }
 
+const insertSpec = `-- name: InsertSpec :one
+INSERT INTO specs (goal_id, version, status, author, plan, markdown, created_at)
+VALUES (?, ?, 'proposed', ?, ?, ?, ?)
+RETURNING id, goal_id, version, status, author, "plan", markdown, branch, commit_sha, path, created_at, approved_at
+`
+
+type InsertSpecParams struct {
+	GoalID    string
+	Version   int64
+	Author    string
+	Plan      string
+	Markdown  string
+	CreatedAt time.Time
+}
+
+// Run in one transaction with NextSpecVersion; UNIQUE (goal_id, version) backs it up.
+func (q *Queries) InsertSpec(ctx context.Context, arg InsertSpecParams) (Spec, error) {
+	row := q.db.QueryRowContext(ctx, insertSpec,
+		arg.GoalID,
+		arg.Version,
+		arg.Author,
+		arg.Plan,
+		arg.Markdown,
+		arg.CreatedAt,
+	)
+	var i Spec
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.Version,
+		&i.Status,
+		&i.Author,
+		&i.Plan,
+		&i.Markdown,
+		&i.Branch,
+		&i.CommitSha,
+		&i.Path,
+		&i.CreatedAt,
+		&i.ApprovedAt,
+	)
+	return i, err
+}
+
+const latestApprovedSpec = `-- name: LatestApprovedSpec :one
+SELECT id, goal_id, version, status, author, "plan", markdown, branch, commit_sha, path, created_at, approved_at FROM specs WHERE goal_id = ? AND status = 'approved' ORDER BY version DESC LIMIT 1
+`
+
+func (q *Queries) LatestApprovedSpec(ctx context.Context, goalID string) (Spec, error) {
+	row := q.db.QueryRowContext(ctx, latestApprovedSpec, goalID)
+	var i Spec
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.Version,
+		&i.Status,
+		&i.Author,
+		&i.Plan,
+		&i.Markdown,
+		&i.Branch,
+		&i.CommitSha,
+		&i.Path,
+		&i.CreatedAt,
+		&i.ApprovedAt,
+	)
+	return i, err
+}
+
 const latestImport = `-- name: LatestImport :one
 SELECT id, agent_id, "trigger", outcome, branch, head, previous, commits, flagged, at FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT 1
 `
@@ -817,6 +1319,67 @@ func (q *Queries) LatestImport(ctx context.Context, agentID string) (Import, err
 		&i.At,
 	)
 	return i, err
+}
+
+const latestQARun = `-- name: LatestQARun :one
+SELECT id, goal_id, agent_id, status, branch, head, merged, summary, bugs, error, created_at, updated_at FROM qa_runs WHERE goal_id = ? ORDER BY id DESC LIMIT 1
+`
+
+func (q *Queries) LatestQARun(ctx context.Context, goalID string) (QaRun, error) {
+	row := q.db.QueryRowContext(ctx, latestQARun, goalID)
+	var i QaRun
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.AgentID,
+		&i.Status,
+		&i.Branch,
+		&i.Head,
+		&i.Merged,
+		&i.Summary,
+		&i.Bugs,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listAcceptedMemory = `-- name: ListAcceptedMemory :many
+SELECT id, project_id, kind, title, body, status, source, created_at, updated_at FROM memory WHERE project_id = ? AND status = 'accepted' ORDER BY id DESC
+`
+
+func (q *Queries) ListAcceptedMemory(ctx context.Context, projectID string) ([]Memory, error) {
+	rows, err := q.db.QueryContext(ctx, listAcceptedMemory, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Memory{}
+	for rows.Next() {
+		var i Memory
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Kind,
+			&i.Title,
+			&i.Body,
+			&i.Status,
+			&i.Source,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAccessRequests = `-- name: ListAccessRequests :many
@@ -865,7 +1428,7 @@ func (q *Queries) ListAccessRequests(ctx context.Context, arg ListAccessRequests
 }
 
 const listAgentMessages = `-- name: ListAgentMessages :many
-SELECT id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery FROM messages WHERE to_agent_id = ?1 OR from_agent_id = ?1
+SELECT id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery, from_user FROM messages WHERE to_agent_id = ?1 OR from_agent_id = ?1
 ORDER BY id DESC LIMIT ?2
 `
 
@@ -892,6 +1455,7 @@ func (q *Queries) ListAgentMessages(ctx context.Context, arg ListAgentMessagesPa
 			&i.CreatedAt,
 			&i.DeliveredAt,
 			&i.Delivery,
+			&i.FromUser,
 		); err != nil {
 			return nil, err
 		}
@@ -907,7 +1471,7 @@ func (q *Queries) ListAgentMessages(ctx context.Context, arg ListAgentMessagesPa
 }
 
 const listChildTasks = `-- name: ListChildTasks :many
-SELECT id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by FROM tasks WHERE parent_task_id = ? ORDER BY created_at, id
+SELECT id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by, depends_on, files, acceptance, role, spec_key, conflicts, conflicts_checked_at FROM tasks WHERE parent_task_id = ? ORDER BY created_at, id
 `
 
 func (q *Queries) ListChildTasks(ctx context.Context, parentTaskID sql.NullString) ([]Task, error) {
@@ -929,6 +1493,13 @@ func (q *Queries) ListChildTasks(ctx context.Context, parentTaskID sql.NullStrin
 			&i.UpdatedAt,
 			&i.ParentTaskID,
 			&i.CreatedBy,
+			&i.DependsOn,
+			&i.Files,
+			&i.Acceptance,
+			&i.Role,
+			&i.SpecKey,
+			&i.Conflicts,
+			&i.ConflictsCheckedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -971,6 +1542,46 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event
 			&i.Detail,
 			&i.State,
 			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGoalSpecs = `-- name: ListGoalSpecs :many
+SELECT id, goal_id, version, status, author, "plan", markdown, branch, commit_sha, path, created_at, approved_at FROM specs WHERE goal_id = ? ORDER BY version DESC
+`
+
+func (q *Queries) ListGoalSpecs(ctx context.Context, goalID string) ([]Spec, error) {
+	rows, err := q.db.QueryContext(ctx, listGoalSpecs, goalID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Spec{}
+	for rows.Next() {
+		var i Spec
+		if err := rows.Scan(
+			&i.ID,
+			&i.GoalID,
+			&i.Version,
+			&i.Status,
+			&i.Author,
+			&i.Plan,
+			&i.Markdown,
+			&i.Branch,
+			&i.CommitSha,
+			&i.Path,
+			&i.CreatedAt,
+			&i.ApprovedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1077,9 +1688,137 @@ func (q *Queries) ListImports(ctx context.Context, arg ListImportsParams) ([]Imp
 	return items, nil
 }
 
+const listInbox = `-- name: ListInbox :many
+SELECT id, project_id, agent_id, task_id, goal_id, role, kind, body, created_at, read_at, answered_at, reply FROM inbox WHERE project_id = ? ORDER BY id DESC LIMIT ?
+`
+
+type ListInboxParams struct {
+	ProjectID string
+	Limit     int64
+}
+
+func (q *Queries) ListInbox(ctx context.Context, arg ListInboxParams) ([]Inbox, error) {
+	rows, err := q.db.QueryContext(ctx, listInbox, arg.ProjectID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Inbox{}
+	for rows.Next() {
+		var i Inbox
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.AgentID,
+			&i.TaskID,
+			&i.GoalID,
+			&i.Role,
+			&i.Kind,
+			&i.Body,
+			&i.CreatedAt,
+			&i.ReadAt,
+			&i.AnsweredAt,
+			&i.Reply,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMemory = `-- name: ListMemory :many
+SELECT id, project_id, kind, title, body, status, source, created_at, updated_at FROM memory WHERE project_id = ? ORDER BY id DESC
+`
+
+func (q *Queries) ListMemory(ctx context.Context, projectID string) ([]Memory, error) {
+	rows, err := q.db.QueryContext(ctx, listMemory, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Memory{}
+	for rows.Next() {
+		var i Memory
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Kind,
+			&i.Title,
+			&i.Body,
+			&i.Status,
+			&i.Source,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectQARuns = `-- name: ListProjectQARuns :many
+SELECT qa_runs.id, qa_runs.goal_id, qa_runs.agent_id, qa_runs.status, qa_runs.branch, qa_runs.head, qa_runs.merged, qa_runs.summary, qa_runs.bugs, qa_runs.error, qa_runs.created_at, qa_runs.updated_at FROM qa_runs JOIN tasks ON tasks.id = qa_runs.goal_id
+WHERE tasks.project_id = ? ORDER BY qa_runs.id DESC LIMIT ?
+`
+
+type ListProjectQARunsParams struct {
+	ProjectID string
+	Limit     int64
+}
+
+func (q *Queries) ListProjectQARuns(ctx context.Context, arg ListProjectQARunsParams) ([]QaRun, error) {
+	rows, err := q.db.QueryContext(ctx, listProjectQARuns, arg.ProjectID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []QaRun{}
+	for rows.Next() {
+		var i QaRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.GoalID,
+			&i.AgentID,
+			&i.Status,
+			&i.Branch,
+			&i.Head,
+			&i.Merged,
+			&i.Summary,
+			&i.Bugs,
+			&i.Error,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProjectSessions = `-- name: ListProjectSessions :many
 SELECT s.id, s.agent_id, s.started_at, s.ended_at, s.turns, s.tool_calls, s.cli_cost_micro_usd,
-       a.role, a.sandbox, a.task_id, a.model, a.removed_at
+       a.kind, a.role, a.sandbox, a.task_id, a.model, a.removed_at
 FROM sessions s JOIN agents a ON a.id = s.agent_id
 WHERE a.project_id = ? ORDER BY s.started_at
 `
@@ -1092,6 +1831,7 @@ type ListProjectSessionsRow struct {
 	Turns           int64
 	ToolCalls       int64
 	CliCostMicroUsd sql.NullInt64
+	Kind            string
 	Role            string
 	Sandbox         string
 	TaskID          sql.NullString
@@ -1116,11 +1856,53 @@ func (q *Queries) ListProjectSessions(ctx context.Context, projectID string) ([]
 			&i.Turns,
 			&i.ToolCalls,
 			&i.CliCostMicroUsd,
+			&i.Kind,
 			&i.Role,
 			&i.Sandbox,
 			&i.TaskID,
 			&i.Model,
 			&i.RemovedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectSpecs = `-- name: ListProjectSpecs :many
+SELECT specs.id, specs.goal_id, specs.version, specs.status, specs.author, specs."plan", specs.markdown, specs.branch, specs.commit_sha, specs.path, specs.created_at, specs.approved_at FROM specs JOIN tasks ON tasks.id = specs.goal_id
+WHERE tasks.project_id = ? ORDER BY specs.goal_id, specs.version DESC
+`
+
+func (q *Queries) ListProjectSpecs(ctx context.Context, projectID string) ([]Spec, error) {
+	rows, err := q.db.QueryContext(ctx, listProjectSpecs, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Spec{}
+	for rows.Next() {
+		var i Spec
+		if err := rows.Scan(
+			&i.ID,
+			&i.GoalID,
+			&i.Version,
+			&i.Status,
+			&i.Author,
+			&i.Plan,
+			&i.Markdown,
+			&i.Branch,
+			&i.CommitSha,
+			&i.Path,
+			&i.CreatedAt,
+			&i.ApprovedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1182,7 +1964,7 @@ func (q *Queries) ListProjectUsage(ctx context.Context, projectID string) ([]Usa
 }
 
 const listPullRequests = `-- name: ListPullRequests :many
-SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at FROM pull_requests WHERE project_id = ? ORDER BY id
+SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at, conflict_rounds FROM pull_requests WHERE project_id = ? ORDER BY id
 `
 
 func (q *Queries) ListPullRequests(ctx context.Context, projectID string) ([]PullRequest, error) {
@@ -1213,6 +1995,7 @@ func (q *Queries) ListPullRequests(ctx context.Context, projectID string) ([]Pul
 			&i.Error,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ConflictRounds,
 		); err != nil {
 			return nil, err
 		}
@@ -1419,7 +2202,7 @@ func (q *Queries) ListSessionUsage(ctx context.Context, sessionID string) ([]Usa
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by FROM tasks WHERE project_id = ? ORDER BY created_at, id
+SELECT id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by, depends_on, files, acceptance, role, spec_key, conflicts, conflicts_checked_at FROM tasks WHERE project_id = ? ORDER BY created_at, id
 `
 
 func (q *Queries) ListTasks(ctx context.Context, projectID string) ([]Task, error) {
@@ -1441,6 +2224,13 @@ func (q *Queries) ListTasks(ctx context.Context, projectID string) ([]Task, erro
 			&i.UpdatedAt,
 			&i.ParentTaskID,
 			&i.CreatedBy,
+			&i.DependsOn,
+			&i.Files,
+			&i.Acceptance,
+			&i.Role,
+			&i.SpecKey,
+			&i.Conflicts,
+			&i.ConflictsCheckedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1456,7 +2246,7 @@ func (q *Queries) ListTasks(ctx context.Context, projectID string) ([]Task, erro
 }
 
 const listVisibleAgents = `-- name: ListVisibleAgents :many
-SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, agents.sandbox, agents.role, worktrees.path AS worktree_path, worktrees.branch AS branch,
+SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, agents.sandbox, agents.kind, agents.role, worktrees.path AS worktree_path, worktrees.branch AS branch,
        worktrees.status AS worktree_status, worktrees.kind AS worktree_kind
 FROM agents JOIN worktrees ON worktrees.agent_id = agents.id
 WHERE agents.project_id = ? AND agents.removed_at IS NULL
@@ -1477,6 +2267,7 @@ type ListVisibleAgentsRow struct {
 	ExitReason          string
 	RemovedAt           sql.NullTime
 	Sandbox             string
+	Kind                string
 	Role                string
 	WorktreePath        string
 	Branch              string
@@ -1507,6 +2298,7 @@ func (q *Queries) ListVisibleAgents(ctx context.Context, projectID string) ([]Li
 			&i.ExitReason,
 			&i.RemovedAt,
 			&i.Sandbox,
+			&i.Kind,
 			&i.Role,
 			&i.WorktreePath,
 			&i.Branch,
@@ -1604,6 +2396,36 @@ func (q *Queries) MarkAgentRemoved(ctx context.Context, arg MarkAgentRemovedPara
 	return err
 }
 
+const markInboxRead = `-- name: MarkInboxRead :one
+UPDATE inbox SET read_at = COALESCE(read_at, ?) WHERE id = ?
+RETURNING id, project_id, agent_id, task_id, goal_id, role, kind, body, created_at, read_at, answered_at, reply
+`
+
+type MarkInboxReadParams struct {
+	ReadAt sql.NullTime
+	ID     int64
+}
+
+func (q *Queries) MarkInboxRead(ctx context.Context, arg MarkInboxReadParams) (Inbox, error) {
+	row := q.db.QueryRowContext(ctx, markInboxRead, arg.ReadAt, arg.ID)
+	var i Inbox
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.GoalID,
+		&i.Role,
+		&i.Kind,
+		&i.Body,
+		&i.CreatedAt,
+		&i.ReadAt,
+		&i.AnsweredAt,
+		&i.Reply,
+	)
+	return i, err
+}
+
 const markUnfinishedAgentsExited = `-- name: MarkUnfinishedAgentsExited :execrows
 UPDATE agents SET state = 'exited', activity = '', exited_at = ?, exit_reason = 'daemon_restart'
 WHERE state != 'exited'
@@ -1615,6 +2437,43 @@ func (q *Queries) MarkUnfinishedAgentsExited(ctx context.Context, exitedAt sql.N
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const nextSpecVersion = `-- name: NextSpecVersion :one
+
+SELECT CAST(COALESCE(MAX(version), 0) + 1 AS INTEGER) FROM specs WHERE goal_id = ?
+`
+
+// Specs (migration 0008, ADR 0031).
+func (q *Queries) NextSpecVersion(ctx context.Context, goalID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, nextSpecVersion, goalID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const qARunByAgent = `-- name: QARunByAgent :one
+SELECT id, goal_id, agent_id, status, branch, head, merged, summary, bugs, error, created_at, updated_at FROM qa_runs WHERE agent_id = ? ORDER BY id DESC LIMIT 1
+`
+
+func (q *Queries) QARunByAgent(ctx context.Context, agentID sql.NullString) (QaRun, error) {
+	row := q.db.QueryRowContext(ctx, qARunByAgent, agentID)
+	var i QaRun
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.AgentID,
+		&i.Status,
+		&i.Branch,
+		&i.Head,
+		&i.Merged,
+		&i.Summary,
+		&i.Bugs,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const removeTask = `-- name: RemoveTask :execrows
@@ -1743,7 +2602,7 @@ func (q *Queries) ReviewForHead(ctx context.Context, arg ReviewForHeadParams) (R
 
 const setPullRequestFlagged = `-- name: SetPullRequestFlagged :one
 UPDATE pull_requests SET pending_flagged = ?, accepted_flagged = ?, error = ?, updated_at = ? WHERE id = ?
-RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at, conflict_rounds
 `
 
 type SetPullRequestFlaggedParams struct {
@@ -1782,6 +2641,7 @@ func (q *Queries) SetPullRequestFlagged(ctx context.Context, arg SetPullRequestF
 		&i.Error,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConflictRounds,
 	)
 	return i, err
 }
@@ -1881,6 +2741,41 @@ func (q *Queries) SetSessionCLICost(ctx context.Context, arg SetSessionCLICostPa
 	return err
 }
 
+const setTaskConflicts = `-- name: SetTaskConflicts :one
+UPDATE tasks SET conflicts = ?, conflicts_checked_at = ? WHERE id = ?
+RETURNING id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by, depends_on, files, acceptance, role, spec_key, conflicts, conflicts_checked_at
+`
+
+type SetTaskConflictsParams struct {
+	Conflicts          string
+	ConflictsCheckedAt sql.NullTime
+	ID                 string
+}
+
+func (q *Queries) SetTaskConflicts(ctx context.Context, arg SetTaskConflictsParams) (Task, error) {
+	row := q.db.QueryRowContext(ctx, setTaskConflicts, arg.Conflicts, arg.ConflictsCheckedAt, arg.ID)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentTaskID,
+		&i.CreatedBy,
+		&i.DependsOn,
+		&i.Files,
+		&i.Acceptance,
+		&i.Role,
+		&i.SpecKey,
+		&i.Conflicts,
+		&i.ConflictsCheckedAt,
+	)
+	return i, err
+}
+
 const setWorktreeStatus = `-- name: SetWorktreeStatus :exec
 UPDATE worktrees SET status = ?, removed_at = ? WHERE agent_id = ?
 `
@@ -1935,10 +2830,81 @@ func (q *Queries) StartReview(ctx context.Context, arg StartReviewParams) (Revie
 	return i, err
 }
 
+const supersedeApprovedSpecs = `-- name: SupersedeApprovedSpecs :exec
+UPDATE specs SET status = 'superseded' WHERE goal_id = ? AND status = 'approved' AND id != ?
+`
+
+type SupersedeApprovedSpecsParams struct {
+	GoalID string
+	ID     int64
+}
+
+func (q *Queries) SupersedeApprovedSpecs(ctx context.Context, arg SupersedeApprovedSpecsParams) error {
+	_, err := q.db.ExecContext(ctx, supersedeApprovedSpecs, arg.GoalID, arg.ID)
+	return err
+}
+
+const supersedeProposedSpecs = `-- name: SupersedeProposedSpecs :exec
+UPDATE specs SET status = 'superseded' WHERE goal_id = ? AND status = 'proposed' AND id != ?
+`
+
+type SupersedeProposedSpecsParams struct {
+	GoalID string
+	ID     int64
+}
+
+// A new version replaces the proposals before it.
+func (q *Queries) SupersedeProposedSpecs(ctx context.Context, arg SupersedeProposedSpecsParams) error {
+	_, err := q.db.ExecContext(ctx, supersedeProposedSpecs, arg.GoalID, arg.ID)
+	return err
+}
+
+const takeConflictRound = `-- name: TakeConflictRound :one
+
+UPDATE pull_requests SET conflict_rounds = conflict_rounds + 1, updated_at = ?1
+WHERE id = ?2 AND conflict_rounds < ?3
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at, conflict_rounds
+`
+
+type TakeConflictRoundParams struct {
+	UpdatedAt time.Time
+	ID        int64
+	MaxRounds int64
+}
+
+// Conflict rounds (ADR 0032).
+// Counts one automatic conflict-resolution relaunch, only while below the limit.
+func (q *Queries) TakeConflictRound(ctx context.Context, arg TakeConflictRoundParams) (PullRequest, error) {
+	row := q.db.QueryRowContext(ctx, takeConflictRound, arg.UpdatedAt, arg.ID, arg.MaxRounds)
+	var i PullRequest
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TaskID,
+		&i.AgentID,
+		&i.Branch,
+		&i.Base,
+		&i.Number,
+		&i.Url,
+		&i.State,
+		&i.Head,
+		&i.Checks,
+		&i.FailedChecks,
+		&i.PendingFlagged,
+		&i.AcceptedFlagged,
+		&i.Rounds,
+		&i.Error,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ConflictRounds,
+	)
+	return i, err
+}
+
 const takePullRequestRound = `-- name: TakePullRequestRound :one
 UPDATE pull_requests SET rounds = rounds + 1, updated_at = ?1
 WHERE id = ?2 AND rounds < ?3
-RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at, conflict_rounds
 `
 
 type TakePullRequestRoundParams struct {
@@ -1970,6 +2936,7 @@ func (q *Queries) TakePullRequestRound(ctx context.Context, arg TakePullRequestR
 		&i.Error,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConflictRounds,
 	)
 	return i, err
 }
@@ -1999,11 +2966,49 @@ func (q *Queries) UpdateAgentState(ctx context.Context, arg UpdateAgentStatePara
 	return err
 }
 
+const updateMemory = `-- name: UpdateMemory :one
+UPDATE memory SET kind = ?, title = ?, body = ?, status = ?, updated_at = ? WHERE id = ?
+RETURNING id, project_id, kind, title, body, status, source, created_at, updated_at
+`
+
+type UpdateMemoryParams struct {
+	Kind      string
+	Title     string
+	Body      string
+	Status    string
+	UpdatedAt time.Time
+	ID        int64
+}
+
+func (q *Queries) UpdateMemory(ctx context.Context, arg UpdateMemoryParams) (Memory, error) {
+	row := q.db.QueryRowContext(ctx, updateMemory,
+		arg.Kind,
+		arg.Title,
+		arg.Body,
+		arg.Status,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i Memory
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Kind,
+		&i.Title,
+		&i.Body,
+		&i.Status,
+		&i.Source,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updatePullRequest = `-- name: UpdatePullRequest :one
 UPDATE pull_requests
 SET base = ?, number = ?, url = ?, state = ?, head = ?, checks = ?, failed_checks = ?, error = ?, updated_at = ?
 WHERE id = ?
-RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at, conflict_rounds
 `
 
 type UpdatePullRequestParams struct {
@@ -2052,6 +3057,7 @@ func (q *Queries) UpdatePullRequest(ctx context.Context, arg UpdatePullRequestPa
 		&i.Error,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConflictRounds,
 	)
 	return i, err
 }
@@ -2119,7 +3125,7 @@ func (q *Queries) UpdateReview(ctx context.Context, arg UpdateReviewParams) (Rev
 const updateTask = `-- name: UpdateTask :one
 UPDATE tasks SET title = ?, description = ?, status = ?, updated_at = ?
 WHERE id = ?
-RETURNING id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by
+RETURNING id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by, depends_on, files, acceptance, role, spec_key, conflicts, conflicts_checked_at
 `
 
 type UpdateTaskParams struct {
@@ -2149,6 +3155,64 @@ func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, e
 		&i.UpdatedAt,
 		&i.ParentTaskID,
 		&i.CreatedBy,
+		&i.DependsOn,
+		&i.Files,
+		&i.Acceptance,
+		&i.Role,
+		&i.SpecKey,
+		&i.Conflicts,
+		&i.ConflictsCheckedAt,
+	)
+	return i, err
+}
+
+const updateTaskPlan = `-- name: UpdateTaskPlan :one
+UPDATE tasks SET title = ?, description = ?, depends_on = ?, files = ?, acceptance = ?, role = ?, updated_at = ?
+WHERE id = ?
+RETURNING id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by, depends_on, files, acceptance, role, spec_key, conflicts, conflicts_checked_at
+`
+
+type UpdateTaskPlanParams struct {
+	Title       string
+	Description string
+	DependsOn   string
+	Files       string
+	Acceptance  string
+	Role        string
+	UpdatedAt   time.Time
+	ID          string
+}
+
+// A sub-task's plan fields (ADR 0032), e.g. from an approved spec revision.
+func (q *Queries) UpdateTaskPlan(ctx context.Context, arg UpdateTaskPlanParams) (Task, error) {
+	row := q.db.QueryRowContext(ctx, updateTaskPlan,
+		arg.Title,
+		arg.Description,
+		arg.DependsOn,
+		arg.Files,
+		arg.Acceptance,
+		arg.Role,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentTaskID,
+		&i.CreatedBy,
+		&i.DependsOn,
+		&i.Files,
+		&i.Acceptance,
+		&i.Role,
+		&i.SpecKey,
+		&i.Conflicts,
+		&i.ConflictsCheckedAt,
 	)
 	return i, err
 }
@@ -2193,7 +3257,7 @@ const upsertPullRequest = `-- name: UpsertPullRequest :one
 INSERT INTO pull_requests (project_id, task_id, agent_id, branch, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT (project_id, branch) DO UPDATE SET updated_at = excluded.updated_at
-RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at
+RETURNING id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at, conflict_rounds
 `
 
 type UpsertPullRequestParams struct {
@@ -2235,6 +3299,7 @@ func (q *Queries) UpsertPullRequest(ctx context.Context, arg UpsertPullRequestPa
 		&i.Error,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConflictRounds,
 	)
 	return i, err
 }

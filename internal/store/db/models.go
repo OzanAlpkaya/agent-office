@@ -35,6 +35,7 @@ type Agent struct {
 	ExitReason          string
 	RemovedAt           sql.NullTime
 	Sandbox             string
+	Kind                string
 	Role                string
 }
 
@@ -63,6 +64,33 @@ type Import struct {
 	At       time.Time
 }
 
+type Inbox struct {
+	ID         int64
+	ProjectID  string
+	AgentID    sql.NullString
+	TaskID     sql.NullString
+	GoalID     sql.NullString
+	Role       string
+	Kind       string
+	Body       string
+	CreatedAt  time.Time
+	ReadAt     sql.NullTime
+	AnsweredAt sql.NullTime
+	Reply      string
+}
+
+type Memory struct {
+	ID        int64
+	ProjectID string
+	Kind      string
+	Title     string
+	Body      string
+	Status    string
+	Source    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type Message struct {
 	ID          int64
 	ProjectID   string
@@ -72,6 +100,7 @@ type Message struct {
 	CreatedAt   time.Time
 	DeliveredAt sql.NullTime
 	Delivery    string
+	FromUser    bool
 }
 
 type Project struct {
@@ -101,6 +130,22 @@ type PullRequest struct {
 	Error           string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	ConflictRounds  int64
+}
+
+type QaRun struct {
+	ID        int64
+	GoalID    string
+	AgentID   sql.NullString
+	Status    string
+	Branch    string
+	Head      string
+	Merged    string
+	Summary   string
+	Bugs      string
+	Error     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type Review struct {
@@ -134,16 +179,38 @@ type Session struct {
 	CliCostMicroUsd sql.NullInt64
 }
 
+type Spec struct {
+	ID         int64
+	GoalID     string
+	Version    int64
+	Status     string
+	Author     string
+	Plan       string
+	Markdown   string
+	Branch     string
+	CommitSha  string
+	Path       string
+	CreatedAt  time.Time
+	ApprovedAt sql.NullTime
+}
+
 type Task struct {
-	ID           string
-	ProjectID    string
-	Title        string
-	Description  string
-	Status       string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	ParentTaskID sql.NullString
-	CreatedBy    string
+	ID                 string
+	ProjectID          string
+	Title              string
+	Description        string
+	Status             string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	ParentTaskID       sql.NullString
+	CreatedBy          string
+	DependsOn          string
+	Files              string
+	Acceptance         string
+	Role               string
+	SpecKey            string
+	Conflicts          string
+	ConflictsCheckedAt sql.NullTime
 }
 
 type UsageMessage struct {

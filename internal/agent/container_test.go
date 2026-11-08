@@ -55,7 +55,7 @@ func TestHostCommandNeverBypassesPermissions(t *testing.T) {
 }
 
 func TestSandboxSettingsAndSeed(t *testing.T) {
-	b, err := SandboxSettings("/opt/agent-office/agent-office hook")
+	b, err := SandboxSettings("/opt/agent-office/agent-office hook", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestSandboxSettingsAndSeed(t *testing.T) {
 		s.Hooks["SessionStart"][0].Hooks[0].Command != "/opt/agent-office/agent-office hook" {
 		t.Fatalf("sandbox settings %s", b)
 	}
-	host, _ := HookSettings("x hook")
+	host, _ := HookSettings("x hook", nil)
 	if strings.Contains(string(host), "skipDangerous") {
 		t.Fatal("host settings must not skip the bypass warning")
 	}

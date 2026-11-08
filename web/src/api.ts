@@ -7,7 +7,16 @@ export type AgentState = "starting" | "idle" | "working" | "waiting_permission" 
 export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "blocked";
 export type WorktreeStatus = "active" | "kept" | "removed";
 export type SandboxMode = "host" | "podman";
-export type Role = "lead" | "worker" | "reviewer";
+// Kind is an agent's behaviour, fixed by agent-office (ADR 0029); Role is the
+// name of its role, which is data (e.g. tech-lead, worker, docs).
+export type Kind = "architect" | "lead" | "worker" | "qa" | "reviewer" | "assistant";
+export type Role = string;
+export const kinds: readonly Kind[] = ["architect", "lead", "worker", "qa", "reviewer", "assistant"];
+
+// defaultRole is the built-in role agent-office uses for a kind.
+export const defaultRole: Record<Kind, Role> = {
+  architect: "architect", lead: "tech-lead", worker: "worker", qa: "qa", reviewer: "reviewer", assistant: "assistant",
+};
 
 export const taskStatuses: readonly TaskStatus[] = ["todo", "in_progress", "review", "done", "blocked"];
 const agentStates: readonly string[] = ["starting", "idle", "working", "waiting_permission", "exited"];
@@ -21,6 +30,7 @@ export interface Agent {
   model?: string;
   inherit_user_settings: boolean;
   sandbox: SandboxMode;
+  kind: Kind;
   role: Role;
   branch: string;
   worktree_path: string;
@@ -105,6 +115,7 @@ export interface SessionUsage {
   agent_id: string;
   task_id?: string;
   goal_id?: string;
+  kind: Kind;
   role: Role;
   sandbox: SandboxMode;
   source: "api" | "transcript";
@@ -256,7 +267,8 @@ function isImport(v: unknown): v is ImportInfo {
 
 function isAgent(v: unknown): v is Agent {
   return isObj(v) && typeof v.id === "string" && typeof v.state === "string" && agentStates.includes(v.state) &&
-    (v.sandbox === "host" || v.sandbox === "podman") && (v.role === "lead" || v.role === "worker" || v.role === "reviewer") &&
+    (v.sandbox === "host" || v.sandbox === "podman") && typeof v.kind === "string" &&
+    (kinds as readonly string[]).includes(v.kind) && typeof v.role === "string" &&
     typeof v.branch === "string" && typeof v.worktree_path === "string" && typeof v.has_terminal === "boolean" &&
     typeof v.started_at === "string" && (v.last_import === undefined || isImport(v.last_import));
 }
@@ -302,7 +314,8 @@ function isTokens(v: unknown): v is Tokens {
 export function isSessionUsage(v: unknown): v is SessionUsage {
   return isObj(v) && typeof v.session_id === "string" && typeof v.agent_id === "string" &&
     (v.task_id === undefined || typeof v.task_id === "string") && (v.goal_id === undefined || typeof v.goal_id === "string") &&
-    typeof v.role === "string" && typeof v.sandbox === "string" && typeof v.started_at === "string" &&
+    typeof v.kind === "string" && typeof v.role === "string" && typeof v.sandbox === "string" &&
+    typeof v.started_at === "string" &&
     isCount(v.turns) && isCount(v.tool_calls) && isCount(v.messages) && isTokens(v.tokens) &&
     isCount(v.cost_micro_usd) && isCount(v.unpriced_tokens) &&
     (v.cli_cost_micro_usd === undefined || isCount(v.cli_cost_micro_usd)) &&

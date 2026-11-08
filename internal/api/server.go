@@ -59,6 +59,7 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/project", s.getProject)
 	mux.HandleFunc("GET /api/status", s.getStatus)
+	mux.HandleFunc("GET /api/roles", s.listRoles)
 	mux.HandleFunc("GET /api/usage", s.getUsage)
 	mux.HandleFunc("GET /api/agents", s.listAgents)
 	mux.HandleFunc("POST /api/agents", s.startAgent)
@@ -169,7 +170,7 @@ func (s *server) listAgents(w http.ResponseWriter, _ *http.Request) {
 // startRequest is the optional JSON body of POST /api/agents.
 type startRequest struct {
 	TaskID string `json:"task_id"`
-	Role   string `json:"role"` // "worker" (default) or "lead" (needs task_id, ADR 0017)
+	Role   string `json:"role"` // a role name (ADR 0029): worker (default), tech-lead, architect, assistant, ...
 }
 
 func (s *server) startAgent(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +389,11 @@ func (s *server) discardAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) getProject(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.eng.Project())
+}
+
+// listRoles lists the team roles of this daemon run (ADR 0029).
+func (s *server) listRoles(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.eng.Roles())
 }
 
 // getStatus reports the sandbox mode, the worker image and warnings (e.g. an

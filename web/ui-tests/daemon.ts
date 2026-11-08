@@ -4,15 +4,16 @@
 // types, so a change to them shows up here.
 import type { Page, WebSocketRoute } from "@playwright/test";
 import type {
-  AccessRequest, Agent, AgentState, Message, ModelUsage, Role, SessionUsage, Status, Task, TaskStatus, Tokens, UsageReport,
+  AccessRequest, Agent, AgentState, Kind, Message, ModelUsage, SessionUsage, Status, Task, TaskStatus, Tokens, UsageReport,
 } from "../src/api";
+import { defaultRole } from "../src/api";
 
 const t0 = Date.parse("2026-11-08T10:00:00Z");
 const iso = (minutes: number): string => new Date(t0 + minutes * 60_000).toISOString();
 
-export function agent(id: string, role: Role, state: AgentState, over: Partial<Agent> = {}): Agent {
+export function agent(id: string, kind: Kind, state: AgentState, over: Partial<Agent> = {}): Agent {
   return {
-    id, role, state, model: "haiku", inherit_user_settings: false, sandbox: "podman",
+    id, kind, role: defaultRole[kind], state, model: "haiku", inherit_user_settings: false, sandbox: "podman",
     branch: `agent-office/${id}`, worktree_path: `/data/agents/${id}`, workspace_kind: "clone",
     worktree_status: "active", has_terminal: true, started_at: iso(0), ...over,
   };
@@ -35,7 +36,7 @@ const zero: Tokens = { input: 0, output: 0, cache_read: 0, cache_write_5m: 0, ca
 
 export function session(id: string, a: Agent, goal: string | undefined, over: Partial<SessionUsage> = {}): SessionUsage {
   return {
-    session_id: id, agent_id: a.id, task_id: a.task_id, goal_id: goal, role: a.role, sandbox: a.sandbox,
+    session_id: id, agent_id: a.id, task_id: a.task_id, goal_id: goal, kind: a.kind, role: a.role, sandbox: a.sandbox,
     source: a.sandbox === "podman" ? "api" : "transcript", started_at: a.started_at, turns: 1, tool_calls: 2, messages: 3,
     tokens: zero, cost_micro_usd: 0, unpriced_tokens: 0, models: ["claude-haiku-5-5"], ...over,
   };

@@ -48,7 +48,7 @@ func (e *Engine) reportNoChange(ctx context.Context, caller, reason string) (mcp
 	if err == nil {
 		info, fu = a.info, a.followup
 		switch {
-		case info.Role != RoleWorker:
+		case info.Kind != KindWorker:
 			err = forbidden("only workers report on a review follow-up")
 		case fu == nil:
 			err = invalid("report_no_change answers a review you were relaunched to address, and there is none " +

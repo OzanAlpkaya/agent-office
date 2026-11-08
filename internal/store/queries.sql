@@ -7,8 +7,19 @@ ON CONFLICT (repo_path) DO UPDATE SET name = excluded.name
 RETURNING *;
 
 -- name: CreateTask :one
-INSERT INTO tasks (id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO tasks (id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by,
+    depends_on, files, acceptance, role, spec_key)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: UpdateTaskPlan :one
+-- A sub-task's plan fields (ADR 0032), e.g. from an approved spec revision.
+UPDATE tasks SET title = ?, description = ?, depends_on = ?, files = ?, acceptance = ?, role = ?, updated_at = ?
+WHERE id = ?
+RETURNING *;
+
+-- name: SetTaskConflicts :one
+UPDATE tasks SET conflicts = ?, conflicts_checked_at = ? WHERE id = ?
 RETURNING *;
 
 -- name: ListChildTasks :many
@@ -32,8 +43,8 @@ RETURNING *;
 DELETE FROM tasks WHERE id = ?;
 
 -- name: CreateAgent :exec
-INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, role)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, kind, role)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: UpdateAgentState :exec
 UPDATE agents SET state = ?, activity = ? WHERE id = ?;
@@ -97,8 +108,8 @@ SELECT * FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT 1;
 SELECT * FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT ?;
 
 -- name: InsertMessage :one
-INSERT INTO messages (project_id, from_agent_id, to_agent_id, body, created_at)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO messages (project_id, from_agent_id, to_agent_id, body, created_at, from_user)
+VALUES (?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: ClaimMessages :many
@@ -282,7 +293,7 @@ WHERE a.project_id = ? ORDER BY u.id;
 
 -- name: ListProjectSessions :many
 SELECT s.id, s.agent_id, s.started_at, s.ended_at, s.turns, s.tool_calls, s.cli_cost_micro_usd,
-       a.role, a.sandbox, a.task_id, a.model, a.removed_at
+       a.kind, a.role, a.sandbox, a.task_id, a.model, a.removed_at
 FROM sessions s JOIN agents a ON a.id = s.agent_id
 WHERE a.project_id = ? ORDER BY s.started_at;
 
@@ -297,3 +308,127 @@ UPDATE sessions SET cli_cost_micro_usd = ? WHERE id = ?;
 
 -- name: DeleteEventsBefore :execrows
 DELETE FROM events WHERE at < ?;
+
+-- Conflict rounds (ADR 0032).
+
+-- name: TakeConflictRound :one
+-- Counts one automatic conflict-resolution relaunch, only while below the limit.
+UPDATE pull_requests SET conflict_rounds = conflict_rounds + 1, updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND conflict_rounds < sqlc.arg(max_rounds)
+RETURNING *;
+
+-- Messages to the user (migration 0008, ADR 0030).
+
+-- name: InsertInbox :one
+INSERT INTO inbox (project_id, agent_id, task_id, goal_id, role, kind, body, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetInbox :one
+SELECT * FROM inbox WHERE id = ?;
+
+-- name: ListInbox :many
+SELECT * FROM inbox WHERE project_id = ? ORDER BY id DESC LIMIT ?;
+
+-- name: CountInboxFromSince :one
+SELECT count(*) FROM inbox WHERE agent_id = ? AND created_at >= ?;
+
+-- name: CountUnreadInboxFrom :one
+SELECT count(*) FROM inbox WHERE agent_id = ? AND read_at IS NULL;
+
+-- name: MarkInboxRead :one
+UPDATE inbox SET read_at = COALESCE(read_at, ?) WHERE id = ?
+RETURNING *;
+
+-- name: AnswerInbox :one
+UPDATE inbox SET reply = ?, answered_at = ?, read_at = COALESCE(read_at, ?) WHERE id = ?
+RETURNING *;
+
+-- Specs (migration 0008, ADR 0031).
+
+-- name: NextSpecVersion :one
+SELECT CAST(COALESCE(MAX(version), 0) + 1 AS INTEGER) FROM specs WHERE goal_id = ?;
+
+-- name: InsertSpec :one
+-- Run in one transaction with NextSpecVersion; UNIQUE (goal_id, version) backs it up.
+INSERT INTO specs (goal_id, version, status, author, plan, markdown, created_at)
+VALUES (?, ?, 'proposed', ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetSpec :one
+SELECT * FROM specs WHERE id = ?;
+
+-- name: ListGoalSpecs :many
+SELECT * FROM specs WHERE goal_id = ? ORDER BY version DESC;
+
+-- name: ListProjectSpecs :many
+SELECT specs.* FROM specs JOIN tasks ON tasks.id = specs.goal_id
+WHERE tasks.project_id = ? ORDER BY specs.goal_id, specs.version DESC;
+
+-- name: LatestApprovedSpec :one
+SELECT * FROM specs WHERE goal_id = ? AND status = 'approved' ORDER BY version DESC LIMIT 1;
+
+-- name: SupersedeProposedSpecs :exec
+-- A new version replaces the proposals before it.
+UPDATE specs SET status = 'superseded' WHERE goal_id = ? AND status = 'proposed' AND id != ?;
+
+-- name: ApproveSpec :one
+-- Approves a proposed version once; the approved version before it is superseded.
+UPDATE specs SET status = 'approved', branch = ?, commit_sha = ?, path = ?, approved_at = ?
+WHERE id = ? AND status = 'proposed'
+RETURNING *;
+
+-- name: SupersedeApprovedSpecs :exec
+UPDATE specs SET status = 'superseded' WHERE goal_id = ? AND status = 'approved' AND id != ?;
+
+-- QA runs (migration 0008, ADR 0033).
+
+-- name: InsertQARun :one
+INSERT INTO qa_runs (goal_id, agent_id, status, branch, merged, created_at, updated_at)
+VALUES (?, ?, 'running', ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetQARun :one
+SELECT * FROM qa_runs WHERE id = ?;
+
+-- name: QARunByAgent :one
+SELECT * FROM qa_runs WHERE agent_id = ? ORDER BY id DESC LIMIT 1;
+
+-- name: LatestQARun :one
+SELECT * FROM qa_runs WHERE goal_id = ? ORDER BY id DESC LIMIT 1;
+
+-- name: ListProjectQARuns :many
+SELECT qa_runs.* FROM qa_runs JOIN tasks ON tasks.id = qa_runs.goal_id
+WHERE tasks.project_id = ? ORDER BY qa_runs.id DESC LIMIT ?;
+
+-- name: FinishQARun :one
+-- Ends a running QA run once.
+UPDATE qa_runs SET status = ?, head = ?, summary = ?, bugs = ?, error = ?, updated_at = ?
+WHERE id = ? AND status = 'running'
+RETURNING *;
+
+-- Project memory (migration 0008, ADR 0034).
+
+-- name: InsertMemory :one
+INSERT INTO memory (project_id, kind, title, body, status, source, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetMemory :one
+SELECT * FROM memory WHERE id = ?;
+
+-- name: ListMemory :many
+SELECT * FROM memory WHERE project_id = ? ORDER BY id DESC;
+
+-- name: ListAcceptedMemory :many
+SELECT * FROM memory WHERE project_id = ? AND status = 'accepted' ORDER BY id DESC;
+
+-- name: CountProposedMemory :one
+SELECT count(*) FROM memory WHERE project_id = ? AND status = 'proposed';
+
+-- name: UpdateMemory :one
+UPDATE memory SET kind = ?, title = ?, body = ?, status = ?, updated_at = ? WHERE id = ?
+RETURNING *;
+
+-- name: DeleteMemory :execrows
+DELETE FROM memory WHERE id = ?;

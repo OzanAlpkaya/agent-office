@@ -107,8 +107,8 @@ interface CardProps extends Props {
 
 function TaskCard(p: CardProps): JSX.Element {
   const { task, agents, goal, canStart, leadRunning, onStatus, onStart, onStartLead, onDelete, onOpenAgent, prs } = p;
-  const running = agents.some((a) => a.state !== "exited" && a.role !== "reviewer");
-  const canOpenPR = p.github && task.status === "review" && agents.some((a) => a.role === "worker") &&
+  const running = agents.some((a) => a.state !== "exited" && a.kind !== "reviewer");
+  const canOpenPR = p.github && task.status === "review" && agents.some((a) => a.kind === "worker") &&
     !prs.some((pr) => pr.state === "open");
   const isGoal = !task.parent_task_id;
   return (
@@ -126,7 +126,7 @@ function TaskCard(p: CardProps): JSX.Element {
           {agents.map((a) => (
             <button key={a.id} className={`chip state-${a.state}`} title={`${a.role} · ${a.branch}`}
               onClick={() => onOpenAgent(a.id)}>
-              {a.role !== "worker" ? `${a.role} ` : ""}{a.id.slice(0, 6)}
+              {a.kind !== "worker" ? `${a.role} ` : ""}{a.id.slice(0, 6)}
             </button>
           ))}
         </div>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,17 +17,16 @@ const ServerName = "agent-office"
 // SocketEnv names the per-agent MCP socket for `agent-office mcp`.
 const SocketEnv = "AGENT_OFFICE_MCP_SOCKET"
 
-// Roles as the engine records them (ADR 0017).
-const (
-	RoleLead     = "lead"
-	RoleWorker   = "worker"
-	RoleReviewer = "reviewer" // reviews one pull request (ADR 0021)
-)
-
 // Tool names.
 const (
 	ToolCreateTask     = "create_task"
 	ToolAssignTask     = "assign_task"
+	ToolListTasks      = "list_tasks"
+	ToolSendMessage    = "send_message"
+	ToolReportDone     = "report_done"
+	ToolRequestAccess  = "request_access"
+	ToolSubmitReview   = "submit_review"
+	ToolReportNoChange = "report_no_change" // a follow-up round that needs no change (ADR 0022)
 	ToolMessageUser    = "message_user"     // a message to the human (ADR 0030)
 	ToolSubmitPlan     = "submit_plan"      // the architect's plan (ADR 0031)
 	ToolStartQA        = "start_qa"         // the Tech Lead starts QA on the goal (ADR 0033)
@@ -34,12 +34,6 @@ const (
 	ToolGetBriefing    = "get_briefing"     // the assistant's facts (ADR 0034)
 	ToolListMemory     = "list_memory"      // project memory (ADR 0034)
 	ToolProposeMemory  = "propose_memory"   // a memory entry for the user to accept (ADR 0034)
-	ToolListTasks      = "list_tasks"
-	ToolSendMessage    = "send_message"
-	ToolReportDone     = "report_done"
-	ToolRequestAccess  = "request_access"
-	ToolSubmitReview   = "submit_review"
-	ToolReportNoChange = "report_no_change" // a follow-up round that needs no change (ADR 0022)
 )
 
 // Team is what the tools call. The engine implements it; caller is the agent
@@ -65,7 +59,8 @@ type CreateTaskInput struct {
 // AgentRef is an agent as the tools show it.
 type AgentRef struct {
 	ID     string `json:"id"`
-	Role   string `json:"role"`
+	Kind   string `json:"kind"` // the behaviour: lead, worker, qa, ...
+	Role   string `json:"role"` // the role's name, e.g. tech-lead, docs
 	State  string `json:"state"`
 	Branch string `json:"branch,omitempty"`
 }
@@ -191,9 +186,9 @@ func (e UserError) Unwrap() error { return e.Err }
 const internalError = "internal error in agent-office; the details are in the daemon log"
 
 // NewServer returns the MCP server for one agent. Tools are bound to caller;
-// tools a role may not use are not even listed for it (the engine refuses
-// them anyway): leads plan, workers report, reviewers review (ADR 0017, 0021).
-func NewServer(team Team, caller, role, version string, log *slog.Logger) *sdk.Server {
+// only the tools of its role are listed (ADR 0029). The engine authorizes
+// every call by the caller's kind anyway (ADR 0017).
+func NewServer(team Team, caller string, tools []string, version string, log *slog.Logger) *sdk.Server {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -202,8 +197,8 @@ func NewServer(team Team, caller, role, version string, log *slog.Logger) *sdk.S
 			"you cannot act as another agent.",
 		Logger: slog.New(slog.DiscardHandler), // the SDK's own logs carry session details; ours are below
 	})
-	t := toolset{team: team, caller: caller, log: log.With("caller", caller)}
-	if role == RoleLead {
+	t := toolset{team: team, caller: caller, log: log.With("caller", caller), tools: tools}
+	{
 		add(s, t, &sdk.Tool{Name: ToolCreateTask, Description: "Create a sub-task of your goal (status todo). " +
 			"Make each sub-task small and independent: one worker on its own branch does it without talking " +
 			"to other workers. At most 20 sub-tasks per goal."},
@@ -221,7 +216,7 @@ func NewServer(team Team, caller, role, version string, log *slog.Logger) *sdk.S
 		"its sub-tasks, their status and their agents. For a worker: its own task and its lead.",
 		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true}},
 		func(ctx context.Context, _ struct{}) (ListTasksOutput, error) { return team.ListTasks(ctx, caller) })
-	if role == RoleReviewer {
+	{
 		add(s, t, &sdk.Tool{Name: ToolSubmitReview, Description: "Submit your review of the pull request, once. " +
 			"agent-office posts it on GitHub as a comment review (it never approves or merges) and ends your " +
 			"session after this turn. Use changes_requested only for problems the author must fix; the author is " +
@@ -229,7 +224,6 @@ func NewServer(team Team, caller, role, version string, log *slog.Logger) *sdk.S
 			func(ctx context.Context, in SubmitReviewInput) (SubmitReviewOutput, error) {
 				return team.SubmitReview(ctx, caller, in)
 			})
-		return s
 	}
 	add(s, t, &sdk.Tool{Name: ToolSendMessage, Description: "Send a message to the lead (workers: to=\"lead\") " +
 		"or to one of your goal's workers (lead: to=<agent id>). It is delivered when the recipient finishes " +
@@ -245,7 +239,7 @@ func NewServer(team Team, caller, role, version string, log *slog.Logger) *sdk.S
 		func(ctx context.Context, in ReportDoneInput) (ReportDoneOutput, error) {
 			return team.ReportDone(ctx, caller, in)
 		})
-	if role == RoleWorker {
+	{
 		add(s, t, &sdk.Tool{Name: ToolReportNoChange, Description: "Only when you were relaunched to address a " +
 			"review of your pull request: report that the review needs no change to the code, with the reason. " +
 			"agent-office posts the reason on the pull request and moves your task back to review. If you changed " +
@@ -267,12 +261,16 @@ type toolset struct {
 	team   Team
 	caller string
 	log    *slog.Logger
+	tools  []string // the tools this agent's role lists
 }
 
 // add registers one tool. The SDK validates the arguments against In's JSON
 // schema (unknown or missing fields are refused) before fn runs. Logs carry
 // the tool name, outcome and duration, never arguments or results.
 func add[In, Out any](s *sdk.Server, t toolset, tool *sdk.Tool, fn func(context.Context, In) (Out, error)) {
+	if !slices.Contains(t.tools, tool.Name) {
+		return
+	}
 	sdk.AddTool(s, tool, func(ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, Out, error) {
 		start := time.Now()
 		out, err := fn(ctx, in)

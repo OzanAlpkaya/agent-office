@@ -147,7 +147,7 @@ func (e *Engine) onHookLocked(ctx context.Context, a *agentProc, ev agent.Event,
 func (e *Engine) stopAfterReportLocked(a *agentProc) {
 	id := a.info.ID
 	reason := ExitReported
-	if a.info.Role == RoleReviewer {
+	if a.info.Kind == KindReviewer {
 		reason = ExitReviewed
 	}
 	e.wg.Add(1)

@@ -300,7 +300,7 @@ func TestMigration0004KeepsPhase3Rows(t *testing.T) {
 		t.Fatalf("new import %+v %v (ids must continue after the old ones)", added, err)
 	}
 	for _, q := range []string{
-		`UPDATE agents SET role = 'boss' WHERE id = 'a1'`,
+		`UPDATE agents SET kind = 'boss' WHERE id = 'a1'`,
 		`UPDATE imports SET trigger = 'push' WHERE id = 7`,
 		`INSERT INTO access_requests (agent_id, kind, value, reason, created_at) VALUES ('a1', 'root', 'x', 'y', '2026-01-01')`,
 		`INSERT INTO messages (project_id, to_agent_id, body, created_at) VALUES ('p1', 'a1', '', '2026-01-01')`,
@@ -353,7 +353,7 @@ func TestMigration0005KeepsPhase4Rows(t *testing.T) {
 		t.Fatalf("migration %+v", s.Migration)
 	}
 	rows, err := s.Q.ListVisibleAgents(ctx, "p1")
-	if err != nil || len(rows) != 1 || rows[0].ID != "l1" || rows[0].Role != "lead" || rows[0].Model != "haiku" ||
+	if err != nil || len(rows) != 1 || rows[0].ID != "l1" || rows[0].Kind != "lead" || rows[0].Role != "tech-lead" || rows[0].Model != "haiku" ||
 		rows[0].Sandbox != "podman" || !rows[0].StartedAt.Equal(ts) {
 		t.Fatalf("agents with worktrees %+v %v", rows, err)
 	}
@@ -386,7 +386,8 @@ func TestMigration0005KeepsPhase4Rows(t *testing.T) {
 		t.Fatalf("upsert is not get-or-create: %+v %v", again, err)
 	}
 	for _, q := range []string{
-		`UPDATE agents SET role = 'boss' WHERE id = 'w1'`,
+		`UPDATE agents SET kind = 'boss' WHERE id = 'w1'`,
+		`UPDATE agents SET role = '' WHERE id = 'w1'`,
 		`UPDATE pull_requests SET state = 'approved'`,
 		`INSERT INTO reviews (pr_id, reviewer, head, status, created_at, updated_at) VALUES (1, 'bot', 'h', 'queued', '2026-01-01', '2026-01-01')`,
 		`INSERT INTO reviews (pr_id, reviewer, head, status, verdict, created_at, updated_at) VALUES (1, 'internal', 'h', 'done', 'lgtm', '2026-01-01', '2026-01-01')`,
@@ -437,5 +438,86 @@ func TestMigration0006KeepsReviews(t *testing.T) {
 	}
 	if _, err := s.DB.ExecContext(ctx, `UPDATE reviews SET reply = ? WHERE id = 1`, string(bytes.Repeat([]byte("x"), 4001))); err == nil {
 		t.Error("CHECK constraint missing on reviews.reply")
+	}
+}
+
+// Migration 0008 (Phase 12) on a database with Phase 8 rows: every agent keeps
+// its behaviour as kind, leads are renamed to the tech-lead role, tasks get
+// empty plan fields, and the new CHECK constraints hold.
+func TestMigration0008KeepsPhase8Rows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agent-office.db")
+	v7, err := openWith(ctx, path, sourcesUpTo(t, 7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	for _, q := range []string{
+		`INSERT INTO projects (id, name, repo_path, slug, created_at) VALUES ('p1', 'linkshelf', '/repo', 'linkshelf-1', ?)`,
+		`INSERT INTO tasks (id, project_id, title, status, created_at, updated_at) VALUES ('g1', 'p1', 'Goal', 'review', ?, ?1)`,
+		`INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, role) VALUES ('l1', 'p1', 'g1', 'haiku', 0, 'exited', ?, 'podman', 'lead')`,
+		`INSERT INTO agents (id, project_id, model, inherit_user_settings, state, started_at, sandbox, role) VALUES ('w1', 'p1', 'haiku', 0, 'exited', ?, 'podman', 'worker')`,
+		`INSERT INTO agents (id, project_id, model, inherit_user_settings, state, started_at, sandbox, role) VALUES ('r1', 'p1', 'haiku', 0, 'exited', ?, 'podman', 'reviewer')`,
+		`INSERT INTO sessions (id, agent_id, started_at, turns) VALUES ('s1', 'l1', ?, 3)`,
+		`INSERT INTO messages (project_id, from_agent_id, to_agent_id, body, created_at) VALUES ('p1', 'w1', 'l1', 'done', ?)`,
+		`INSERT INTO pull_requests (project_id, agent_id, branch, created_at, updated_at) VALUES ('p1', 'w1', 'b', ?, ?1)`,
+	} {
+		if _, err := v7.DB.ExecContext(ctx, q, ts); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	v7.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Migration.From != 7 || s.Migration.To < 8 {
+		t.Fatalf("migration %+v", s.Migration)
+	}
+	for id, want := range map[string][2]string{"l1": {"lead", "tech-lead"}, "w1": {"worker", "worker"}, "r1": {"reviewer", "reviewer"}} {
+		var kind, role string
+		if err := s.DB.QueryRow(`SELECT kind, role FROM agents WHERE id = ?`, id).Scan(&kind, &role); err != nil ||
+			kind != want[0] || role != want[1] {
+			t.Errorf("%s: kind %q role %q %v", id, kind, role, err)
+		}
+	}
+	var turns int
+	if err := s.DB.QueryRow(`SELECT turns FROM sessions WHERE id = 's1'`).Scan(&turns); err != nil || turns != 3 {
+		t.Fatalf("the lead's session survived: %d %v", turns, err)
+	}
+	g, err := s.Q.GetTask(ctx, "g1")
+	if err != nil || g.DependsOn != "[]" || g.Files != "[]" || g.Acceptance != "[]" || g.Conflicts != "[]" || g.Role != "" {
+		t.Fatalf("task %+v %v", g, err)
+	}
+	m, err := s.Q.ListAgentMessages(ctx, db.ListAgentMessagesParams{AgentID: "l1", Lim: 10})
+	if err != nil || len(m) != 1 || m[0].FromUser {
+		t.Fatalf("messages %+v %v", m, err)
+	}
+	pr, err := s.Q.GetPullRequest(ctx, 1)
+	if err != nil || pr.ConflictRounds != 0 {
+		t.Fatalf("pull request %+v %v", pr, err)
+	}
+	for _, q := range []string{
+		`UPDATE agents SET kind = 'boss' WHERE id = 'w1'`,
+		`INSERT INTO inbox (project_id, kind, body, created_at) VALUES ('p1', 'spam', 'x', '2026-01-01')`,
+		`INSERT INTO inbox (project_id, kind, body, created_at) VALUES ('p1', 'info', '', '2026-01-01')`,
+		`INSERT INTO specs (goal_id, version, status, plan, markdown, created_at) VALUES ('g1', 1, 'draft', '{}', '', '2026-01-01')`,
+		`INSERT INTO qa_runs (goal_id, status, created_at, updated_at) VALUES ('g1', 'maybe', '2026-01-01', '2026-01-01')`,
+		`INSERT INTO memory (project_id, kind, title, body, status, created_at, updated_at) VALUES ('p1', 'rumour', 't', 'b', 'accepted', '2026-01-01', '2026-01-01')`,
+		`INSERT INTO memory (project_id, kind, title, body, status, created_at, updated_at) VALUES ('p1', 'lesson', 't', 'b', 'maybe', '2026-01-01', '2026-01-01')`,
+	} {
+		if _, err := s.DB.ExecContext(ctx, q); err == nil {
+			t.Errorf("CHECK constraint missing: %s", q)
+		}
+	}
+	// One spec version per goal and number.
+	ins := `INSERT INTO specs (goal_id, version, status, plan, markdown, created_at) VALUES ('g1', 1, 'proposed', '{}', '', '2026-01-01')`
+	if _, err := s.DB.ExecContext(ctx, ins); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, ins); err == nil {
+		t.Error("a second version 1 was accepted")
 	}
 }

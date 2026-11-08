@@ -49,28 +49,31 @@ var AgentIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // WorkerSpec describes one worker container. Host paths must be absolute.
 type WorkerSpec struct {
-	Instance      string // daemon instance; scopes startup reconciliation
-	AgentID       string
-	Image         string
-	Workspace     string // the agent's shared clone
-	ObjectsDir    string // the main repository's objects, mounted read-only at the same path
-	ConfigDir     string // per-agent Claude Code config dir
-	HookSocket    string
-	MCPSocket     string // team MCP socket (ADR 0006)
-	MCPConfig     string // daemon-generated --mcp-config file
-	EgressSocket  string
-	APISocket     string
-	SecretsSocket string // optional: stack pack secrets, served once to sandbox-init (ADR 0023)
-	Skills        string // optional: stack pack skills, mounted read-only at ConfigDir/skills (ADR 0023)
-	AgentOffice   string // static agent-office binary
-	Claude        string // the resolved, versioned claude binary
-	Settings      string // daemon-generated settings file
-	GitHooks      string // directory with the commit-msg hook (WriteGitHooks)
-	Git           GitIdentity
-	Env           []string
-	Memory        string // e.g. "2g"; empty: DefaultMemory
-	Pids          int    // 0: DefaultPids
-	Command       []string
+	Instance  string // daemon instance; scopes startup reconciliation
+	AgentID   string
+	Image     string
+	Workspace string // the agent's shared clone
+	// ReadOnlyWorkspace mounts the clone read-only: a read-only role (ADR 0029)
+	// cannot change it, not even through Bash.
+	ReadOnlyWorkspace bool
+	ObjectsDir        string // the main repository's objects, mounted read-only at the same path
+	ConfigDir         string // per-agent Claude Code config dir
+	HookSocket        string
+	MCPSocket         string // team MCP socket (ADR 0006)
+	MCPConfig         string // daemon-generated --mcp-config file
+	EgressSocket      string
+	APISocket         string
+	SecretsSocket     string // optional: stack pack secrets, served once to sandbox-init (ADR 0023)
+	Skills            string // optional: stack pack skills, mounted read-only at ConfigDir/skills (ADR 0023)
+	AgentOffice       string // static agent-office binary
+	Claude            string // the resolved, versioned claude binary
+	Settings          string // daemon-generated settings file
+	GitHooks          string // directory with the commit-msg hook (WriteGitHooks)
+	Git               GitIdentity
+	Env               []string
+	Memory            string // e.g. "2g"; empty: DefaultMemory
+	Pids              int    // 0: DefaultPids
+	Command           []string
 }
 
 // HelperSpec describes a short-lived git helper container (status, bundle,
@@ -175,7 +178,7 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 		src, dst string
 		ro       bool
 	}{
-		{s.Workspace, WorkspaceDir, false},
+		{s.Workspace, WorkspaceDir, s.ReadOnlyWorkspace},
 		{s.ObjectsDir, s.ObjectsDir, true},
 		{s.ConfigDir, ConfigDir, false},
 		{s.HookSocket, HookSocket, false},

@@ -114,7 +114,7 @@ func (gf *ghFixture) reviewer(t *testing.T, n int) AgentInfo {
 	t.Helper()
 	seen := 0
 	u := gf.log.wait(t, 10*time.Second, func(u Update) bool {
-		if u.Type == "agent" && u.Agent.Role == RoleReviewer && u.Agent.State == string(hooks.Starting) {
+		if u.Type == "agent" && u.Agent.Kind == KindReviewer && u.Agent.State == string(hooks.Starting) {
 			seen++
 			return seen == n
 		}

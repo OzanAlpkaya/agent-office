@@ -80,12 +80,27 @@ func (f *fakeTeam) SubmitReview(_ context.Context, caller string, in SubmitRevie
 
 var quiet = slog.New(slog.DiscardHandler)
 
+// The built-in roles' tool lists (internal/role, which this package cannot
+// import in tests: it imports mcp). The engine passes a role's list.
+const (
+	RoleLead     = "lead"
+	RoleWorker   = "worker"
+	RoleReviewer = "reviewer"
+)
+
+var roleTools = map[string][]string{
+	RoleLead: {ToolCreateTask, ToolAssignTask, ToolListTasks, ToolSendMessage, ToolReportDone, ToolRequestAccess},
+	RoleWorker: {ToolListTasks, ToolSendMessage, ToolReportDone, ToolReportNoChange,
+		ToolRequestAccess},
+	RoleReviewer: {ToolListTasks, ToolSubmitReview},
+}
+
 // connect serves NewServer(team, caller, role) in memory and returns a client.
 func connect(t *testing.T, team Team, caller, role string) *sdk.ClientSession {
 	t.Helper()
 	ctx := context.Background()
 	st, ct := sdk.NewInMemoryTransports()
-	ss, err := NewServer(team, caller, role, "test", quiet).Connect(ctx, st, nil)
+	ss, err := NewServer(team, caller, roleTools[role], "test", quiet).Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +320,7 @@ func shortDir(t *testing.T) string {
 
 func listen(t *testing.T, team Team, caller, role string) *Listener {
 	t.Helper()
-	ln, err := Listen(filepath.Join(shortDir(t), "mcp.sock"), NewServer(team, caller, role, "test", quiet), quiet)
+	ln, err := Listen(filepath.Join(shortDir(t), "mcp.sock"), NewServer(team, caller, roleTools[role], "test", quiet), quiet)
 	if err != nil {
 		t.Fatal(err)
 	}
