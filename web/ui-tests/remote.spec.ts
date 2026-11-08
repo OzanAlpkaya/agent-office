@@ -195,7 +195,7 @@ test("the terminal in use sets the size", async ({ page }) => {
 // The clipboard as in a browser profile that denies the async write (Ozan's
 // manual test: copying silently did nothing). Only clipboard-read is granted,
 // to read back what landed there; setClipboard grants write for a moment.
-async function clipboardPage(page: Page, context: BrowserContext): Promise<{
+async function clipboardPage(page: Page, context: BrowserContext, setup?: (d: MockDaemon) => void): Promise<{
   clip: () => Promise<string>;
   setClipboard: (t: string) => Promise<void>;
   inputs: () => string[];
@@ -203,6 +203,7 @@ async function clipboardPage(page: Page, context: BrowserContext): Promise<{
 }> {
   await context.grantPermissions(["clipboard-read"]);
   const daemon = new MockDaemon(team(4));
+  setup?.(daemon);
   await open(page, daemon);
   await page.locator("aside .card", { hasText: worker }).click();
   await expect(page.locator(".xterm")).toContainText(`mock terminal of ${worker}`);
@@ -354,4 +355,59 @@ test.describe("as an installed app", () => {
     await context.setOffline(false);
     await context.close();
   });
+});
+
+// Claude Code's fullscreen mode (seen in Ozan's sessions): it turns on mouse
+// tracking, draws its own selection and sends it as OSC 52; xterm.js then has
+// no selection of its own ("Copy failed: nothing is selected" before the fix).
+const fullscreen = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const osc52 = (text: string): string => `\x1b]52;c;${Buffer.from(text, "utf8").toString("base64")}\x07`;
+const answer = "● What can I help you with?";
+
+function claudeFullscreen(d: MockDaemon): void {
+  // An old request in the scrollback must not be applied when it is replayed.
+  d.terminalPreamble = `${fullscreen}\r\n${answer}\r\n${osc52("old request from the scrollback")}`;
+  // On the release of a drag (SGR mouse report "...m"), copy the selection, as Claude Code does.
+  d.onTerminalInput = (data, reply) => { if (/\x1b\[<\d+;\d+;\d+m/.test(data)) reply(osc52(answer)); };
+}
+
+test("a selection Claude Code makes itself (OSC 52) lands in the clipboard", async ({ page, context }) => {
+  const { clip, inputs } = await clipboardPage(page, context, claudeFullscreen);
+  // (The browser's clipboard is shared by the tests, so only "not the old request" can be checked.)
+  expect(await clip(), "the replayed scrollback set the clipboard").not.toBe("old request from the scrollback");
+  const rowsEl = page.locator(".xterm-rows > div");
+  const idx = (await rowsEl.allTextContents()).findIndex((l) => l.includes(answer));
+  const rb = (await rowsEl.nth(idx).boundingBox())!;
+  await page.mouse.move(rb.x + 2, rb.y + rb.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(rb.x + 200, rb.y + rb.height / 2, { steps: 6 });
+  await page.mouse.up();
+  // The mouse went to the program (xterm.js made no selection) and its answer reached the clipboard.
+  expect(inputs().some((m) => m.includes("\\u001b[<"))).toBe(true);
+  await expect.poll(clip).toBe(answer);
+  await expect(page.getByRole("status")).toHaveCount(0);
+});
+
+test("an agent cannot set or read the clipboard on its own", async ({ page, context }) => {
+  const { clip, setClipboard, inputs, daemon } = await clipboardPage(page, context, claudeFullscreen);
+  await setClipboard("mine");
+  // No gesture in this terminal: an unprompted write is refused and said so.
+  daemon.terminalOutput(worker, osc52("text the agent picked"));
+  await expect(page.getByRole("status")).toContainText("Ignored a clipboard write from the agent");
+  // A read request is never answered.
+  daemon.terminalOutput(worker, "\x1b]52;c;?\x07");
+  await page.waitForTimeout(500);
+  expect(await clip()).toBe("mine");
+  expect(inputs()).toEqual([]);
+});
+
+test("with Claude Code handling the mouse, Shift+drag selects and Ctrl+Shift+C explains", async ({ page, context }) => {
+  const { clip } = await clipboardPage(page, context, (d) => { d.terminalPreamble = fullscreen; });
+  await page.locator(".xterm").click();
+  await page.keyboard.press("Control+Shift+C");
+  await expect(page.getByRole("status")).toContainText("Claude Code handles the mouse in this terminal");
+  await page.keyboard.down("Shift");
+  await selectFirstRow(page);
+  await page.keyboard.up("Shift");
+  await expect.poll(async () => (await clip()).trim()).toBe(firstRow);
 });

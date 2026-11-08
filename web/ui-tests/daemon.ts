@@ -146,6 +146,11 @@ export class MockDaemon {
   readonly terminals: string[] = []; // agent ids whose terminal was opened
   readonly requests: string[] = []; // "METHOD path body" of every write the page sent
   readonly terminalInput: string[] = []; // text frames the page sent to terminals
+  // A terminal program for tests: what follows the greeting (e.g. mouse tracking
+  // on, like Claude Code's fullscreen mode) and how it answers input.
+  terminalPreamble = "";
+  onTerminalInput?: (data: string, reply: (bytes: string) => void) => void;
+  private readonly terminalSockets = new Map<string, WebSocketRoute>();
   paired = true; // whether this browser is paired (ADR 0039)
   devices: Device[] = [
     { id: "d1", name: "Chrome on Linux", kind: "browser", paired_via: "local", created_at: iso(0), last_seen_at: iso(30) },
@@ -264,14 +269,24 @@ export class MockDaemon {
     await page.routeWebSocket(/\/api\/agents\/[^/]+\/terminal$/, (ws) => {
       const id = /\/api\/agents\/([^/]+)\/terminal$/.exec(ws.url())?.[1] ?? "";
       this.terminals.push(id);
-      ws.send(Buffer.from(`\x1b[32mmock terminal of ${id}\x1b[0m\r\n> `));
-      ws.onMessage((m) => { this.terminalInput.push(String(m)); });
+      ws.send(Buffer.from(`\x1b[32mmock terminal of ${id}\x1b[0m\r\n> ${this.terminalPreamble}`));
+      this.terminalSockets.set(id, ws);
+      ws.onMessage((m) => {
+        this.terminalInput.push(String(m));
+        const msg = JSON.parse(String(m)) as { type: string; data?: string };
+        if (msg.type === "input" && msg.data) this.onTerminalInput?.(msg.data, (b) => ws.send(Buffer.from(b)));
+      });
       // An exited agent's terminal replays its scrollback, then closes like the daemon's.
       if (this.world.agents.find((a) => a.id === id)?.state === "exited") {
         ws.send(Buffer.from("Resume this session with:\r\nclaude --resume 00000000-0000-4000-8000-000000000000\r\n"));
         void ws.close({ code: 1000, reason: "process exited" });
       }
     });
+  }
+
+  // terminalOutput sends program output to an open terminal, unprompted.
+  terminalOutput(id: string, bytes: string): void {
+    this.terminalSockets.get(id)?.send(Buffer.from(bytes));
   }
 
   // signOut ends this browser's pairing the way a revoke from another device does.

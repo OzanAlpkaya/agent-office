@@ -93,7 +93,10 @@ function LiveTerminal({ agent, onResume }: Props): JSX.Element {
   useEffect(() => {
     if (!host.current) return;
     const term = new Terminal({ ...termOptions, cursorBlink: true });
-    const detach = clip.attach(term, host.current);
+    // The first message replays the scrollback; OSC 52 clipboard writes in it are
+    // old and never applied (ADR 0040).
+    let replayed = false;
+    const detach = clip.attach(term, host.current, () => replayed);
     pasteInto.current = (text) => { term.paste(text); term.focus(); };
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -115,7 +118,11 @@ function LiveTerminal({ agent, onResume }: Props): JSX.Element {
       sendSize();
       term.focus();
     };
-    ws.onmessage = (e) => term.write(new Uint8Array(e.data as ArrayBuffer));
+    ws.onmessage = (e) => {
+      const data = new Uint8Array(e.data as ArrayBuffer);
+      if (replayed) term.write(data);
+      else term.write(data, () => { replayed = true; });
+    };
     ws.onclose = (e) => {
       if (e.code === statusSignedOut) signalUnauthorized();
       const exited = e.reason === "process exited";

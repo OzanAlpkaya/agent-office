@@ -1,12 +1,19 @@
 import { type JSX, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
-import { copyToClipboard, readClipboard } from "./clipboard";
+import { copyToClipboard, parseOsc52, readClipboard } from "./clipboard";
 import { keyAction } from "./terminalKeys";
+
+// osc52Window is how long after the user's gesture in a terminal its program
+// may still set the clipboard (Claude Code answers a selection in
+// milliseconds; Chrome's user activation lasts 5 s).
+const osc52Window = 3000;
 
 // Copy and paste for an xterm.js terminal (ADR 0040), without depending on
 // browser shortcuts: Ctrl+Shift+C / Ctrl+Shift+V, copy when a mouse
 // selection ends, and a right-click menu with Copy and Paste. F12 (and the
 // other devtools shortcuts) reach the browser. Failures show a short notice.
+// When Claude Code handles the mouse (its fullscreen mode), its own selection
+// arrives as OSC 52 and is copied right after the user's gesture.
 
 export interface MenuState {
   x: number;
@@ -26,7 +33,7 @@ export interface TerminalClipboard {
 // useTerminalClipboard wires a terminal created by an effect. Call attach from
 // that effect with the terminal and its host element; it returns the cleanup.
 export function useTerminalClipboard(pasteInto?: RefObject<((text: string) => void) | undefined>): TerminalClipboard & {
-  attach: (term: Terminal, host: HTMLElement) => () => void;
+  attach: (term: Terminal, host: HTMLElement, liveOutput?: () => boolean) => () => void;
 } {
   const [notice, setNotice] = useState("");
   const [menu, setMenu] = useState<MenuState>();
@@ -52,12 +59,27 @@ export function useTerminalClipboard(pasteInto?: RefObject<((text: string) => vo
     );
   };
 
-  const attach = (term: Terminal, host: HTMLElement): (() => void) => {
+  // attach wires a terminal. With liveOutput, the terminal also takes OSC 52
+  // clipboard writes from the program, but only for output that is live (not
+  // the replayed scrollback; liveOutput says when) and within osc52Window of
+  // the user's own mouse or key gesture in this terminal: an agent must not
+  // be able to replace what the user copied (clipboard injection).
+  const attach = (term: Terminal, host: HTMLElement, liveOutput?: () => boolean): (() => void) => {
+    let lastGesture = -Infinity; // never: performance.now() starts near 0 at page load
+    const gesture = (): void => { lastGesture = performance.now(); };
+    // Claude Code's fullscreen mode handles the mouse: xterm.js then has no selection of its own.
+    const mouseTaken = (): boolean => term.modes.mouseTrackingMode !== "none";
     term.attachCustomKeyEventHandler((e) => {
       const action = keyAction(e);
       if (action === "copy") {
         e.preventDefault(); // not devtools
-        if (e.type === "keydown") copy(term.getSelection());
+        if (e.type !== "keydown") return false;
+        if (!term.hasSelection() && mouseTaken()) {
+          notify("Nothing selected here: Claude Code handles the mouse in this terminal. Select with the mouse to copy " +
+            "through it, or hold Shift while selecting.");
+        } else {
+          copy(term.getSelection());
+        }
         return false;
       }
       // Ctrl+Shift+V: the browser's paste event reaches xterm (no ^V to the agent);
@@ -71,16 +93,35 @@ export function useTerminalClipboard(pasteInto?: RefObject<((text: string) => vo
       if (e.button === 0 && term.hasSelection()) copy(term.getSelection());
     };
     const onMouseDown = (e: MouseEvent): void => {
+      gesture();
       if (e.button === 0) window.addEventListener("mouseup", onMouseUp, true);
     };
+    const osc52 = liveOutput && term.parser.registerOscHandler(52, (data) => {
+      const req = parseOsc52(data);
+      if (req.kind === "read") return true; // never answered: the agent may not read the clipboard
+      if (!liveOutput()) return true; // replayed scrollback: an old request
+      if (performance.now() - lastGesture > osc52Window) {
+        notify("Ignored a clipboard write from the agent: it did not follow your selection in this terminal.");
+        return true;
+      }
+      if (req.kind === "invalid") {
+        notify(`Copy failed: the agent's clipboard request was ${req.reason}.`);
+        return true;
+      }
+      copy(req.text); // within the gesture's activation, so the copy event is allowed
+      return true;
+    });
     const onContextMenu = (e: MouseEvent): void => {
       e.preventDefault();
       const box = (host.closest(".terminal-wrap") ?? host).getBoundingClientRect();
       setMenu({ x: e.clientX - box.left, y: e.clientY - box.top, selection: term.getSelection() });
     };
     host.addEventListener("mousedown", onMouseDown, true);
+    host.addEventListener("keydown", gesture, true);
     host.addEventListener("contextmenu", onContextMenu, true);
     return () => {
+      osc52?.dispose();
+      host.removeEventListener("keydown", gesture, true);
       host.removeEventListener("mousedown", onMouseDown, true);
       window.removeEventListener("mouseup", onMouseUp, true);
       host.removeEventListener("contextmenu", onContextMenu, true);
