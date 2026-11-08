@@ -81,8 +81,9 @@ func TestResumeKeepsAgentAndWorkspace(t *testing.T) {
 		t.Fatalf("a resume moved the task to %s", got.Status)
 	}
 
-	// Again, with the user's prompt: it continues the second session, and the
-	// prompt carries no memory section (the conversation has it).
+	// Again, with the user's prompt. The second session got no message, so
+	// Claude Code wrote no conversation for it: the resume continues the first
+	// one (resumeSource). The prompt carries no memory section.
 	from = log.mark()
 	typeLine(t, e, a.ID, "exit")
 	log.waitFrom(t, 5*time.Second, from, agentGone(a.ID))
@@ -90,8 +91,8 @@ func TestResumeKeepsAgentAndWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r2.ResumedFrom != r.SessionID {
-		t.Fatalf("second resume continues %s, want %s", r2.ResumedFrom, r.SessionID)
+	if r2.ResumedFrom != a.SessionID {
+		t.Fatalf("second resume continues %s, want %s (the empty fork %s skipped)", r2.ResumedFrom, a.SessionID, r.SessionID)
 	}
 	out = screen(t, e, a.ID, "PROMPT:Please also add a test.")
 	if strings.Contains(out, "Project memory") {
@@ -364,6 +365,10 @@ func TestRestoreAfterCrash(t *testing.T) {
 	s, _ := e1.Start(ctx, StartRequest{})
 	log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
 	log.wait(t, 5*time.Second, agentState(s.ID, hooks.Idle))
+	// w had a conversation (an agent waiting for permission got a prompt).
+	from := log.mark()
+	typeLine(t, e1, w.ID, "turn")
+	log.waitFrom(t, 5*time.Second, from, agentState(w.ID, hooks.Idle))
 	e1.Shutdown()
 	// Simulate a crash: the rows still say what the agents were doing.
 	for id, st := range map[string]string{w.ID: "waiting_permission", s.ID: "starting"} {
@@ -415,4 +420,54 @@ func TestRestoreOff(t *testing.T) {
 	if items, _ := e3.Inbox(ctx); len(items) != 0 {
 		t.Fatalf("notice without a restore: %+v", items)
 	}
+}
+
+// An idle agent restored twice (Ozan's test: a sandboxed worker showed
+// "resume failed" after its second restart). The first restore resumes it
+// without a prompt, so Claude Code writes no conversation for that fork; the
+// second restore must continue the original conversation, not the empty fork.
+func TestRestoreTwice(t *testing.T) {
+	f := newFixture(t)
+	f.opts.RestoreAgents = true
+	ctx := context.Background()
+	e1, err := New(ctx, f.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := record(t, e1)
+	task, _ := e1.CreateTask(ctx, TaskInput{Title: "Twice"})
+	w, err := e1.Start(ctx, StartRequest{TaskID: task.ID}) // a task: its first prompt is the conversation
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
+	e1.Shutdown()
+
+	for run, wantFrom := range []string{w.SessionID, w.SessionID} {
+		e, err := New(ctx, f.opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "the restore", func() bool {
+			a, _ := e.Get(w.ID)
+			return a.State == string(hooks.Idle) && a.SessionID != w.SessionID && a.ResumedFrom != ""
+		})
+		a, _ := e.Get(w.ID)
+		if a.ResumedFrom != wantFrom {
+			t.Fatalf("restart %d resumed %s, want the original conversation %s", run+1, a.ResumedFrom, wantFrom)
+		}
+		screen(t, e, w.ID, "RESUMED:"+wantFrom)
+		e.Shutdown()
+		if a, _ := e.Get(w.ID); a.ExitReason == ExitResumeFailed {
+			t.Fatalf("restart %d ended as a failed resume", run+1)
+		}
+	}
+	// The user resumes it once more, with a prompt: still the original conversation.
+	e, _ := New(ctx, func() Options { o := f.opts; o.RestoreAgents = false; return o }())
+	t.Cleanup(e.Shutdown)
+	r, err := e.Resume(ctx, w.ID, "go on")
+	if err != nil || r.ResumedFrom != w.SessionID {
+		t.Fatalf("resume after two restores: %+v %v", r, err)
+	}
+	screen(t, e, w.ID, "RESUMED:"+w.SessionID)
 }
