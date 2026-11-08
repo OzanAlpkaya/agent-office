@@ -42,9 +42,8 @@ type Message struct {
 	Tokens
 }
 
-// maxCount bounds a decoded token count, so a corrupt or hostile number
-// cannot overflow sums or costs (2^40 tokens × the highest allowed price,
-// 10^7 nano-USD per token, stays below 2^63).
+// maxCount bounds a decoded token count, so token sums cannot overflow;
+// costs use saturating arithmetic (Prices.Cost).
 const maxCount = 1 << 40
 
 func count(p *int64) int64 {

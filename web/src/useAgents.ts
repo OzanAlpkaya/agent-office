@@ -113,7 +113,8 @@ export function useWorld(): World {
             // Usage history; live updates arriving meanwhile are merged, not overwritten.
             void api.usage().then(
               (rep) => setUsage((prev) => {
-                const next: Record<string, SessionUsage> = {};
+                // Start from prev: a live update that arrived during the fetch is kept.
+                const next: Record<string, SessionUsage> = { ...prev };
                 for (const s of rep.sessions) next[s.session_id] = newerUsage(prev[s.session_id], s);
                 return next;
               }),

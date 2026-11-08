@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -304,6 +305,7 @@ func TestTranscriptRefusesSymlink(t *testing.T) {
 
 func TestPricesBuiltin(t *testing.T) {
 	p := Builtin()
+	p.Models["huge"] = Price{Rates: Rates{Output: 10_000_000}, Fast: 100_000} // the largest allowed price and multiplier
 	if p.AsOf == "" || !strings.HasPrefix(p.Source, "https://") || len(p.Models) < 15 {
 		t.Fatalf("builtin = %+v", p)
 	}
@@ -326,6 +328,9 @@ func TestPricesBuiltin(t *testing.T) {
 		{Message{Model: "claude-opus-4-5", Geo: "us", Tokens: Tokens{Output: 1_000_000}}, 25_000_000_000},
 		// The largest token counts cannot overflow.
 		{Message{Model: "claude-opus-4-1", Tokens: Tokens{Output: maxCount}}, maxCount * 75_000},
+		{Message{Model: "claude-opus-4-1", Tokens: Tokens{Input: maxCount, Output: maxCount, CacheRead: maxCount,
+			CacheWrite5m: maxCount, CacheWrite1h: maxCount}}, 15_000*maxCount + 75_000*maxCount + 1_500*maxCount + 18_750*maxCount + 30_000*maxCount},
+		{Message{Model: "huge", Speed: "fast", Tokens: Tokens{Output: maxCount}}, math.MaxInt64 / 1000},
 	}
 	for _, c := range cases {
 		got, ok := p.Cost(c.m)
@@ -335,6 +340,9 @@ func TestPricesBuiltin(t *testing.T) {
 	}
 	if MicroUSD(1499) != 1 || MicroUSD(1500) != 2 || MicroUSD(0) != 0 {
 		t.Error("MicroUSD rounding")
+	}
+	if AddNano(math.MaxInt64-1, 5) != math.MaxInt64 {
+		t.Error("AddNano does not saturate")
 	}
 	if _, ok := p.Cost(Message{Model: "claude-unknown-9", Tokens: Tokens{Input: 1}}); ok {
 		t.Error("unknown model priced")

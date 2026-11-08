@@ -95,6 +95,13 @@ func (p *APIProxy) Handler() http.Handler {
 			if info, ok := resp.Request.Context().Value(reqInfoKey{}).(*reqInfo); ok {
 				info.requestID = rid
 			}
+			if p.OnUsage != nil && resp.StatusCode == http.StatusOK && resp.Header.Get("Content-Encoding") != "" {
+				// Not expected (Accept-Encoding is dropped), but never silent: this
+				// response's spend is not counted.
+				p.event(APIMeter, resp.Request.Method+" "+resp.Request.URL.Path+": encoded response not metered")
+				p.Log.Warn("api usage not metered: encoded response", "request_id", rid,
+					"encoding", sanitize(resp.Header.Get("Content-Encoding")))
+			}
 			if p.OnUsage != nil && resp.StatusCode == http.StatusOK && resp.Header.Get("Content-Encoding") == "" {
 				resp.Body = usage.MeterBody(resp.Body, resp.Header.Get("Content-Type"), rid, p.OnUsage, func(err error) {
 					p.event(APIMeter, resp.Request.Method+" "+resp.Request.URL.Path)

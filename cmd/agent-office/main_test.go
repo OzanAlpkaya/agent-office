@@ -165,6 +165,7 @@ func TestObservabilityFlags(t *testing.T) {
 		{"--budget-goal-usd", "NaN"},
 		{"--log-format", "xml"},
 		{"--event-retention-days", "-1"},
+		{"--budget-goal-usd", "0.0000001"},
 	} {
 		if _, err := parseServe(append([]string{"--repo", "/tmp"}, args...)); err == nil {
 			t.Errorf("parseServe(%v) accepted", args)

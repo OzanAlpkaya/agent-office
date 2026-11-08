@@ -394,6 +394,9 @@ func parseServe(args []string) (serveConfig, error) {
 		if v < 0 || v > 1e6 || math.IsNaN(v) {
 			return c, fmt.Errorf("%s must be between 0 and 1000000, got %v", name, v)
 		}
+		if v > 0 && math.Round(v*1e6) == 0 {
+			return c, fmt.Errorf("%s %v is below $0.000001 and would turn the budget off; use 0 for off", name, v)
+		}
 	}
 	if c.eventRetentionDays < 0 || c.eventRetentionDays > 3650 {
 		return c, fmt.Errorf("--event-retention-days must be between 0 and 3650, got %d", c.eventRetentionDays)

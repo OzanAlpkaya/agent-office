@@ -323,7 +323,7 @@ func (p *Prices) Lookup(model string) (Price, bool) {
 }
 
 // Cost is the estimated cost of one message in nano-USD; false when its model
-// has no price. Token counts are capped (maxCount), so it cannot overflow.
+// has no price. The arithmetic saturates instead of overflowing.
 func (p *Prices) Cost(m Message) (int64, bool) {
 	pr, ok := p.Lookup(m.Model)
 	if !ok {
@@ -333,13 +333,36 @@ func (p *Prices) Cost(m Message) (int64, bool) {
 	if pr.Long != nil && m.Prompt() > pr.Long.Above {
 		r = pr.Long.Rates
 	}
-	nano := m.Input*r.Input + m.Output*r.Output + m.CacheRead*r.CacheRead +
-		m.CacheWrite5m*r.CacheWrite5m + m.CacheWrite1h*r.CacheWrite1h
+	var nano int64
+	for _, x := range [][2]int64{{m.Input, r.Input}, {m.Output, r.Output}, {m.CacheRead, r.CacheRead},
+		{m.CacheWrite5m, r.CacheWrite5m}, {m.CacheWrite1h, r.CacheWrite1h}} {
+		nano = AddNano(nano, mulNano(x[0], x[1]))
+	}
 	if m.Speed == "fast" && pr.Fast > 0 {
-		nano = nano * pr.Fast / 1000
+		nano = mulNano(nano, pr.Fast) / 1000
 	}
 	if m.Geo == "us" && pr.GeoUS > 0 {
-		nano = nano * pr.GeoUS / 1000
+		nano = mulNano(nano, pr.GeoUS) / 1000
 	}
 	return nano, true
+}
+
+// AddNano adds two non-negative amounts, saturating at the largest int64:
+// absurd token counts (a corrupt or hostile transcript) give a huge cost,
+// never a wrapped negative one.
+func AddNano(a, b int64) int64 {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
+}
+
+func mulNano(a, b int64) int64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > math.MaxInt64/b {
+		return math.MaxInt64
+	}
+	return a * b
 }
