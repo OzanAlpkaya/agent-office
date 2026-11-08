@@ -194,3 +194,73 @@ func TestEnvScrubsGitDir(t *testing.T) {
 		t.Fatalf("GIT_DIR leaked into git calls: %v", err)
 	}
 }
+
+func TestCommitMessages(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t)
+	g := Git{}
+	gitRun := func(stdin string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Stdin = strings.NewReader(stdin)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	base := gitRun("", "rev-parse", "HEAD")
+	gitRun("", "switch", "-q", "-c", "work")
+	gitRun("", "commit", "-q", "--allow-empty", "-m", "feat: first\n\nFixes #12\nsecond paragraph")
+	first := gitRun("", "rev-parse", "HEAD")
+	gitRun("", "commit", "-q", "--allow-empty", "-m", "chore: second")
+	second := gitRun("", "rev-parse", "HEAD")
+
+	msgs, err := g.CommitMessages(ctx, repo, base, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 || msgs[first] != "feat: first\n\nFixes #12\nsecond paragraph\n" || msgs[second] != "chore: second\n" {
+		t.Fatalf("messages %q", msgs)
+	}
+
+	// git prints a message only up to a NUL, so a NUL cannot forge a record;
+	// it could hide a closing keyword, but the bundle import's fsck refuses
+	// such commits (nulInCommit), so none reaches a branch the daemon pushes.
+	tree := gitRun("", "rev-parse", "HEAD^{tree}")
+	raw := "tree " + tree + "\nparent " + second + "\nauthor t <t@example.com> 1 +0000\ncommitter t <t@example.com> 1 +0000\n\n" +
+		"innocent\x00" + strings.Repeat("0", 40) + "\nfixes #1\n"
+	nul := gitRun(raw, "hash-object", "-t", "commit", "-w", "--stdin", "--literally")
+	gitRun("", "update-ref", "refs/heads/work", nul)
+	msgs, err = g.CommitMessages(ctx, repo, base, "work")
+	if err != nil || len(msgs) != 3 || msgs[nul] != "innocent" {
+		t.Fatalf("messages %q %v", msgs, err)
+	}
+	bundle := filepath.Join(t.TempDir(), "b.bundle")
+	gitRun("", "bundle", "create", "-q", bundle, second+"..work")
+	dst := newRepo(t)
+	fetch := exec.Command("git", "-c", "transfer.fsckObjects=true", "fetch", "-q", repo, second)
+	fetch.Dir = dst
+	if out, err := fetch.CombinedOutput(); err != nil {
+		t.Fatalf("fetch base: %v %s", err, out)
+	}
+	imp := exec.Command("git", "-c", "transfer.fsckObjects=true", "fetch", "-q", "--no-tags", bundle, "+refs/heads/work:refs/in/work")
+	imp.Dir = dst
+	if out, err := imp.CombinedOutput(); err == nil || !strings.Contains(string(out), "nulInCommit") {
+		t.Fatalf("a commit with a NUL was imported: %v %s", err, out)
+	}
+}
+
+func TestIsCommitHash(t *testing.T) {
+	for s, want := range map[string]bool{
+		strings.Repeat("a", 40): true, strings.Repeat("0", 64): true, strings.Repeat("A", 40): false,
+		strings.Repeat("a", 39): false, "": false, strings.Repeat("g", 40): false,
+	} {
+		if isCommitHash(s) != want {
+			t.Errorf("isCommitHash(%q) = %v", s, !want)
+		}
+	}
+}

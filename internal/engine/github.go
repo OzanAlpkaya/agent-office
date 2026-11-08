@@ -407,8 +407,25 @@ func (e *Engine) submitPR(ctx context.Context, agentID, summary string, manual b
 			}
 		}
 		if len(gh) > 0 {
-			found = append(found, FlaggedCommit{Commit: head, Problem: "changes files under .github/ (workflows run " +
-				"with the repository's secrets when pushed): " + truncateRunes(strings.Join(gh, ", "), 300)})
+			found = addFlag(found, head, "changes files under .github/ (workflows run "+
+				"with the repository's secrets when pushed): "+truncateRunes(strings.Join(gh, ", "), 300))
+		}
+		// A closing keyword in a commit message ("fixes #12") closes that
+		// issue when the commit reaches the default branch, whatever the
+		// merge method; PR text is neutralized, commits cannot be (ADR 0020).
+		msgs, err := e.git.CommitMessages(ctx, repo, base, branch)
+		if err != nil {
+			return refuse(err)
+		}
+		for _, c := range commits {
+			msg, ok := msgs[c.Hash]
+			if !ok {
+				return refuse(fmt.Errorf("the message of commit %s could not be read", short(c.Hash)))
+			}
+			if refs := github.ClosingReferences(msg); len(refs) > 0 {
+				found = addFlag(found, c.Hash, "commit message would close an issue when the pull request is merged: "+
+					truncateRunes(strings.Join(refs, ", "), 200))
+			}
 		}
 		var blocking []FlaggedCommit
 		for _, f := range found {
@@ -461,6 +478,18 @@ func (e *Engine) submitPR(ctx context.Context, agentID, summary string, manual b
 	e.requestReviewLocked(ctx, row, false)
 	e.publishPR(ctx, row)
 	return e.prView(ctx, row), nil
+}
+
+// addFlag adds a problem to a commit's flag, so a commit with several
+// problems is listed (and accepted) once.
+func addFlag(found []FlaggedCommit, commit, problem string) []FlaggedCommit {
+	for i := range found {
+		if found[i].Commit == commit {
+			found[i].Problem += "; " + problem
+			return found
+		}
+	}
+	return append(found, FlaggedCommit{Commit: commit, Problem: problem})
 }
 
 func nonNil[T any](s []T) []T {

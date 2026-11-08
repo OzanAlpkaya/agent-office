@@ -292,6 +292,7 @@ func taskPrompt(title, description, branch string) string {
 	b.WriteString("\nYou are working in a dedicated git worktree on branch " + branch +
 		". When the task is done, commit your changes on this branch." +
 		" Do not push. Do not touch any other branch: do not create, check out, merge, rebase," +
-		" reset or delete other branches. agent-office pushes and opens pull requests itself.")
+		" reset or delete other branches. agent-office pushes and opens pull requests itself." +
+		" Do not write issue-closing keywords such as \"fixes #12\" in commit messages: the user decides which issues a merge closes.")
 	return b.String()
 }

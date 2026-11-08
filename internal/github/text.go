@@ -13,7 +13,23 @@ var (
 	mentionPattern = regexp.MustCompile(`@([A-Za-z0-9])`)
 	imagePattern   = regexp.MustCompile(`!\[`)
 	closingPattern = regexp.MustCompile(`(?i)\b(c)(los(?:e|es|ed))\b|\b(f)(ix(?:es|ed)?)\b|\b(r)(esolv(?:e|es|ed))\b`)
+	// closingRefPattern is GitHub's closing syntax: a keyword, an optional
+	// colon, then an issue as #N, owner/repo#N or an issue URL.
+	closingRefPattern = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?[ \t]*` +
+		`(#\d+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+|https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+)`)
 )
+
+// ClosingReferences returns the issue-closing references in a commit message
+// ("fixes #12"), in order. GitHub closes those issues when a commit carrying
+// them reaches the default branch, whatever the merge message says, so the
+// daemon flags such commits before pushing them (ADR 0020).
+func ClosingReferences(msg string) []string {
+	var refs []string
+	for _, m := range closingRefPattern.FindAllString(msg, 20) {
+		refs = append(refs, m)
+	}
+	return refs
+}
 
 // Neutralize makes agent-written text safe to post on GitHub (ADR 0020): an
 // agent cannot @mention people (notifications), use closing keywords

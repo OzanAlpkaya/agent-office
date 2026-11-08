@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -338,5 +339,22 @@ func TestPostCommentIsNeverRetried(t *testing.T) {
 	}
 	if _, err := c.PostComment(ctx, pr.Number, "  "); err == nil {
 		t.Fatal("empty comment accepted")
+	}
+}
+
+func TestClosingReferences(t *testing.T) {
+	cases := map[string][]string{
+		"feat: tags\n\nFixes #12":                        {"Fixes #12"},
+		"close #1, resolves: #2 and FIXED octo/shelf#3":  {"close #1", "resolves: #2", "FIXED octo/shelf#3"},
+		"closes https://github.com/octo/shelf/issues/7":  {"closes https://github.com/octo/shelf/issues/7"},
+		"fix: handle #12 in the parser":                  nil, // "fix:" then text: no reference
+		"prefixes #3, fixture #4, closet #5, unfixed #6": nil,
+		"fixes 12 (no hash)":                             nil,
+		"see #12":                                        nil,
+	}
+	for in, want := range cases {
+		if got := ClosingReferences(in); !slices.Equal(got, want) {
+			t.Errorf("ClosingReferences(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
