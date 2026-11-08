@@ -75,7 +75,12 @@ Option 3, option 2, option 2 and option 2.
 - **Host:** the transcript path from hooks is accepted only as `<session-id>.jsonl`, absolute, a
   regular file of the user opened with `O_NOFOLLOW`, and is never logged or stored. New complete
   lines of it and of `<session-id>/subagents/*.jsonl` are read after `Stop`, `SubagentStop` and
-  `SessionEnd`, at most every 10 s during a turn, and once more after the process exits.
+  `SessionEnd`, again 2 s and 8 s later (the real e2e run showed Claude Code writing a turn's last
+  line after its Stop hook), at most every 10 s during a turn, and once more after the process
+  exits.
+- **Writes never block the stream:** metered usage goes into the session's memory at once and is
+  persisted by one background writer per session (the latest value of each message; failures are
+  retried and logged). Transcript reads persist in their own goroutine.
 - **Prices:** `internal/usage/prices.yaml`, from platform.claude.com/docs/en/about-claude/pricing
   as of 2026-11-08: per model id, input, output, cache write 5 m, cache write 1 h and cache read per
   million tokens; Haiku 5.5's tier for prompts over 100 000 tokens (input, cache read and cache

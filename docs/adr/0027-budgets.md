@@ -60,6 +60,10 @@ Option 2, option 3, option 3 and option 2.
   Claude Code, so they are checked per request instead.
 - A relaunched worker (ADR 0022) starts a new session with a fresh session budget; the goal budget
   still counts everything before.
+- **Spend is counted from memory first:** a session's metered usage enters its in-memory record
+  before the database, so a failed write cannot let the session budget fail open; the goal budget
+  adds this session from memory to the other sessions' rows. A goal that cannot be resolved (its
+  task unreadable) refuses while a goal budget is set.
 - Host-mode agents are not limited (they have no API socket); the UI and `GET /api/status` say so.
 
 ## Consequences
@@ -71,3 +75,6 @@ Option 2, option 3, option 3 and option 2.
 - A spent budget leaves the agent idle at its prompt; the user can save its work, stop it or
   restart the daemon with a higher limit. Raising a limit at run time is a later addition.
 - The budget is only as accurate as the price table; it is an estimate, not a billing guarantee.
+- Deleting a sub-task detaches its usage rows from the goal (`task_id` becomes empty), which lowers
+  the goal's counted spend. Only the user can delete tasks (agents cannot), so this is not an agent
+  bypass; the session budget is unaffected.
