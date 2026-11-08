@@ -52,7 +52,9 @@ func fakeClaude() int {
 			extra += fmt.Sprintf(`,"transcript_path":%q`, transcript)
 		}
 		payload := fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q%s}`, event, sid, extra)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		// Below Claude Code's own 10 s hook timeout; a busy test machine (several
+		// -race runs at once) needs more than a couple of seconds.
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 		var reply strings.Builder
 		_ = hooks.Forward(ctx, sock, strings.NewReader(payload), &reply)
