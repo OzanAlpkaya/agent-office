@@ -51,6 +51,24 @@ test("the link agent-office pair prints fills in the code and leaves no trace in
   await expect(page.getByText("Waiting for your approval")).toBeVisible();
 });
 
+test("sign out all other devices", async ({ page }) => {
+  const daemon = new MockDaemon(team(4));
+  await open(page, daemon);
+  await page.getByRole("button", { name: "Devices" }).click();
+  const panel = page.getByRole("region", { name: "Devices" });
+  await expect(panel.locator(".device")).toHaveCount(2);
+  await panel.getByRole("button", { name: "Sign out all other devices" }).click();
+  await expect(panel.locator(".device")).toHaveCount(1);
+  expect(daemon.requests).toContain("POST /api/devices/sign-out-others");
+});
+
+test("a pairing link opened in a paired browser leaves no code in the URL", async ({ page }) => {
+  const daemon = new MockDaemon(team(4));
+  await open(page, daemon, `/#pair=${mockCode}`);
+  await expect(page.getByText("Waiting for your approval")).toBeVisible();
+  expect(new URL(page.url()).hash).toBe("");
+});
+
 test("a browser signed out from another device returns to the pairing screen", async ({ page }) => {
   const daemon = new MockDaemon(team(4));
   await open(page, daemon);
@@ -76,6 +94,7 @@ test("the Devices panel pairs a device and signs devices out", async ({ page }) 
   await panel.locator(".device").nth(1).getByRole("button", { name: "Sign out device" }).click();
   await expect(panel.locator(".device")).toHaveCount(1);
   expect(daemon.requests).toContain("DELETE /api/devices/d2");
+  await expect(panel.getByRole("button", { name: "Sign out all other devices" })).toHaveCount(0);
 
   // Signing this browser out shows the pairing screen.
   await panel.getByRole("button", { name: "Sign out" }).click();

@@ -1,17 +1,16 @@
 import { type FormEvent, type JSX, useState } from "react";
 import { ApiError, type AuthSession, api } from "./api";
-import { codeFromHash, deviceName, formatCode, normalizeCode } from "./auth";
+import { deviceName, formatCode, normalizeCode } from "./auth";
 
 // PairScreen pairs this browser with the daemon (ADR 0039). The code comes
 // from `agent-office pair` on the daemon's machine, or from the Devices panel
 // of a browser that is already paired.
-export function PairScreen({ remote, onPaired }: { remote: boolean; onPaired: (s: AuthSession) => void }): JSX.Element {
-  const [code, setCode] = useState(() => {
-    const c = codeFromHash(location.hash);
-    // The code must not stay in the address bar or the history.
-    if (c) history.replaceState(null, "", location.pathname + location.search);
-    return c;
-  });
+export function PairScreen({ remote, initialCode, onPaired }: {
+  remote: boolean;
+  initialCode: string; // from the link agent-office pair prints (Gate removes it from the URL)
+  onPaired: (s: AuthSession) => void;
+}): JSX.Element {
+  const [code, setCode] = useState(initialCode);
   const [name, setName] = useState(() => deviceName(navigator.userAgent));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
