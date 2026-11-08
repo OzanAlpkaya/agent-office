@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 12 (Team workflow and roles) done on `phase-12/team-workflow`, waiting for review; next: Phase 9
+**Current phase:** Phase 9 (Memory & persistence), not started; Phase 12 merged
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -21,7 +21,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [ ] Phase 9: Memory & persistence
 - [ ] Phase 10: Remote access (PWA over Tailscale)
 - [ ] Phase 11: Portfolio polish
-- [x] Phase 12: Team workflow and roles (review pending)
+- [x] Phase 12: Team workflow and roles
 - [ ] Phase 13: Office v2
 
 ## Log
@@ -160,3 +160,8 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   the branches, every sub-task before the goal, relaunch and plan limits, ...). The real e2e found
   a haiku lead stalling after a report; reports now name the next step. `make check`,
   `make ui-test`, `make sandbox-test` and `make e2e` (host, sandbox, team, workflow 3 of 3) pass.
+- 2026-11-08: Phase 12 review: all decisions approved, including the recommended per-role models.
+  Ozan tested plan approval with a real architect in the UI end to end. Fixed before the merge: the
+  architect no longer claims a plan is approved when "approved" is typed into its terminal (it
+  points to the UI's Approve button), and the inbox's plan notice has Review plan and Approve plan
+  buttons. Merged into `main` (`--no-ff`).

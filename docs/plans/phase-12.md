@@ -1,6 +1,6 @@
 # Phase 12 plan: Team workflow and roles
 
-- **Status:** Done on `phase-12/team-workflow`, waiting for Ozan's review (not merged). Written 2026-11-08 with the recommended
+- **Status:** Done on `phase-12/team-workflow`; approved by Ozan and merged into `main` (2026-11-08). Written 2026-11-08 with the recommended
   option for every open question and executed straight away, as Ozan asked ("Write the Phase 12
   plan to docs/plans/phase-12.md using your recommended options, then execute it immediately
   without asking me anything"). Every decision is listed in the end-of-phase summary; nothing is
@@ -470,3 +470,12 @@ The phase is large, so it is split into sub-phases on the one phase branch, each
   `TestTeamEndToEnd`, `TestTeamWorkflowEndToEnd` passed on the branch before the review fixes;
   after them all four passed again (`TestTeamWorkflowEndToEnd` 3 of 3). `TestGitHubEndToEnd` was skipped (`AO_E2E_GITHUB_REPO`
   unset); the after-merge relaunch is covered against the GitHub fake.
+- **After the review (Ozan, 2026-11-08):** all decisions approved, including the recommended
+  per-role models (built-in roles keep following `--model`; the recommendation stays a
+  `--role-model` setting). Ozan tested plan approval with a real architect in the UI end to end
+  (approval, Tech Lead, dependent sub-tasks, QA, goal report). Two findings fixed before the merge:
+  the architect claimed the plan was approved after "approved" was typed into its terminal (its
+  prompt and the `submit_plan` result now say only the UI's Approve button approves, and to send
+  the user there; haiku did so in 3 of 3 checks); the inbox's plan notice gets **Review plan** and
+  **Approve plan vN** buttons (Playwright "the plan notice in the inbox reviews or approves the plan
+  directly"). `make check` and `make ui-test` (22) pass.
