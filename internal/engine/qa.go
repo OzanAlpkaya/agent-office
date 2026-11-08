@@ -379,6 +379,8 @@ func (e *Engine) reportQA(ctx context.Context, caller string, in mcp.ReportQAInp
 			strings.ToUpper(in.Verdict), summary)
 		if len(bugTasks) > 0 {
 			body += "\n\nBugs filed as sub-tasks: " + strings.Join(bugTasks, ", ") + ". Assign them, then start QA again."
+		} else if status == QAPassed {
+			body += "\n\nQA passed: report the goal with report_done."
 		}
 		if len(unfiled) > 0 {
 			body += "\n\nNot filed (the goal has " + fmt.Sprint(MaxSubTasks) + " sub-tasks): " + strings.Join(unfiled, "; ")

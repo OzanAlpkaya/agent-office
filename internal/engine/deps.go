@@ -44,6 +44,43 @@ func (e *Engine) subTaskInput(ctx context.Context, goal db.Task, in mcp.CreateTa
 	return ti, nil
 }
 
+// nextSteps tells the lead what a report made possible (Phase 12 e2e: haiku
+// read a report, listed the tasks and ended its turn without assigning the
+// sub-task the report unblocked): the sub-tasks now ready, or that every
+// sub-task is reported.
+func (e *Engine) nextSteps(ctx context.Context, reported db.Task) string {
+	if !reported.ParentTaskID.Valid {
+		return ""
+	}
+	siblings, err := e.q.ListChildTasks(ctx, reported.ParentTaskID)
+	if err != nil {
+		return ""
+	}
+	var ready []string
+	pending := false
+	for _, s := range siblings {
+		if s.Status != StatusReview && s.Status != StatusDone {
+			pending = true
+		}
+		if s.Status != StatusTodo || !slices.Contains(jsonList(s.DependsOn), reported.ID) {
+			continue
+		}
+		if unmet, err := e.unmetDependencies(ctx, s); err == nil && len(unmet) == 0 {
+			ready = append(ready, fmt.Sprintf("%s %q", s.ID, s.Title))
+		}
+	}
+	switch {
+	case len(ready) > 0:
+		return "\n\nNow ready to assign (everything they depend on is reported): " + strings.Join(ready, ", ") +
+			". Assign them with assign_task."
+	case !pending && e.opts.QA:
+		return "\n\nEvery sub-task of the goal is reported: call start_qa."
+	case !pending:
+		return "\n\nEvery sub-task of the goal is reported: report the goal with report_done."
+	}
+	return ""
+}
+
 // unmetDependencies lists the dependencies of task that are not reported yet.
 func (e *Engine) unmetDependencies(ctx context.Context, task db.Task) ([]string, error) {
 	var out []string

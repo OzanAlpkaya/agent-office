@@ -58,6 +58,9 @@ func TestQAGatesTheGoal(t *testing.T) {
 		t.Fatalf("QA while a sub-task is in progress: %v", err)
 	}
 	report(w2.ID, "filter.go")
+	if m := messagesTo(t, e, lead); len(m) == 0 || !strings.Contains(m[0].Body, "Every sub-task of the goal is reported: call start_qa") {
+		t.Fatalf("last report to the lead: %+v", m)
+	}
 	if _, err := tm.StartQA(ctx, out1.AgentID); !isUser(err, ErrForbidden) {
 		t.Fatalf("start_qa by a worker: %v", err)
 	}
@@ -80,7 +83,10 @@ func TestQAGatesTheGoal(t *testing.T) {
 		screen(t, e, qa.AgentID, "tags are stored")
 		for _, b := range qa.Branches {
 			typeLine(t, e, qa.AgentID, "merge "+b)
-			screen(t, e, qa.AgentID, "merge done (err=false)")
+		}
+		typeLine(t, e, qa.AgentID, "merges-done") // lines are handled in order
+		if scr := screen(t, e, qa.AgentID, "INPUT:merges-done"); strings.Count(scr, "merge done (err=false)") != len(qa.Branches) {
+			t.Fatalf("merges:\n%s", scr)
 		}
 		return qa
 	}

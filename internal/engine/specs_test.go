@@ -216,6 +216,11 @@ func TestArchitectPlanToTechLead(t *testing.T) {
 	if _, err := tm.ReportDone(ctx, w1.ID, mcp.ReportDoneInput{Summary: "table"}); err != nil {
 		t.Fatal(err)
 	}
+	// The lead is told what the report made possible.
+	if m := messagesTo(t, e, lead); len(m) == 0 || !strings.Contains(m[0].Body, "Now ready to assign") ||
+		!strings.Contains(m[0].Body, byKey["api"].ID) {
+		t.Fatalf("report to the lead: %+v", m)
+	}
 	// Now the dependent sub-task starts, from its dependency's work.
 	a2, err := tm.AssignTask(ctx, lead, mcp.AssignTaskInput{TaskID: byKey["api"].ID})
 	if err != nil {

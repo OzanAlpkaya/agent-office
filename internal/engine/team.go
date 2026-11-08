@@ -538,6 +538,7 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 			body += "\n\nagent-office found conflicts: " + describeConflicts(conflicts) + ". Decide the order: let one " +
 				"sub-task wait for the other, or assign a sub-task that resolves it."
 		}
+		body += e.nextSteps(ctx, task)
 		if _, err := e.sendMessage(ctx, info.ID, lead.info.ID, truncateRunes(body, MaxMessageLen), false); err != nil {
 			e.log.Warn("notify lead", "agent_id", info.ID, "lead", lead.info.ID, "err", err)
 		} else {
