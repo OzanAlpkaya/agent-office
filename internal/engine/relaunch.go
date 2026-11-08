@@ -26,8 +26,8 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 		err = fmt.Errorf("agent %s: %w", id, ErrStillRunning)
 	case a.busy:
 		err = invalid("agent %s is being removed or relaunched", id)
-	case a.info.Role != RoleWorker:
-		err = invalid("only workers are relaunched, not a %s", a.info.Role)
+	case a.info.Kind != KindWorker && a.info.Kind != KindArchitect:
+		err = invalid("only workers and architects are relaunched, not a %s", a.info.Role)
 	case a.info.WorktreeStatus == WorktreeRemoved:
 		err = invalid("agent %s's workspace was removed", id)
 	case (a.info.Sandbox == SandboxPodman) != (e.opts.Sandbox != nil):
@@ -62,7 +62,7 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 	}
 	var prep sandboxPrep
 	if info.Sandbox == SandboxPodman {
-		if prep, err = e.prepareSandboxStart(ctx, agentName(id), info.Role); err != nil {
+		if prep, err = e.prepareSandboxStart(ctx, agentName(id), info.Kind); err != nil {
 			return AgentInfo{}, err
 		}
 	}
@@ -99,7 +99,11 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 		return AgentInfo{}, fmt.Errorf("record relaunch: %w", err)
 	}
 
-	l := launchInfo{id: id, sid: sid, role: info.Role, branch: info.Branch, path: info.WorktreePath, base: a.baseCommit,
+	if prompt != "" {
+		prompt += e.memorySection(ctx) // ADR 0034
+	}
+	l := launchInfo{id: id, sid: sid, role: info.Kind, def: e.roleOf(info.Role, info.Kind), branch: info.Branch,
+		path: info.WorktreePath, base: a.baseCommit,
 		taskID: info.TaskID, started: started, prompt: prompt, prev: a, followup: fu}
 	var out AgentInfo
 	if info.Sandbox == SandboxPodman {

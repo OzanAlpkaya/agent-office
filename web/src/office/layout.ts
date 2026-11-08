@@ -24,7 +24,7 @@ export function assignDesks(prev: Assignment, agents: readonly Agent[]): Assignm
   const desks = prev.desks.map((id) => (id !== undefined && present.has(id) ? id : undefined));
   let lead = prev.lead !== undefined && present.has(prev.lead) ? prev.lead : undefined;
 
-  const leads = agents.filter((a) => a.role === "lead").slice().sort(byStart);
+  const leads = agents.filter((a) => a.kind === "lead").slice().sort(byStart);
   const running = leads.find((a) => a.state !== "exited");
   if (running && lead !== running.id) {
     const i = desks.indexOf(running.id);

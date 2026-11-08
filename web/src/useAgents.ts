@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  type AccessRequest, type Agent, type Message, type PullRequest, type SandboxEvent, type SessionUsage, type Task, api,
-  parseEventMessage, wsURL,
+  type AccessRequest, type Agent, type InboxItem, type MemoryEntry, type Message, type PullRequest, type QARun,
+  type SandboxEvent, type SessionUsage, type Spec, type Task, api, parseEventMessage, wsURL,
 } from "./api";
 import { totalTokens } from "./usage";
 
@@ -15,7 +15,16 @@ export interface World {
   accessRequests: AccessRequest[]; // pending first, then the most recent
   pullRequests: PullRequest[]; // in creation order (ADR 0020)
   usage: Record<string, SessionUsage>; // token usage per session id (ADR 0026)
+  inbox: InboxItem[]; // messages to the user, newest first (ADR 0030)
+  specs: Spec[]; // every version of every goal's plan (ADR 0031)
+  qaRuns: QARun[]; // newest first (ADR 0033)
+  memory: MemoryEntry[]; // newest first (ADR 0034)
   connection: Connection;
+}
+
+// byNewest upserts an item with a numeric id into a list kept newest first.
+function byNewest<T extends { id: number }>(list: T[], item: T): T[] {
+  return [item, ...list.filter((x) => x.id !== item.id)].sort((a, b) => b.id - a.id);
 }
 
 // newerUsage keeps whichever copy of a session's usage has seen more: live
@@ -81,6 +90,10 @@ export function useWorld(): World {
   const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
   const [pullRequests, setPullRequests] = useState<PullRequest[]>([]);
   const [usage, setUsage] = useState<Record<string, SessionUsage>>({});
+  const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [specs, setSpecs] = useState<Spec[]>([]);
+  const [qaRuns, setQARuns] = useState<QARun[]>([]);
+  const [memory, setMemory] = useState<MemoryEntry[]>([]);
   const [connection, setConnection] = useState<Connection>("connecting");
 
   useEffect(() => {
@@ -110,6 +123,10 @@ export function useWorld(): World {
             setMessages({});
             setAccessRequests(sortAccess(msg.accessRequests));
             setPullRequests(msg.pullRequests);
+            setInbox(msg.inbox.slice().sort((a, b) => b.id - a.id));
+            setSpecs(msg.specs);
+            setQARuns(msg.qaRuns.slice().sort((a, b) => b.id - a.id));
+            setMemory(msg.memory.slice().sort((a, b) => b.id - a.id));
             // Usage history; live updates arriving meanwhile are merged, not overwritten.
             void api.usage().then(
               (rep) => setUsage((prev) => {
@@ -190,6 +207,21 @@ export function useWorld(): World {
           case "task_deleted":
             setTasks((prev) => prev.filter((t) => t.id !== msg.id));
             break;
+          case "inbox":
+            setInbox((prev) => byNewest(prev, msg.item));
+            break;
+          case "spec":
+            setSpecs((prev) => byNewest(prev, msg.spec));
+            break;
+          case "qa_run":
+            setQARuns((prev) => byNewest(prev, msg.run));
+            break;
+          case "memory":
+            setMemory((prev) => byNewest(prev, msg.entry));
+            break;
+          case "memory_deleted":
+            setMemory((prev) => prev.filter((m) => String(m.id) !== msg.id));
+            break;
         }
       };
       ws.onclose = () => {
@@ -207,5 +239,5 @@ export function useWorld(): World {
     };
   }, []);
 
-  return { agents, tasks, events, messages, accessRequests, pullRequests, usage, connection };
+  return { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, connection };
 }

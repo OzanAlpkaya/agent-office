@@ -1,3 +1,4 @@
+import type { Kind } from "../api";
 // Pixel art for the office view (ADR 0024). Every sprite here is original to
 // this repository: a pixel map is a list of rows, one character per pixel,
 // looked up in a palette; "." is transparent. Some larger pieces (desk, floor,
@@ -176,11 +177,14 @@ export const hairColors: readonly Swatch[] = [
   { base: 0x4b6fd1, shade: 0x6d8ee6 }, // dyed blue
 ];
 
-// Shirt colours by role, matching the role colours of the rest of the UI.
-export const shirts: Readonly<Record<"lead" | "worker" | "reviewer", Swatch>> = {
+// Shirt colours by kind, matching the role colours of the rest of the UI.
+export const shirts: Readonly<Record<Kind, Swatch>> = {
+  architect: { base: 0xd99a3f, shade: 0xb07a2a },
   lead: { base: 0x9b6dde, shade: 0x7a4fbf },
   worker: { base: 0x4f86d9, shade: 0x3a68b0 },
+  qa: { base: 0xd9605a, shade: 0xb04640 },
   reviewer: { base: 0x3fb8ab, shade: 0x2d8f85 },
+  assistant: { base: 0x8fbf5a, shade: 0x6f9a40 },
 };
 
 export function personPalette(skin: Swatch, hairColor: Swatch, shirt: Swatch): Palette {

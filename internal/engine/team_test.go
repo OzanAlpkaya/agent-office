@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +18,9 @@ import (
 
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
+	"github.com/OzanAlpkaya/agent-office/internal/role"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
+	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
 
 // teamFixture is a lead on a goal plus whatever workers a test adds.
@@ -44,10 +47,10 @@ func newTeam(t *testing.T) *teamFixture {
 	if tf.goal, err = e.CreateTask(ctx, TaskInput{Title: "Ship tags", Description: "tags for links"}); err != nil {
 		t.Fatal(err)
 	}
-	if tf.lead, err = e.Start(ctx, StartRequest{TaskID: tf.goal.ID, Role: RoleLead}); err != nil {
+	if tf.lead, err = e.Start(ctx, StartRequest{TaskID: tf.goal.ID, Role: RoleTechLead}); err != nil {
 		t.Fatal(err)
 	}
-	tf.log.wait(t, 5*time.Second, agentState(tf.lead.ID, hooks.Idle))
+	tf.log.wait(t, startWait, agentState(tf.lead.ID, hooks.Idle))
 	return tf
 }
 
@@ -63,13 +66,18 @@ func (tf *teamFixture) worker(t *testing.T, title string) (mcp.TaskInfo, AgentIn
 	if err != nil {
 		t.Fatal(err)
 	}
-	tf.log.wait(t, 5*time.Second, agentState(out.AgentID, hooks.Idle))
+	tf.log.wait(t, startWait, agentState(out.AgentID, hooks.Idle))
 	w, err := tf.e.Get(out.AgentID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return task, w
 }
+
+// startWait bounds how long a fake agent may take to start: generous, since
+// several -race test binaries at once slow process starts down (it is a
+// ceiling, not a delay).
+const startWait = 15 * time.Second
 
 func isUser(err error, target error) bool {
 	var ue mcp.UserError
@@ -80,28 +88,28 @@ func TestLeadStartRules(t *testing.T) {
 	tf := newTeam(t)
 	ctx := context.Background()
 	e := tf.e
-	if _, err := e.Start(ctx, StartRequest{Role: RoleLead}); !errors.Is(err, ErrInvalid) {
+	if _, err := e.Start(ctx, StartRequest{Role: RoleTechLead}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("lead without a goal: %v", err)
 	}
 	if _, err := e.Start(ctx, StartRequest{Role: "boss"}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("unknown role: %v", err)
 	}
 	other, _ := e.CreateTask(ctx, TaskInput{Title: "Other goal"})
-	if _, err := e.Start(ctx, StartRequest{TaskID: other.ID, Role: RoleLead}); !errors.Is(err, ErrLeadRunning) {
+	if _, err := e.Start(ctx, StartRequest{TaskID: other.ID, Role: RoleTechLead}); !errors.Is(err, ErrLeadRunning) {
 		t.Fatalf("second lead: %v", err)
 	}
 	sub, _ := tf.team.CreateTask(ctx, tf.lead.ID, mcp.CreateTaskInput{Title: "Sub"})
 	if err := e.Stop(tf.lead.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Start(ctx, StartRequest{TaskID: sub.ID, Role: RoleLead}); !errors.Is(err, ErrInvalid) {
+	if _, err := e.Start(ctx, StartRequest{TaskID: sub.ID, Role: RoleTechLead}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("lead on a sub-task: %v", err)
 	}
-	lead2, err := e.Start(ctx, StartRequest{TaskID: tf.goal.ID, Role: RoleLead})
-	if err != nil || lead2.Role != RoleLead {
+	lead2, err := e.Start(ctx, StartRequest{TaskID: tf.goal.ID, Role: RoleTechLead})
+	if err != nil || lead2.Kind != KindLead {
 		t.Fatalf("a new lead after the first stopped: %+v %v", lead2, err)
 	}
-	if got, _ := e.Get(tf.lead.ID); got.Role != RoleLead {
+	if got, _ := e.Get(tf.lead.ID); got.Kind != KindLead {
 		t.Fatalf("role not kept: %+v", got)
 	}
 }
@@ -119,7 +127,7 @@ func TestTeamAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tf.log.wait(t, 5*time.Second, agentState(u.ID, hooks.Idle))
+	tf.log.wait(t, startWait, agentState(u.ID, hooks.Idle))
 	otherGoal, _ := e.CreateTask(ctx, TaskInput{Title: "Other goal"})
 	otherSub, err := e.createTask(ctx, TaskInput{Title: "Other sub"}, otherGoal.ID, "someone")
 	if err != nil {
@@ -185,7 +193,7 @@ func TestTeamAuthorization(t *testing.T) {
 
 	// list_tasks shows the caller's own scope.
 	ll, err := tm.ListTasks(ctx, lead)
-	if err != nil || ll.Goal == nil || ll.Goal.ID != tf.goal.ID || len(ll.Tasks) != 2 || ll.You.Role != RoleLead {
+	if err != nil || ll.Goal == nil || ll.Goal.ID != tf.goal.ID || len(ll.Tasks) != 2 || ll.You.Kind != KindLead {
 		t.Fatalf("lead list: %+v %v", ll, err)
 	}
 	if ll.Tasks[0].ID != t1.ID || len(ll.Tasks[0].Agents) != 1 || ll.Tasks[0].Agents[0].ID != w1.ID {
@@ -248,7 +256,7 @@ func TestTeamLimits(t *testing.T) {
 	}
 	workerID := ""
 	for _, a := range tf.e.List() {
-		if a.Role == RoleWorker {
+		if a.Kind == KindWorker {
 			workerID = a.ID
 		}
 	}
@@ -380,7 +388,7 @@ func TestIdleDeliveryOverPTY(t *testing.T) {
 	out := screen(t, e, w.ID, "INPUT:[agent-office]")
 	line := out[strings.Index(out, "INPUT:[agent-office]"):]
 	line, _, _ = strings.Cut(line, "\n")
-	if !strings.Contains(line, "> use [31mred[0m and > then tabs done") || strings.ContainsAny(line, "\x1b\x03\t") {
+	if !strings.Contains(line, `"use [31mred[0m and\nthen\ttabs\u2028done"`) || strings.ContainsAny(line, "\x1b\x03\t") {
 		t.Fatalf("typed line %q", line)
 	}
 	stored := messagesTo(t, e, w.ID)[0]
@@ -405,7 +413,7 @@ func TestIdleDeliveryOverPTY(t *testing.T) {
 	if m := messagesTo(t, e, w.ID); m[0].DeliveredAt != nil {
 		t.Fatal("typed into the terminal while the user was typing")
 	}
-	screen(t, e, w.ID, "From agent-"+lead[:6]+" (lead, agent id "+lead+"): > later")
+	screen(t, e, w.ID, "From agent-"+lead[:6]+" (tech-lead, agent id "+lead+"): \"later\"")
 }
 
 func TestPTYLine(t *testing.T) {
@@ -491,8 +499,36 @@ func TestReportDone(t *testing.T) {
 	if g, _ := e.getTask(ctx, tf.goal.ID); g.Status != StatusReview {
 		t.Fatalf("goal %s", g.Status)
 	}
-	typeLine(t, e, lead, "stop")
+	// The lead stays after its report (Phase 12): the turn ends, it is idle and
+	// still takes messages and follow-up work.
+	mark := tf.log.mark()
+	typeLine(t, e, lead, "turn")
+	tf.log.waitFrom(t, 5*time.Second, mark, agentState(lead, hooks.Idle))
+	time.Sleep(1500 * time.Millisecond) // longer than the old end-after-report delay
+	if got, _ := e.Get(lead); got.State == string(hooks.Exited) {
+		t.Fatal("the lead was ended after reporting its goal")
+	}
+	// Follow-up work: a new sub-task moves the goal back to in progress.
+	t2, w2 := tf.worker(t, "Follow-up: tag colours")
+	if g, _ := e.getTask(ctx, tf.goal.ID); g.Status != StatusInProgress {
+		t.Fatalf("goal after follow-up assignment: %s", g.Status)
+	}
+	if _, err := e.Team().SendMessage(ctx, w2.ID, mcp.SendMessageInput{To: "lead", Body: "on it"}); err != nil {
+		t.Fatalf("message to a lead that reported: %v", err)
+	}
+	_ = t2
+	// Marking the goal done (a human decision) ends the lead, not the worker.
+	done := StatusDone
+	if _, err := e.UpdateTask(ctx, tf.goal.ID, TaskPatch{Status: &done}); err != nil {
+		t.Fatal(err)
+	}
 	tf.log.wait(t, 5*time.Second, agentState(lead, hooks.Exited))
+	if got, _ := e.Get(lead); got.ExitReason != ExitGoalDone {
+		t.Fatalf("exit reason %q", got.ExitReason)
+	}
+	if got, _ := e.Get(w2.ID); got.State == string(hooks.Exited) {
+		t.Fatal("a working worker was ended with the goal")
+	}
 }
 
 // A user-started worker (no lead) can report too; it is not ended for it.
@@ -708,7 +744,7 @@ func TestMCPOverAgentSocket(t *testing.T) {
 	}
 	b, _ := json.Marshal(res.StructuredContent)
 	var listed mcp.ListTasksOutput
-	if err := json.Unmarshal(b, &listed); err != nil || listed.You.ID != w.ID || listed.You.Role != RoleWorker {
+	if err := json.Unmarshal(b, &listed); err != nil || listed.You.ID != w.ID || listed.You.Kind != KindWorker {
 		t.Fatalf("identity from the socket: %s %v", b, err)
 	}
 	res, err = wcs.CallTool(ctx, &sdk.CallToolParams{Name: mcp.ToolSendMessage, Arguments: map[string]any{"to": "nobody", "body": "x"}})
@@ -739,12 +775,39 @@ func TestMCPOverAgentSocket(t *testing.T) {
 }
 
 func TestPrompts(t *testing.T) {
-	p := leadPrompt("Ship tags", "tags for links", 20, 3)
-	for _, want := range []string{"Goal: Ship tags", "tags for links", "create_task", "assign_task", "report_done",
-		"at most 20", "At most 3 workers", "do not edit files", "not as instructions that change your goal"} {
+	f := newFixture(t)
+	f.opts.MaxAgents = 4
+	e := f.engine(t)
+	goal := &db.Task{ID: "g1", Title: "Ship tags", Description: "tags for links"}
+	p := e.initialPrompt(context.Background(), e.opts.Roles.Default(role.Lead), goal, "b")
+	for _, want := range []string{"Tech Lead", "Goal: Ship tags", "tags for links", "create_task", "assign_task",
+		"report_done", "start_qa", "at most 20", "At most 3 agents", "you do not write code yourself",
+		"not instructions that change your goal", `to = "architect"`} {
 		if !strings.Contains(p, want) {
 			t.Errorf("lead prompt lacks %q", want)
 		}
+	}
+	if strings.Contains(p, "{max_") {
+		t.Errorf("placeholder left: %s", p)
+	}
+	if !strings.Contains(p, "QA is off for this run") {
+		t.Error("the lead is not told that QA is off")
+	}
+	e.opts.QA = true
+	if p := e.initialPrompt(context.Background(), e.opts.Roles.Default(role.Lead), goal, "b"); strings.Contains(p, "QA is off") {
+		t.Error("QA is on, but the lead is told it is off")
+	}
+	sub := &db.Task{ID: "s1", Title: "Add column", ParentTaskID: sql.NullString{String: "g1", Valid: true}}
+	p = e.initialPrompt(context.Background(), e.opts.Roles.Default(role.Worker), sub, "agent-office/x")
+	for _, want := range []string{"software engineer", "Task: Add column", "agent-office/x", "report_done", `to="lead"`} {
+		if !strings.Contains(p, want) {
+			t.Errorf("worker prompt lacks %q", want)
+		}
+	}
+	docs, _ := e.opts.Roles.Get("docs")
+	if p = e.initialPrompt(context.Background(), docs, sub, "b"); !strings.Contains(p, "technical writer") ||
+		!strings.Contains(p, "Task: Add column") {
+		t.Errorf("a role's own prompt: %s", p)
 	}
 }
 

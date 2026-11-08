@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -387,7 +388,7 @@ func TestStartRoleAPI(t *testing.T) {
 	_ = json.NewDecoder(r.Body).Decode(&task)
 	r = f.doBody(t, "POST", "/api/agents", ct, `{"task_id":"`+task.ID+`","role":"lead"}`)
 	var a engine.AgentInfo
-	if err := json.NewDecoder(r.Body).Decode(&a); err != nil || r.StatusCode != http.StatusCreated || a.Role != engine.RoleLead {
+	if err := json.NewDecoder(r.Body).Decode(&a); err != nil || r.StatusCode != http.StatusCreated || a.Role != engine.RoleTechLead || a.Kind != engine.KindLead {
 		t.Fatalf("start lead: %d %+v %v", r.StatusCode, a, err)
 	}
 	r = f.doBody(t, "GET", "/api/agents/"+a.ID+"/messages", nil, "")
@@ -481,5 +482,98 @@ func TestUsageAPI(t *testing.T) {
 	}
 	if r2 := f.doBody(t, "GET", "/api/usage", nil, ""); r2.Header.Get("X-Request-Id") == r.Header.Get("X-Request-Id") {
 		t.Fatal("request ids repeat")
+	}
+}
+
+// Phase 12's endpoints: roles, inbox, specs, QA runs, memory, the assistant's
+// briefing and messages to an agent, and their place in the snapshot.
+func TestTeamWorkflowAPI(t *testing.T) {
+	f := newFixture(t)
+	ct := map[string]string{"Content-Type": "application/json"}
+	decode := func(r *http.Response, v any) {
+		t.Helper()
+		if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var roles []map[string]any
+	r := f.do(t, "GET", "/api/roles", nil)
+	decode(r, &roles)
+	names := map[string]string{}
+	for _, x := range roles {
+		names[x["name"].(string)] = x["behaviour"].(string)
+		if _, ok := x["prompt"]; ok {
+			t.Fatal("role prompts are not served")
+		}
+	}
+	if names["tech-lead"] != "lead" || names["docs"] != "worker" || names["assistant"] != "assistant" {
+		t.Fatalf("roles %v", names)
+	}
+	for _, p := range []string{"/api/inbox", "/api/specs", "/api/qa-runs", "/api/memory"} {
+		body, _ := io.ReadAll(f.do(t, "GET", p, nil).Body)
+		if strings.TrimSpace(string(body)) != "[]" {
+			t.Errorf("%s: %s", p, body)
+		}
+	}
+	for _, c := range []struct {
+		method, path, body string
+		want               int
+	}{
+		{"POST", "/api/inbox/x/read", "", http.StatusBadRequest},
+		{"POST", "/api/inbox/9/read", "", http.StatusNotFound},
+		{"POST", "/api/inbox/9/reply", `{"body":"hi"}`, http.StatusNotFound},
+		{"PUT", "/api/specs/9", `{"summary":"s","design":"","sub_tasks":[]}`, http.StatusNotFound},
+		{"POST", "/api/specs/9/approve", "", http.StatusNotFound},
+		{"POST", "/api/memory", `{"kind":"rumour","title":"t","body":"b"}`, http.StatusBadRequest},
+		{"POST", "/api/memory", `{"kind":"lesson","title":"t","body":"b","extra":1}`, http.StatusBadRequest},
+		{"POST", "/api/tasks/nope/resolve-conflict", "", http.StatusNotFound},
+		{"POST", "/api/agents/nope/message", `{"body":"hi"}`, http.StatusNotFound},
+	} {
+		if r := f.doBody(t, c.method, c.path, ct, c.body); r.StatusCode != c.want {
+			t.Errorf("%s %s: %d, want %d", c.method, c.path, r.StatusCode, c.want)
+		}
+	}
+	var m engine.MemoryEntry
+	r = f.doBody(t, "POST", "/api/memory", ct, `{"kind":"decision","title":"SQLite","body":"Only SQLite."}`)
+	decode(r, &m)
+	if r.StatusCode != http.StatusCreated || m.Status != engine.MemoryAccepted {
+		t.Fatalf("add memory %d %+v", r.StatusCode, m)
+	}
+	r = f.doBody(t, "PATCH", "/api/memory/"+strconv.FormatInt(m.ID, 10), ct, `{"body":"Only SQLite, via modernc."}`)
+	decode(r, &m)
+	if r.StatusCode != http.StatusOK || m.Body != "Only SQLite, via modernc." {
+		t.Fatalf("edit memory %d %+v", r.StatusCode, m)
+	}
+	if r := f.do(t, "DELETE", "/api/memory/"+strconv.FormatInt(m.ID, 10), nil); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete memory %d", r.StatusCode)
+	}
+
+	// The briefing button starts the assistant (no task); the user can write to it.
+	var as engine.AgentInfo
+	r = f.do(t, "POST", "/api/assistant/briefing", nil)
+	decode(r, &as)
+	if r.StatusCode != http.StatusOK || as.Kind != engine.KindAssistant || as.TaskID != "" {
+		t.Fatalf("briefing %d %+v", r.StatusCode, as)
+	}
+	if r := f.doBody(t, "POST", "/api/agents/"+as.ID+"/message", ct, `{"body":"hello"}`); r.StatusCode != http.StatusCreated {
+		t.Fatalf("message the assistant: %d", r.StatusCode)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, f.ws+"/api/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap map[string]json.RawMessage
+	_ = json.Unmarshal(data, &snap)
+	for _, k := range []string{"inbox", "specs", "qa_runs", "memory"} {
+		if v := string(snap[k]); !strings.HasPrefix(v, "[") {
+			t.Errorf("snapshot %s = %q", k, v)
+		}
 	}
 }

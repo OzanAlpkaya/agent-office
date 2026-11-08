@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -528,5 +529,40 @@ func TestStatusArgsDoesNotWriteTheIndex(t *testing.T) {
 	sandboxGit(t, clone, "status", "--porcelain") // control: plain status refreshes it
 	if control, _ := os.ReadFile(index); bytes.Equal(before, control) {
 		t.Fatal("control failed: plain status did not refresh the index")
+	}
+}
+
+// Extra agent-office branches (QA's sub-task branches, ADR 0033) are set in
+// the new repository; anything else is refused.
+func TestCreateSharedCloneWithExtraBranches(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t)
+	commitIn(t, repo, "a.go")
+	work := strings.TrimSpace(string(sandboxGit(t, repo, "rev-parse", "HEAD")))
+	base := strings.TrimSpace(string(sandboxGit(t, repo, "rev-parse", "HEAD^")))
+	root := t.TempDir()
+	g := Git{UntrustedRoots: []string{root}}
+	branch, other := BranchName("QA", "abcdef123456"), BranchName("Tags", "123456abcdef")
+	clone := filepath.Join(root, "proj", "abcdef123456")
+	if err := g.CreateSharedCloneWith(ctx, repo, clone, branch, base, map[string]string{other: work}); err != nil {
+		t.Fatal(err)
+	}
+	refs := strings.Fields(string(sandboxGit(t, clone, "for-each-ref", "--format=%(refname) %(objectname)")))
+	want := []string{"refs/heads/" + branch, base, "refs/heads/" + other, work}
+	if len(refs) != 4 || !slices.Contains(refs, want[0]) || !slices.Contains(refs, want[2]) || !slices.Contains(refs, work) {
+		t.Fatalf("refs %v", refs)
+	}
+	if head := strings.TrimSpace(string(sandboxGit(t, clone, "symbolic-ref", "HEAD"))); head != "refs/heads/"+branch {
+		t.Fatalf("HEAD %s", head)
+	}
+	for name, extra := range map[string]map[string]string{
+		"not an agent branch": {"main": work},
+		"not a hash":          {other: "HEAD"},
+		"the agent's own":     {branch: work},
+	} {
+		dir := filepath.Join(root, "proj", strings.ReplaceAll(name, " ", "-"))
+		if err := g.CreateSharedCloneWith(ctx, repo, dir, branch, base, extra); err == nil {
+			t.Errorf("%s accepted", name)
+		}
 	}
 }

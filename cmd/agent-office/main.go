@@ -6,6 +6,7 @@
 //	agent-office sandbox-init -- cmd   in-container init of a sandboxed worker (ADR 0016)
 //	agent-office worker-image          build the worker container image with podman
 //	agent-office pack list|check       list stack packs, validate a pack directory (ADR 0023)
+//	agent-office role list|check       list team roles, validate a role directory (ADR 0029)
 //	agent-office version               print the version
 package main
 
@@ -36,6 +37,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/pack"
 	"github.com/OzanAlpkaya/agent-office/internal/review"
+	"github.com/OzanAlpkaya/agent-office/internal/role"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -70,6 +72,8 @@ func main() {
 		}
 	case "pack":
 		os.Exit(packCommand(os.Args[2:], os.Stdout, os.Stderr))
+	case "role":
+		os.Exit(roleCommand(os.Args[2:], os.Stdout, os.Stderr))
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -94,6 +98,8 @@ commands:
             (--tag: print the tag only)
   pack list               list the built-in and your stack packs
   pack check <dir>...     validate stack pack directories and print every problem
+  role list               list the built-in and your team roles
+  role check <dir>...     validate role directories and print every problem
   version   print the version
 `)
 }
@@ -241,6 +247,9 @@ type serveConfig struct {
 	budgetGoalUSD       float64 // per goal; 0: off
 	eventRetentionDays  int     // ADR 0028; 0: keep events
 	logFormat           string  // text | json
+	rolesDir            string  // user roles (ADR 0029)
+	roleModels          map[string]string
+	qa                  bool // a goal's report needs a passing QA run (ADR 0033)
 }
 
 func parseServe(args []string) (serveConfig, error) {
@@ -324,6 +333,19 @@ func parseServe(args []string) (serveConfig, error) {
 	}
 	fs.Float64Var(&c.budgetGoalUSD, "budget-goal-usd", c.budgetGoalUSD,
 		"sandboxed agents: refuse API requests once a goal's estimated cost (lead, workers, reviewers) reaches this; 0 = off [AGENT_OFFICE_BUDGET_GOAL_USD]")
+	rolesDir, err := role.DefaultDir()
+	if err != nil {
+		return c, err
+	}
+	fs.StringVar(&c.rolesDir, "roles-dir", rolesDir, "your team roles, one directory each; one named like a built-in replaces it ["+
+		role.DirEnv+"]")
+	roleModels := fs.String("role-model", os.Getenv("AGENT_OFFICE_ROLE_MODELS"),
+		"models per role, e.g. architect=opus,worker=sonnet; others use the role's model or --model [AGENT_OFFICE_ROLE_MODELS]")
+	qa, err := envBool("AGENT_OFFICE_QA", true)
+	if err != nil {
+		return c, err
+	}
+	fs.BoolVar(&c.qa, "qa", qa, "a goal is reported only after QA passed on its sub-tasks' current work [AGENT_OFFICE_QA]")
 	retention, err := envInt("AGENT_OFFICE_EVENT_RETENTION_DAYS", 30)
 	if err != nil {
 		return c, err
@@ -340,6 +362,12 @@ func parseServe(args []string) (serveConfig, error) {
 	})
 	if c.repo == "" {
 		return c, errors.New("--repo is required")
+	}
+	if c.roleModels, err = role.ParseModels(*roleModels); err != nil {
+		return c, err
+	}
+	if c.rolesDir, err = filepath.Abs(c.rolesDir); err != nil {
+		return c, err
 	}
 	abs, err := filepath.Abs(c.repo)
 	if err != nil {
@@ -440,6 +468,21 @@ func serve(args []string) error {
 	// Money is integer from here on (ADR 0026): the flags' dollars become micro-USD.
 	budgets := engine.Budgets{SessionMicroUSD: int64(math.Round(cfg.budgetSessionUSD * 1e6)),
 		GoalMicroUSD: int64(math.Round(cfg.budgetGoalUSD * 1e6))}
+	roles, err := role.Load(cfg.rolesDir)
+	if err != nil {
+		return fmt.Errorf("roles: %w", err)
+	}
+	if roles, err = roles.WithModels(cfg.roleModels); err != nil {
+		return err
+	}
+	for _, r := range roles.List() {
+		if r.Model == "" {
+			continue
+		}
+		if err := checkBudgetModel(budgets, r.Model, prices); err != nil {
+			return fmt.Errorf("role %s: %w", r.Name, err)
+		}
+	}
 	if err := checkBudgetModel(budgets, cfg.model, prices); err != nil {
 		return err
 	}
@@ -506,6 +549,7 @@ func serve(args []string) error {
 		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
 		Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version, GitHub: ghOpts,
+		Roles: roles, QA: cfg.qa,
 		Prices: prices, Budgets: budgets, EventRetention: time.Duration(cfg.eventRetentionDays) * 24 * time.Hour,
 	})
 	if err != nil {

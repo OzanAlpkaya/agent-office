@@ -330,47 +330,78 @@ derived from Claude Code hooks.
 
 ---
 
-## Phase 12: Team workflow
+## Phase 12: Team workflow and roles
 
-Added after Ozan's end-to-end test (2026-11-08). Appended rather than inserted so that the phase
-numbers ADRs refer to stay valid; it can run before Phases 10 and 11.
+Added after Ozan's end-to-end test (2026-11-08) and expanded by him before planning (2026-11-08)
+into "Team workflow and roles". Appended rather than inserted so that the phase numbers ADRs refer
+to stay valid.
 
-**Goal:** A team run that holds up on real work: the lead stays available for follow-ups,
-parallel work does not silently collide, and every agent can reach the user.
+**Goal:** A team run that holds up on real work: roles are data, an Architect agrees the plan with
+the user, a Tech Lead executes it in dependency order and stays for follow-ups, QA integrates and
+tests the result, an Assistant keeps the user briefed, parallel work does not silently collide,
+and every agent reaches the user or the agent above it.
 
-**Scope**
-- **The lead stays until the goal is done.** Today the lead exits right after reporting the goal
-  done. Instead it stays idle until the goal is marked done (or the user stops it), so the user
-  can review the result and give it follow-up work. Decide whether an idle lead keeps its
-  `--max-agents` slot, or exits and is resumed for follow-ups once Phase 9 can resume sessions.
-- **Conflicts between parallel workers.** Two workers on one goal produced conflicting branches
-  (both edited `internal/httpapi/handler.go`).
-  - Detect conflicts on `report_done`: `git merge-tree` of the branch against the default branch
-    and the other open agent branches, run in the main repository on imported branches (never in
-    an agent repository, ADR 0014); show them in the UI on the task and the PR.
-  - Let the lead plan dependent sub-tasks sequentially (a sub-task waits for the ones it depends
-    on), and tell it in its prompt to do so when sub-tasks touch the same files.
-  - After another PR merges, relaunch the worker whose branch now conflicts to resolve the
-    conflict (the ADR 0022 relaunch path), within a round limit.
-- **Messages to the user.** A worker without a lead tried to send a correction to a lead that did
-  not exist. Agents (with or without a lead) can send a message to the user; it is shown on the
-  task card, rendered as text, with the ADR 0018 limits.
+**Scope** (see ADRs 0029–0034, `docs/roles.md` and `docs/plans/phase-12.md`, sub-phases 12.1–12.7)
+- Roles as data (role packs: prompt, team tools, denied tools, model, read-only or read-write
+  workspace, reports-to) over six engine behaviours; model per role.
+- Architect (read-only) produces a plan (design, sub-tasks, dependencies, files, acceptance
+  criteria), editable and approvable in the UI and committed as `docs/specs/<goal>.md`; optional.
+- Tech Lead (the lead, renamed) executes the approved plan and stays until the goal is done.
+- QA merges reported branches into an integration branch in the sandbox, tests, files bugs as
+  sub-tasks; the goal report needs a passing run.
+- Assistant: briefings, pending decisions, suggestions, project memory (accepted by the user).
+- Escalation chain worker → Tech Lead → Architect → user; messages to the user on the task card.
+- Conflicts: dependencies and file ownership enforced on assignment, `git merge-tree` checks on
+  `report_done`, relaunch to resolve after a PR merges.
 
 **Definition of Done**
-- [ ] A lead that reported its goal stays idle until the goal is marked done or stopped, and
-      takes follow-up work typed into its terminal.
-- [ ] Conflicts with the default branch and other open agent branches are detected on
-      `report_done` and shown in the UI (tested with two branches editing the same lines).
-- [ ] A lead can make a sub-task depend on others; it starts only after they are done.
-- [ ] After a merge, a worker whose branch conflicts can be relaunched to resolve it.
-- [ ] Any agent can message the user; the message appears on its task card.
+- [x] Roles are YAML (built-in and user-owned); a new worker-behaviour role (e.g. `docs`) runs
+      without code changes, with its own prompt, model, tools and workspace mode
+      (`TestRolesAreData`: a user's `devops` role with its model, prompt, deny rules and two team
+      tools; `TestLoadInvalid`, `TestUserRoles`, `TestBehaviourTools`; built-in `docs` and
+      `security` roles).
+- [x] A lead that reported its goal stays idle until the goal is marked done or stopped, and
+      takes follow-up work typed into its terminal (`TestReportDone`: still running after its
+      report, a new sub-task moves the goal back to in progress, marking the goal done ends it with
+      `goal_done`; live in `TestTeamEndToEnd` and `TestTeamWorkflowEndToEnd`).
+- [x] An Architect's plan is shown, edited and approved in the UI; approval commits
+      `docs/specs/<goal>.md` and creates the sub-tasks; the Tech Lead starts on it
+      (`TestArchitectPlanToTechLead`, `TestEscalationRevisesThePlan`; Playwright "a proposed plan is
+      shown on the goal and approved by the user"; live in `TestTeamWorkflowEndToEnd`).
+- [x] A lead can make a sub-task depend on others; it starts only after they are done, from
+      their work; overlapping files without a dependency are refused
+      (`TestDependenciesAndFileOwnership`, including a merge of two dependencies;
+      `TestOverlapCountsAssignmentsInFlight`; live: the dependent branch had its dependency's file).
+- [x] Conflicts with the default branch and other open agent branches are detected on
+      `report_done` and shown in the UI (tested with two branches editing the same lines):
+      `TestConflictsOnReportAndResolve`; Playwright "task cards show dependencies, conflicts, QA and
+      their roles".
+- [x] After a merge, a worker whose branch conflicts can be relaunched to resolve it
+      (`TestMergeRelaunchesConflictingWorker`: automatic after a GitHub merge;
+      `TestConflictsOnReportAndResolve`: Resolve conflict by hand, report refused until the merge is
+      committed).
+- [x] QA merges the reported branches, reports pass or fail with bugs as sub-tasks, and gates
+      the goal report (`TestQAGatesTheGoal`, `TestQAPassNeedsTheBranches`, `TestQAExitWithoutReport`,
+      `TestGoalNeedsEverySubTask`; live in `TestTeamWorkflowEndToEnd`).
+- [x] Any agent without someone above it can message the user; the message appears on its task
+      card and in the inbox, and the user's reply reaches the agent (`TestMessageUserAndChain`,
+      `TestArchitectChain`, `TestOneLineDeliveryCannotForgeTheUser`; Playwright "the inbox shows the
+      team's questions and sends the answer").
+- [x] The Assistant gives a briefing from daemon data and proposes memory that reaches other
+      agents only once the user accepts it (`TestAssistantBriefingAndMemory`,
+      `TestMemorySectionIsCapped`; Playwright "project memory proposals wait for the user").
 
 **Backlog** (from the Phase 8 review, 2026-11-08)
-- Investigate the intermittent `TestTeamAuthorization` failure (`internal/engine`): it failed once
-  in a full `make check` under load during Phase 8, then passed 15 of 15 on its own and in every
-  later full run. Reproduce under load (e.g. `go test -race -count=50 -run TestTeamAuthorization`
-  next to other packages, or `-cpu 1,2,8`), capture the failure message and fix the race or the
-  test's timing assumption. Placed here because Phase 12 reworks the team code it tests.
+- [x] Investigate the intermittent `TestTeamAuthorization` failure: a real data race (`Start` read
+      the agent's view after releasing the engine lock while its first hook changed it), fixed;
+      plus a test timing assumption (a 2 s hook timeout in the fake CLI under load).
+
+**Backlog** (from Phase 12)
+- QA's integration branch carries the tests QA added, but only worker branches become pull
+  requests: offer the integration branch as a pull request (or a sub-task that moves QA's tests
+  onto the default branch).
+- Several goals in parallel (one Tech Lead, architect and QA at a time today, ADR 0017).
+- Per-task relevance and export of project memory (Phase 9).
 
 ---
 

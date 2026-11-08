@@ -52,7 +52,9 @@ func fakeClaude() int {
 			extra += fmt.Sprintf(`,"transcript_path":%q`, transcript)
 		}
 		payload := fmt.Sprintf(`{"hook_event_name":%q,"session_id":%q%s}`, event, sid, extra)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		// Below Claude Code's own 10 s hook timeout; a busy test machine (several
+		// -race runs at once) needs more than a couple of seconds.
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 		var reply strings.Builder
 		_ = hooks.Forward(ctx, sock, strings.NewReader(payload), &reply)
@@ -144,7 +146,32 @@ func fakeClaude() int {
 				}
 			}
 			fmt.Println("committed more")
+		case "commitall": // commit everything written with "write"
+			for _, args := range [][]string{{"add", "-A"}, {"-c", "user.name=t", "-c", "user.email=t@example.com",
+				"commit", "-q", "-m", "feat: work"}} {
+				if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+					fmt.Printf("git failed: %v %s\n", err, out)
+				}
+			}
+			fmt.Println("committed all")
 		default:
+			if rev, ok := strings.CutPrefix(strings.TrimSpace(in.Text()), "merge "); ok {
+				out, err := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "merge",
+					"--no-edit", rev).CombinedOutput()
+				fmt.Printf("merge done (err=%v): %s\n", err != nil, strings.ReplaceAll(string(out), "\n", " "))
+				continue
+			}
+			if rest, ok := strings.CutPrefix(strings.TrimSpace(in.Text()), "write "); ok {
+				// write <path> <text>: the file's whole content becomes <text> plus a newline
+				name, text, _ := strings.Cut(rest, " ")
+				_ = os.MkdirAll(filepath.Dir(name), 0o755)
+				if err := os.WriteFile(name, []byte(text+"\n"), 0o644); err != nil {
+					fmt.Println("write failed:", err)
+				} else {
+					fmt.Println("wrote " + name)
+				}
+				continue
+			}
 			if l := strings.TrimSpace(in.Text()); l != "" {
 				fmt.Println("INPUT:" + l) // what the agent read, e.g. a message typed by the daemon
 			}

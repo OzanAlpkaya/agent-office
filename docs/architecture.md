@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 0 design, updated through Phase 8 (observability & cost), based on the spikes in `spikes/` and
+Status: Phase 0 design, updated through Phase 12 (team workflow and roles), based on the spikes in `spikes/` and
 the ADRs in `docs/adr/`. Parts marked *(later)* belong to later phases and will be detailed then.
 
 ## Overview
@@ -58,15 +58,16 @@ flowchart LR
 | `agent` | Adapter per agent CLI: command line, env, settings file, and translating CLI-specific hook payloads into common events. |
 | `engine` | Owns the lifecycle of agents, tasks, worktrees and messages. All state changes go through it. |
 | `hooks` | Accepts forwarded hook events from the per-agent sockets and runs the agent state machine. |
-| `mcp` | Team MCP server (go-sdk v1.8.0): `create_task`, `assign_task`, `list_tasks`, `send_message`, `report_done`, `request_access`, `submit_review` (reviewers), `report_no_change` (workers in a review follow-up) over a `Team` interface the engine implements; per-agent socket listener; the `agent-office mcp` stdio bridge (ADR 0006). |
+| `mcp` | Team MCP server (go-sdk v1.8.0): `create_task`, `assign_task`, `list_tasks`, `send_message`, `report_done`, `request_access`, `submit_review` (reviewers), `report_no_change` (workers in a review follow-up), and from Phase 12 `message_user`, `submit_plan`, `start_qa`, `report_qa`, `get_briefing`, `list_memory`, `propose_memory`, over a `Team` interface the engine implements; each agent's server lists only its role's tools; per-agent socket listener; the `agent-office mcp` stdio bridge (ADR 0006). |
 | `store` | SQLite via modernc + sqlc, forward-only goose migrations; refuses schemas newer than the binary and backs up before migrating (ADR 0004, 0011, 0012, 0013). |
-| `git` | git CLI wrapper: worktrees, branches, branch-name slugs (ADR 0009, 0010). |
+| `git` | git CLI wrapper: worktrees, branches, branch-name slugs (ADR 0009, 0010); plumbing in the main repository: commits without a checkout, `merge-tree`, `commit-tree`, compare-and-swap branch moves, base fetches (ADR 0031, 0032). |
 | `sandbox` | Starts workers in rootless Podman (`--network none`); per-agent egress proxy and credential-injecting API proxy; token file reader (ADR 0007, 0014–0016). |
 | `github` | go-github v93 client for one repository: find-or-create PR, reviews, COMMENT reviews, checks; token file read per operation; no merge operation; `githubtest` fake for tests (ADR 0020). Never the `gh` CLI. |
 | `review` | Pluggable `Reviewer` interface (`Request`, `Poll`) with the internal reviewer agent and CodeRabbit behind it; one `Feedback` shape (ADR 0021). |
 | `secret` | Redacting `Secret` type and the user-only token-file reader (OAuth and GitHub tokens, ADR 0015, 0020). |
 | `pack` | Stack packs (ADR 0023): strict YAML loader and validation, built-in `go` and `node` packs, user packs from a user-owned directory, build files for the pack image, skills, secret files. |
 | `usage` | Token usage and cost (ADR 0026): transcript reader and API response meter (numbers and ids only), the price table (built in plus a user file; integer nano-USD). |
+| `role` | Team roles (ADR 0029): strict YAML loader over six behaviours (architect, lead, worker, qa, reviewer, assistant), built-in roles and user roles from a user-owned directory, model overrides. |
 | `api` | HTTP + WebSocket for the UI; serves the embedded UI build; request ids. |
 
 ## Key flows
@@ -142,7 +143,7 @@ sequenceDiagram
   D->>D: message to the lead (queued)
   D->>L: typed into the idle lead's terminal (or Stop-hook block)
   W-->>D: Stop → the worker is ended (slot freed)
-  L->>D: report_done (no sub-task in progress) → goal to review
+  L->>D: report_done (no sub-task in progress) → goal to review; the lead stays (Phase 12)
 ```
 
 - A lead may create up to 20 sub-tasks of its goal, assign those in `todo`/`blocked` (each
@@ -294,6 +295,53 @@ flowchart LR
   API requests (with Anthropic's `request-id`), delivery and imports. `--log-format json`.
 - Retention: events older than 30 days are deleted daily; the newest 3 migration backups are kept.
 
+**Team workflow (Phase 12, ADR 0029–0034).** Roles are data over six behaviours the engine
+implements (`docs/roles.md`): a role brings the prompt, model (`--role-model`), a subset of its
+behaviour's team tools, denied Claude Code tools (`permissions.deny`) and a read-only or read-write
+workspace (`:ro` mount in the sandbox); authorization uses the agent's **kind** (behaviour), never
+its role name. A goal runs like this:
+
+```mermaid
+sequenceDiagram
+  participant U as User (UI)
+  participant A as Architect (read-only)
+  participant D as Daemon
+  participant L as Tech Lead (read-only)
+  participant W as Workers
+  participant Q as QA
+  U->>D: Start architect on the goal
+  A->>U: message_user(question) → inbox; the answer comes back as the user's words
+  A->>D: submit_plan(design, sub-tasks, depends_on, files, acceptance)
+  D->>U: plan version shown on the goal card (edit = new version)
+  U->>D: Approve
+  D->>D: commit docs/specs/<goal>.md on agent-office/spec-<slug>-<goal> (plumbing), create sub-tasks
+  D->>A: end (plan_approved); start the Tech Lead with the plan
+  L->>D: assign_task (refused: unmet dependencies, overlapping files of a running sub-task)
+  D->>W: start from the dependencies' work (merge-tree + commit-tree for several), else the spec commit
+  W->>D: report_done → merge-tree vs. the base and the other open sub-tasks → conflicts on the tasks, to the lead
+  L->>D: start_qa (no sub-task in progress)
+  D->>Q: own clone at the goal's base with every reported branch
+  Q->>D: report_qa(pass | fail, bugs) → bugs become sub-tasks
+  L->>D: report_done → refused unless QA passed on the current heads and no bug sub-task is open
+  L-->>U: stays idle for follow-up work; marking the goal done ends it
+  L->>D: send_message(to="architect") when the plan breaks → the architect is relaunched with the spec
+```
+
+- **Escalation chain:** worker → Tech Lead → architect → user. `message_user` is for agents with
+  nobody above them (architect, assistant, a lead without an architect, a worker without a running
+  lead); the others are told whom to ask. Messages to the user are inbox items (30 per agent per
+  10 minutes, 20 unread), shown in the header's Inbox and on the task card; replies are delivered
+  like team messages, framed as the user's own words (ADR 0030).
+- **Conflicts** (ADR 0032): order and file ownership are enforced by `assign_task`; `merge-tree`
+  checks run in the main repository on every report and after a PR merges on GitHub (base fetched,
+  other open PRs re-checked); a conflicting worker is relaunched to merge the new base (2 automatic
+  rounds per PR, a ref set in sandboxed repositories by a helper container), or by hand with
+  **Resolve conflict**.
+- **Assistant** (ADR 0034): no task, read-only, one at a time; `get_briefing` returns facts the
+  daemon computes (goals, what waits on the user, what is blocked, running agents, cost); it
+  proposes project memory, which reaches every agent's first prompt only after the user accepts it.
+- `--max-agents` still counts every running agent; an idle Tech Lead or assistant keeps its slot.
+
 **Isolation (Phase 3).** Each sandboxed worker is a rootless Podman container with
 `--network none`, a read-only rootfs and no capabilities (ADR 0007). It mounts its own shared
 clone (the main repository's objects read-only), its per-agent sockets and the read-only
@@ -324,10 +372,14 @@ events: logged, stored (rate-limited), pushed to the UI live and listed by
 
 | Entity | Key fields | Notes |
 |---|---|---|
-| **Agent** | id, role (lead / worker / reviewer), sandbox, state, task_id, current_session_id | One live session at a time; at most one running lead (ADR 0017); a worker can be relaunched in its workspace with a new session (ADR 0022). |
+| **Agent** | id, kind (architect / lead / worker / qa / reviewer / assistant), role (the role's name), model, sandbox, state, task_id, current_session_id | One live session at a time; at most one running lead, architect, QA and assistant (ADR 0017, 0029); workers and architects can be relaunched in their workspace with a new session (ADR 0022, 0031). |
 | **Session** | id (= CLI session UUID), agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd | One per CLI process; the correlation id of its logs (ADR 0028). |
 | **UsageMessage** | session_id, message_id, agent_id, task_id, source (api / transcript), request_id, model, speed, inference_geo, input / output / cache read / cache write 5m / 1h tokens | One per API message, upserted; priced when read (ADR 0026). |
-| **Task** | id, title, description, status (todo / in_progress / review / done / blocked), parent_task_id, created_by | A goal is a top-level task; the lead creates its sub-tasks through MCP. Agents point to their task (`agents.task_id`). |
+| **Task** | id, title, description, status (todo / in_progress / review / done / blocked), parent_task_id, created_by, depends_on, files, acceptance, role, spec_key, conflicts | A goal is a top-level task; its sub-tasks come from an approved spec or the lead's `create_task`. Agents point to their task (`agents.task_id`). |
+| **Spec** | id, goal_id, version, status (proposed / approved / superseded), author, plan (JSON), markdown, branch, commit, path | One row per version of a goal's plan; approval commits it (ADR 0031). |
+| **QARun** | id, goal_id, agent_id, status (running / passed / failed / error), branch, head, merged (task, branch, head), summary, bugs | One per `start_qa`; the latest gates the goal's report (ADR 0033). |
+| **InboxItem** | id, agent_id (empty: agent-office), task_id, goal_id, role, kind (question / blocked / info / briefing / plan), body, read_at, answered_at, reply | A message to the user (ADR 0030). |
+| **MemoryEntry** | id, kind (decision / convention / lesson), title, body, status (proposed / accepted), source | Accepted entries reach agents' prompts (ADR 0034). |
 | **Worktree** | id, repo_path, path, branch, base_ref, kind (worktree / clone), created_at, removed_at | One per worker agent; sandboxed agents get a shared clone (ADR 0014). |
 | **Import** | id, agent_id, trigger, outcome, branch, head, previous, commits, flagged, at | One per import of a sandboxed agent's branch (migration 0003). |
 | **Message** | id, from_agent_id (empty: agent-office), to_agent_id, body, created_at, delivered_at, delivery (stop_hook / pty) | Claimed once, then delivered (ADR 0018). |
@@ -377,4 +429,10 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Pack secrets leak to places other than the agent | Values only in user-only files, read at each launch; served once on a per-agent socket to `sandbox-init`, which sets them in the agent CLI's environment only; never argv, `-e`, container config, files, logs, DB or UI; only workers get them (not leads or reviewers); reserved names cannot override the sandbox's variables or hand agents a GitHub token. Tested: `TestSandboxedPackLaunch` (canary absent from sandbox-init, `podman inspect`, runtime dir, logs, DB; a second fetch is refused), `TestSecretsServedOnceToInit`, `TestFetchSecretsRefusesBadReplies`, `TestReservedEnv` | 6 |
 | Agent exfiltrates a pack secret | Residual by design: an agent can send a secret it holds to any allowed host (TLS hides contents from the proxy). Packs should hold test or read-only credentials; the UI and `docs/packs.md` say so | 6 |
 | Sensitive data in captured payloads | Store reduced events only; raw hook payloads and transcripts are never persisted or sent to the UI in full. Usage is decoded field by field (numbers, ids, two enums); transcript paths are never logged or stored, and read errors drop the path. Tested with marked fixtures: `TestTranscriptFixture`, `TestHostUsageFromTranscript`, `TestLogsFollowOneSession`, `TestAPIProxyMetersUsageAndBudget` | 1, 8 |
+| A role file widens what an agent can do | Roles come from the binary or a user-owned directory (ownership and mode checked, no symlinks), never the repository; a role picks a behaviour whose maximum team tools and authority are code, and may only narrow them; authorization uses the kind. Tested: `TestLoadInvalid`, `TestUserRoles`, `TestBehaviourTools`, `TestRolesAreData` | 12 |
+| A read-only role changes files | Edit/Write/NotebookEdit denied in `permissions.deny` (holds under `--dangerously-skip-permissions`, checked with 2.1.319) and the sandboxed workspace mounted `:ro`, so Bash cannot write either. Residual: host-mode Bash asks the user like every tool there. Tested: `TestRolesAreData`, `TestWorkerArgsReadOnlyWorkspace` | 12 |
+| Agent-written text reaches the user (phishing, floods) | Only agents with nobody above them may use `message_user`; 30 per agent per 10 minutes and 20 unread; rendered as text, labelled with agent and role. Replies are the user's own words, framed as such; an agent's text cannot forge that header (quoted lines). Tested: `TestMessageUserAndChain`, `TestArchitectChain` | 12 |
+| Project memory as a persistent injection channel | The assistant can only propose; entries reach prompts only after the user accepts them, size-capped, shown with their source; memory is not read from the repository. Tested: `TestAssistantBriefingAndMemory`, `TestMemorySectionIsCapped` | 12 |
+| An approved plan or a conflict check touches the user's checkout | Spec commits are built with a temporary index and plumbing and move only `agent-office/spec-*` branches by compare-and-swap; dependency bases and conflict checks use `merge-tree`/`commit-tree` (objects only); the host never runs git in agent repositories (QA's extra branches are created during clone setup; conflict bases set by a helper container). Tested: `TestCommitFileLeavesTheCheckoutAlone`, `TestMergeTree`, `TestArchitectPlanToTechLead`, `TestCreateSharedCloneWithExtraBranches` | 12 |
+| Agents ignore the plan (order, files, QA) | Enforced by deterministic code: `assign_task` refuses unmet dependencies and overlapping running sub-tasks; the goal's `report_done` needs a passing QA run on the current heads. Tested: `TestDependenciesAndFileOwnership`, `TestQAGatesTheGoal` | 12 |
 | A hook payload points the daemon at a file to read (host mode) | The transcript path must be `<session-id>.jsonl`, absolute and clean, a regular file owned by the user, opened without following symlinks, read in bounded chunks with capped lines; only numbers are kept. Host agents already run as the user, so they gain nothing they could not read themselves | 8 |

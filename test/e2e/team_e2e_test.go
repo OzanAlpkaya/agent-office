@@ -23,6 +23,7 @@ type teamTask struct {
 
 type teamAgent struct {
 	agentInfo
+	Kind       string      `json:"kind"`
 	Role       string      `json:"role"`
 	Sandbox    string      `json:"sandbox"`
 	LastImport *importInfo `json:"last_import"`
@@ -37,16 +38,12 @@ type message struct {
 	Delivery    string `json:"delivery"`
 }
 
-// TestTeamEndToEnd is the Phase 4 DoD with real Claude Code (Phase 4): given a
-// goal, a sandboxed lead creates and assigns sub-tasks through the team MCP
-// server; sandboxed workers commit, report_done (their branches are imported)
-// and end; their reports reach the lead as messages, each delivered once; the
-// lead reports the goal. Nothing in it needs a human, so no access request is
-// made; the approval path is covered by the engine and API tests.
-//
-// Like TestSandboxEndToEnd it works on a throwaway clone of AO_E2E_REPO and
-// needs podman, the stack pack image (make worker-image PACK=go) and the OAuth token file.
-func TestTeamEndToEnd(t *testing.T) {
+// teamDaemon starts a sandboxed daemon on a throwaway clone of AO_E2E_REPO
+// (skipping without the prerequisites) and returns it, the clone and a
+// function listing agents. It needs podman, the stack pack image (make
+// worker-image PACK=go) and the OAuth token file.
+func teamDaemon(t *testing.T, extra ...string) (*daemon, string, func() []teamAgent) {
+	t.Helper()
 	src := os.Getenv("AO_E2E_REPO")
 	if src == "" {
 		t.Skip("AO_E2E_REPO not set; this test runs real Claude Code sessions")
@@ -85,8 +82,8 @@ func TestTeamEndToEnd(t *testing.T) {
 	}
 	port := freePort(t)
 	d := &daemon{t: t, bin: bin, base: "http://127.0.0.1:" + port, logPath: filepath.Join(tmp, "daemon.log"),
-		args: []string{"serve", "--repo", repo, "--addr", "127.0.0.1:" + port, "--data-dir", data,
-			"--model", model, "--max-agents", "3", "--log-level", "debug", "--sandbox", "podman", "--pack", e2ePack()}}
+		args: append([]string{"serve", "--repo", repo, "--addr", "127.0.0.1:" + port, "--data-dir", data,
+			"--model", model, "--log-level", "debug", "--sandbox", "podman", "--pack", e2ePack()}, extra...)}
 	listAgents := func() []teamAgent {
 		var list []teamAgent
 		d.json("GET", "/api/agents", nil, 200, &list)
@@ -111,6 +108,19 @@ func TestTeamEndToEnd(t *testing.T) {
 		}
 	})
 	d.start()
+	return d, repo, listAgents
+}
+
+// TestTeamEndToEnd is the Phase 4 DoD with real Claude Code: given a goal, a
+// sandboxed lead creates and assigns sub-tasks through the team MCP server;
+// sandboxed workers commit, report_done (their branches are imported) and
+// end; their reports reach the lead as messages, each delivered once; the
+// lead reports the goal. Phase 12: the lead stays after its report and ends
+// when the user marks the goal done. QA is off here (TestTeamWorkflowEndToEnd
+// covers it). Nothing needs a human, so no access request is made; the
+// approval path is covered by the engine and API tests.
+func TestTeamEndToEnd(t *testing.T) {
+	d, repo, listAgents := teamDaemon(t, "--max-agents", "3", "--qa=false")
 
 	var goal taskInfo
 	d.json("POST", "/api/tasks", map[string]string{"title": "E2E team: two note files",
@@ -120,12 +130,13 @@ func TestTeamEndToEnd(t *testing.T) {
 			"Each sub-task description must name the file and its content, and tell the worker to commit it " +
 			"and then call report_done. When both workers have reported, call report_done for the goal."}, 201, &goal)
 	var lead teamAgent
-	d.json("POST", "/api/agents", map[string]string{"task_id": goal.ID, "role": "lead"}, 201, &lead)
-	if lead.Role != "lead" || lead.Sandbox != "podman" {
+	d.json("POST", "/api/agents", map[string]string{"task_id": goal.ID, "role": "lead"}, 201, &lead) // the old name
+	if lead.Role != "tech-lead" || lead.Kind != "lead" || lead.Sandbox != "podman" {
 		t.Fatalf("lead %+v", lead)
 	}
 
-	// The goal is done when the lead has reported it and ended.
+	// The goal is reported when it is in review and the lead is idle again; the
+	// lead stays (Phase 12).
 	deadline := time.Now().Add(12 * time.Minute)
 	for {
 		var tasks []teamTask
@@ -138,11 +149,11 @@ func TestTeamEndToEnd(t *testing.T) {
 		}
 		agents := listAgents()
 		leadNow := agents[slices.IndexFunc(agents, func(a teamAgent) bool { return a.ID == lead.ID })]
-		if g.Status == "review" && leadNow.State == "exited" {
+		if g.Status == "review" && leadNow.State == "idle" {
 			break
 		}
-		if leadNow.State == "exited" && g.Status != "review" {
-			t.Fatalf("the lead exited (%s) without reporting the goal (%s)", leadNow.ExitReason, g.Status)
+		if leadNow.State == "exited" {
+			t.Fatalf("the lead exited (%s); goal %s", leadNow.ExitReason, g.Status)
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("timeout: goal %s, lead %s; agents %+v", g.Status, leadNow.State, agents)
@@ -239,5 +250,33 @@ func TestTeamEndToEnd(t *testing.T) {
 	}
 	if st := gitOut(t, repo, "status", "--porcelain"); st != "" {
 		t.Errorf("the user's checkout changed: %q", st)
+	}
+
+	// The lead stayed; marking the goal done (the user's decision) ends it.
+	d.json("PATCH", "/api/tasks/"+goal.ID, map[string]string{"status": "done"}, 200, nil)
+	waitAgent(t, listAgents, lead.ID, 30*time.Second, func(a teamAgent) bool { return a.State == "exited" })
+	if a := findAgent(listAgents(), lead.ID); a.ExitReason != "goal_done" {
+		t.Errorf("lead exit reason %q, want goal_done", a.ExitReason)
+	}
+}
+
+func findAgent(list []teamAgent, id string) teamAgent {
+	if i := slices.IndexFunc(list, func(a teamAgent) bool { return a.ID == id }); i >= 0 {
+		return list[i]
+	}
+	return teamAgent{}
+}
+
+func waitAgent(t *testing.T, list func() []teamAgent, id string, d time.Duration, ok func(teamAgent) bool) teamAgent {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for {
+		if a := findAgent(list(), id); ok(a) {
+			return a
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for agent %s: %+v", id, findAgent(list(), id))
+		}
+		time.Sleep(2 * time.Second)
 	}
 }

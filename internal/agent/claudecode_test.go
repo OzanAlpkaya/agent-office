@@ -203,7 +203,7 @@ func TestMCPConfigWithPackServers(t *testing.T) {
 }
 
 func TestHookSettings(t *testing.T) {
-	raw, err := HookSettings(ShellQuote("/opt/agent office/agent-office") + " hook")
+	raw, err := HookSettings(ShellQuote("/opt/agent office/agent-office")+" hook", []string{"Write"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,10 +231,18 @@ func TestHookSettings(t *testing.T) {
 	var perms struct {
 		Permissions struct {
 			Allow []string `json:"allow"`
+			Deny  []string `json:"deny"`
 		} `json:"permissions"`
 	}
 	if err := json.Unmarshal(raw, &perms); err != nil || !slices.Equal(perms.Permissions.Allow, []string{"mcp__agent-office"}) {
 		t.Fatalf("only the team tools are pre-allowed: %+v %v", perms, err)
+	}
+	if !slices.Equal(perms.Permissions.Deny, []string{"Write"}) {
+		t.Fatalf("a role's deny rules: %+v", perms)
+	}
+	raw, _ = SandboxSettings("/opt/agent-office/agent-office hook", nil)
+	if strings.Contains(string(raw), `"deny"`) {
+		t.Fatalf("no deny rules, no deny key: %s", raw)
 	}
 }
 

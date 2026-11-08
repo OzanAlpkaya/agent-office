@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -42,12 +43,36 @@ type Task struct {
 	CreatedBy    string    `json:"created_by,omitempty"`     // empty: the user; else the creating agent's id
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+
+	// A sub-task's plan (ADR 0032).
+	DependsOn          []string   `json:"depends_on"` // task ids that must be reported first
+	Files              []string   `json:"files"`      // paths, directories ending in '/', globs it touches
+	Acceptance         []string   `json:"acceptance"` // criteria QA tests (ADR 0033)
+	Role               string     `json:"role,omitempty"`
+	SpecKey            string     `json:"spec_key,omitempty"`
+	Conflicts          []Conflict `json:"conflicts"` // the last merge-tree check of its branch
+	ConflictsCheckedAt *time.Time `json:"conflicts_checked_at,omitempty"`
+}
+
+// Conflict is a set of files that would not merge cleanly (ADR 0032): the
+// task's branch against the base branch (With empty) or another sub-task's.
+type Conflict struct {
+	With   string   `json:"with,omitempty"` // the other task's id; empty: the base branch
+	Branch string   `json:"branch"`         // the other branch
+	Files  []string `json:"files"`
 }
 
 // TaskInput creates a task.
 type TaskInput struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
+
+	// Sub-tasks only (ADR 0032); set by the lead or an approved spec.
+	DependsOn  []string `json:"-"`
+	Files      []string `json:"-"`
+	Acceptance []string `json:"-"`
+	Role       string   `json:"-"`
+	SpecKey    string   `json:"-"`
 }
 
 // TaskPatch changes a task; nil fields stay as they are.
@@ -58,8 +83,40 @@ type TaskPatch struct {
 }
 
 func taskFromRow(t db.Task) Task {
-	return Task{ID: t.ID, Title: t.Title, Description: t.Description, Status: t.Status,
-		ParentTaskID: t.ParentTaskID.String, CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
+	v := Task{ID: t.ID, Title: t.Title, Description: t.Description, Status: t.Status,
+		ParentTaskID: t.ParentTaskID.String, CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
+		DependsOn: jsonList(t.DependsOn), Files: jsonList(t.Files), Acceptance: jsonList(t.Acceptance), Role: t.Role,
+		SpecKey: t.SpecKey, Conflicts: []Conflict{}}
+	if t.Conflicts != "" {
+		_ = json.Unmarshal([]byte(t.Conflicts), &v.Conflicts)
+	}
+	if v.Conflicts == nil {
+		v.Conflicts = []Conflict{}
+	}
+	if t.ConflictsCheckedAt.Valid {
+		c := t.ConflictsCheckedAt.Time.UTC()
+		v.ConflictsCheckedAt = &c
+	}
+	return v
+}
+
+// jsonList decodes a JSON array of strings stored in a column; never nil.
+func jsonList(s string) []string {
+	var out []string
+	_ = json.Unmarshal([]byte(s), &out)
+	if out == nil {
+		out = []string{}
+	}
+	return out
+}
+
+// jsonText encodes a list for a JSON column.
+func jsonText(v []string) string {
+	if v == nil {
+		v = []string{}
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 // normalizeTitle trims the title and replaces control characters (including
@@ -107,7 +164,8 @@ func (e *Engine) createTask(ctx context.Context, in TaskInput, parent, createdBy
 	t := now()
 	row, err := e.q.CreateTask(ctx, db.CreateTaskParams{ID: randomHex(6), ProjectID: e.project.ID, Title: title,
 		Description: desc, Status: StatusTodo, CreatedAt: t, UpdatedAt: t, ParentTaskID: nullString(parent),
-		CreatedBy: createdBy})
+		CreatedBy: createdBy, DependsOn: jsonText(in.DependsOn), Files: jsonText(in.Files),
+		Acceptance: jsonText(in.Acceptance), Role: in.Role, SpecKey: in.SpecKey})
 	if err != nil {
 		return Task{}, err
 	}
@@ -166,7 +224,30 @@ func (e *Engine) UpdateTask(ctx context.Context, id string, p TaskPatch) (Task, 
 	}
 	v := taskFromRow(row)
 	e.publish(Update{Type: "task", Task: &v})
+	if row.Status == StatusDone && cur.Status != StatusDone && !row.ParentTaskID.Valid {
+		e.endGoal(row.ID)
+	}
 	return v, nil
+}
+
+// endGoal ends the agents that coordinate a goal the user marked done: its
+// Tech Lead, architect and QA (exit reason goal_done). Workers are left alone:
+// they end when they report, and one still working may hold work.
+func (e *Engine) endGoal(goalID string) {
+	e.mu.Lock()
+	var ids []string
+	for _, a := range e.agents {
+		if a.info.TaskID == goalID && a.running() &&
+			(a.info.Kind == KindLead || a.info.Kind == KindArchitect || a.info.Kind == KindQA) {
+			ids = append(ids, a.info.ID)
+		}
+	}
+	e.mu.Unlock()
+	for _, id := range ids {
+		e.log.Info("goal done: ending its agent", "agent_id", id, "task_id", goalID)
+		e.wg.Add(1)
+		go func() { defer e.wg.Done(); _ = e.stop(id, ExitGoalDone) }()
+	}
 }
 
 // DeleteTask deletes a task. Agents that worked on it keep running history but

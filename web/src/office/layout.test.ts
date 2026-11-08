@@ -26,32 +26,32 @@ describe("assignDesks", () => {
   });
 
   it("gives the lead desk to the lead", () => {
-    const a = assignDesks(emptyAssignment, [agent("w1", { started_at: at(2) }), agent("L", { role: "lead", started_at: at(1) })]);
+    const a = assignDesks(emptyAssignment, [agent("w1", { started_at: at(2) }), agent("L", { kind: "lead", started_at: at(1) })]);
     expect(a).toEqual({ lead: "L", desks: ["w1"] });
   });
 
   it("moves an exited lead to a regular desk when a new lead starts", () => {
-    const first = assignDesks(emptyAssignment, [agent("L1", { role: "lead", started_at: at(1) }), agent("w", { started_at: at(2) })]);
-    const exited = assignDesks(first, [agent("L1", { role: "lead", state: "exited" }), agent("w")]);
+    const first = assignDesks(emptyAssignment, [agent("L1", { kind: "lead", started_at: at(1) }), agent("w", { started_at: at(2) })]);
+    const exited = assignDesks(first, [agent("L1", { kind: "lead", state: "exited" }), agent("w")]);
     expect(exited.lead).toBe("L1"); // stays while no other lead runs
     const second = assignDesks(exited, [
-      agent("L1", { role: "lead", state: "exited", started_at: at(1) }), agent("w", { started_at: at(2) }),
-      agent("L2", { role: "lead", started_at: at(5) }),
+      agent("L1", { kind: "lead", state: "exited", started_at: at(1) }), agent("w", { started_at: at(2) }),
+      agent("L2", { kind: "lead", started_at: at(5) }),
     ]);
     expect(second).toEqual({ lead: "L2", desks: ["w", "L1"] });
   });
 
   it("is idempotent", () => {
     const agents = [
-      agent("L1", { role: "lead", state: "exited", started_at: at(1) }), agent("w1", { started_at: at(2) }),
-      agent("L2", { role: "lead", started_at: at(5) }), agent("r", { role: "reviewer", started_at: at(6) }),
+      agent("L1", { kind: "lead", state: "exited", started_at: at(1) }), agent("w1", { started_at: at(2) }),
+      agent("L2", { kind: "lead", started_at: at(5) }), agent("r", { kind: "reviewer", started_at: at(6) }),
     ];
     const once = assignDesks({ lead: "L1", desks: ["w1"] }, agents);
     expect(assignDesks(once, agents)).toEqual(once);
   });
 
   it("gives every agent exactly one seat", () => {
-    const agents = Array.from({ length: 23 }, (_, i) => agent(`a${i}`, { role: i === 4 ? "lead" : "worker", started_at: at(i) }));
+    const agents = Array.from({ length: 23 }, (_, i) => agent(`a${i}`, { kind: i === 4 ? "lead" : "worker", started_at: at(i) }));
     let a: Assignment = emptyAssignment;
     a = assignDesks(a, agents.slice(0, 10));
     a = assignDesks(a, agents.filter((_, i) => i % 3 !== 0));

@@ -78,14 +78,65 @@ func (f *fakeTeam) SubmitReview(_ context.Context, caller string, in SubmitRevie
 	return SubmitReviewOutput{ReviewID: 5, Posted: true, Next: "end your turn"}, f.err
 }
 
+func (f *fakeTeam) SubmitPlan(_ context.Context, caller string, in SubmitPlanInput) (SubmitPlanOutput, error) {
+	f.record(caller, ToolSubmitPlan, in)
+	return SubmitPlanOutput{SpecID: 1, Version: 1, Status: "proposed"}, f.err
+}
+
+func (f *fakeTeam) StartQA(_ context.Context, caller string) (StartQAOutput, error) {
+	f.record(caller, ToolStartQA, nil)
+	return StartQAOutput{RunID: 1}, f.err
+}
+
+func (f *fakeTeam) ReportQA(_ context.Context, caller string, in ReportQAInput) (ReportQAOutput, error) {
+	f.record(caller, ToolReportQA, in)
+	return ReportQAOutput{RunID: 1, Status: "passed"}, f.err
+}
+
+func (f *fakeTeam) GetBriefing(_ context.Context, caller string) (Briefing, error) {
+	f.record(caller, ToolGetBriefing, nil)
+	return Briefing{}, f.err
+}
+
+func (f *fakeTeam) ListMemory(_ context.Context, caller string) (ListMemoryOutput, error) {
+	f.record(caller, ToolListMemory, nil)
+	return ListMemoryOutput{}, f.err
+}
+
+func (f *fakeTeam) ProposeMemory(_ context.Context, caller string, in ProposeMemoryInput) (ProposeMemoryOutput, error) {
+	f.record(caller, ToolProposeMemory, in)
+	return ProposeMemoryOutput{ID: 1, Status: "proposed"}, f.err
+}
+
+func (f *fakeTeam) MessageUser(_ context.Context, caller string, in MessageUserInput) (MessageUserOutput, error) {
+	f.record(caller, ToolMessageUser, in)
+	return MessageUserOutput{MessageID: 9, Status: "shown"}, f.err
+}
+
 var quiet = slog.New(slog.DiscardHandler)
+
+// The built-in roles' tool lists (internal/role, which this package cannot
+// import in tests: it imports mcp). The engine passes a role's list.
+const (
+	RoleLead     = "lead"
+	RoleWorker   = "worker"
+	RoleReviewer = "reviewer"
+)
+
+var roleTools = map[string][]string{
+	RoleLead: {ToolCreateTask, ToolAssignTask, ToolListTasks, ToolSendMessage, ToolMessageUser, ToolReportDone,
+		ToolRequestAccess},
+	RoleWorker: {ToolListTasks, ToolSendMessage, ToolMessageUser, ToolReportDone, ToolReportNoChange,
+		ToolRequestAccess},
+	RoleReviewer: {ToolListTasks, ToolSubmitReview},
+}
 
 // connect serves NewServer(team, caller, role) in memory and returns a client.
 func connect(t *testing.T, team Team, caller, role string) *sdk.ClientSession {
 	t.Helper()
 	ctx := context.Background()
 	st, ct := sdk.NewInMemoryTransports()
-	ss, err := NewServer(team, caller, role, "test", quiet).Connect(ctx, st, nil)
+	ss, err := NewServer(team, caller, roleTools[role], "test", quiet).Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,12 +183,13 @@ func toolNames(t *testing.T, cs *sdk.ClientSession) []string {
 
 func TestToolsPerRole(t *testing.T) {
 	lead := toolNames(t, connect(t, &fakeTeam{}, "l1", RoleLead))
-	want := []string{ToolAssignTask, ToolCreateTask, ToolListTasks, ToolReportDone, ToolRequestAccess, ToolSendMessage}
+	want := []string{ToolAssignTask, ToolCreateTask, ToolListTasks, ToolMessageUser, ToolReportDone, ToolRequestAccess,
+		ToolSendMessage}
 	if !slices.Equal(lead, want) {
 		t.Fatalf("lead tools %v", lead)
 	}
 	worker := toolNames(t, connect(t, &fakeTeam{}, "w1", RoleWorker))
-	want = []string{ToolListTasks, ToolReportDone, ToolReportNoChange, ToolRequestAccess, ToolSendMessage}
+	want = []string{ToolListTasks, ToolMessageUser, ToolReportDone, ToolReportNoChange, ToolRequestAccess, ToolSendMessage}
 	if !slices.Equal(worker, want) {
 		t.Fatalf("worker tools %v", worker)
 	}
@@ -305,7 +357,7 @@ func shortDir(t *testing.T) string {
 
 func listen(t *testing.T, team Team, caller, role string) *Listener {
 	t.Helper()
-	ln, err := Listen(filepath.Join(shortDir(t), "mcp.sock"), NewServer(team, caller, role, "test", quiet), quiet)
+	ln, err := Listen(filepath.Join(shortDir(t), "mcp.sock"), NewServer(team, caller, roleTools[role], "test", quiet), quiet)
 	if err != nil {
 		t.Fatal(err)
 	}

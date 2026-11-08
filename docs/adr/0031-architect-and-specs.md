@@ -1,0 +1,100 @@
+# 0031. The architect's plan: structured, versioned, approved by the user, committed as a spec
+
+- **Status:** Accepted
+- **Date:** 2026-11-08
+- **Amends:** ADR 0017 (an approved plan creates a goal's sub-tasks), ADR 0022 (architects can be
+  relaunched)
+
+## Context
+
+Ozan (2026-11-08): an Architect talks with the user before work starts, asks clarifying
+questions, reads the repository read-only, and produces a plan (design, sub-tasks, dependencies,
+files each sub-task touches, acceptance criteria) saved as `docs/specs/<goal>.md`, editable and
+approvable in the UI; optional for small goals. The Tech Lead executes the approved plan and
+escalates to the Architect if it breaks.
+
+Forces:
+
+- The plan drives deterministic behaviour (which sub-tasks exist, in which order they may start,
+  which files they own, what QA checks), so it must be machine-readable and validated, not prose.
+- The user must see and change it before money is spent on workers.
+- The daemon must not commit to the user's branches or touch their working tree (CLAUDE.md, ADR
+  0014), yet the spec should end up in the repository.
+- The architect is read-only (ADR 0029): it cannot write the file itself.
+
+## Options considered
+
+**How the plan reaches agent-office**
+
+1. **The architect writes `docs/specs/<goal>.md`** on a branch. Cons: needs a read-write
+   architect; the daemon would parse Markdown to learn dependencies.
+2. **A structured `submit_plan` tool**; the daemon validates it, stores it and renders the
+   Markdown. Pros: one source for the UI, the sub-tasks and the file; validation errors go back to
+   the architect.
+
+**Where the spec lives**
+
+1. **Only in the database.** Cons: not in the repository, as asked.
+2. **Committed into the user's checkout or default branch.** Cons: the daemon would commit to the
+   user's branch.
+3. **Database as the editable source; on approval, a commit on a spec branch** built with plumbing
+   (no checkout), which every sub-task branch starts from. Pros: the spec is in every branch, so
+   workers can read the whole plan, and it reaches the default branch with the first merged PR;
+   nothing of the user's moves.
+
+**What approval does**
+
+1. **Only marks it approved**; the Tech Lead creates the sub-tasks. Cons: the model re-types the
+   plan and may drift from it.
+2. **The daemon creates the sub-tasks from the plan**, ends the architect and starts the Tech Lead.
+
+## Decision
+
+Option 2, option 3 and option 2.
+
+- **`submit_plan`** (architects only, for their goal): `summary`, `design` (Markdown), `risks`,
+  `sub_tasks[]` with `key`, `title`, `description`, `role` (a worker-behaviour role), `depends_on`
+  (keys), `files` (paths, directories ending in `/`, globs) and `acceptance` (criteria). Validated:
+  1–20 sub-tasks, unique keys, dependencies that exist, no self-dependency, no cycle (the cycle is
+  named), clean relative file entries, known worker roles, sizes. A valid plan becomes a new
+  **proposed version** in `specs` (earlier proposals are superseded) with its rendered Markdown,
+  and an agent-office inbox item tells the user (ADR 0030). The architect waits for questions,
+  change requests or approval.
+- **The user** reads the plan on the goal card, **edits** it (a new version by the user,
+  `PUT /api/specs/{id}`) or **approves** a proposed version (`POST /api/specs/{id}/approve`).
+- **Approval**, in this order:
+  1. The Markdown is committed as `docs/specs/<goal-slug>.md` on top of the previous approved
+     version or the main repository's HEAD, with a temporary index file (`hash-object`,
+     `read-tree`, `update-index`, `write-tree`, `commit-tree`; the user's identity, an
+     `Agent-Office-Goal` trailer). No working tree is touched. The branch
+     `agent-office/spec-<slug>-<goal id>` is moved by compare-and-swap once the transaction below
+     has recorded the approval, so a refused approval leaves no commit on it.
+  2. In one transaction: the version becomes `approved` (the previous approved one `superseded`)
+     and the sub-tasks are applied: new keys are created (dependencies resolved to task ids);
+     sub-tasks still `todo` that no worker ever touched are updated, or deleted if the plan
+     dropped them; anything already worked on is kept and listed.
+  3. Running architects of the goal end (`plan_approved`). A running Tech Lead gets a message with
+     what changed; otherwise one is started with the plan in its prompt (if no slot is free, the
+     result says so and the user starts it).
+- **Sub-task branches start from the spec commit** (or from their dependencies' work, ADR 0032).
+- **Escalation:** `send_message(to="architect")` from the Tech Lead relaunches an exited architect
+  (same agent and workspace, new session, ADR 0022's path, now also for architects) with the
+  approved spec in its prompt; the lead's message is delivered after its first turn. A revision
+  goes through the same approval. At most 3 such relaunches per goal; then the lead is told to tell
+  the user.
+- **Limits:** at most 5 plan versions per goal per 10 minutes (the architect's and the user's
+  edits) and 30 in all, since each is stored and announced.
+- `GET /api/specs` lists every version; specs are in the `/api/events` snapshot and `spec`
+  updates.
+
+## Consequences
+
+- The plan the user approved is the plan that runs: sub-tasks, order and files come from it, not
+  from a model re-reading it.
+- Every PR of the goal carries the spec commit until the first one merges; GitHub shows it in
+  the PR's commits. With squash merges the spec arrives with the first PR; later PRs add the same
+  file with the same content, which merges cleanly.
+- A revised plan cannot pull work out from under a running worker: started sub-tasks are kept and
+  reported as such.
+- The architect is optional: "Start lead" skips it, and the lead plans with `create_task`
+  (with dependencies and files, ADR 0032) as before.

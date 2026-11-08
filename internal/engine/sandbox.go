@@ -145,7 +145,7 @@ func (e *Engine) prepareSandboxStart(ctx context.Context, agentName, role string
 	var secrets map[string]secret.Secret
 	// Workers only: leads plan and run no code, and reviewers read the agent-written
 	// diff, the most injectable input there is (ADR 0023).
-	if p := e.opts.Sandbox.Pack; p != nil && role == RoleWorker {
+	if p := e.opts.Sandbox.Pack; p != nil && role == KindWorker {
 		var skipped []string
 		if secrets, skipped, err = p.ReadSecrets(e.opts.Sandbox.SecretsDir); err != nil {
 			return sandboxPrep{}, fmt.Errorf("%w: %v", ErrInvalid, err)
@@ -159,7 +159,7 @@ func (e *Engine) prepareSandboxStart(ctx context.Context, agentName, role string
 }
 
 // createClone sets up the agent repository (ADR 0014) and returns an undo.
-func (e *Engine) createClone(ctx context.Context, id, path, branch, base string) (func(), error) {
+func (e *Engine) createClone(ctx context.Context, id, path, branch, base string, extra map[string]string) (func(), error) {
 	s := e.opts.Sandbox
 	undo := func() {
 		cctx := context.Background()
@@ -171,7 +171,7 @@ func (e *Engine) createClone(ctx context.Context, id, path, branch, base string)
 		}
 		_ = e.git.UnprotectBase(cctx, e.project.RepoPath, id)
 	}
-	if err := e.git.CreateSharedClone(ctx, e.project.RepoPath, path, branch, base); err != nil {
+	if err := e.git.CreateSharedCloneWith(ctx, e.project.RepoPath, path, branch, base, extra); err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
 	}
 	if err := e.git.ProtectBase(ctx, e.project.RepoPath, id, base); err != nil {
@@ -213,7 +213,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	if err := os.MkdirAll(res.dir, 0o700); err != nil {
 		return fail(err)
 	}
-	settings, err := agent.SandboxSettings(sandbox.AgentOfficeBin + " hook")
+	settings, err := agent.SandboxSettings(sandbox.AgentOfficeBin+" hook", l.def.DenyRules())
 	if err != nil {
 		return fail(err)
 	}
@@ -264,7 +264,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	if err := os.WriteFile(mcpConfig, cfg, 0o644); err != nil { // read by the container user; dir is 0700
 		return fail(err)
 	}
-	if mln, err = e.listenMCP(mcpPath, id, l.role, log); err != nil {
+	if mln, err = e.listenMCP(mcpPath, id, l, log); err != nil {
 		return fail(err)
 	}
 	onEvent := func(ev sandbox.Event) { e.sandboxEvent(id, ev) }
@@ -311,7 +311,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	}
 
 	command, err := agent.ContainerArgs(agent.ContainerSpec{Bin: sandbox.ClaudeBin, SessionID: sid,
-		Model: e.opts.Model, SettingsPath: sandbox.SettingsFile, MCPConfigPath: sandbox.MCPConfigFile, InitialPrompt: l.prompt})
+		Model: e.modelOf(l.def), SettingsPath: sandbox.SettingsFile, MCPConfigPath: sandbox.MCPConfigFile, InitialPrompt: l.prompt})
 	if err != nil {
 		return fail(err)
 	}
@@ -319,7 +319,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		Instance: s.Instance, AgentID: id, Image: s.Image, Workspace: wsPath, ObjectsDir: prep.objects, ConfigDir: cfgDir,
 		HookSocket: ln.Path(), MCPSocket: mcpPath, MCPConfig: mcpConfig, EgressSocket: egressPath, APISocket: apiPath,
 		SecretsSocket: secretsPath, Skills: skillsPath, AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
-		Git: prep.ident, Memory: s.Memory, Pids: s.Pids, Command: command,
+		Git: prep.ident, Memory: s.Memory, Pids: s.Pids, Command: command, ReadOnlyWorkspace: l.def.ReadOnly,
 	})
 	if err != nil {
 		return fail(err)
@@ -330,7 +330,8 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	}
 
 	a := &agentProc{
-		info: AgentInfo{ID: id, SessionID: sid, TaskID: taskID, Model: e.opts.Model, Sandbox: SandboxPodman, Role: l.role,
+		info: AgentInfo{ID: id, SessionID: sid, TaskID: taskID, Model: e.modelOf(l.def), Sandbox: SandboxPodman, Kind: l.role,
+			Role:   l.def.Name,
 			Branch: branch, WorktreePath: wsPath, WorkspaceKind: KindClone, WorktreeStatus: WorktreeActive,
 			HasTerminal: true, StartedAt: started},
 		status:     hooks.Status{State: hooks.Starting},
@@ -348,13 +349,14 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	}
 	e.mu.Lock()
 	e.registerLocked(a, l)
+	view := a.view() // under the lock: the agent's first hook may already be changing its state
 	e.mu.Unlock()
 	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "sandbox", SandboxPodman, "branch", branch,
 		"workspace", wsPath, "container", res.container, "image", s.Image, "pack", packName(s.Pack),
-		"secrets", secretNames(prep.secrets), "model", e.opts.Model)
+		"secrets", secretNames(prep.secrets), "model", e.modelOf(l.def), "role_name", l.def.Name, "read_only", l.def.ReadOnly)
 	e.wg.Add(1)
 	go e.watch(a)
-	return a.view(), nil
+	return view, nil
 }
 
 // closeSandbox stops the proxies, removes the container if it is still there

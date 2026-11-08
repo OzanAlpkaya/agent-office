@@ -15,8 +15,9 @@ import (
 type followupRound struct {
 	prID     int64
 	reviewID int64
-	number   int    // the pull request
+	number   int    // the pull request (0: none, e.g. a conflict without GitHub)
 	head     string // the branch head the review was about
+	conflict bool   // a relaunch to resolve a conflict with the base branch (ADR 0032)
 }
 
 // needsNewCommit refuses a report in a follow-up round whose branch is still
@@ -24,6 +25,10 @@ type followupRound struct {
 func (fu *followupRound) needsNewCommit(head string) error {
 	if fu == nil || head != fu.head {
 		return nil
+	}
+	if fu.conflict {
+		return invalid("your branch has no new commit yet: merge the base, resolve the conflicts, commit the merge on " +
+			"this branch, then call report_done again")
 	}
 	return invalid("your branch has no new commit since the review of pull request #%d: commit your change on this "+
 		"branch, then call report_done again. If the review needs no change to the code, call report_no_change "+
@@ -48,9 +53,9 @@ func (e *Engine) reportNoChange(ctx context.Context, caller, reason string) (mcp
 	if err == nil {
 		info, fu = a.info, a.followup
 		switch {
-		case info.Role != RoleWorker:
+		case info.Kind != KindWorker:
 			err = forbidden("only workers report on a review follow-up")
-		case fu == nil:
+		case fu == nil || fu.conflict:
 			err = invalid("report_no_change answers a review you were relaunched to address, and there is none " +
 				"open for you; report your work with report_done")
 		case a.stopAfterTurn:

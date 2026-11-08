@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 12 (Team workflow), not started; Phase 8 merged
+**Current phase:** Phase 9 (Memory & persistence), not started; Phase 12 merged
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -21,7 +21,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [ ] Phase 9: Memory & persistence
 - [ ] Phase 10: Remote access (PWA over Tailscale)
 - [ ] Phase 11: Portfolio polish
-- [ ] Phase 12: Team workflow
+- [x] Phase 12: Team workflow and roles
 - [ ] Phase 13: Office v2
 
 ## Log
@@ -142,3 +142,26 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   `docs/screenshots/usage.png`. Backlog in `docs/plan.md`: the intermittent `TestTeamAuthorization`
   failure under load (Phase 12) and the "user settings" label flipping on sandboxed agents after a
   restart (Phase 9). Merged into `main` (`--no-ff`).
+- 2026-11-08: Phase 12 expanded by Ozan into "Team workflow and roles" (roles as data, Architect,
+  Tech Lead, QA, Assistant, escalation chain, model per role, conflict handling). Plan written with
+  the recommended options and started on `phase-12/team-workflow` (`docs/plans/phase-12.md`).
+- 2026-11-08: Phase 12 done on `phase-12/team-workflow`; plan written with the recommended options
+  and executed without a separate approval, as Ozan asked (`docs/plans/phase-12.md`). ADRs 0029
+  (roles as data over six behaviours, model per role, the Tech Lead stays), 0030 (escalation chain,
+  messages to the user), 0031 (architect plans, specs committed on a spec branch), 0032
+  (dependencies, file ownership, merge-tree conflict checks, resolve-conflict relaunches), 0033 (QA
+  integration runs gate the goal), 0034 (assistant briefings, project memory the user accepts).
+  New package `role` and `docs/roles.md`; migration 0008; no new dependencies. Built-in roles:
+  architect, tech-lead, worker, qa, reviewer, assistant, plus docs and security. The UI gets an
+  inbox, plan view/editor/approval, QA and conflict panels, a role picker and project memory. The
+  Phase 8 backlog flake (`TestTeamAuthorization`) was a real data race, fixed; two more pre-existing
+  test races fixed. An independent review led to 9 fixes (typed messages quoted as JSON so the
+  user's header cannot be forged, in-flight assignments in the overlap check, QA pass must contain
+  the branches, every sub-task before the goal, relaunch and plan limits, ...). The real e2e found
+  a haiku lead stalling after a report; reports now name the next step. `make check`,
+  `make ui-test`, `make sandbox-test` and `make e2e` (host, sandbox, team, workflow 3 of 3) pass.
+- 2026-11-08: Phase 12 review: all decisions approved, including the recommended per-role models.
+  Ozan tested plan approval with a real architect in the UI end to end. Fixed before the merge: the
+  architect no longer claims a plan is approved when "approved" is typed into its terminal (it
+  points to the UI's Approve button), and the inbox's plan notice has Review plan and Approve plan
+  buttons. Merged into `main` (`--no-ff`).

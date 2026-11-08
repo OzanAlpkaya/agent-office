@@ -114,7 +114,7 @@ func (gf *ghFixture) reviewer(t *testing.T, n int) AgentInfo {
 	t.Helper()
 	seen := 0
 	u := gf.log.wait(t, 10*time.Second, func(u Update) bool {
-		if u.Type == "agent" && u.Agent.Role == RoleReviewer && u.Agent.State == string(hooks.Starting) {
+		if u.Type == "agent" && u.Agent.Kind == KindReviewer && u.Agent.State == string(hooks.Starting) {
 			seen++
 			return seen == n
 		}
@@ -671,8 +671,14 @@ func TestRestartReoffersFollowup(t *testing.T) {
 	gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return p.State == PROpen })
 	_ = gf.e.Stop(w.ID)
 	r := gf.reviewer(t, 1)
+	mark := gf.log.mark()
 	gf.submit(t, r, mcp.SubmitReviewInput{Verdict: review.VerdictChangesRequested, Summary: "fix"})
 	gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return len(p.Reviews) == 1 && p.Reviews[0].Followup == FollowupStarted })
+	// "started" is claimed before the relaunch runs: wait for the relaunched
+	// worker, so the daemon dies after the follow-up began, as the test means.
+	gf.log.waitFrom(t, startWait, mark, func(u Update) bool {
+		return u.Type == "agent" && u.Agent.ID == w.ID && u.Agent.State == string(hooks.Idle) && u.Agent.ExitedAt == nil
+	})
 	gf.e.Shutdown()
 	g := *gf.f.opts.GitHub
 	g.PollFast = time.Hour

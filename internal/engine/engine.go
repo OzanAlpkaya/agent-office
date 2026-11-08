@@ -21,6 +21,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/pack"
+	"github.com/OzanAlpkaya/agent-office/internal/role"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -57,6 +58,8 @@ const (
 	ExitReported      = "reported_done"    // the agent called report_done and its turn ended (ADR 0017)
 	ExitReviewed      = "review_submitted" // a reviewer called submit_review and its turn ended (ADR 0021)
 	ExitFollowUp      = "follow_up"        // ended to be relaunched with review feedback (ADR 0022)
+	ExitGoalDone      = "goal_done"        // the user marked the agent's goal done (Phase 12)
+	ExitPlanApproved  = "plan_approved"    // an architect whose plan the user approved (ADR 0031)
 )
 
 // Worktree statuses (ADR 0010).
@@ -74,11 +77,27 @@ const (
 	KindClone     = "clone"
 )
 
-// Agent roles (agents.role, ADR 0017).
+// Agent kinds (agents.kind): the behaviour the engine implements for an
+// agent, which fixes its authority (ADR 0017, 0029). Authorization checks use
+// the kind, never the role's name.
 const (
-	RoleLead     = "lead"
-	RoleWorker   = "worker"
-	RoleReviewer = "reviewer" // reviews one pull request (ADR 0021)
+	KindArchitect = string(role.Architect) // agrees the plan with the user (ADR 0031)
+	KindLead      = string(role.Lead)      // the Tech Lead of a goal
+	KindWorker    = string(role.Worker)
+	KindQA        = string(role.QA)        // integrates and tests a goal (ADR 0033)
+	KindReviewer  = string(role.Reviewer)  // reviews one pull request (ADR 0021)
+	KindAssistant = string(role.Assistant) // briefs the user (ADR 0034)
+)
+
+// Names of the built-in roles (agents.role): data, see internal/role.
+const (
+	RoleArchitect = role.NameArchitect
+	RoleTechLead  = role.NameTechLead
+	RoleWorker    = role.NameWorker
+	RoleQA        = role.NameQA
+	RoleReviewer  = role.NameReviewer
+	RoleAssistant = role.NameAssistant
+	roleLeadAlias = "lead" // the Tech Lead's name before Phase 12, still accepted
 )
 
 // Options configures the engine. All paths must be absolute.
@@ -88,7 +107,9 @@ type Options struct {
 	Store               *store.Store  // required
 	Git                 git.Git       // git CLI wrapper
 	MaxAgents           int           // running agents at once; default 4
-	Model               string        // optional default model
+	Model               string        // optional default model; a role's own model wins (ADR 0029)
+	Roles               *role.Set     // team roles (ADR 0029); nil: the built-in roles
+	QA                  bool          // a goal's report needs a passing QA run (ADR 0033)
 	InheritUserSettings bool          // host mode: load the user's own Claude Code settings
 	ClaudeBin           string        // claude binary
 	HookCommand         string        // shell command Claude Code runs for hooks
@@ -124,6 +145,7 @@ type Status struct {
 	GitHub   *GitHubStatus `json:"github,omitempty"`
 	Prices   PriceInfo     `json:"prices"`  // cost estimates (ADR 0026)
 	Budgets  Budgets       `json:"budgets"` // enforced for sandboxed agents only (ADR 0027)
+	QA       bool          `json:"qa"`      // goals need a passing QA run (ADR 0033)
 }
 
 // PackStatus is what the daemon's stack pack gives sandboxed agents. Secrets
@@ -156,7 +178,8 @@ type AgentInfo struct {
 	Model               string      `json:"model,omitempty"`
 	InheritUserSettings bool        `json:"inherit_user_settings"`
 	Sandbox             string      `json:"sandbox"` // SandboxHost | SandboxPodman
-	Role                string      `json:"role"`    // RoleLead | RoleWorker
+	Kind                string      `json:"kind"`    // the behaviour: KindLead, KindWorker, ...
+	Role                string      `json:"role"`    // the role's name, e.g. tech-lead, worker, docs
 	Branch              string      `json:"branch"`
 	WorktreePath        string      `json:"worktree_path"`
 	WorkspaceKind       string      `json:"workspace_kind"` // KindWorktree | KindClone
@@ -172,7 +195,7 @@ type AgentInfo struct {
 // Update is one change broadcast to subscribers.
 type Update struct {
 	// "agent" | "agent_removed" | "task" | "task_deleted" | "sandbox_event" | "message" | "access_request" |
-	// "pull_request" | "usage"
+	// "pull_request" | "usage" | "inbox" | "spec" | "qa_run" | "memory" | "memory_deleted"
 	Type          string         `json:"type"`
 	Agent         *AgentInfo     `json:"agent,omitempty"`
 	Task          *Task          `json:"task,omitempty"`
@@ -181,7 +204,11 @@ type Update struct {
 	Message       *Message       `json:"message,omitempty"`
 	AccessRequest *AccessRequest `json:"access_request,omitempty"`
 	PullRequest   *PullRequest   `json:"pull_request,omitempty"`
-	Usage         *SessionUsage  `json:"usage,omitempty"` // a running session's usage (ADR 0026)
+	Usage         *SessionUsage  `json:"usage,omitempty"`  // a running session's usage (ADR 0026)
+	Inbox         *InboxItem     `json:"inbox,omitempty"`  // a message to the user (ADR 0030)
+	Spec          *Spec          `json:"spec,omitempty"`   // a version of a goal's plan (ADR 0031)
+	QARun         *QARun         `json:"qa_run,omitempty"` // a QA run (ADR 0033)
+	Memory        *MemoryEntry   `json:"memory,omitempty"` // a project memory entry (ADR 0034)
 }
 
 type agentProc struct {
@@ -230,7 +257,7 @@ type Engine struct {
 	agents       map[string]*agentProc
 	order        []string
 	starting     int             // slots reserved by Start while git runs outside the lock
-	startingLead bool            // a lead start is in progress (one lead at a time, ADR 0017)
+	startingKind map[string]bool // kinds of one-at-a-time agents being started (ADR 0017, 0029)
 	assigning    map[string]bool // task ids an assign_task is starting a worker for
 	subs         map[chan Update]struct{}
 	wg           sync.WaitGroup
@@ -282,6 +309,9 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	if opts.Prices == nil {
 		opts.Prices = usage.Builtin()
 	}
+	if opts.Roles == nil {
+		opts.Roles = role.MustBuiltins()
+	}
 	if b := opts.Budgets; b.SessionMicroUSD < 0 || b.GoalMicroUSD < 0 {
 		return nil, fmt.Errorf("engine: budgets must not be negative, got %+v", b)
 	}
@@ -315,17 +345,18 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		return nil, fmt.Errorf("engine: register project: %w", err)
 	}
 	e := &Engine{
-		opts:      opts,
-		log:       opts.Logger,
-		ids:       ids,
-		adapter:   agent.ClaudeCode{Bin: opts.ClaudeBin},
-		git:       opts.Git,
-		q:         opts.Store.Q,
-		st:        opts.Store,
-		project:   Project{ID: row.ID, Name: row.Name, RepoPath: row.RepoPath, Slug: row.Slug},
-		agents:    map[string]*agentProc{},
-		subs:      map[chan Update]struct{}{},
-		assigning: map[string]bool{},
+		opts:         opts,
+		log:          opts.Logger,
+		ids:          ids,
+		adapter:      agent.ClaudeCode{Bin: opts.ClaudeBin},
+		git:          opts.Git,
+		q:            opts.Store.Q,
+		st:           opts.Store,
+		project:      Project{ID: row.ID, Name: row.Name, RepoPath: row.RepoPath, Slug: row.Slug},
+		agents:       map[string]*agentProc{},
+		subs:         map[chan Update]struct{}{},
+		assigning:    map[string]bool{},
+		startingKind: map[string]bool{},
 	}
 	if opts.Sandbox != nil {
 		if err := e.prepareSandbox(); err != nil {
@@ -401,6 +432,7 @@ func (e *Engine) reconcile(ctx context.Context) error {
 	if n > 0 {
 		e.log.Info("agents from the previous run marked exited", "count", n, "reason", ExitDaemonRestart)
 	}
+	e.expireQARuns(ctx)
 	if e.opts.Sandbox != nil {
 		e.reconcileSandbox(ctx, interrupted)
 	}
@@ -423,6 +455,7 @@ func (e *Engine) Status() Status {
 	}
 	p := e.prices()
 	st.Prices, st.Budgets = PriceInfo{AsOf: p.AsOf, Source: p.Source, File: p.File}, e.opts.Budgets
+	st.QA = e.opts.QA
 	if g := e.opts.GitHub; g != nil {
 		st.GitHub = &GitHubStatus{Repo: g.Client.Repo().String(), Base: g.Base, Remote: g.Remote, Reviewer: e.gh.reviewer.Name(),
 			Rounds: g.Rounds}
@@ -435,28 +468,25 @@ func agentName(id string) string { return "agent-" + id[:6] }
 
 // StartRequest describes a new agent.
 type StartRequest struct {
-	TaskID string // optional for workers; a lead's goal (ADR 0017)
-	Role   string // RoleWorker (default) or RoleLead
+	TaskID string // optional for workers; a lead's or architect's goal (ADR 0017)
+	Role   string // a role name (ADR 0029); empty: worker; "lead": tech-lead
 
 	// Set by the engine for reviewers (ADR 0021); never from the API.
-	base     string // start from this commit instead of HEAD
-	reviewPR int    // reviewers: the pull request number, for the branch name
-	reviewID int64  // reviewers: the review row
-	prompt   string // initial prompt instead of the task prompt
+	base      string            // start from this commit instead of HEAD
+	reviewPR  int               // reviewers: the pull request number, for the branch name
+	reviewID  int64             // reviewers: the review row
+	prompt    string            // initial prompt instead of the task prompt
+	qa        bool              // a QA run started by start_qa (ADR 0033)
+	extraRefs map[string]string // sandbox: more branches in the agent's repository (QA's sub-task branches)
 }
 
 // Start creates a worktree and launches a new agent in it.
 func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error) {
-	role := req.Role
-	switch {
-	case role == "":
-		role = RoleWorker
-	case role == RoleReviewer && req.reviewID != 0:
-	case role != RoleWorker && role != RoleLead:
-		return AgentInfo{}, fmt.Errorf("%w: role must be %s or %s", ErrInvalid, RoleWorker, RoleLead)
-	case role == RoleLead && req.TaskID == "":
-		return AgentInfo{}, fmt.Errorf("%w: a lead needs a goal: start it on a task", ErrInvalid)
+	def, err := e.resolveRole(req)
+	if err != nil {
+		return AgentInfo{}, err
 	}
+	role := string(def.Behaviour) // the kind; authority comes from it
 	e.mu.Lock()
 	if e.closing {
 		e.mu.Unlock()
@@ -466,20 +496,23 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		e.mu.Unlock()
 		return AgentInfo{}, ErrTooManyAgents
 	}
-	if role == RoleLead {
-		if e.startingLead || e.runningLeadLocked() != nil {
+	if single(role) {
+		if e.startingKind[role] || e.runningKindLocked(role) != nil {
 			e.mu.Unlock()
-			return AgentInfo{}, ErrLeadRunning
+			if role == KindLead {
+				return AgentInfo{}, ErrLeadRunning
+			}
+			return AgentInfo{}, fmt.Errorf("%w: a %s is already running; stop it first", ErrInvalid, def.Name)
 		}
-		e.startingLead = true
+		e.startingKind[role] = true
 	}
 	e.starting++
 	e.mu.Unlock()
 	defer func() {
 		e.mu.Lock()
 		e.starting--
-		if role == RoleLead {
-			e.startingLead = false
+		if single(role) {
+			delete(e.startingKind, role)
 		}
 		e.mu.Unlock()
 	}()
@@ -493,8 +526,8 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		if err != nil {
 			return AgentInfo{}, err
 		}
-		if role == RoleLead && t.ParentTaskID.Valid {
-			return AgentInfo{}, fmt.Errorf("%w: a sub-task cannot be a goal; start the lead on a top-level task", ErrInvalid)
+		if (role == KindLead || role == KindArchitect) && t.ParentTaskID.Valid {
+			return AgentInfo{}, fmt.Errorf("%w: a sub-task cannot be a goal; start the %s on a top-level task", ErrInvalid, def.Name)
 		}
 		task = &t
 	}
@@ -505,11 +538,20 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		title = task.Title
 	}
 	branch := git.BranchName(title, id)
-	if role == RoleReviewer {
+	switch role {
+	case KindReviewer:
 		branch = fmt.Sprintf("%sreview-pr%d-%s", git.BranchPrefix, req.reviewPR, id[:6])
+	case KindArchitect, KindQA, KindAssistant:
+		branch = git.BranchName(role+" "+title, id)
+	}
+	if req.base == "" && role == KindWorker && task != nil && task.ParentTaskID.Valid {
+		// A sub-task starts from its goal's work: its dependencies, or the
+		// approved spec (ADR 0031, 0032).
+		if req.base, err = e.subTaskBase(ctx, *task); err != nil {
+			return AgentInfo{}, err
+		}
 	}
 	var base string
-	var err error
 	if req.base != "" {
 		base, err = e.git.RevParse(ctx, e.project.RepoPath, req.base)
 	} else {
@@ -529,7 +571,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		}
 		mode, kind = SandboxPodman, KindClone
 		wtPath = filepath.Join(e.opts.Sandbox.WorkspaceRoot, e.project.Slug, id)
-		if undoWorktree, err = e.createClone(ctx, id, wtPath, branch, base); err != nil {
+		if undoWorktree, err = e.createClone(ctx, id, wtPath, branch, base, req.extraRefs); err != nil {
 			return AgentInfo{}, err
 		}
 	} else {
@@ -551,9 +593,9 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	started := now()
 	err = e.st.Tx(ctx, func(q *db.Queries) error {
 		if err := q.CreateAgent(ctx, db.CreateAgentParams{
-			ID: id, ProjectID: e.project.ID, TaskID: nullString(req.TaskID), Model: e.opts.Model,
+			ID: id, ProjectID: e.project.ID, TaskID: nullString(req.TaskID), Model: e.modelOf(def),
 			InheritUserSettings: e.opts.InheritUserSettings, State: string(hooks.Starting), StartedAt: started,
-			Sandbox: mode, Role: role,
+			Sandbox: mode, Kind: role, Role: def.Name,
 		}); err != nil {
 			return err
 		}
@@ -571,7 +613,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 				return fmt.Errorf("review %d is not queued: %w", req.reviewID, err)
 			}
 		}
-		if task != nil && task.Status != StatusInProgress && role != RoleReviewer {
+		if task != nil && task.Status != StatusInProgress && movesTask(role) {
 			// ADR 0011: starting an agent for a task moves it to in_progress.
 			t, err := q.UpdateTask(ctx, db.UpdateTaskParams{Title: task.Title, Description: task.Description,
 				Status: StatusInProgress, UpdatedAt: started, ID: task.ID})
@@ -590,9 +632,12 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	var a AgentInfo
 	prompt := req.prompt
 	if prompt == "" {
-		prompt = e.initialPrompt(ctx, role, task, branch)
+		prompt = e.initialPrompt(ctx, def, task, branch)
 	}
-	l := launchInfo{id: id, sid: sid, role: role, branch: branch, path: wtPath, base: base, taskID: req.TaskID,
+	if prompt != "" {
+		prompt += e.memorySection(ctx) // ADR 0034: accepted notes only
+	}
+	l := launchInfo{id: id, sid: sid, role: role, def: def, branch: branch, path: wtPath, base: base, taskID: req.TaskID,
 		started: started, prompt: prompt, reviewID: req.reviewID}
 	if e.opts.Sandbox != nil {
 		a, err = e.launchSandboxed(l, prep)
@@ -607,7 +652,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		_ = e.q.MarkAgentRemoved(context.Background(), db.MarkAgentRemovedParams{RemovedAt: nullTime(now()), ID: id})
 		return AgentInfo{}, err
 	}
-	if task != nil && role != RoleReviewer {
+	if task != nil && movesTask(role) {
 		tv := taskFromRow(*task)
 		e.publish(Update{Type: "task", Task: &tv})
 	}
@@ -616,12 +661,22 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 
 // launchInfo is what Start (and a relaunch) hands to the launch paths.
 type launchInfo struct {
-	id, sid, role, branch, path, base, taskID string
-	started                                   time.Time
-	prompt                                    string         // initial prompt; empty for none
-	reviewID                                  int64          // reviewers (ADR 0021)
-	prev                                      *agentProc     // a relaunch: the exited agent it replaces (ADR 0022)
-	followup                                  *followupRound // a relaunch to address a review (ADR 0022)
+	id, sid, branch, path, base, taskID string
+	role                                string     // the kind
+	def                                 *role.Role // the role definition (ADR 0029)
+	started                             time.Time
+	prompt                              string         // initial prompt; empty for none
+	reviewID                            int64          // reviewers (ADR 0021)
+	prev                                *agentProc     // a relaunch: the exited agent it replaces (ADR 0022)
+	followup                            *followupRound // a relaunch to address a review (ADR 0022)
+}
+
+// roleName is the launched role's name ("" if a test left it out).
+func (l launchInfo) roleName() string {
+	if l.def == nil {
+		return ""
+	}
+	return l.def.Name
 }
 
 // registerLocked adds a freshly launched agent, or replaces the exited one a
@@ -650,7 +705,7 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 	}
 	log := e.sessionLogger(l)
 	settingsPath := filepath.Join(dir, id+".settings.json")
-	settings, err := agent.HookSettings(e.opts.HookCommand)
+	settings, err := agent.HookSettings(e.opts.HookCommand, l.def.DenyRules())
 	if err != nil {
 		return AgentInfo{}, err
 	}
@@ -669,12 +724,12 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 		err = os.WriteFile(mcpConfig, cfg, 0o600)
 	}
 	if err == nil {
-		mln, err = e.listenMCP(mcpPath, id, l.role, log)
+		mln, err = e.listenMCP(mcpPath, id, l, log)
 	}
 	var cmd *exec.Cmd
 	if err == nil {
 		cmd, err = e.adapter.Command(agent.LaunchSpec{
-			SessionID: sid, Model: e.opts.Model, WorkDir: wtPath, SettingsPath: settingsPath,
+			SessionID: sid, Model: e.modelOf(l.def), WorkDir: wtPath, SettingsPath: settingsPath,
 			InheritUserSettings: e.opts.InheritUserSettings, SocketPath: ln.Path(), BaseEnv: e.opts.BaseEnv,
 			InitialPrompt: l.prompt, MCPConfigPath: mcpConfig,
 		})
@@ -694,7 +749,8 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 	}
 
 	a := &agentProc{
-		info: AgentInfo{ID: id, SessionID: sid, TaskID: taskID, Model: e.opts.Model, Sandbox: SandboxHost, Role: l.role,
+		info: AgentInfo{ID: id, SessionID: sid, TaskID: taskID, Model: e.modelOf(l.def), Sandbox: SandboxHost, Kind: l.role,
+			Role:                l.def.Name,
 			InheritUserSettings: e.opts.InheritUserSettings, Branch: branch, WorktreePath: wtPath,
 			WorkspaceKind: KindWorktree, WorktreeStatus: WorktreeActive, HasTerminal: true, StartedAt: started},
 		status:     hooks.Status{State: hooks.Starting},
@@ -712,12 +768,14 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 	}
 	e.mu.Lock()
 	e.registerLocked(a, l)
+	view := a.view() // under the lock: the agent's first hook may already be changing its state
 	e.mu.Unlock()
 	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "pid", term.Pid(),
-		"branch", branch, "worktree", wtPath, "model", e.opts.Model, "inherit_user_settings", e.opts.InheritUserSettings)
+		"branch", branch, "worktree", wtPath, "model", e.modelOf(l.def), "role_name", l.def.Name,
+		"inherit_user_settings", e.opts.InheritUserSettings)
 	e.wg.Add(1)
 	go e.watch(a)
-	return a.view(), nil
+	return view, nil
 }
 
 // watch marks the agent exited when its process ends, whether or not a
@@ -788,7 +846,7 @@ func (e *Engine) watch(a *agentProc) {
 	}
 	alog.Info("agent exited", "exit_code", code, "reason", reason)
 	close(a.exited)
-	if a.info.Sandbox == SandboxPodman && a.info.Role != RoleReviewer {
+	if a.info.Sandbox == SandboxPodman && imports(a.info.Kind) {
 		// ADR 0014: the work reaches the main repository on exit, before a
 		// relaunch (ADR 0022) may start a new session in the workspace.
 		ictx, icancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -798,6 +856,9 @@ func (e *Engine) watch(a *agentProc) {
 	close(a.afterExit)
 	if a.reviewID != 0 {
 		e.reviewerExited(a.reviewID, a.info.ID)
+	}
+	if a.info.Kind == KindQA {
+		e.qaExited(a.info.ID)
 	}
 }
 
@@ -1101,9 +1162,12 @@ func (e *Engine) publishLocked(u Update) {
 }
 
 // runningLeadLocked returns the running lead, if any.
-func (e *Engine) runningLeadLocked() *agentProc {
+func (e *Engine) runningLeadLocked() *agentProc { return e.runningKindLocked(KindLead) }
+
+// runningKindLocked returns the running agent of kind, if any.
+func (e *Engine) runningKindLocked(kind string) *agentProc {
 	for _, a := range e.agents {
-		if a.info.Role == RoleLead && a.running() {
+		if a.info.Kind == kind && a.running() {
 			return a
 		}
 	}
@@ -1178,7 +1242,8 @@ func (a *agentProc) view() AgentInfo {
 func infoFromRow(r db.ListVisibleAgentsRow) AgentInfo {
 	info := AgentInfo{
 		ID: r.ID, TaskID: r.TaskID.String, State: r.State, Model: r.Model,
-		InheritUserSettings: r.InheritUserSettings, Sandbox: r.Sandbox, Role: r.Role, Branch: r.Branch, WorktreePath: r.WorktreePath,
+		InheritUserSettings: r.InheritUserSettings, Sandbox: r.Sandbox, Kind: r.Kind, Role: r.Role, Branch: r.Branch,
+		WorktreePath:  r.WorktreePath,
 		WorkspaceKind: r.WorktreeKind, WorktreeStatus: r.WorktreeStatus, StartedAt: r.StartedAt, ExitReason: r.ExitReason,
 	}
 	if r.ExitedAt.Valid {

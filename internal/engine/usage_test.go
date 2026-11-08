@@ -109,7 +109,7 @@ func TestHostUsageFromTranscript(t *testing.T) {
 		t.Fatalf("report %+v", rep)
 	}
 	s := rep.Sessions[0]
-	if s.Turns != 2 || s.ToolCalls != 1 || s.EndedAt == nil || s.CLICostMicroUSD == nil || s.Messages != 3 || s.Role != RoleWorker ||
+	if s.Turns != 2 || s.ToolCalls != 1 || s.EndedAt == nil || s.CLICostMicroUSD == nil || s.Messages != 3 || s.Kind != KindWorker ||
 		s.CostMicroUSD != fixtureCost {
 		t.Errorf("session %+v", s)
 	}
@@ -339,7 +339,7 @@ func TestLogsFollowOneSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := e.Start(ctx, StartRequest{TaskID: goal.ID, Role: RoleLead})
+	a, err := e.Start(ctx, StartRequest{TaskID: goal.ID, Role: RoleTechLead})
 	if err != nil {
 		t.Fatal(err)
 	}

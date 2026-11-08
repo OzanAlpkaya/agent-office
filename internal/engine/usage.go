@@ -55,7 +55,8 @@ type SessionUsage struct {
 	AgentID   string       `json:"agent_id"`
 	TaskID    string       `json:"task_id,omitempty"`
 	GoalID    string       `json:"goal_id,omitempty"` // the task's goal: its parent, or the task itself
-	Role      string       `json:"role"`
+	Kind      string       `json:"kind"`              // the agent's behaviour (ADR 0029)
+	Role      string       `json:"role"`              // the role's name
 	Sandbox   string       `json:"sandbox"`
 	Source    string       `json:"source"` // SourceAPI | SourceTranscript
 	StartedAt time.Time    `json:"started_at"`
@@ -147,7 +148,7 @@ func (e *Engine) newSessionUsage(l launchInfo, sandboxMode string) *sessionUsage
 		source = SourceAPI
 	}
 	su := &sessionUsage{msgs: map[string]usage.Message{}, dirty: map[string]usage.Message{}, view: SessionUsage{
-		SessionID: l.sid, AgentID: l.id, TaskID: l.taskID, Role: l.role, Sandbox: sandboxMode, Source: source,
+		SessionID: l.sid, AgentID: l.id, TaskID: l.taskID, Kind: l.role, Role: l.roleName(), Sandbox: sandboxMode, Source: source,
 		StartedAt: l.started}}
 	if l.taskID != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -565,7 +566,7 @@ func (e *Engine) Usage(ctx context.Context) (UsageReport, error) {
 	models := map[string]bool{}
 	for _, s := range sessions {
 		v := SessionUsage{SessionID: s.ID, AgentID: s.AgentID, TaskID: s.TaskID.String, GoalID: goals[s.TaskID.String],
-			Role: s.Role, Sandbox: s.Sandbox, Source: SourceTranscript, StartedAt: s.StartedAt.UTC(), Turns: s.Turns,
+			Kind: s.Kind, Role: s.Role, Sandbox: s.Sandbox, Source: SourceTranscript, StartedAt: s.StartedAt.UTC(), Turns: s.Turns,
 			ToolCalls: s.ToolCalls, Models: []string{}}
 		if s.Sandbox == SandboxPodman {
 			v.Source = SourceAPI

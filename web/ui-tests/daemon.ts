@@ -4,15 +4,17 @@
 // types, so a change to them shows up here.
 import type { Page, WebSocketRoute } from "@playwright/test";
 import type {
-  AccessRequest, Agent, AgentState, Message, ModelUsage, Role, SessionUsage, Status, Task, TaskStatus, Tokens, UsageReport,
+  AccessRequest, Agent, AgentState, InboxItem, Kind, MemoryEntry, Message, ModelUsage, QARun, RoleInfo, SessionUsage, Spec,
+  Status, Task, TaskStatus, Tokens, UsageReport,
 } from "../src/api";
+import { defaultRole } from "../src/api";
 
 const t0 = Date.parse("2026-11-08T10:00:00Z");
 const iso = (minutes: number): string => new Date(t0 + minutes * 60_000).toISOString();
 
-export function agent(id: string, role: Role, state: AgentState, over: Partial<Agent> = {}): Agent {
+export function agent(id: string, kind: Kind, state: AgentState, over: Partial<Agent> = {}): Agent {
   return {
-    id, role, state, model: "haiku", inherit_user_settings: false, sandbox: "podman",
+    id, kind, role: defaultRole[kind], state, model: "haiku", inherit_user_settings: false, sandbox: "podman",
     branch: `agent-office/${id}`, worktree_path: `/data/agents/${id}`, workspace_kind: "clone",
     worktree_status: "active", has_terminal: true, started_at: iso(0), ...over,
   };
@@ -29,13 +31,27 @@ export interface World {
   messages: Message[];
   usage?: SessionUsage[];
   models?: ModelUsage[];
+  inbox?: InboxItem[];
+  specs?: Spec[];
+  qaRuns?: QARun[];
+  memory?: MemoryEntry[];
 }
+
+const role = (name: string, behaviour: Kind, read_only = false): RoleInfo => ({
+  name, behaviour, read_only, description: `${name} role`, model: "", reports_to: "lead", team_tools: [], deny: null,
+  source: "builtin",
+});
+
+export const roles: RoleInfo[] = [
+  role("architect", "architect", true), role("assistant", "assistant", true), role("docs", "worker"), role("qa", "qa"),
+  role("reviewer", "reviewer"), role("security", "worker"), role("tech-lead", "lead", true), role("worker", "worker"),
+];
 
 const zero: Tokens = { input: 0, output: 0, cache_read: 0, cache_write_5m: 0, cache_write_1h: 0 };
 
 export function session(id: string, a: Agent, goal: string | undefined, over: Partial<SessionUsage> = {}): SessionUsage {
   return {
-    session_id: id, agent_id: a.id, task_id: a.task_id, goal_id: goal, role: a.role, sandbox: a.sandbox,
+    session_id: id, agent_id: a.id, task_id: a.task_id, goal_id: goal, kind: a.kind, role: a.role, sandbox: a.sandbox,
     source: a.sandbox === "podman" ? "api" : "transcript", started_at: a.started_at, turns: 1, tool_calls: 2, messages: 3,
     tokens: zero, cost_micro_usd: 0, unpriced_tokens: 0, models: ["claude-haiku-5-5"], ...over,
   };
@@ -125,6 +141,7 @@ export const status: Status = {
 export class MockDaemon {
   private events?: WebSocketRoute;
   readonly terminals: string[] = []; // agent ids whose terminal was opened
+  readonly requests: string[] = []; // "METHOD path body" of every write the page sent
 
   constructor(readonly world: World) {}
 
@@ -137,6 +154,32 @@ export class MockDaemon {
       if (p === "/api/project") return route.fulfill(json({ id: "p1", name: "linkshelf", repo_path: "/home/dev/linkshelf", slug: "linkshelf" }));
       if (p === "/api/status") return route.fulfill(json(status));
       if (p === "/api/usage") return route.fulfill(json(report(this.world)));
+      if (p === "/api/roles") return route.fulfill(json(roles));
+      const method = route.request().method();
+      if (method !== "GET") {
+        this.requests.push(`${method} ${p} ${route.request().postData() ?? ""}`.trim());
+        if (/^\/api\/inbox\/\d+\/(reply|read)$/.test(p)) {
+          const id = Number(p.split("/")[3]);
+          const it = (this.world.inbox ?? []).find((x) => x.id === id);
+          const body = route.request().postDataJSON() as { body?: string } | null;
+          const next = { ...it, read_at: iso(30), ...(body?.body ? { reply: body.body, answered_at: iso(30) } : {}) };
+          return route.fulfill(json(next));
+        }
+        if (method === "PUT" && /^\/api\/specs\/\d+$/.test(p)) {
+          const s = this.world.specs?.[0];
+          return route.fulfill(json({ ...s, id: 99, version: (s?.version ?? 0) + 1, plan: route.request().postDataJSON() }));
+        }
+        if (/^\/api\/specs\/\d+\/approve$/.test(p)) {
+          return route.fulfill(json({ spec: this.world.specs?.[0], created: ["t1"], updated: [], deleted: [], kept: [] }));
+        }
+        if (p.endsWith("/resolve-conflict") || (method === "DELETE" && p.startsWith("/api/memory/"))) {
+          return route.fulfill({ status: 204 });
+        }
+        if (/^\/api\/memory\/\d+\/accept$/.test(p)) {
+          const id = Number(p.split("/")[3]);
+          return route.fulfill(json({ ...(this.world.memory ?? []).find((m) => m.id === id), status: "accepted" }));
+        }
+      }
       const m = /^\/api\/agents\/([^/]+)\/(events|messages)$/.exec(p);
       if (m) {
         return route.fulfill(json(m[2] === "messages" ? this.world.messages.filter((x) => x.to === m[1] || x.from === m[1]) : []));
@@ -147,7 +190,8 @@ export class MockDaemon {
       this.events = ws;
       ws.send(JSON.stringify({
         type: "snapshot", agents: this.world.agents, tasks: this.world.tasks,
-        access_requests: this.world.accessRequests, pull_requests: [],
+        access_requests: this.world.accessRequests, pull_requests: [], inbox: this.world.inbox ?? [],
+        specs: this.world.specs ?? [], qa_runs: this.world.qaRuns ?? [], memory: this.world.memory ?? [],
       }));
     });
     await page.routeWebSocket(/\/api\/agents\/[^/]+\/terminal$/, (ws) => {
@@ -188,6 +232,17 @@ export class MockDaemon {
   usage(s: SessionUsage): void {
     this.world.usage = [...(this.world.usage ?? []).filter((x) => x.session_id !== s.session_id), s];
     this.send({ type: "usage", usage: s });
+  }
+
+  // inboxItem sends a live message to the user (ADR 0030).
+  inboxItem(it: InboxItem): void {
+    this.world.inbox = [it, ...(this.world.inbox ?? []).filter((x) => x.id !== it.id)];
+    this.send({ type: "inbox", inbox: it });
+  }
+
+  memoryEntry(m: MemoryEntry): void {
+    this.world.memory = [m, ...(this.world.memory ?? []).filter((x) => x.id !== m.id)];
+    this.send({ type: "memory", memory: m });
   }
 
   message(id: number, from: string | undefined, to: string): void {

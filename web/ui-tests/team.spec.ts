@@ -1,0 +1,172 @@
+// The team workflow UI (Phase 12, ADR 0029-0034) against a mocked daemon:
+// the inbox, plan approval, dependencies and conflicts on task cards, QA and
+// project memory.
+import { type Page, expect, test } from "@playwright/test";
+import type { Spec } from "../src/api";
+import { MockDaemon, type World, agent, task } from "./daemon";
+
+const screens = "test-results/screens";
+const at = "2026-11-08T10:05:00Z";
+
+function workflow(): World {
+  const goal = task("g00000000001", "Add tags to saved links", "in_progress");
+  const sub = (id: string, title: string, status: "todo" | "in_progress" | "review", over = {}) =>
+    task(id, title, status, { parent_task_id: goal.id, ...over });
+  const tasks = [
+    goal,
+    sub("t00000000001", "Tags table", "review", { spec_key: "schema", files: ["internal/store/"], acceptance: ["tags are stored"] }),
+    sub("t00000000003", "Tag API", "in_progress", { spec_key: "api" }),
+    sub("t00000000002", "Tag filter", "todo", { spec_key: "filter", depends_on: ["t00000000001", "t00000000003"] }),
+    sub("t00000000004", "Tag CLI", "review", {
+      conflicts: [{ branch: "origin/main", files: ["cmd/main.go"] },
+        { with: "t00000000001", branch: "agent-office/tags-table-b2c3d4", files: ["internal/store/store.go"] }],
+    }),
+  ];
+  const spec: Spec = {
+    id: 1, goal_id: goal.id, version: 2, status: "proposed", author: "a7c4e1000001", created_at: at, markdown: "# Add tags",
+    plan: {
+      summary: "Users can tag links and filter by tag.", design: "A tags table and a ?tag= filter.",
+      sub_tasks: [
+        { key: "schema", title: "Tags table", description: "Add the table.", files: ["internal/store/"] },
+        { key: "filter", title: "Tag filter", description: "Filter by tag.", depends_on: ["schema"], acceptance: ["?tag=x filters"] },
+      ],
+      risks: "Migrations.",
+    },
+  };
+  return {
+    tasks,
+    agents: [
+      agent("a7c4e1000001", "architect", "idle", { task_id: goal.id }),
+      agent("a1ead0000001", "lead", "idle", { task_id: goal.id }),
+      agent("b2c3d4000001", "worker", "working", { task_id: "t00000000003" }),
+      agent("c3d4e5000002", "worker", "exited", { task_id: "t00000000004", exit_reason: "reported_done" }),
+      agent("d4e5f6000003", "worker", "idle", { role: "docs", task_id: "t00000000001" }),
+    ],
+    accessRequests: [],
+    messages: [],
+    specs: [spec],
+    inbox: [
+      { id: 2, kind: "plan", body: "The architect's plan (version 2) is ready for your approval.", created_at: at, goal_id: goal.id, task_id: goal.id },
+      { id: 1, kind: "question", agent_id: "a7c4e1000001", role: "architect", task_id: goal.id, goal_id: goal.id,
+        body: "Should tags be case-insensitive?", created_at: at },
+    ],
+    qaRuns: [{
+      id: 1, goal_id: goal.id, status: "failed", branch: "agent-office/qa-add-tags-e5f6a7", merged: [], created_at: at, updated_at: at,
+      summary: "The filter ignores case.", bugs: [{ title: "Filter is case-sensitive", description: "?tag=Go misses go", bug_task_id: "t00000000009" }],
+    }],
+    memory: [{ id: 1, kind: "convention", title: "Errors are wrapped", body: "Wrap errors with %w.", status: "proposed",
+      source: "f00000000001", created_at: at, updated_at: at }],
+  };
+}
+
+// card is the task card whose own title is title (sub-task cards also name their goal).
+const card = (page: Page, title: string) =>
+  page.locator("article.task").filter({ has: page.locator(".task-title").getByText(title, { exact: true }) });
+
+async function open(page: Page, daemon: MockDaemon): Promise<string[]> {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+  await daemon.install(page);
+  await page.goto("/");
+  return errors;
+}
+
+test("the inbox shows the team's questions and sends the answer", async ({ page }) => {
+  const daemon = new MockDaemon(workflow());
+  const errors = await open(page, daemon);
+  const button = page.getByRole("button", { name: /^Inbox/ });
+  await expect(button).toHaveText("Inbox · 2");
+  await button.click();
+  const inbox = page.getByRole("region", { name: "Inbox" });
+  await expect(inbox).toContainText("Should tags be case-insensitive?");
+  await expect(inbox).toContainText("architect a7c4e1");
+  await inbox.getByLabel("Answer").fill("Yes, lower-case them.");
+  await inbox.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => daemon.requests).toContain('POST /api/inbox/1/reply {"body":"Yes, lower-case them."}');
+  // A live item arrives and is counted.
+  daemon.inboxItem({ id: 3, kind: "briefing", agent_id: "f00000000001", role: "assistant", body: "All quiet.", created_at: at });
+  await expect(button).toHaveText("Inbox · 3");
+  await expect(inbox.getByLabel("Ask the assistant")).toBeVisible();
+  await page.screenshot({ path: `${screens}/team-inbox.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test("the plan notice in the inbox reviews or approves the plan directly", async ({ page }) => {
+  const daemon = new MockDaemon(workflow());
+  const errors = await open(page, daemon);
+  await page.getByRole("button", { name: /^Inbox/ }).click();
+  const notice = page.getByRole("region", { name: "Inbox" }).locator("li.inbox-item.kind-plan");
+  await expect(notice).toContainText("ready for your approval");
+  await notice.getByRole("button", { name: "Review plan" }).click();
+  const goal = card(page, "Add tags to saved links");
+  await expect(goal).toBeFocused();
+  await expect(goal).toBeInViewport();
+  await expect(goal.locator("details.plan")).toHaveAttribute("open", "");
+  await notice.getByRole("button", { name: "Approve plan v2" }).click();
+  await expect.poll(() => daemon.requests).toContain("POST /api/specs/1/approve");
+  await expect.poll(() => daemon.requests).toContain("POST /api/inbox/2/read");
+  await page.screenshot({ path: `${screens}/team-inbox-plan.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test("a proposed plan is shown on the goal and approved by the user", async ({ page }) => {
+  const daemon = new MockDaemon(workflow());
+  const errors = await open(page, daemon);
+  const goal = card(page, "Add tags to saved links");
+  const plan = goal.locator("details.plan");
+  await expect(plan).toContainText("Plan v2 · waiting for your approval · 2 sub-tasks · by architect a7c4e1");
+  await expect(plan).toContainText("Users can tag links and filter by tag.");
+  await expect(plan).toContainText("after schema");
+  await expect(plan).toContainText("?tag=x filters");
+  await expect(goal.getByRole("button", { name: "Start architect" })).toBeDisabled(); // one is running
+  await page.screenshot({ path: `${screens}/team-plan.png`, fullPage: true });
+  await plan.getByRole("button", { name: "Edit" }).click();
+  await plan.getByLabel("Title").first().fill("Tags table and index");
+  await plan.getByRole("button", { name: "Save as a new version" }).click();
+  await expect.poll(() => daemon.requests.find((r) => r.startsWith("PUT /api/specs/1"))).toContain('"title":"Tags table and index"');
+  await plan.getByRole("button", { name: "Approve plan" }).click();
+  await expect.poll(() => daemon.requests).toContain("POST /api/specs/1/approve");
+  expect(errors).toEqual([]);
+});
+
+test("task cards show dependencies, conflicts, QA and their roles", async ({ page }) => {
+  const daemon = new MockDaemon(workflow());
+  const errors = await open(page, daemon);
+  const filter = card(page, "Tag filter");
+  await expect(filter).toContainText("Waits for “Tag API”");
+  const cli = card(page, "Tag CLI");
+  await expect(cli).toContainText("Conflicts with the base branch origin/main in cmd/main.go");
+  await expect(cli).toContainText("Conflicts with “Tags table” (agent-office/tags-table-b2c3d4) in internal/store/store.go");
+  await cli.getByRole("button", { name: "Resolve conflict" }).click();
+  await expect.poll(() => daemon.requests).toContain("POST /api/tasks/t00000000004/resolve-conflict");
+  const table = card(page, "Tags table");
+  await expect(table).toContainText("internal/store/");
+  await expect(table).toContainText("1 acceptance criterion");
+  const goal = card(page, "Add tags to saved links");
+  await expect(goal.locator("details.qa")).toContainText("QA failed run 1");
+  await expect(goal.locator("details.qa")).toContainText("1 bug");
+  // Roles: the worker roles are offered when starting an agent; names show on cards.
+  await expect(filter.getByLabel("Role")).toContainText("docs");
+  await expect(page.locator("li.card", { hasText: "d4e5f6000003" })).toContainText("docs");
+  await expect(page.locator("li.card", { hasText: "a1ead0000001" })).toContainText("tech-lead");
+  await page.screenshot({ path: `${screens}/team-board.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test("project memory proposals wait for the user", async ({ page }) => {
+  const daemon = new MockDaemon(workflow());
+  const errors = await open(page, daemon);
+  await page.getByRole("button", { name: "Memory · 1 proposed" }).click();
+  const panel = page.getByRole("region", { name: "Project memory" });
+  await expect(panel).toContainText("Errors are wrapped");
+  await expect(panel).toContainText("proposed by f00000");
+  await panel.getByRole("button", { name: "Accept" }).click();
+  await expect.poll(() => daemon.requests).toContain("POST /api/memory/1/accept");
+  daemon.memoryEntry({ ...workflow().memory![0], status: "accepted" });
+  await expect(page.getByRole("button", { name: "Memory" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Accept" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Briefing" }).click();
+  await expect.poll(() => daemon.requests).toContain("POST /api/assistant/briefing");
+  expect(errors.filter((e) => !e.includes("404"))).toEqual([]);
+});
