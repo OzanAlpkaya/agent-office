@@ -104,8 +104,9 @@ The ones that shape the system most:
 
 You need git, make, Go 1.27+, Node 26+ (with npm), rootless
 [Podman](https://podman.io/docs/installation) and [Claude Code](https://www.anthropic.com/claude-code),
-logged in. Agents run with your Claude subscription. The repository you point it at needs at least
-one commit.
+logged in. Agents run with your Claude subscription. (On a minimal Debian, Node's official tarball
+also needs `libatomic1`.) Checked from a fresh clone, on this machine and in a clean Debian
+container.
 
 ```sh
 git clone https://github.com/OzanAlpkaya/agent-office.git
@@ -132,8 +133,9 @@ In a second terminal, pair your browser once:
 
 On the board, click **+ New task** and describe a small change. Then:
 
-- **Start agent** runs one sandboxed worker on it. Watch its terminal, and when it commits, its
-  branch appears in your repository (`agent-office/<task>-<id>`).
+- **Start agent** runs one sandboxed worker on it. Watch its terminal. When the worker reports, the
+  task moves to review and its branch, with its commits, appears in your repository
+  (`agent-office/<task>-<id>`). The agent stays open for follow-up instructions until you stop it.
 - For a team, write a goal, click **Start Tech Lead** and open the **Office** tab.
 
 Agents' workspaces, the database and session logs live under `~/.local/share/agent-office`
