@@ -343,11 +343,14 @@ func TestEndToEnd(t *testing.T) {
 	// 1. Three tasks, three agents in parallel, each in its own worktree. The
 	// task text is the first prompt.
 	titles := []string{"E2E görev bir", "E2E görev iki", "E2E görev üç"}
+	// Phase 9: a codeword only the first conversation knows; a resumed one recalls it.
+	codeword := fmt.Sprintf("KIWI%04d", time.Now().UnixNano()%10000)
 	var tasks []taskInfo
 	for _, title := range titles {
 		var task taskInfo
 		d.json("POST", "/api/tasks", map[string]string{"title": title,
-			"description": "Reply with only the word ready. Do not use any tools."}, 201, &task)
+			"description": "The codeword of this task is " + codeword + "; remember it. Reply with only the word ready. " +
+				"Do not use any tools."}, 201, &task)
 		tasks = append(tasks, task)
 	}
 	for _, task := range tasks {
@@ -459,8 +462,11 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
-	// 7. Restart: agents are shown as exited (daemon_restart) without terminals;
-	// tasks and worktrees survive.
+	// 7. Restart without restoring (Phase 9 restores by default): agents are
+	// shown as exited (daemon_restart) without live terminals; tasks and
+	// worktrees survive, and so does every session's terminal output.
+	baseArgs := d.args
+	d.args = append(append([]string(nil), baseArgs...), "--restore-agents=false")
 	d.start()
 	var after []agentInfo
 	d.json("GET", "/api/agents", nil, 200, &after)
@@ -488,6 +494,76 @@ func TestEndToEnd(t *testing.T) {
 			t.Errorf("usage of session %s after restart: %+v", sid, u)
 		}
 	}
+	// Phase 9 (ADR 0036): the session's terminal output was saved.
+	var sessions []struct {
+		ID       string `json:"id"`
+		Live     bool   `json:"live"`
+		Terminal bool   `json:"terminal"`
+	}
+	d.json("GET", "/api/agents/"+c.ID+"/sessions", nil, 200, &sessions)
+	if len(sessions) != 1 || sessions[0].ID != c.SessionID || sessions[0].Live || !sessions[0].Terminal {
+		t.Fatalf("C's sessions after restart: %+v", sessions)
+	}
+	if code, out := d.do("GET", "/api/agents/"+c.ID+"/sessions/"+c.SessionID+"/terminal", nil); code != 200 ||
+		len(out) < 1000 {
+		t.Errorf("C's saved terminal: %d, %d bytes", code, len(out))
+	}
+
+	// 7b. Resume C (ADR 0035): same agent and worktree, a new session that
+	// continues the conversation, so it still knows the codeword.
+	w = watch(t, ctx, d.base)
+	var cr struct {
+		agentInfo
+		ResumedFrom string `json:"resumed_from"`
+	}
+	d.json("POST", "/api/agents/"+c.ID+"/resume", map[string]string{
+		"prompt": "What is the codeword of your task? Reply with only the codeword."}, 200, &cr)
+	if cr.ResumedFrom != c.SessionID || cr.SessionID == c.SessionID || cr.WorktreePath != c.WorktreePath {
+		t.Fatalf("resumed C %+v", cr)
+	}
+	w.waitFor(t, c.ID, "the resumed turn to finish", 2*time.Minute, func(h []string) bool {
+		return len(h) > 0 && h[len(h)-1] == "idle" && strings.Contains(strings.Join(h, ","), "working")
+	})
+	tc3 := attach(t, ctx, d.base, c.ID)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) && strings.Count(tc3.text(), codeword) < 2 { // the prompt itself does not contain it
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !strings.Contains(tc3.text(), codeword) {
+		t.Errorf("the resumed session did not recall the codeword:\n%s", tail(tc3.text(), 30))
+	}
+	checkForkedUsage(t, d, c.SessionID, cr.SessionID)
+
+	// 7c. Crash with C idle; the next start restores it (default on) and says so.
+	d.signal(syscall.SIGKILL)
+	d.args = baseArgs
+	d.start()
+	var restored agentInfo
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(500 * time.Millisecond) {
+		var list []agentInfo
+		d.json("GET", "/api/agents", nil, 200, &list)
+		for _, ag := range list {
+			if ag.ID == c.ID {
+				restored = ag
+			}
+		}
+		if restored.HasTerminal && restored.SessionID != cr.SessionID {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("C was not restored: %+v", restored)
+		}
+	}
+	var inbox []struct {
+		AgentID string `json:"agent_id"`
+		Kind    string `json:"kind"`
+		Body    string `json:"body"`
+	}
+	d.json("GET", "/api/inbox", nil, 200, &inbox)
+	if len(inbox) == 0 || inbox[0].AgentID != "" || !strings.Contains(inbox[0].Body, "Resumed with their conversations") {
+		t.Errorf("restore notice %+v", inbox)
+	}
+	d.json("POST", "/api/agents/"+c.ID+"/stop", nil, 200, nil)
 
 	// 8. Removal never loses work: A has an untracked file -> kept until
 	// discarded; B and C are clean -> worktree and branch removed.

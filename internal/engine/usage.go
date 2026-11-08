@@ -137,6 +137,12 @@ type sessionUsage struct {
 	settle     *time.Timer // the next settle read; guarded by Engine.mu
 	settleStep int         // index into transcriptSettle; guarded by Engine.mu
 	ended      bool        // the process exited: the final read was done; guarded by Engine.mu
+
+	// A resumed host session (ADR 0035): its transcript repeats the messages
+	// of the conversation it continues, and Claude Code's cost-state there is
+	// cumulative. Both are set before the session starts and only read after.
+	skip    map[string]bool // message ids the agent's earlier sessions recorded
+	cliBase int64           // Claude Code's cost of the sessions it continues, micro-USD
 }
 
 func (e *Engine) prices() *usage.Prices { return e.opts.Prices }
@@ -150,6 +156,9 @@ func (e *Engine) newSessionUsage(l launchInfo, sandboxMode string) *sessionUsage
 	su := &sessionUsage{msgs: map[string]usage.Message{}, dirty: map[string]usage.Message{}, view: SessionUsage{
 		SessionID: l.sid, AgentID: l.id, TaskID: l.taskID, Kind: l.role, Role: l.roleName(), Sandbox: sandboxMode, Source: source,
 		StartedAt: l.started}}
+	if l.resumeFrom != "" && source == SourceTranscript {
+		e.forkedTranscript(su, l)
+	}
 	if l.taskID != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -161,6 +170,37 @@ func (e *Engine) newSessionUsage(l launchInfo, sandboxMode string) *sessionUsage
 		}
 	}
 	return su
+}
+
+// maxResumeChain bounds the walk over the sessions a resumed one continues.
+const maxResumeChain = 100
+
+// forkedTranscript prepares a resumed host session's usage: the message ids
+// to skip (already counted for an earlier session) and the CLI cost to
+// subtract (spike, 2026-11-08, Claude Code 2.1.319: a forked transcript copies
+// the parent's assistant records, and its cost-state includes the parent's
+// cost).
+func (e *Engine) forkedTranscript(su *sessionUsage, l launchInfo) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ids, err := e.q.AgentUsageMessageIDs(ctx, db.AgentUsageMessageIDsParams{AgentID: l.id, SessionID: l.sid})
+	if err != nil {
+		e.log.Warn("usage of earlier sessions not readable; a resumed transcript may count them again", "agent_id", l.id, "err", err)
+	}
+	su.skip = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		su.skip[id] = true
+	}
+	for from, n := l.resumeFrom, 0; from != "" && n < maxResumeChain; n++ {
+		s, err := e.q.GetSession(ctx, from)
+		if err != nil {
+			break
+		}
+		if s.CliCostMicroUsd.Valid {
+			su.cliBase += s.CliCostMicroUsd.Int64
+		}
+		from = s.ResumedFrom
+	}
 }
 
 func goalOf(t db.Task) string {
@@ -444,6 +484,19 @@ func (e *Engine) readTranscript(su *sessionUsage, log *slog.Logger) {
 	if len(r.Messages) > 0 || r.CLICostMicroUSD != nil {
 		log.Debug("transcript read", "messages", len(r.Messages), "cli_cost", r.CLICostMicroUSD != nil)
 	}
+	if len(su.skip) > 0 {
+		kept := r.Messages[:0]
+		for _, m := range r.Messages {
+			if !su.skip[m.ID] {
+				kept = append(kept, m)
+			}
+		}
+		r.Messages = kept
+	}
+	if r.CLICostMicroUSD != nil && su.cliBase > 0 {
+		own := max(*r.CLICostMicroUSD-su.cliBase, 0)
+		r.CLICostMicroUSD = &own
+	}
 	if r.CLICostMicroUSD != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := e.q.SetSessionCLICost(ctx, db.SetSessionCLICostParams{CliCostMicroUsd: sql.NullInt64{Int64: *r.CLICostMicroUSD, Valid: true},
@@ -660,6 +713,7 @@ func (e *Engine) retentionLoop(ctx context.Context) {
 	for {
 		pctx, cancel := context.WithTimeout(ctx, time.Minute)
 		e.pruneEvents(pctx)
+		e.pruneHistory() // saved terminals follow the same retention (ADR 0036)
 		cancel()
 		select {
 		case <-ctx.Done():

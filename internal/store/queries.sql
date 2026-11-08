@@ -54,7 +54,7 @@ UPDATE agents SET state = 'exited', activity = '', exited_at = ?, exit_code = ?,
 WHERE id = ?;
 
 -- name: MarkAgentRemoved :exec
-UPDATE agents SET removed_at = ? WHERE id = ?;
+UPDATE agents SET removed_at = ?, resume_state = '' WHERE id = ?;
 
 -- name: ListVisibleAgents :many
 SELECT agents.*, worktrees.path AS worktree_path, worktrees.branch AS branch,
@@ -64,11 +64,12 @@ WHERE agents.project_id = ? AND agents.removed_at IS NULL
 ORDER BY agents.started_at, agents.id;
 
 -- name: MarkUnfinishedAgentsExited :execrows
-UPDATE agents SET state = 'exited', activity = '', exited_at = ?, exit_reason = 'daemon_restart'
+-- A crash: the last recorded state is what a restore resumes from (ADR 0035).
+UPDATE agents SET resume_state = state, state = 'exited', activity = '', exited_at = ?, exit_reason = 'daemon_restart'
 WHERE state != 'exited';
 
 -- name: CreateSession :exec
-INSERT INTO sessions (id, agent_id, started_at) VALUES (?, ?, ?);
+INSERT INTO sessions (id, agent_id, started_at, resumed_from) VALUES (?, ?, ?, ?);
 
 -- name: EndSessions :exec
 UPDATE sessions SET ended_at = ? WHERE agent_id = ? AND ended_at IS NULL;
@@ -180,7 +181,8 @@ SELECT count(*) FROM messages WHERE to_agent_id = ? AND from_agent_id = ? AND de
 
 -- name: ReopenAgent :exec
 -- A follow-up relaunches an exited agent in its workspace (ADR 0022).
-UPDATE agents SET state = 'starting', activity = '', exited_at = NULL, exit_code = NULL, exit_reason = ''
+UPDATE agents SET state = 'starting', activity = '', exited_at = NULL, exit_code = NULL, exit_reason = '',
+    resume_state = ''
 WHERE id = ? AND state = 'exited';
 
 -- name: UpsertPullRequest :one
@@ -410,8 +412,8 @@ RETURNING *;
 -- Project memory (migration 0008, ADR 0034).
 
 -- name: InsertMemory :one
-INSERT INTO memory (project_id, kind, title, body, status, source, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO memory (project_id, kind, title, body, status, source, created_at, updated_at, roles, paths)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetMemory :one
@@ -427,7 +429,7 @@ SELECT * FROM memory WHERE project_id = ? AND status = 'accepted' ORDER BY id DE
 SELECT count(*) FROM memory WHERE project_id = ? AND status = 'proposed';
 
 -- name: UpdateMemory :one
-UPDATE memory SET kind = ?, title = ?, body = ?, status = ?, updated_at = ? WHERE id = ?
+UPDATE memory SET kind = ?, title = ?, body = ?, status = ?, updated_at = ?, roles = ?, paths = ? WHERE id = ?
 RETURNING *;
 
 -- name: DeleteMemory :execrows
@@ -439,3 +441,29 @@ SELECT count(*) FROM sessions WHERE agent_id = ?;
 
 -- name: CountSpecsSince :one
 SELECT count(*) FROM specs WHERE goal_id = ? AND created_at >= ?;
+
+-- Resume and restore (migration 0009, ADR 0035).
+
+-- name: SetResumeState :exec
+UPDATE agents SET resume_state = ? WHERE id = ?;
+
+-- name: LatestSession :one
+SELECT * FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1;
+
+-- name: GetSession :one
+SELECT * FROM sessions WHERE id = ?;
+
+-- name: ListAgentSessions :many
+SELECT * FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC;
+
+-- name: AgentUsageMessageIDs :many
+-- Message ids an agent's sessions recorded: a forked transcript repeats its parent's (ADR 0035).
+SELECT DISTINCT message_id FROM usage_messages WHERE agent_id = ? AND session_id != ?;
+
+-- name: ClearResumeStates :exec
+UPDATE agents SET resume_state = '' WHERE project_id = ? AND resume_state != '';
+
+-- name: DeleteSession :exec
+-- A resumed session whose CLI could not load the conversation (ADR 0035): it never ran, and a later
+-- resume must continue the session before it.
+DELETE FROM sessions WHERE id = ?;

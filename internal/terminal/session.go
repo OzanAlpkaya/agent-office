@@ -45,6 +45,7 @@ type Session struct {
 
 	mu         sync.Mutex
 	scrollback []byte
+	gen        uint64 // output chunks received; Snapshot callers compare it to skip unchanged saves
 	limit      int
 	subBuf     int
 	subs       map[*Subscriber]struct{}
@@ -112,6 +113,7 @@ func (s *Session) broadcast(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scrollback = append(s.scrollback, chunk...)
+	s.gen++
 	if over := len(s.scrollback) - s.limit; over > 0 {
 		s.scrollback = append([]byte(nil), s.scrollback[over:]...)
 	}
@@ -158,6 +160,15 @@ func (s *Session) Attach() (snapshot []byte, sub *Subscriber, ok bool) {
 	sub = &Subscriber{C: c, c: c, s: s}
 	s.subs[sub] = struct{}{}
 	return snapshot, sub, true
+}
+
+// Snapshot returns a copy of the scrollback and a counter that changes
+// whenever output arrives, so a caller saving the scrollback can skip
+// unchanged snapshots.
+func (s *Session) Snapshot() ([]byte, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.scrollback...), s.gen
 }
 
 // Close detaches the subscriber. It is safe to call more than once.

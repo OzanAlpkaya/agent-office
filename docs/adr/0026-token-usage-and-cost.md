@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-11-08
 - **Amends:** ADR 0016 (the API socket meters usage), ADR 0011 (`sessions` gains counters)
+- **Amended by:** ADR 0035 (resumed host sessions: copied messages skipped, cumulative cost-state)
 
 ## Context
 

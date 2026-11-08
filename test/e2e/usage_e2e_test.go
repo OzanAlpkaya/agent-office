@@ -113,8 +113,10 @@ func usd(micro int64) string { return fmt.Sprintf("$%d.%06d", micro/1_000_000, m
 // transcript was metered on its API socket with the same token counts. The
 // transcript belongs to the sandbox's subordinate uid; the test reads it
 // through podman unshare. Requests Claude Code does not write to the
-// transcript are metered too, so the meter may hold more messages.
-func checkSandboxUsage(t *testing.T, dataDir, agentID, sessionID string) {
+// transcript are metered too, so the meter may hold more messages. A resumed
+// session's transcript repeats its parent's messages (Phase 9), which were
+// metered for the parent: name it as parent.
+func checkSandboxUsage(t *testing.T, dataDir, agentID, sessionID string, parent ...string) {
 	t.Helper()
 	cfg := filepath.Join(dataDir, "agents", agentID, "config")
 	found, err := exec.Command("podman", "unshare", "find", cfg, "-name", sessionID+".jsonl", "-path", "*/projects/*").Output()
@@ -137,21 +139,29 @@ func checkSandboxUsage(t *testing.T, dataDir, agentID, sessionID string) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT message_id, input_tokens, output_tokens, cache_read, cache_write_5m, cache_write_1h
-		FROM usage_messages WHERE session_id = ? AND source = 'api'`, sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metered := map[string]usage.Tokens{}
-	for rows.Next() {
-		var id string
-		var tk usage.Tokens
-		if err := rows.Scan(&id, &tk.Input, &tk.Output, &tk.CacheRead, &tk.CacheWrite5m, &tk.CacheWrite1h); err != nil {
+	metered, own := map[string]usage.Tokens{}, 0
+	for _, sid := range append([]string{sessionID}, parent...) {
+		rows, err := db.Query(`SELECT message_id, input_tokens, output_tokens, cache_read, cache_write_5m, cache_write_1h
+			FROM usage_messages WHERE session_id = ? AND source = 'api'`, sid)
+		if err != nil {
 			t.Fatal(err)
 		}
-		metered[id] = tk
+		for rows.Next() {
+			var id string
+			var tk usage.Tokens
+			if err := rows.Scan(&id, &tk.Input, &tk.Output, &tk.CacheRead, &tk.CacheWrite5m, &tk.CacheWrite1h); err != nil {
+				t.Fatal(err)
+			}
+			metered[id] = tk
+			if sid == sessionID {
+				own++
+			}
+		}
+		rows.Close()
 	}
-	rows.Close()
+	if own == 0 {
+		t.Errorf("session %s: nothing metered on its own API socket", sessionID)
+	}
 	if len(tr.Messages) == 0 {
 		t.Fatal("the sandboxed transcript holds no assistant messages")
 	}
@@ -176,4 +186,46 @@ func (tm *term) text() string {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	return ansi.ReplaceAllString(tm.buf.String(), "")
+}
+
+// checkForkedUsage (Phase 9, ADR 0035): a resumed host session's transcript
+// repeats its parent's messages; agent-office counts each message once, so
+// both sessions together have exactly the distinct messages of both files.
+func checkForkedUsage(t *testing.T, d *daemon, parent, fork string) {
+	t.Helper()
+	ids := map[string]bool{}
+	forkMsgs := 0
+	for _, sid := range []string{parent, fork} {
+		f, err := os.Open(hostTranscript(t, sid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := usage.ReadTranscript(f)
+		f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range r.Messages {
+			ids[m.ID] = true
+		}
+		if sid == fork {
+			forkMsgs = len(r.Messages)
+		}
+	}
+	var p, f sessionUsage
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(time.Second) {
+		u := usageOf(t, d)
+		p, f = u[parent], u[fork]
+		if p.Messages+f.Messages == len(ids) && f.Messages > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("forked usage: parent %d + fork %d messages, transcripts %d distinct (fork file %d)",
+				p.Messages, f.Messages, len(ids), forkMsgs)
+		}
+	}
+	if f.Messages >= forkMsgs {
+		t.Errorf("the fork's copied messages were counted again: %d of %d", f.Messages, forkMsgs)
+	}
+	t.Logf("forked session %s: %d new messages (its transcript holds %d), parent %d", fork[:8], f.Messages, forkMsgs, p.Messages)
 }

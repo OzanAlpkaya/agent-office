@@ -66,11 +66,37 @@ test("agent and task cards show their usage", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("an exited agent's terminal explains the resume line", async ({ page }) => {
+test("an exited agent's terminal explains the resume line and resumes it", async ({ page }) => {
   const daemon = new MockDaemon(team(10));
-  await open(page, daemon);
+  const errors = await open(page, daemon);
   await page.locator(".card", { hasText: "d0e1f2000009" }).click();
-  await expect(page.getByTestId("resume-note")).toContainText("cannot be used with agent-office yet");
-  await expect(page.getByTestId("resume-note")).toContainText("Phase 9");
+  await expect(page.getByTestId("resume-note")).toContainText("does not apply here");
+  await expect(page.getByTestId("resume-note")).toContainText("Use Resume to continue it in agent-office");
   await page.screenshot({ path: `${screens}/resume-note.png` });
+  await page.locator(".terminal-banner").getByRole("button", { name: "Resume" }).click();
+  await expect.poll(() => daemon.requests).toContain('POST /api/agents/d0e1f2000009/resume {"prompt":""}');
+  await page.locator(".card", { hasText: "d0e1f2000009" }).getByRole("button", { name: "Resume" }).click();
+  await expect.poll(() => daemon.requests.filter((r) => r.startsWith("POST /api/agents/d0e1f2000009/resume")).length).toBe(2);
+  expect(errors).toEqual([]);
+});
+
+test("an agent from an earlier daemon run shows its saved sessions", async ({ page }) => {
+  const world = team(10);
+  const id = "d0e1f2000009";
+  world.agents = world.agents.map((a) => a.id === id
+    ? { ...a, state: "exited", has_terminal: false, exit_reason: "daemon_restart", session_id: `${id}-s2`, resumable: true }
+    : a);
+  const daemon = new MockDaemon(world);
+  const errors = await open(page, daemon);
+  await page.locator(".card", { hasText: id }).click();
+  const saved = page.getByTestId("saved-terminal");
+  await expect(saved.locator(".xterm-rows")).toContainText(`saved output of ${id}-s2`);
+  const picker = page.getByLabel("Session");
+  await expect(picker.locator("option")).toHaveCount(2);
+  await picker.selectOption(`${id}-s1`);
+  await expect(saved.locator(".xterm-rows")).toContainText(`saved output of ${id}-s1`);
+  await page.screenshot({ path: `${screens}/saved-terminal.png` });
+  await saved.getByRole("button", { name: "Resume" }).click();
+  await expect.poll(() => daemon.requests).toContain(`POST /api/agents/${id}/resume {"prompt":""}`);
+  expect(errors).toEqual([]);
 });

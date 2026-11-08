@@ -102,13 +102,16 @@ type MemoryCounts struct {
 	Proposed int `json:"proposed"`
 }
 
-// MemoryEntry is a project memory entry as the assistant sees it.
+// MemoryEntry is a project memory entry as an agent sees it.
 type MemoryEntry struct {
-	ID     int64  `json:"id"`
-	Kind   string `json:"kind"`
-	Title  string `json:"title"`
-	Body   string `json:"body"`
-	Status string `json:"status"` // accepted (every agent gets it) or proposed (waits for the user)
+	ID           int64    `json:"id"`
+	Kind         string   `json:"kind"`
+	Title        string   `json:"title"`
+	Body         string   `json:"body"`
+	Status       string   `json:"status"`          // accepted (agents get it) or proposed (waits for the user; assistant only)
+	Roles        []string `json:"roles,omitempty"` // only for these roles; empty: every role
+	Paths        []string `json:"paths,omitempty"` // only for tasks touching these files; empty: every task
+	AppliesToYou bool     `json:"applies_to_you"`  // its scope includes the caller (ADR 0037)
 }
 
 // ListMemoryOutput is list_memory's result.
@@ -118,9 +121,11 @@ type ListMemoryOutput struct {
 
 // ProposeMemoryInput is propose_memory's input.
 type ProposeMemoryInput struct {
-	Kind  string `json:"kind" jsonschema:"decision (something decided and why), convention (how things are done here) or lesson (something learned the hard way)."`
-	Title string `json:"title" jsonschema:"Short title (1-200 characters)."`
-	Body  string `json:"body" jsonschema:"A few sentences every agent should know (1-2000 characters)."`
+	Kind  string   `json:"kind" jsonschema:"decision (something decided and why), convention (how things are done here) or lesson (something learned the hard way)."`
+	Title string   `json:"title" jsonschema:"Short title (1-200 characters)."`
+	Body  string   `json:"body" jsonschema:"A few sentences every agent should know (1-2000 characters)."`
+	Roles []string `json:"roles,omitempty" jsonschema:"Optional: only agents of these role names get it (e.g. worker, qa); empty for every role."`
+	Paths []string `json:"paths,omitempty" jsonschema:"Optional: only agents whose task touches these files get it (repository-relative paths, directories ending in /, globs); empty for every task."`
 }
 
 // ProposeMemoryOutput is propose_memory's result.
@@ -440,8 +445,9 @@ func NewServer(team Team, caller string, tools []string, version string, log *sl
 		"agent-office: goals and their sub-tasks, what waits on the user, what is blocked, running agents, cost and " +
 		"project memory. Exact; use its numbers as they are.", Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true}},
 		func(ctx context.Context, _ struct{}) (Briefing, error) { return team.GetBriefing(ctx, caller) })
-	add(s, t, &sdk.Tool{Name: ToolListMemory, Description: "List the project memory (assistant only): accepted entries, " +
-		"which every agent starts with, and proposals waiting for the user.", Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true}},
+	add(s, t, &sdk.Tool{Name: ToolListMemory, Description: "List the project memory: the notes the user approved for the " +
+		"team (decisions, conventions, lessons), each marked whether it applies to you; your first prompt had the ones " +
+		"that fit in it. The assistant also sees proposals waiting for the user.", Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true}},
 		func(ctx context.Context, _ struct{}) (ListMemoryOutput, error) { return team.ListMemory(ctx, caller) })
 	add(s, t, &sdk.Tool{Name: ToolProposeMemory, Description: "Propose a project memory entry (assistant only): a " +
 		"decision, convention or lesson every agent should start with. The user accepts, edits or deletes it in " +

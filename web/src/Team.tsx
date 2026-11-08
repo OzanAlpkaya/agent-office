@@ -2,7 +2,8 @@
 // architect's plan, QA runs and a sub-task's plan and conflicts. Every text
 // that agents wrote is rendered as text, never as HTML.
 import { type FormEvent, type JSX, useState } from "react";
-import type { Agent, InboxItem, MemoryEntry, Plan, QARun, RoleInfo, Spec, Task } from "./api";
+import type { Agent, InboxItem, MemoryDraft, MemoryEntry, Plan, QARun, RoleInfo, Spec, Task } from "./api";
+import { parseScope, scopeLabel } from "./memory";
 import {
   type PlanForm, type SubTaskForm, fromForm, needsAnswer, newSubTask, proposedSpec, toForm, waitsFor,
 } from "./workflow";
@@ -114,8 +115,8 @@ const memoryKinds: MemoryEntry["kind"][] = ["decision", "convention", "lesson"];
 
 export function MemoryPanel(p: {
   entries: MemoryEntry[];
-  onAdd: (kind: MemoryEntry["kind"], title: string, body: string) => Promise<boolean>;
-  onEdit: (m: MemoryEntry, patch: Pick<MemoryEntry, "kind" | "title" | "body">) => Promise<boolean>;
+  onAdd: (d: MemoryDraft) => Promise<boolean>;
+  onEdit: (m: MemoryEntry, patch: MemoryDraft) => Promise<boolean>;
   onAccept: (m: MemoryEntry) => void;
   onDelete: (m: MemoryEntry) => void;
 }): JSX.Element {
@@ -124,20 +125,27 @@ export function MemoryPanel(p: {
     <section className="side-panel memory" aria-label="Project memory">
       <h2>Project memory</h2>
       <p className="small muted">
-        Accepted notes are added to every agent&apos;s first prompt. The assistant proposes notes; none reaches an agent
-        until you accept it.
+        Accepted notes are added to the first prompt of the agents they apply to: every agent, or only the roles and
+        files you name (an agent&apos;s files are its sub-task&apos;s). Agents can list every note with list_memory. The
+        assistant proposes notes; none reaches an agent until you accept it.
       </p>
-      {editing === "new"
-        ? <MemoryForm onCancel={() => setEditing(undefined)}
-          onSave={async (k, t, b) => { const ok = await p.onAdd(k, t, b); if (ok) setEditing(undefined); return ok; }} />
-        : <button onClick={() => setEditing("new")}>+ Add a note</button>}
+      <div className="row">
+        {editing === "new"
+          ? null
+          : <button onClick={() => setEditing("new")}>+ Add a note</button>}
+        <a className="button-link" href="/api/memory/export" download="memory.md">Export as Markdown</a>
+      </div>
+      {editing === "new" && (
+        <MemoryForm onCancel={() => setEditing(undefined)}
+          onSave={async (d) => { const ok = await p.onAdd(d); if (ok) setEditing(undefined); return ok; }} />
+      )}
       <ul>
         {p.entries.map((m) => (
           <li key={m.id} className={`memory-entry ${m.status}`}>
             {editing === m.id ? (
               <MemoryForm entry={m} onCancel={() => setEditing(undefined)}
-                onSave={async (k, t, b) => {
-                  const ok = await p.onEdit(m, { kind: k, title: t, body: b });
+                onSave={async (d) => {
+                  const ok = await p.onEdit(m, d);
                   if (ok) setEditing(undefined);
                   return ok;
                 }} />
@@ -149,6 +157,7 @@ export function MemoryPanel(p: {
                   {m.status === "proposed" && <span className="chip hint">proposed by {m.source ? m.source.slice(0, 6) : "?"}</span>}
                 </div>
                 <div className="quote small">{m.body}</div>
+                <div className="small muted" data-testid="memory-scope">For {scopeLabel(m)}</div>
                 <div className="row">
                   {m.status === "proposed" && <button onClick={() => p.onAccept(m)}>Accept</button>}
                   <button onClick={() => setEditing(m.id)}>Edit</button>
@@ -165,20 +174,30 @@ export function MemoryPanel(p: {
 
 function MemoryForm({ entry, onSave, onCancel }: {
   entry?: MemoryEntry;
-  onSave: (kind: MemoryEntry["kind"], title: string, body: string) => Promise<boolean>;
+  onSave: (d: MemoryDraft) => Promise<boolean>;
   onCancel: () => void;
 }): JSX.Element {
   const [kind, setKind] = useState<MemoryEntry["kind"]>(entry?.kind ?? "convention");
   const [title, setTitle] = useState(entry?.title ?? "");
   const [body, setBody] = useState(entry?.body ?? "");
+  const [roles, setRoles] = useState((entry?.roles ?? []).join(", "));
+  const [paths, setPaths] = useState((entry?.paths ?? []).join(", "));
+  const save = (): void => {
+    // The parent shows errors; a refused save keeps the form open.
+    void onSave({ kind, title, body, roles: parseScope(roles), paths: parseScope(paths) });
+  };
   return (
-    <form className="task-form" onSubmit={(e) => { e.preventDefault(); void onSave(kind, title, body); }}>
+    <form className="task-form" onSubmit={(e) => { e.preventDefault(); save(); }}>
       <select aria-label="Kind" value={kind} onChange={(e) => setKind(e.target.value as MemoryEntry["kind"])}>
         {memoryKinds.map((k) => <option key={k} value={k}>{k}</option>)}
       </select>
       <input aria-label="Title" placeholder="Title" maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} />
-      <textarea aria-label="Note" placeholder="What every agent should know" maxLength={2000} rows={3} value={body}
+      <textarea aria-label="Note" placeholder="What the agents should know" maxLength={2000} rows={3} value={body}
         onChange={(e) => setBody(e.target.value)} />
+      <input aria-label="Only for roles" placeholder="Only for roles, e.g. worker, qa (empty: every role)" value={roles}
+        onChange={(e) => setRoles(e.target.value)} />
+      <input aria-label="Only for files" placeholder="Only for files, e.g. internal/store/, web/** (empty: every task)"
+        value={paths} onChange={(e) => setPaths(e.target.value)} />
       <div className="row">
         <button className="primary" type="submit" disabled={!title.trim() || !body.trim()}>Save</button>
         <button type="button" onClick={onCancel}>Cancel</button>

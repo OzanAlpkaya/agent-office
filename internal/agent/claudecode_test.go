@@ -150,6 +150,29 @@ func TestCommand(t *testing.T) {
 	}
 }
 
+// A resume continues the old conversation under the daemon's new session id
+// (ADR 0035): --fork-session is what lets --session-id go with --resume.
+func TestCommandResume(t *testing.T) {
+	old := "3cac7f56-8774-4ca6-84d9-5a9d3711db6f"
+	spec := LaunchSpec{SessionID: "65426929-28b2-4399-b44a-6792d0f13a42", WorkDir: "/repo", SettingsPath: "/run/s.json",
+		SocketPath: "/run/a.sock", InheritUserSettings: true, ResumeFrom: old, InitialPrompt: "continue"}
+	cmd, err := ClaudeCode{Bin: "claude"}.Command(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"claude", "--resume", old, "--fork-session", "--session-id", spec.SessionID, "--settings", "/run/s.json",
+		"--", "continue"}
+	if !slices.Equal(cmd.Args, want) {
+		t.Fatalf("args %v\nwant %v", cmd.Args, want)
+	}
+	for _, bad := range []string{"--help", "not-a-uuid", old + " x"} {
+		spec.ResumeFrom = bad
+		if _, err := (ClaudeCode{Bin: "claude"}).Command(spec); err == nil {
+			t.Errorf("ResumeFrom %q accepted", bad)
+		}
+	}
+}
+
 func TestMCPConfig(t *testing.T) {
 	raw, err := MCPConfig("/opt/agent office/agent-office", "/run/user/1000/agent-office/agents/a.mcp.sock", nil)
 	if err != nil {

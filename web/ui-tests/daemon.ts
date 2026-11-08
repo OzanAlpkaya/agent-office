@@ -14,7 +14,7 @@ const iso = (minutes: number): string => new Date(t0 + minutes * 60_000).toISOSt
 
 export function agent(id: string, kind: Kind, state: AgentState, over: Partial<Agent> = {}): Agent {
   return {
-    id, kind, role: defaultRole[kind], state, model: "haiku", inherit_user_settings: false, sandbox: "podman",
+    id, kind, role: defaultRole[kind], state, model: "haiku", inherit_user_settings: false, sandbox: "podman", resumable: state === "exited",
     branch: `agent-office/${id}`, worktree_path: `/data/agents/${id}`, workspace_kind: "clone",
     worktree_status: "active", has_terminal: true, started_at: iso(0), ...over,
   };
@@ -175,10 +175,30 @@ export class MockDaemon {
         if (p.endsWith("/resolve-conflict") || (method === "DELETE" && p.startsWith("/api/memory/"))) {
           return route.fulfill({ status: 204 });
         }
+        const resume = /^\/api\/agents\/([^/]+)\/resume$/.exec(p);
+        if (resume) {
+          const a = this.world.agents.find((x) => x.id === resume[1]);
+          return route.fulfill(json({ ...a, state: "starting", resumable: false, session_id: "11111111-0000-4000-8000-000000000001" }));
+        }
         if (/^\/api\/memory\/\d+\/accept$/.test(p)) {
           const id = Number(p.split("/")[3]);
           return route.fulfill(json({ ...(this.world.memory ?? []).find((m) => m.id === id), status: "accepted" }));
         }
+      }
+      const ss = /^\/api\/agents\/([^/]+)\/sessions$/.exec(p);
+      if (ss) {
+        const a = this.world.agents.find((x) => x.id === ss[1]);
+        if (!a) return route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' });
+        const live = a.has_terminal && a.state !== "exited";
+        return route.fulfill(json([
+          { id: a.session_id ?? `${a.id}-s2`, started_at: iso(20), resumed_from: `${a.id}-s1`, turns: 3, tool_calls: 4,
+            live, terminal: true, ...(live ? {} : { ended_at: iso(25) }) },
+          { id: `${a.id}-s1`, started_at: iso(0), ended_at: iso(10), turns: 2, tool_calls: 1, live: false, terminal: true },
+        ]));
+      }
+      const st = /^\/api\/agents\/([^/]+)\/sessions\/([^/]+)\/terminal$/.exec(p);
+      if (st) {
+        return route.fulfill({ status: 200, contentType: "application/octet-stream", body: `saved output of ${st[2]}\r\n` });
       }
       const m = /^\/api\/agents\/([^/]+)\/(events|messages)$/.exec(p);
       if (m) {

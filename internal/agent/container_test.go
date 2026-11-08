@@ -28,6 +28,18 @@ func TestContainerArgs(t *testing.T) {
 	if _, err := ContainerArgs(ContainerSpec{Bin: "/opt/claude/claude"}); err == nil {
 		t.Fatal("incomplete spec accepted")
 	}
+	old := "3cac7f56-8774-4ca6-84d9-5a9d3711db6f"
+	args, err = ContainerArgs(ContainerSpec{Bin: "/opt/claude/claude", SessionID: "sid", ResumeFrom: old,
+		SettingsPath: "/opt/agent-office/settings.json"})
+	want = []string{"/opt/claude/claude", "--resume", old, "--fork-session", "--session-id", "sid", "--settings",
+		"/opt/agent-office/settings.json", "--dangerously-skip-permissions"}
+	if err != nil || !slices.Equal(args, want) {
+		t.Fatalf("resume args %q %v", args, err)
+	}
+	if _, err := ContainerArgs(ContainerSpec{Bin: "/opt/claude/claude", SessionID: "sid", SettingsPath: "/s",
+		ResumeFrom: "--dangerously-skip-permissions"}); err == nil {
+		t.Fatal("a flag accepted as ResumeFrom")
+	}
 }
 
 // Host agents never run without permission prompts (ADR 0007), whatever the

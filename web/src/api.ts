@@ -43,6 +43,8 @@ export interface Agent {
   exit_code?: number;
   exit_reason?: string;
   last_import?: ImportInfo; // sandboxed agents
+  resumable: boolean; // exited and can continue its conversation (ADR 0035)
+  resumed_from?: string; // the session this one continues
 }
 
 // ImportInfo is one import of a sandboxed agent's branch into the repository.
@@ -112,6 +114,23 @@ export interface Budgets {
 }
 
 // SessionUsage is one agent session's usage; live updates send the same shape.
+// SessionInfo is one of an agent's sessions, for its history (ADR 0036).
+export interface SessionInfo {
+  id: string;
+  started_at: string;
+  ended_at?: string;
+  resumed_from?: string;
+  turns: number;
+  tool_calls: number;
+  live: boolean; // the running process's session
+  terminal: boolean; // its terminal output was saved (or is live)
+}
+
+export function isSessionInfo(v: unknown): v is SessionInfo {
+  return isObj(v) && typeof v.id === "string" && typeof v.started_at === "string" && typeof v.live === "boolean" &&
+    typeof v.terminal === "boolean" && typeof v.turns === "number";
+}
+
 export interface SessionUsage {
   session_id: string;
   agent_id: string;
@@ -315,9 +334,14 @@ export interface MemoryEntry {
   body: string;
   status: "proposed" | "accepted";
   source?: string;
+  roles?: string[]; // only agents of these roles get it; empty: every role (ADR 0037)
+  paths?: string[]; // only agents whose task touches these files; empty: every task
   created_at: string;
   updated_at: string;
 }
+
+// MemoryDraft is what the user writes or changes in a memory entry.
+export type MemoryDraft = Pick<MemoryEntry, "kind" | "title" | "body"> & { roles: string[]; paths: string[] };
 
 // Message between agents (ADR 0018). from is absent for agent-office itself.
 // The body is written by an agent: render it as text only.
@@ -612,7 +636,18 @@ export const api = {
   removeAgent: (id: string): Promise<RemoveResult> => request("DELETE", `/api/agents/${id}`),
   discardAgent: (id: string): Promise<RemoveResult> => request("POST", `/api/agents/${id}/discard`),
   importAgent: (id: string): Promise<ImportInfo> => request("POST", `/api/agents/${id}/import`),
+  resumeAgent: (id: string, prompt = ""): Promise<Agent> => request("POST", `/api/agents/${id}/resume`, { prompt }),
   saveWork: (id: string): Promise<ImportInfo> => request("POST", `/api/agents/${id}/save-work`),
+  agentSessions: async (id: string): Promise<SessionInfo[]> => {
+    const ss: unknown = await request("GET", `/api/agents/${id}/sessions`);
+    return Array.isArray(ss) ? ss.filter(isSessionInfo) : [];
+  },
+  // The bytes one session's terminal received, to replay into a read-only terminal.
+  sessionTerminal: async (id: string, sid: string): Promise<Uint8Array> => {
+    const res = await fetch(`/api/agents/${id}/sessions/${sid}/terminal`, { headers: { Accept: "application/octet-stream" } });
+    if (!res.ok) throw new ApiError(`GET saved terminal: ${res.status}`, res.status, undefined);
+    return new Uint8Array(await res.arrayBuffer());
+  },
   agentEvents: async (id: string): Promise<SandboxEvent[]> => {
     const evs: unknown = await request("GET", `/api/agents/${id}/events`);
     return Array.isArray(evs) ? evs.filter(isSandboxEvent) : [];
@@ -642,10 +677,8 @@ export const api = {
   editSpec: (id: number, plan: Plan): Promise<Spec> => request("PUT", `/api/specs/${id}`, plan),
   approveSpec: (id: number): Promise<ApproveResult> => request("POST", `/api/specs/${id}/approve`),
   resolveConflict: (taskId: string): Promise<void> => request("POST", `/api/tasks/${taskId}/resolve-conflict`),
-  addMemory: (kind: MemoryEntry["kind"], title: string, body: string): Promise<MemoryEntry> =>
-    request("POST", "/api/memory", { kind, title, body }),
-  editMemory: (id: number, patch: Partial<Pick<MemoryEntry, "kind" | "title" | "body">>): Promise<MemoryEntry> =>
-    request("PATCH", `/api/memory/${id}`, patch),
+  addMemory: (d: MemoryDraft): Promise<MemoryEntry> => request("POST", "/api/memory", d),
+  editMemory: (id: number, patch: Partial<MemoryDraft>): Promise<MemoryEntry> => request("PATCH", `/api/memory/${id}`, patch),
   acceptMemory: (id: number): Promise<MemoryEntry> => request("POST", `/api/memory/${id}/accept`),
   deleteMemory: (id: number): Promise<void> => request("DELETE", `/api/memory/${id}`),
   askBriefing: (): Promise<Agent> => request("POST", "/api/assistant/briefing"),

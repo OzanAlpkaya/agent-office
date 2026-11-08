@@ -1,6 +1,6 @@
 # 0029. Roles as data over engine behaviours; model per role; the Tech Lead stays
 
-- **Status:** Accepted
+- **Status:** Accepted; `list_memory` added to the architect, lead, worker and qa ceilings by ADR 0037
 - **Date:** 2026-11-08
 - **Amends:** ADR 0017 (roles become `kind` + role name; the lead stays after its report),
   ADR 0021 (the reviewer's prompt comes from its role)

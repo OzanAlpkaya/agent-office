@@ -33,6 +33,7 @@ const (
 	maxMemoryBody     = 2000
 	maxMemoryProposed = 50   // open proposals; the user decides the rest first
 	maxMemoryPrompt   = 6000 // characters of accepted memory in a prompt
+	maxMemoryScope    = 10   // roles or paths an entry is scoped to (ADR 0037)
 )
 
 // MemoryEntry is one project memory entry. A proposed entry's text was
@@ -44,13 +45,15 @@ type MemoryEntry struct {
 	Body      string    `json:"body"`
 	Status    string    `json:"status"`
 	Source    string    `json:"source,omitempty"` // the proposing agent; empty: the user
+	Roles     []string  `json:"roles"`            // only agents of these roles get it; empty: every role (ADR 0037)
+	Paths     []string  `json:"paths"`            // only agents whose task touches these files; empty: every task
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func memoryFromRow(r db.Memory) MemoryEntry {
 	return MemoryEntry{ID: r.ID, Kind: r.Kind, Title: r.Title, Body: r.Body, Status: r.Status, Source: r.Source,
-		CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC()}
+		Roles: jsonList(r.Roles), Paths: jsonList(r.Paths), CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC()}
 }
 
 func validMemoryKind(k string) bool {
@@ -63,6 +66,30 @@ type MemoryInput struct {
 	Title  string `json:"title"`
 	Body   string `json:"body"`
 	Status string `json:"status,omitempty"` // PATCH: "accepted" accepts a proposal
+	// Scope (ADR 0037); PATCH: absent keeps it, [] clears it.
+	Roles *[]string `json:"roles,omitempty"`
+	Paths *[]string `json:"paths,omitempty"`
+}
+
+// memoryScope validates an entry's scope: known role names, and file
+// patterns as a sub-task's files (ADR 0032).
+func (e *Engine) memoryScope(roles, paths []string) ([]string, []string, error) {
+	r, err := normalizeList(roles, maxMemoryScope, 32, "roles", func(n string) bool { _, ok := e.opts.Roles.Get(n); return ok })
+	if err != nil {
+		return nil, nil, err
+	}
+	p, err := normalizeList(paths, maxMemoryScope, 300, "paths", validFilePattern)
+	if err != nil {
+		return nil, nil, err
+	}
+	return r, p, nil
+}
+
+func deref(v *[]string) []string {
+	if v == nil {
+		return nil
+	}
+	return *v
 }
 
 func (e *Engine) normalizeMemory(in MemoryInput) (MemoryInput, error) {
@@ -103,8 +130,13 @@ func (e *Engine) AddMemory(ctx context.Context, in MemoryInput) (MemoryEntry, er
 	if err != nil {
 		return MemoryEntry{}, err
 	}
+	roles, paths, err := e.memoryScope(deref(in.Roles), deref(in.Paths))
+	if err != nil {
+		return MemoryEntry{}, err
+	}
 	row, err := e.q.InsertMemory(ctx, db.InsertMemoryParams{ProjectID: e.project.ID, Kind: in.Kind, Title: in.Title,
-		Body: in.Body, Status: MemoryAccepted, Source: "", CreatedAt: now(), UpdatedAt: now()})
+		Body: in.Body, Status: MemoryAccepted, Source: "", CreatedAt: now(), UpdatedAt: now(),
+		Roles: jsonText(roles), Paths: jsonText(paths)})
 	if err != nil {
 		return MemoryEntry{}, err
 	}
@@ -140,6 +172,16 @@ func (e *Engine) UpdateMemory(ctx context.Context, id int64, p MemoryInput) (Mem
 	if in, err = e.normalizeMemory(in); err != nil {
 		return MemoryEntry{}, err
 	}
+	roles, paths := jsonList(cur.Roles), jsonList(cur.Paths)
+	if p.Roles != nil {
+		roles = *p.Roles
+	}
+	if p.Paths != nil {
+		paths = *p.Paths
+	}
+	if roles, paths, err = e.memoryScope(roles, paths); err != nil {
+		return MemoryEntry{}, err
+	}
 	status := cur.Status
 	switch p.Status {
 	case "":
@@ -149,7 +191,7 @@ func (e *Engine) UpdateMemory(ctx context.Context, id int64, p MemoryInput) (Mem
 		return MemoryEntry{}, invalid("status can only become accepted; delete an entry to drop it")
 	}
 	row, err := e.q.UpdateMemory(ctx, db.UpdateMemoryParams{Kind: in.Kind, Title: in.Title, Body: in.Body, Status: status,
-		UpdatedAt: now(), ID: id})
+		UpdatedAt: now(), Roles: jsonText(roles), Paths: jsonText(paths), ID: id})
 	if err != nil {
 		return MemoryEntry{}, err
 	}
@@ -169,18 +211,57 @@ func (e *Engine) DeleteMemory(ctx context.Context, id int64) error {
 	return nil
 }
 
-// memorySection is the accepted project memory every agent starts with,
-// newest first, within maxMemoryPrompt characters (ADR 0034).
-func (e *Engine) memorySection(ctx context.Context) string {
+// memoryApplies reports whether entry m's scope includes an agent of role
+// roleName whose task declares files (ADR 0037): no roles, or its role among
+// them; and no paths, or a declared file overlapping one of them.
+func memoryApplies(m MemoryEntry, roleName string, files []string) bool {
+	if len(m.Roles) > 0 && !slices.Contains(m.Roles, roleName) {
+		return false
+	}
+	return len(m.Paths) == 0 || len(overlapping(m.Paths, files)) > 0
+}
+
+// agentScope is what memory relevance looks at: the agent's role name and
+// its task's declared files.
+func (e *Engine) agentScope(ctx context.Context, roleName, taskID string) (string, []string) {
+	if taskID == "" {
+		return roleName, nil
+	}
+	t, err := e.q.GetTask(ctx, taskID)
+	if err != nil {
+		return roleName, nil
+	}
+	return roleName, jsonList(t.Files)
+}
+
+// memorySection is the accepted project memory an agent starts with
+// (ADR 0034, 0037): the entries whose scope includes it, scoped ones first
+// (they were written for agents like it), then the rest, each group newest
+// first, within maxMemoryPrompt characters. Entries scoped to other roles or
+// files are left out; list_memory shows everything.
+func (e *Engine) memorySection(ctx context.Context, roleName string, files []string, canList bool) string {
 	rows, err := e.q.ListAcceptedMemory(ctx, e.project.ID)
 	if err != nil || len(rows) == 0 {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString("\n\nProject memory (notes the user approved for every agent; follow them unless your task says otherwise):")
-	n, left := 0, 0
+	var scoped, general []MemoryEntry
+	other := 0
 	for _, r := range rows {
-		line := fmt.Sprintf("\n- [%s] %s: %s", r.Kind, r.Title, strings.ReplaceAll(r.Body, "\n", " "))
+		m := memoryFromRow(r)
+		switch {
+		case !memoryApplies(m, roleName, files):
+			other++
+		case len(m.Roles) > 0 || len(m.Paths) > 0:
+			scoped = append(scoped, m)
+		default:
+			general = append(general, m)
+		}
+	}
+	var b strings.Builder
+	b.WriteString("\n\nProject memory (notes the user approved for the team; follow them unless your task says otherwise):")
+	n, left := 0, 0
+	for _, m := range append(scoped, general...) {
+		line := fmt.Sprintf("\n- [%s] %s: %s", m.Kind, m.Title, strings.ReplaceAll(m.Body, "\n", " "))
 		if b.Len()+len(line) > maxMemoryPrompt {
 			left++
 			continue
@@ -191,10 +272,64 @@ func (e *Engine) memorySection(ctx context.Context) string {
 	if n == 0 {
 		return ""
 	}
-	if left > 0 {
-		fmt.Fprintf(&b, "\n(%d older note(s) left out for length.)", left)
+	if left > 0 || other > 0 {
+		b.WriteString("\n(")
+		if left > 0 {
+			fmt.Fprintf(&b, "%d more note(s) left out for length", left)
+		}
+		if other > 0 {
+			if left > 0 {
+				b.WriteString("; ")
+			}
+			fmt.Fprintf(&b, "%d note(s) for other roles or files not shown", other)
+		}
+		if canList {
+			b.WriteString("; list_memory shows every note")
+		}
+		b.WriteString(".)")
 	}
 	return b.String()
+}
+
+// MemoryMarkdown is the accepted project memory as a Markdown document, for
+// the user to export (ADR 0037). The database stays the source.
+func (e *Engine) MemoryMarkdown(ctx context.Context) (string, error) {
+	rows, err := e.q.ListAcceptedMemory(ctx, e.project.ID)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Project memory: %s\n\nNotes the user approved for every agent-office agent working on this "+
+		"repository (exported %s).\n", e.project.Name, now().Format("2006-01-02"))
+	for _, kind := range []struct{ k, h string }{{MemoryDecision, "Decisions"}, {MemoryConvention, "Conventions"},
+		{MemoryLesson, "Lessons"}} {
+		first := true
+		for _, r := range rows {
+			m := memoryFromRow(r)
+			if m.Kind != kind.k {
+				continue
+			}
+			if first {
+				fmt.Fprintf(&b, "\n## %s\n", kind.h)
+				first = false
+			}
+			fmt.Fprintf(&b, "\n### %s\n\n%s\n", m.Title, m.Body)
+			var scope []string
+			if len(m.Roles) > 0 {
+				scope = append(scope, "roles: "+strings.Join(m.Roles, ", "))
+			}
+			if len(m.Paths) > 0 {
+				scope = append(scope, "files: "+strings.Join(m.Paths, ", "))
+			}
+			if len(scope) > 0 {
+				fmt.Fprintf(&b, "\n_Applies to %s._\n", strings.Join(scope, "; "))
+			}
+		}
+	}
+	if len(rows) == 0 {
+		b.WriteString("\nNo accepted notes yet.\n")
+	}
+	return b.String(), nil
 }
 
 // asAssistant checks that caller is the running assistant.
@@ -212,16 +347,32 @@ func (e *Engine) asAssistant(caller, tool string) error {
 }
 
 func (t team) ListMemory(ctx context.Context, caller string) (mcp.ListMemoryOutput, error) {
-	if err := t.e.asAssistant(caller, mcp.ToolListMemory); err != nil {
+	e := t.e
+	e.mu.Lock()
+	a, err := e.callerLocked(caller)
+	var info AgentInfo
+	if err == nil {
+		info = a.info
+	}
+	e.mu.Unlock()
+	if err != nil {
 		return mcp.ListMemoryOutput{}, userErr(err)
 	}
-	entries, err := t.e.Memory(ctx)
+	if info.Kind == KindReviewer {
+		return mcp.ListMemoryOutput{}, userErr(forbidden("reviewers do not read project memory"))
+	}
+	entries, err := e.Memory(ctx)
 	if err != nil {
 		return mcp.ListMemoryOutput{}, err
 	}
+	roleName, files := e.agentScope(ctx, info.Role, info.TaskID)
 	out := mcp.ListMemoryOutput{Entries: []mcp.MemoryEntry{}}
 	for _, m := range entries {
-		out.Entries = append(out.Entries, mcp.MemoryEntry{ID: m.ID, Kind: m.Kind, Title: m.Title, Body: m.Body, Status: m.Status})
+		if m.Status != MemoryAccepted && info.Kind != KindAssistant {
+			continue // proposals are the assistant's and the user's business (ADR 0034)
+		}
+		out.Entries = append(out.Entries, mcp.MemoryEntry{ID: m.ID, Kind: m.Kind, Title: m.Title, Body: m.Body,
+			Status: m.Status, Roles: m.Roles, Paths: m.Paths, AppliesToYou: memoryApplies(m, roleName, files)})
 	}
 	return out, nil
 }
@@ -235,6 +386,10 @@ func (t team) ProposeMemory(ctx context.Context, caller string, in mcp.ProposeMe
 	if err != nil {
 		return mcp.ProposeMemoryOutput{}, userErr(err)
 	}
+	roles, paths, err := e.memoryScope(in.Roles, in.Paths)
+	if err != nil {
+		return mcp.ProposeMemoryOutput{}, userErr(err)
+	}
 	if n, err := e.q.CountProposedMemory(ctx, e.project.ID); err != nil {
 		return mcp.ProposeMemoryOutput{}, err
 	} else if n >= maxMemoryProposed {
@@ -242,7 +397,8 @@ func (t team) ProposeMemory(ctx context.Context, caller string, in mcp.ProposeMe
 			ErrLimit, n))
 	}
 	row, err := e.q.InsertMemory(ctx, db.InsertMemoryParams{ProjectID: e.project.ID, Kind: mi.Kind, Title: mi.Title,
-		Body: mi.Body, Status: MemoryProposed, Source: caller, CreatedAt: now(), UpdatedAt: now()})
+		Body: mi.Body, Status: MemoryProposed, Source: caller, CreatedAt: now(), UpdatedAt: now(),
+		Roles: jsonText(roles), Paths: jsonText(paths)})
 	if err != nil {
 		return mcp.ProposeMemoryOutput{}, err
 	}

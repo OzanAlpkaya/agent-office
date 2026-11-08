@@ -64,7 +64,7 @@ func newFixture(t *testing.T) *fixture {
 		Repo: repo, WorktreeRoot: filepath.Join(dir, "wt"), Store: st, MaxAgents: 1,
 		ClaudeBin: bin, HookCommand: "true", RuntimeDir: filepath.Join(dir, "rt"),
 		BaseEnv: []string{"PATH=" + os.Getenv("PATH")}, StopTimeout: time.Second, Logger: log,
-		AgentOfficeBin: bin,
+		AgentOfficeBin: bin, HistoryDir: filepath.Join(dir, "terminals"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -544,6 +544,20 @@ func TestTeamWorkflowAPI(t *testing.T) {
 	if r.StatusCode != http.StatusOK || m.Body != "Only SQLite, via modernc." {
 		t.Fatalf("edit memory %d %+v", r.StatusCode, m)
 	}
+	r = f.doBody(t, "PATCH", "/api/memory/"+strconv.FormatInt(m.ID, 10), ct, `{"roles":["worker"],"paths":["internal/store/"]}`)
+	decode(r, &m)
+	if r.StatusCode != http.StatusOK || len(m.Roles) != 1 || len(m.Paths) != 1 {
+		t.Fatalf("scope memory %d %+v", r.StatusCode, m)
+	}
+	if r := f.doBody(t, "PATCH", "/api/memory/"+strconv.FormatInt(m.ID, 10), ct, `{"roles":["boss"]}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown role in scope: %d", r.StatusCode)
+	}
+	r = f.do(t, "GET", "/api/memory/export", nil)
+	md, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusOK || !strings.HasPrefix(r.Header.Get("Content-Type"), "text/markdown") ||
+		!strings.Contains(r.Header.Get("Content-Disposition"), "attachment") || !strings.Contains(string(md), "### SQLite") {
+		t.Fatalf("export %d %q", r.StatusCode, md)
+	}
 	if r := f.do(t, "DELETE", "/api/memory/"+strconv.FormatInt(m.ID, 10), nil); r.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete memory %d", r.StatusCode)
 	}
@@ -575,5 +589,65 @@ func TestTeamWorkflowAPI(t *testing.T) {
 		if v := string(snap[k]); !strings.HasPrefix(v, "[") {
 			t.Errorf("snapshot %s = %q", k, v)
 		}
+	}
+}
+
+// Resume, sessions and saved terminals (ADR 0035, 0036).
+func TestResumeAndSessionsAPI(t *testing.T) {
+	decode := func(r *http.Response, v any) {
+		t.Helper()
+		if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := newFixture(t)
+	a := f.start(t)
+	ct := map[string]string{"Content-Type": "application/json"}
+	if r := f.doBody(t, "POST", "/api/agents/"+a.ID+"/resume", ct, `{}`); r.StatusCode != http.StatusConflict {
+		t.Fatalf("resume a running agent: %d", r.StatusCode)
+	}
+	for i := 0; ; i++ { // output to save
+		out, _ := f.eng.SessionTerminal(context.Background(), a.ID, a.SessionID)
+		if strings.Contains(string(out), "fake-agent-ready") {
+			break
+		}
+		if i > 100 {
+			t.Fatal("the agent printed nothing")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := f.eng.Stop(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	var got engine.AgentInfo
+	r := f.doBody(t, "POST", "/api/agents/"+a.ID+"/resume", ct, `{"prompt":"go on"}`)
+	decode(r, &got)
+	if r.StatusCode != http.StatusOK || got.ID != a.ID || got.ResumedFrom != a.SessionID || got.SessionID == a.SessionID {
+		t.Fatalf("resume %d %+v", r.StatusCode, got)
+	}
+	for _, c := range []struct {
+		method, path, body string
+		want               int
+	}{
+		{"POST", "/api/agents/nope/resume", `{}`, http.StatusNotFound},
+		{"POST", "/api/agents/" + a.ID + "/resume", `{"prompt":1}`, http.StatusBadRequest},
+		{"GET", "/api/agents/nope/sessions", "", http.StatusNotFound},
+		{"GET", "/api/agents/" + a.ID + "/sessions/00000000-0000-4000-8000-000000000000/terminal", "", http.StatusNotFound},
+	} {
+		if r := f.doBody(t, c.method, c.path, ct, c.body); r.StatusCode != c.want {
+			t.Errorf("%s %s: %d, want %d", c.method, c.path, r.StatusCode, c.want)
+		}
+	}
+	var ss []engine.SessionInfo
+	r = f.do(t, "GET", "/api/agents/"+a.ID+"/sessions", nil)
+	decode(r, &ss)
+	if r.StatusCode != http.StatusOK || len(ss) != 2 || !ss[0].Live || ss[1].ID != a.SessionID || !ss[1].Terminal {
+		t.Fatalf("sessions %d %+v", r.StatusCode, ss)
+	}
+	r = f.do(t, "GET", "/api/agents/"+a.ID+"/sessions/"+a.SessionID+"/terminal", nil)
+	body, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusOK || r.Header.Get("Content-Type") != "application/octet-stream" ||
+		!strings.Contains(string(body), "fake-agent-ready") {
+		t.Fatalf("saved terminal %d %q %q", r.StatusCode, r.Header.Get("Content-Type"), body)
 	}
 }

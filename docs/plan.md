@@ -262,25 +262,44 @@ derived from Claude Code hooks.
 
 **Goal:** Agents and the team keep useful context across sessions.
 
-**Scope**
-- Project memory (decisions, conventions) available to agents.
-- Resume agents and tasks after a restart; session history.
+**Scope** (see ADRs 0035–0037 and `docs/plans/phase-9.md`)
+- Resume an exited agent's conversation (`claude --resume … --fork-session`) in its workspace and
+  sandbox; restore the agents a daemon stop interrupted (`--restore-agents`, default on).
+- Session history: every session's terminal output saved in the data dir and shown in the UI.
+- Relevant project memory: entries scoped to roles and files, `list_memory` for the team, Markdown
+  export.
 
 **Definition of Done**
-- [ ] A restarted daemon restores agents, tasks and history.
-- [ ] Agents can read relevant project memory at task start.
-- [ ] Memory is inspectable and editable by the user.
+- [x] A restarted daemon restores agents, tasks and history: interrupted agents are resumed with
+      their conversations (`TestRestoreAfterShutdown`, `TestRestoreAfterCrash`,
+      `TestRestoreStopsAtShutdown`; live in `make e2e`: a host agent and a sandboxed worker recalled
+      their earlier conversation after a SIGKILL and restart), and every session's terminal output
+      and counters stay readable (`TestSessionHistory`, `TestResumeAndSessionsAPI`; Playwright "an
+      agent from an earlier daemon run shows its saved sessions").
+- [x] Agents can read relevant project memory at task start: entries scoped to the agent's role or
+      its task's files come first, others are left out, and `list_memory` shows all accepted
+      entries to every behaviour but reviewers (`TestMemoryRelevance`, `TestBehaviourTools`).
+- [x] Memory is inspectable and editable by the user: scopes shown and edited in the memory panel,
+      exported as Markdown (`TestTeamWorkflowAPI`; Playwright "project memory proposals wait for
+      the user").
 
 **Backlog** (from Ozan's end-to-end test, 2026-11-08)
-- Make the "Resume this session" line meaningful: resume a stopped agent's session from
-  agent-office (same agent, workspace and sandbox), then drop the Phase 8 note that explains it
-  under exited agents' terminals.
+- [x] Make the "Resume this session" line meaningful: Resume continues a stopped agent's session
+      from agent-office (same agent, workspace and sandbox); the Phase 8 note is replaced
+      (`TestResumeKeepsAgentAndWorkspace`, Playwright "an exited agent's terminal explains the
+      resume line and resumes it").
 
 **Backlog** (from the Phase 8 review, 2026-11-08)
-- After a daemon restart, a sandboxed agent's card switches from "user settings off" to "user
-  settings on". The setting does not apply to sandboxed agents (ADR 0003), so the label is wrong,
-  not the behaviour: restore the value the agent ran with (or hide the label for sandboxed agents)
-  when agents are loaded from the database.
+- [x] A sandboxed agent's card no longer switches to "user settings on" after a restart: the
+      effective value is stored, migration 0009 fixes old rows, and sandboxed cards say "sandbox
+      config" (`TestMigration0009FixesSandboxedSettings`).
+
+**Backlog** (from Phase 9)
+- Relaunches for review follow-ups, conflict rounds and architect escalation still start fresh
+  sessions (ADR 0035); switching them to resume is a small change if fresh sessions turn out to
+  lose too much.
+- Follow-up and conflict rounds do not survive a restart (ADR 0022); persisting the round would
+  let those workers be restored too.
 
 ---
 
@@ -401,7 +420,7 @@ and every agent reaches the user or the agent above it.
   requests: offer the integration branch as a pull request (or a sub-task that moves QA's tests
   onto the default branch).
 - Several goals in parallel (one Tech Lead, architect and QA at a time today, ADR 0017).
-- Per-task relevance and export of project memory (Phase 9).
+- [x] Per-task relevance and export of project memory (done in Phase 9, ADR 0037).
 
 ---
 

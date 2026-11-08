@@ -60,6 +60,7 @@ const (
 	ExitFollowUp      = "follow_up"        // ended to be relaunched with review feedback (ADR 0022)
 	ExitGoalDone      = "goal_done"        // the user marked the agent's goal done (Phase 12)
 	ExitPlanApproved  = "plan_approved"    // an architect whose plan the user approved (ADR 0031)
+	ExitResumeFailed  = "resume_failed"    // a resumed CLI exited before its first hook: no conversation to load (ADR 0035)
 )
 
 // Worktree statuses (ADR 0010).
@@ -126,6 +127,8 @@ type Options struct {
 	Prices              *usage.Prices   // cost estimates (ADR 0026); nil: the built-in table
 	Budgets             Budgets         // sandboxed agents' spend limits (ADR 0027); zero: off
 	EventRetention      time.Duration   // reduced events older than this are deleted (ADR 0028); 0: kept
+	RestoreAgents       bool            // resume the agents the previous run's stop interrupted (ADR 0035)
+	HistoryDir          string          // saved terminals of every session (ADR 0036); "": not saved
 
 	// Message delivery timing (ADR 0018); zero values get the defaults. Tests
 	// shorten them.
@@ -189,7 +192,9 @@ type AgentInfo struct {
 	ExitedAt            *time.Time  `json:"exited_at,omitempty"`
 	ExitCode            *int        `json:"exit_code,omitempty"`
 	ExitReason          string      `json:"exit_reason,omitempty"`
-	LastImport          *ImportInfo `json:"last_import,omitempty"` // sandboxed agents (ADR 0014)
+	LastImport          *ImportInfo `json:"last_import,omitempty"`  // sandboxed agents (ADR 0014)
+	Resumable           bool        `json:"resumable"`              // exited and can continue its conversation (ADR 0035)
+	ResumedFrom         string      `json:"resumed_from,omitempty"` // the session this one continues
 }
 
 // Update is one change broadcast to subscribers.
@@ -232,6 +237,10 @@ type agentProc struct {
 	since      time.Time      // this session's start: older messages are not delivered to it (ADR 0022)
 	usage      *sessionUsage  // this session's token usage (ADR 0026); nil for agents of a previous run
 	log        *slog.Logger   // this session's logger: agent, session and task ids (ADR 0028)
+	resumeFrom string         // the session this one continues (ADR 0035); "" for a fresh one
+
+	sessionStarted bool          // the main agent's SessionStart arrived; guarded by Engine.mu
+	historyDone    chan struct{} // closed after the session's terminal was saved for the last time (ADR 0036); nil for agents of a previous run
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
 	hasPrompt     bool        // started with an initial prompt
@@ -267,6 +276,9 @@ type Engine struct {
 	stopBG   context.CancelFunc // retention loop (ADR 0028)
 	ids      *sessionIDs        // running agents' sessions, for log lines (ADR 0028)
 	closing  bool               // Shutdown began: no agent starts any more; guarded by mu
+
+	restartImports sync.WaitGroup    // sandbox imports after a restart; a restore waits for them
+	noRestore      map[string]string // agent id -> why a restore leaves it exited (set before the restore runs)
 }
 
 // New validates opts, registers the repository as a project, reconciles state
@@ -276,6 +288,9 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		if !filepath.IsAbs(p) {
 			return nil, fmt.Errorf("engine: %s must be an absolute path, got %q", name, p)
 		}
+	}
+	if opts.HistoryDir != "" && !filepath.IsAbs(opts.HistoryDir) {
+		return nil, fmt.Errorf("engine: HistoryDir must be an absolute path, got %q", opts.HistoryDir)
 	}
 	if opts.Store == nil || opts.ClaudeBin == "" || opts.HookCommand == "" {
 		return nil, errors.New("engine: Store, ClaudeBin and HookCommand are required")
@@ -357,6 +372,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		subs:         map[chan Update]struct{}{},
 		assigning:    map[string]bool{},
 		startingKind: map[string]bool{},
+		noRestore:    map[string]string{},
 	}
 	if opts.Sandbox != nil {
 		if err := e.prepareSandbox(); err != nil {
@@ -375,6 +391,11 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	e.stopBG = cancel
 	e.wg.Add(1)
 	go e.retentionLoop(bg)
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.restore(bg) // after reconciliation and GitHub's restart rules (ADR 0035)
+	}()
 	return e, nil
 }
 
@@ -591,10 +612,12 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	}
 
 	started := now()
+	// The effective value: sandboxed agents never load the user's settings (ADR 0003).
+	inherit := e.opts.InheritUserSettings && mode == SandboxHost
 	err = e.st.Tx(ctx, func(q *db.Queries) error {
 		if err := q.CreateAgent(ctx, db.CreateAgentParams{
 			ID: id, ProjectID: e.project.ID, TaskID: nullString(req.TaskID), Model: e.modelOf(def),
-			InheritUserSettings: e.opts.InheritUserSettings, State: string(hooks.Starting), StartedAt: started,
+			InheritUserSettings: inherit, State: string(hooks.Starting), StartedAt: started,
 			Sandbox: mode, Kind: role, Role: def.Name,
 		}); err != nil {
 			return err
@@ -603,7 +626,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 			Branch: branch, BaseCommit: base, CreatedAt: started, Kind: kind}); err != nil {
 			return err
 		}
-		if err := q.CreateSession(ctx, db.CreateSessionParams{ID: sid, AgentID: id, StartedAt: started}); err != nil {
+		if err := q.CreateSession(ctx, db.CreateSessionParams{ID: sid, AgentID: id, StartedAt: started, ResumedFrom: ""}); err != nil {
 			return err
 		}
 		if req.reviewID != 0 {
@@ -635,7 +658,12 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		prompt = e.initialPrompt(ctx, def, task, branch)
 	}
 	if prompt != "" {
-		prompt += e.memorySection(ctx) // ADR 0034: accepted notes only
+		var files []string
+		if task != nil {
+			files = jsonList(task.Files)
+		}
+		// ADR 0034, 0037: accepted notes whose scope includes this agent.
+		prompt += e.memorySection(ctx, def.Name, files, slices.Contains(def.TeamTools, mcp.ToolListMemory))
 	}
 	l := launchInfo{id: id, sid: sid, role: role, def: def, branch: branch, path: wtPath, base: base, taskID: req.TaskID,
 		started: started, prompt: prompt, reviewID: req.reviewID}
@@ -669,6 +697,8 @@ type launchInfo struct {
 	reviewID                            int64          // reviewers (ADR 0021)
 	prev                                *agentProc     // a relaunch: the exited agent it replaces (ADR 0022)
 	followup                            *followupRound // a relaunch to address a review (ADR 0022)
+	resumeFrom                          string         // a resume: the session whose conversation continues (ADR 0035)
+	since                               time.Time      // messages from this time on are delivered; zero: started
 }
 
 // roleName is the launched role's name ("" if a test left it out).
@@ -682,7 +712,11 @@ func (l launchInfo) roleName() string {
 // registerLocked adds a freshly launched agent, or replaces the exited one a
 // relaunch started again (keeping its place, start time and last import).
 func (e *Engine) registerLocked(a *agentProc, l launchInfo) {
-	a.reviewID, a.since, a.followup = l.reviewID, l.started, l.followup
+	a.reviewID, a.since, a.followup, a.resumeFrom = l.reviewID, l.started, l.followup, l.resumeFrom
+	a.info.ResumedFrom = l.resumeFrom
+	if !l.since.IsZero() {
+		a.since = l.since
+	}
 	if l.prev != nil {
 		a.info.StartedAt, a.info.LastImport = l.prev.info.StartedAt, l.prev.info.LastImport
 		a.info.WorktreeStatus = l.prev.info.WorktreeStatus
@@ -731,7 +765,7 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 		cmd, err = e.adapter.Command(agent.LaunchSpec{
 			SessionID: sid, Model: e.modelOf(l.def), WorkDir: wtPath, SettingsPath: settingsPath,
 			InheritUserSettings: e.opts.InheritUserSettings, SocketPath: ln.Path(), BaseEnv: e.opts.BaseEnv,
-			InitialPrompt: l.prompt, MCPConfigPath: mcpConfig,
+			InitialPrompt: l.prompt, MCPConfigPath: mcpConfig, ResumeFrom: l.resumeFrom,
 		})
 	}
 	var term *terminal.Session
@@ -753,18 +787,19 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 			Role:                l.def.Name,
 			InheritUserSettings: e.opts.InheritUserSettings, Branch: branch, WorktreePath: wtPath,
 			WorkspaceKind: KindWorktree, WorktreeStatus: WorktreeActive, HasTerminal: true, StartedAt: started},
-		status:     hooks.Status{State: hooks.Starting},
-		baseCommit: base,
-		term:       term,
-		listener:   ln,
-		settings:   settingsPath,
-		exited:     make(chan struct{}),
-		afterExit:  make(chan struct{}),
-		mcp:        mln,
-		mcpConfig:  mcpConfig,
-		hasPrompt:  l.prompt != "",
-		usage:      e.newSessionUsage(l, SandboxHost),
-		log:        log,
+		status:      hooks.Status{State: hooks.Starting},
+		baseCommit:  base,
+		term:        term,
+		listener:    ln,
+		settings:    settingsPath,
+		exited:      make(chan struct{}),
+		afterExit:   make(chan struct{}),
+		historyDone: make(chan struct{}),
+		mcp:         mln,
+		mcpConfig:   mcpConfig,
+		hasPrompt:   l.prompt != "",
+		usage:       e.newSessionUsage(l, SandboxHost),
+		log:         log,
 	}
 	e.mu.Lock()
 	e.registerLocked(a, l)
@@ -773,6 +808,7 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "pid", term.Pid(),
 		"branch", branch, "worktree", wtPath, "model", e.modelOf(l.def), "role_name", l.def.Name,
 		"inherit_user_settings", e.opts.InheritUserSettings)
+	e.keepHistory(a)
 	e.wg.Add(1)
 	go e.watch(a)
 	return view, nil
@@ -820,6 +856,9 @@ func (e *Engine) watch(a *agentProc) {
 	reason := a.exitReason
 	if reason == "" {
 		reason = ExitProcess
+		if resumeFailed(a) {
+			reason = ExitResumeFailed
+		}
 	}
 	a.status = hooks.Status{State: hooks.Exited}
 	a.info.ExitedAt, a.info.ExitCode, a.info.ExitReason = &t, &code, reason
@@ -830,6 +869,12 @@ func (e *Engine) watch(a *agentProc) {
 		alog.Error("persist agent exit", "err", err)
 	}
 	_ = e.q.EndSessions(ctx, db.EndSessionsParams{EndedAt: nullTime(t), AgentID: a.info.ID})
+	if reason == ExitResumeFailed {
+		// It never ran: a later resume continues the session before it (ADR 0035).
+		if err := e.q.DeleteSession(ctx, a.info.SessionID); err != nil {
+			alog.Warn("forget the failed resume's session", "err", err)
+		}
+	}
 	e.publishAgentLocked(a)
 	e.expireAccessLocked(ctx, a.info.ID)
 	e.mu.Unlock()
@@ -843,6 +888,9 @@ func (e *Engine) watch(a *agentProc) {
 		su.view.EndedAt = &t
 		su.mu.Unlock()
 		e.publishUsage(su)
+	}
+	if reason == ExitResumeFailed {
+		e.removeSessionHistory(a)
 	}
 	alog.Info("agent exited", "exit_code", code, "reason", reason)
 	close(a.exited)
@@ -876,6 +924,9 @@ func (e *Engine) hookHandler(id string, log *slog.Logger) hooks.Handler {
 		}
 		if ev.SessionID != a.info.SessionID {
 			return nil, ErrSession
+		}
+		if ev.Kind == agent.SessionStarted && !ev.Subagent {
+			a.sessionStarted = true
 		}
 		e.countLocked(ctx, a, ev, log)
 		e.transcriptHookLocked(a, ev, log)
@@ -1037,6 +1088,10 @@ func (e *Engine) removeAgent(ctx context.Context, id string, force bool) (Remove
 	e.order = slices.DeleteFunc(e.order, func(s string) bool { return s == id })
 	e.publishLocked(Update{Type: "agent_removed", ID: id})
 	e.mu.Unlock()
+	if a.historyDone != nil {
+		<-a.historyDone // the exit's last save, which would create the directory again
+	}
+	e.removeHistory(id)
 	e.log.Info("agent removed", "agent_id", id, "worktree", res.Worktree, "branch", res.Branch, "discarded", force)
 	return res, nil
 }
@@ -1203,7 +1258,9 @@ func (e *Engine) Shutdown() {
 		e.mu.Lock()
 	}
 	ids := slices.Clone(e.order)
+	resume := e.resumeStatesLocked()
 	e.mu.Unlock()
+	e.saveResumeStates(resume)
 	var wg sync.WaitGroup
 	for _, id := range ids {
 		wg.Add(1)
@@ -1236,13 +1293,14 @@ func (a *agentProc) view() AgentInfo {
 	v := a.info
 	v.State, v.Activity = string(a.status.State), a.status.Activity
 	v.HasTerminal = a.term != nil
+	v.Resumable = a.status.State == hooks.Exited && !a.busy && resumable(v.Kind) && v.WorktreeStatus != WorktreeRemoved
 	return v
 }
 
 func infoFromRow(r db.ListVisibleAgentsRow) AgentInfo {
 	info := AgentInfo{
 		ID: r.ID, TaskID: r.TaskID.String, State: r.State, Model: r.Model,
-		InheritUserSettings: r.InheritUserSettings, Sandbox: r.Sandbox, Kind: r.Kind, Role: r.Role, Branch: r.Branch,
+		InheritUserSettings: r.InheritUserSettings && r.Sandbox == SandboxHost, Sandbox: r.Sandbox, Kind: r.Kind, Role: r.Role, Branch: r.Branch,
 		WorktreePath:  r.WorktreePath,
 		WorkspaceKind: r.WorktreeKind, WorktreeStatus: r.WorktreeStatus, StartedAt: r.StartedAt, ExitReason: r.ExitReason,
 	}

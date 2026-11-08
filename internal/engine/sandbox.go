@@ -311,7 +311,8 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	}
 
 	command, err := agent.ContainerArgs(agent.ContainerSpec{Bin: sandbox.ClaudeBin, SessionID: sid,
-		Model: e.modelOf(l.def), SettingsPath: sandbox.SettingsFile, MCPConfigPath: sandbox.MCPConfigFile, InitialPrompt: l.prompt})
+		Model: e.modelOf(l.def), SettingsPath: sandbox.SettingsFile, MCPConfigPath: sandbox.MCPConfigFile, InitialPrompt: l.prompt,
+		ResumeFrom: l.resumeFrom})
 	if err != nil {
 		return fail(err)
 	}
@@ -334,18 +335,19 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 			Role:   l.def.Name,
 			Branch: branch, WorktreePath: wsPath, WorkspaceKind: KindClone, WorktreeStatus: WorktreeActive,
 			HasTerminal: true, StartedAt: started},
-		status:     hooks.Status{State: hooks.Starting},
-		baseCommit: base,
-		term:       term,
-		listener:   ln,
-		settings:   settingsPath,
-		sandbox:    res,
-		exited:     make(chan struct{}),
-		afterExit:  make(chan struct{}),
-		mcp:        mln,
-		hasPrompt:  l.prompt != "",
-		usage:      su,
-		log:        log,
+		status:      hooks.Status{State: hooks.Starting},
+		baseCommit:  base,
+		term:        term,
+		listener:    ln,
+		settings:    settingsPath,
+		sandbox:     res,
+		exited:      make(chan struct{}),
+		afterExit:   make(chan struct{}),
+		historyDone: make(chan struct{}),
+		mcp:         mln,
+		hasPrompt:   l.prompt != "",
+		usage:       su,
+		log:         log,
 	}
 	e.mu.Lock()
 	e.registerLocked(a, l)
@@ -354,6 +356,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "sandbox", SandboxPodman, "branch", branch,
 		"workspace", wsPath, "container", res.container, "image", s.Image, "pack", packName(s.Pack),
 		"secrets", secretNames(prep.secrets), "model", e.modelOf(l.def), "role_name", l.def.Name, "read_only", l.def.ReadOnly)
+	e.keepHistory(a)
 	e.wg.Add(1)
 	go e.watch(a)
 	return view, nil

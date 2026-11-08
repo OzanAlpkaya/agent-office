@@ -203,3 +203,30 @@ func TestRedrawRestoresSize(t *testing.T) {
 		t.Fatalf("size after Redraw = %+v", got)
 	}
 }
+
+// Snapshot's counter moves only when output arrives (Phase 9 saves the
+// scrollback when it changed).
+func TestSnapshotCounter(t *testing.T) {
+	s := bash(t, Options{})
+	_, sub, _ := s.Attach()
+	defer sub.Close()
+	if _, err := s.Write([]byte("echo snap-$((1+1))\n")); err != nil {
+		t.Fatal(err)
+	}
+	readUntil(t, sub, "snap-2")
+	time.Sleep(100 * time.Millisecond)
+	data, gen := s.Snapshot()
+	if !strings.Contains(string(data), "snap-2") || gen == 0 {
+		t.Fatalf("snapshot %q gen %d", data, gen)
+	}
+	if _, again := s.Snapshot(); again != gen {
+		t.Fatalf("counter moved without output: %d -> %d", gen, again)
+	}
+	if _, err := s.Write([]byte("echo more\n")); err != nil {
+		t.Fatal(err)
+	}
+	readUntil(t, sub, "more\r\n")
+	if _, after := s.Snapshot(); after == gen {
+		t.Fatal("counter did not move with output")
+	}
+}

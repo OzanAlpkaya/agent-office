@@ -2,21 +2,47 @@ package engine
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
+
+// relaunchSpec says how an exited agent starts again.
+type relaunchSpec struct {
+	prompt   string         // initial prompt; empty for none
+	followup *followupRound // a relaunch to address a review or conflict (ADR 0022, 0032)
+	resume   bool           // continue the latest session's conversation (ADR 0035)
+}
 
 // relaunch starts an exited worker again in its own workspace, on its own
 // branch and base, with a new session and prompt (ADR 0022). Its task moves
 // back to in_progress. The workspace is never touched on failure: it holds the
 // agent's work.
 func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRound) (AgentInfo, error) {
+	return e.relaunchWith(ctx, id, relaunchSpec{prompt: prompt, followup: fu})
+}
+
+// resumable is whether an agent of kind can continue its conversation
+// (ADR 0035). QA runs and reviews end with their agent (ADR 0021, 0033).
+func resumable(kind string) bool {
+	return kind == KindWorker || kind == KindArchitect || kind == KindLead || kind == KindAssistant
+}
+
+// relaunchWith is relaunch and resume: same agent id, workspace, branch,
+// base, config dir and role, a new session. A resume continues the latest
+// session's conversation (claude --resume --fork-session), leaves the task's
+// status alone and receives the messages queued for that conversation.
+func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (AgentInfo, error) {
 	e.mu.Lock()
 	a, ok := e.agents[id]
 	var err error
+	oneAtATime := false
 	switch {
 	case e.closing:
 		err = ErrShuttingDown
@@ -26,18 +52,26 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 		err = fmt.Errorf("agent %s: %w", id, ErrStillRunning)
 	case a.busy:
 		err = invalid("agent %s is being removed or relaunched", id)
-	case a.info.Kind != KindWorker && a.info.Kind != KindArchitect:
+	case !r.resume && a.info.Kind != KindWorker && a.info.Kind != KindArchitect:
 		err = invalid("only workers and architects are relaunched, not a %s", a.info.Role)
+	case r.resume && !resumable(a.info.Kind):
+		err = invalid("a %s is not resumed: its run ended with it; start a new one", a.info.Role)
 	case a.info.WorktreeStatus == WorktreeRemoved:
 		err = invalid("agent %s's workspace was removed", id)
 	case (a.info.Sandbox == SandboxPodman) != (e.opts.Sandbox != nil):
 		err = invalid("agent %s ran in %s mode; this daemon runs in the other mode", id, a.info.Sandbox)
 	case e.runningLocked()+e.starting >= e.opts.MaxAgents:
 		err = ErrTooManyAgents
+	case r.resume && single(a.info.Kind) && (e.startingKind[a.info.Kind] || e.runningKindLocked(a.info.Kind) != nil):
+		err = invalid("a %s is already running; stop it first", a.info.Kind)
 	}
 	if err != nil {
 		e.mu.Unlock()
 		return AgentInfo{}, err
+	}
+	if r.resume && single(a.info.Kind) {
+		oneAtATime = true
+		e.startingKind[a.info.Kind] = true
 	}
 	a.busy = true
 	e.starting++
@@ -46,6 +80,9 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 		e.mu.Lock()
 		e.starting--
 		a.busy = false
+		if oneAtATime {
+			delete(e.startingKind, a.info.Kind)
+		}
 		e.mu.Unlock()
 	}()
 	if a.term != nil {
@@ -59,6 +96,19 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 	info := a.info
 	if _, err := os.Stat(info.WorktreePath); err != nil {
 		return AgentInfo{}, invalid("agent %s's workspace is gone: %v", id, err)
+	}
+	var from db.Session
+	if r.resume {
+		if from, err = e.q.LatestSession(ctx, id); errors.Is(err, sql.ErrNoRows) {
+			return AgentInfo{}, invalid("agent %s has no session to resume", id)
+		} else if err != nil {
+			return AgentInfo{}, err
+		}
+		if (info.Kind == KindLead || info.Kind == KindArchitect) && info.TaskID != "" {
+			if t, err := e.q.GetTask(ctx, info.TaskID); err == nil && t.Status == StatusDone {
+				return AgentInfo{}, invalid("the goal of this %s is done; start a new one for new work", info.Role)
+			}
+		}
 	}
 	var prep sandboxPrep
 	if info.Sandbox == SandboxPodman {
@@ -74,11 +124,12 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 		if err := q.ReopenAgent(ctx, id); err != nil {
 			return err
 		}
-		if err := q.CreateSession(ctx, db.CreateSessionParams{ID: sid, AgentID: id, StartedAt: started}); err != nil {
+		if err := q.CreateSession(ctx, db.CreateSessionParams{ID: sid, AgentID: id, StartedAt: started,
+			ResumedFrom: from.ID}); err != nil {
 			return err
 		}
-		if info.TaskID == "" {
-			return nil
+		if info.TaskID == "" || r.resume {
+			return nil // a resume continues; status changes come from reports and the user
 		}
 		t, err := q.GetTask(ctx, info.TaskID)
 		if err != nil {
@@ -99,12 +150,20 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 		return AgentInfo{}, fmt.Errorf("record relaunch: %w", err)
 	}
 
-	if prompt != "" {
-		prompt += e.memorySection(ctx) // ADR 0034
+	prompt := r.prompt
+	if prompt != "" && !r.resume {
+		// ADR 0034, 0037; a resumed conversation already has it.
+		roleName, files := e.agentScope(ctx, info.Role, info.TaskID)
+		def := e.roleOf(info.Role, info.Kind)
+		prompt += e.memorySection(ctx, roleName, files, slices.Contains(def.TeamTools, mcp.ToolListMemory))
 	}
 	l := launchInfo{id: id, sid: sid, role: info.Kind, def: e.roleOf(info.Role, info.Kind), branch: info.Branch,
 		path: info.WorktreePath, base: a.baseCommit,
-		taskID: info.TaskID, started: started, prompt: prompt, prev: a, followup: fu}
+		taskID: info.TaskID, started: started, prompt: prompt, prev: a, followup: r.followup}
+	if r.resume {
+		// Messages queued for the conversation it continues are its own.
+		l.resumeFrom, l.since = from.ID, from.StartedAt.UTC()
+	}
 	var out AgentInfo
 	if info.Sandbox == SandboxPodman {
 		out, err = e.launchSandboxed(l, prep)
@@ -115,6 +174,9 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 		bg := context.Background()
 		_ = e.q.MarkAgentExited(bg, db.MarkAgentExitedParams{ExitedAt: nullTime(now()), ExitReason: ExitStartFailed, ID: id})
 		_ = e.q.EndSessions(bg, db.EndSessionsParams{EndedAt: nullTime(now()), AgentID: id})
+		if r.resume {
+			_ = e.q.DeleteSession(bg, sid) // never ran; the next resume continues from.ID again
+		}
 		if task != nil && prevStatus != "" && prevStatus != StatusInProgress {
 			if t, gerr := e.getTask(bg, task.ID); gerr == nil {
 				_, _ = e.setTaskStatus(bg, t, prevStatus) // no agent works on it after all
@@ -125,6 +187,33 @@ func (e *Engine) relaunch(ctx context.Context, id, prompt string, fu *followupRo
 	if task != nil {
 		e.publish(Update{Type: "task", Task: task})
 	}
-	e.log.Info("agent relaunched", "agent_id", id, "session_id", sid, "task_id", info.TaskID, "branch", info.Branch)
+	if r.resume {
+		e.log.Info("agent resumed", "agent_id", id, "session_id", sid, "resumed_from", from.ID, "task_id", info.TaskID,
+			"prompt", prompt != "")
+	} else {
+		e.log.Info("agent relaunched", "agent_id", id, "session_id", sid, "task_id", info.TaskID, "branch", info.Branch)
+	}
 	return out, nil
+}
+
+// MaxResumePrompt bounds the optional prompt of a resume.
+const MaxResumePrompt = MaxMessageLen
+
+// Resume continues an exited agent's latest conversation in its workspace and
+// sandbox, with an optional prompt from the user (ADR 0035).
+func (e *Engine) Resume(ctx context.Context, id, prompt string) (AgentInfo, error) {
+	if prompt != "" {
+		var err error
+		if prompt, err = normalizeText(prompt, MaxResumePrompt, "prompt"); err != nil {
+			return AgentInfo{}, err
+		}
+	}
+	return e.relaunchWith(ctx, id, relaunchSpec{prompt: prompt, resume: true})
+}
+
+// resumeFailed reports whether a resumed CLI exited before its first hook:
+// one that exits before it could not load the conversation (Claude Code
+// prints "No conversation found ..." and exits 1).
+func resumeFailed(a *agentProc) bool {
+	return a.resumeFrom != "" && !a.sessionStarted
 }

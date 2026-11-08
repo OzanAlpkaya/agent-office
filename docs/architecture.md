@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 0 design, updated through Phase 12 (team workflow and roles), based on the spikes in `spikes/` and
+Status: Phase 0 design, updated through Phase 9 (memory and persistence; Phase 12 came before it), based on the spikes in `spikes/` and
 the ADRs in `docs/adr/`. Parts marked *(later)* belong to later phases and will be detailed then.
 
 ## Overview
@@ -55,7 +55,7 @@ flowchart LR
 
 | Package | Responsibility |
 |---|---|
-| `agent` | Adapter per agent CLI: command line, env, settings file, and translating CLI-specific hook payloads into common events. |
+| `agent` | Adapter per agent CLI: command line (also `--resume … --fork-session`, ADR 0035), env, settings file, and translating CLI-specific hook payloads into common events. |
 | `engine` | Owns the lifecycle of agents, tasks, worktrees and messages. All state changes go through it. |
 | `hooks` | Accepts forwarded hook events from the per-agent sockets and runs the agent state machine. |
 | `mcp` | Team MCP server (go-sdk v1.8.0): `create_task`, `assign_task`, `list_tasks`, `send_message`, `report_done`, `request_access`, `submit_review` (reviewers), `report_no_change` (workers in a review follow-up), and from Phase 12 `message_user`, `submit_plan`, `start_qa`, `report_qa`, `get_briefing`, `list_memory`, `propose_memory`, over a `Team` interface the engine implements; each agent's server lists only its role's tools; per-agent socket listener; the `agent-office mcp` stdio bridge (ADR 0006). |
@@ -342,6 +342,41 @@ sequenceDiagram
   proposes project memory, which reaches every agent's first prompt only after the user accepts it.
 - `--max-agents` still counts every running agent; an idle Tech Lead or assistant keeps its slot.
 
+**Memory and persistence (Phase 9, ADR 0035–0037).**
+
+```mermaid
+sequenceDiagram
+  participant D1 as Daemon (run 1)
+  participant DB as SQLite + data dir
+  participant D2 as Daemon (run 2)
+  participant C as Claude Code
+  D1->>DB: every 5 s and at exit: scrollback -> terminals/<project>/<agent>/<session>.log
+  D1->>DB: stop (shutdown) or crash: agents.resume_state = what each agent was doing
+  D2->>DB: reconcile, restart imports (sandbox), GitHub restart rules
+  D2->>C: claude --resume <last session> --fork-session --session-id <new> [-- restart prompt]
+  C-->>D2: SessionStart (source fork, the new id) -> queued messages delivered
+  D2->>DB: sessions.resumed_from; resume_state cleared; inbox notice (restored / not, why)
+```
+
+- **Resume** (ADR 0035): an exited worker, architect, lead or assistant continues its latest
+  conversation in its workspace and sandbox (Resume button, `POST /api/agents/{id}/resume`), with an
+  optional prompt; same agent, new session (`resumed_from`), fresh session budget, task status
+  unchanged, messages queued for the conversation delivered. QA and reviewers are not resumed.
+  Relaunches for reviews, conflicts and escalations stay fresh sessions (ADR 0022).
+- **Restore** (`--restore-agents`, default on): at start, agents the previous stop interrupted are
+  resumed once (coordinators first, within `--max-agents`); mid-turn ones get agent-office's
+  "you were cut off" prompt, idle ones none. Agents in a review round, still starting, of the other
+  sandbox mode or beyond the slots stay exited and are listed in the notice.
+- **Host usage of forks:** a forked transcript repeats its parent's messages and its cost-state is
+  cumulative; the reader skips known message ids and subtracts the chain's CLI cost.
+- **Session history** (ADR 0036): every session's scrollback is saved (0600, data dir); `GET
+  /api/agents/{id}/sessions` and `…/sessions/{sid}/terminal`; the UI replays it read-only with a
+  session picker. Deleted with the agent and by event retention.
+- **Relevant memory** (ADR 0037): entries may be scoped to role names and file patterns; a first
+  prompt lists the entries that apply to the agent's role and its task's declared files, scoped
+  ones first, within 6 000 characters; `list_memory` (all behaviours but reviewers) shows every
+  accepted entry marked `applies_to_you`; `GET /api/memory/export` downloads Markdown.
+
 **Isolation (Phase 3).** Each sandboxed worker is a rootless Podman container with
 `--network none`, a read-only rootfs and no capabilities (ADR 0007). It mounts its own shared
 clone (the main repository's objects read-only), its per-agent sockets and the read-only
@@ -372,14 +407,14 @@ events: logged, stored (rate-limited), pushed to the UI live and listed by
 
 | Entity | Key fields | Notes |
 |---|---|---|
-| **Agent** | id, kind (architect / lead / worker / qa / reviewer / assistant), role (the role's name), model, sandbox, state, task_id, current_session_id | One live session at a time; at most one running lead, architect, QA and assistant (ADR 0017, 0029); workers and architects can be relaunched in their workspace with a new session (ADR 0022, 0031). |
-| **Session** | id (= CLI session UUID), agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd | One per CLI process; the correlation id of its logs (ADR 0028). |
+| **Agent** | id, kind (architect / lead / worker / qa / reviewer / assistant), role (the role's name), model, sandbox, state, task_id, current_session_id | One live session at a time; at most one running lead, architect, QA and assistant (ADR 0017, 0029); workers and architects can be relaunched in their workspace with a new session (ADR 0022, 0031); workers, architects, leads and assistants can be resumed with their conversation, and are restored after a restart from `resume_state` (ADR 0035). |
+| **Session** | id (= CLI session UUID), agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from | One per CLI process; the correlation id of its logs (ADR 0028); a resumed one names the session whose conversation it continues; its terminal output is saved in the data dir (ADR 0035, 0036). |
 | **UsageMessage** | session_id, message_id, agent_id, task_id, source (api / transcript), request_id, model, speed, inference_geo, input / output / cache read / cache write 5m / 1h tokens | One per API message, upserted; priced when read (ADR 0026). |
 | **Task** | id, title, description, status (todo / in_progress / review / done / blocked), parent_task_id, created_by, depends_on, files, acceptance, role, spec_key, conflicts | A goal is a top-level task; its sub-tasks come from an approved spec or the lead's `create_task`. Agents point to their task (`agents.task_id`). |
 | **Spec** | id, goal_id, version, status (proposed / approved / superseded), author, plan (JSON), markdown, branch, commit, path | One row per version of a goal's plan; approval commits it (ADR 0031). |
 | **QARun** | id, goal_id, agent_id, status (running / passed / failed / error), branch, head, merged (task, branch, head), summary, bugs | One per `start_qa`; the latest gates the goal's report (ADR 0033). |
 | **InboxItem** | id, agent_id (empty: agent-office), task_id, goal_id, role, kind (question / blocked / info / briefing / plan), body, read_at, answered_at, reply | A message to the user (ADR 0030). |
-| **MemoryEntry** | id, kind (decision / convention / lesson), title, body, status (proposed / accepted), source | Accepted entries reach agents' prompts (ADR 0034). |
+| **MemoryEntry** | id, kind (decision / convention / lesson), title, body, status (proposed / accepted), source, roles, paths | Accepted entries reach the prompts of the agents their scope includes (ADR 0034, 0037). |
 | **Worktree** | id, repo_path, path, branch, base_ref, kind (worktree / clone), created_at, removed_at | One per worker agent; sandboxed agents get a shared clone (ADR 0014). |
 | **Import** | id, agent_id, trigger, outcome, branch, head, previous, commits, flagged, at | One per import of a sandboxed agent's branch (migration 0003). |
 | **Message** | id, from_agent_id (empty: agent-office), to_agent_id, body, created_at, delivered_at, delivery (stop_hook / pty) | Claimed once, then delivered (ADR 0018). |
@@ -432,7 +467,9 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | A role file widens what an agent can do | Roles come from the binary or a user-owned directory (ownership and mode checked, no symlinks), never the repository; a role picks a behaviour whose maximum team tools and authority are code, and may only narrow them; authorization uses the kind. Tested: `TestLoadInvalid`, `TestUserRoles`, `TestBehaviourTools`, `TestRolesAreData` | 12 |
 | A read-only role changes files | Edit/Write/NotebookEdit denied in `permissions.deny` (holds under `--dangerously-skip-permissions`, checked with 2.1.319) and the sandboxed workspace mounted `:ro`, so Bash cannot write either. Residual: host-mode Bash asks the user like every tool there. Tested: `TestRolesAreData`, `TestWorkerArgsReadOnlyWorkspace` | 12 |
 | Agent-written text reaches the user (phishing, floods) | Only agents with nobody above them may use `message_user`; 30 per agent per 10 minutes and 20 unread; rendered as text, labelled with agent and role. Replies are the user's own words, framed as such; an agent's text cannot forge that header (quoted lines). Tested: `TestMessageUserAndChain`, `TestArchitectChain` | 12 |
-| Project memory as a persistent injection channel | The assistant can only propose; entries reach prompts only after the user accepts them, size-capped, shown with their source; memory is not read from the repository. Tested: `TestAssistantBriefingAndMemory`, `TestMemorySectionIsCapped` | 12 |
+| Project memory as a persistent injection channel | The assistant can only propose; entries reach prompts only after the user accepts them, size-capped, shown with their source and scope; scopes only narrow who gets an entry; memory is not read from the repository and its export is a download, not a commit; `list_memory` shows other agents accepted entries only, and reviewers not at all. Tested: `TestAssistantBriefingAndMemory`, `TestMemorySectionIsCapped`, `TestMemoryRelevance` | 12, 9 |
 | An approved plan or a conflict check touches the user's checkout | Spec commits are built with a temporary index and plumbing and move only `agent-office/spec-*` branches by compare-and-swap; dependency bases and conflict checks use `merge-tree`/`commit-tree` (objects only); the host never runs git in agent repositories (QA's extra branches are created during clone setup; conflict bases set by a helper container). Tested: `TestCommitFileLeavesTheCheckoutAlone`, `TestMergeTree`, `TestArchitectPlanToTechLead`, `TestCreateSharedCloneWithExtraBranches` | 12 |
 | Agents ignore the plan (order, files, QA) | Enforced by deterministic code: `assign_task` refuses unmet dependencies and overlapping running sub-tasks; the goal's `report_done` needs a passing QA run on the current heads. Tested: `TestDependenciesAndFileOwnership`, `TestQAGatesTheGoal` | 12 |
+| Saved terminal output leaks (it holds whatever the agent printed: prompts, code, possibly a pack secret it echoed) | Files only in the data dir, directory 0700 and files 0600, written through a temp file; served only to the loopback UI for that agent's own sessions (`TestResumeAndSessionsAPI`, `TestSessionHistory`: another agent's session is not found), read without following symlinks, size-capped; never logged, never in the repository; deleted with the agent and by event retention. The token canary checks of `TestSandboxEndToEnd` scan the data dir, which now includes them. Residual: like the database, readable by the user's own processes | 9 |
+| A restore or resume widens what an agent may do | A resumed agent keeps its kind, role, workspace, sandbox mode and task; one-at-a-time and `--max-agents` limits apply; QA and reviewers are never resumed; a fresh session budget, as for relaunches. The restore prompt is agent-office's fixed text, never stored agent output. Tested: `TestResumeRefusals`, `TestRestoreAfterShutdown`, `TestRestoreAfterCrash` | 9 |
 | A hook payload points the daemon at a file to read (host mode) | The transcript path must be `<session-id>.jsonl`, absolute and clean, a regular file owned by the user, opened without following symlinks, read in bounded chunks with capped lines; only numbers are kept. Host agents already run as the user, so they gain nothing they could not read themselves | 8 |

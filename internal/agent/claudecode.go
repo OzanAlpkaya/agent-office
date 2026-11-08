@@ -42,6 +42,7 @@ type LaunchSpec struct {
 	BaseEnv             []string // usually os.Environ(); scrubbed before use
 	InitialPrompt       string   // optional first prompt of the interactive session
 	MCPConfigPath       string   // optional --mcp-config file with the team MCP server (ADR 0006)
+	ResumeFrom          string   // optional: continue this session's conversation under SessionID (ADR 0035)
 }
 
 // Command builds the claude command for spec. It does not start it.
@@ -49,7 +50,10 @@ func (c ClaudeCode) Command(spec LaunchSpec) (*exec.Cmd, error) {
 	if spec.SessionID == "" || spec.SettingsPath == "" || spec.SocketPath == "" || spec.WorkDir == "" {
 		return nil, errors.New("agent: LaunchSpec needs SessionID, SettingsPath, SocketPath and WorkDir")
 	}
-	args := []string{"--session-id", spec.SessionID, "--settings", spec.SettingsPath}
+	if spec.ResumeFrom != "" && !uuidRe.MatchString(spec.ResumeFrom) {
+		return nil, fmt.Errorf("agent: ResumeFrom must be a session UUID, got %q", spec.ResumeFrom)
+	}
+	args := append(resumeArgs(spec.ResumeFrom), "--session-id", spec.SessionID, "--settings", spec.SettingsPath)
 	if spec.Model != "" {
 		args = append(args, "--model", spec.Model)
 	}
@@ -108,6 +112,9 @@ const TestedClaudeCodeVersion = "2.1.319"
 
 var versionRe = regexp.MustCompile(`^(\d+\.\d+\.\d+)\b`)
 
+// uuidRe matches the session ids the daemon generates (--session-id).
+var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
 // ParseVersion extracts "2.1.319" from `claude --version` output such as
 // "2.1.319 (Claude Code)".
 func ParseVersion(out string) (string, error) {
@@ -150,6 +157,19 @@ type ContainerSpec struct {
 	SettingsPath  string
 	MCPConfigPath string // optional; the worker then uses only this MCP config
 	InitialPrompt string
+	ResumeFrom    string // optional: continue this session's conversation under SessionID (ADR 0035)
+}
+
+// resumeArgs continues session from's conversation in a new session: with
+// --fork-session the CLI takes the --session-id that follows (checked with
+// 2.1.319: without it, --session-id and --resume are refused together), so
+// hooks keep carrying the id the daemon chose and the old transcript stays as
+// it was.
+func resumeArgs(from string) []string {
+	if from == "" {
+		return nil
+	}
+	return []string{"--resume", from, "--fork-session"}
 }
 
 // ContainerArgs returns the CLI command line for a sandboxed worker. It is
@@ -159,7 +179,10 @@ func ContainerArgs(s ContainerSpec) ([]string, error) {
 	if s.Bin == "" || s.SessionID == "" || s.SettingsPath == "" {
 		return nil, errors.New("agent: ContainerSpec needs Bin, SessionID and SettingsPath")
 	}
-	args := []string{s.Bin, "--session-id", s.SessionID, "--settings", s.SettingsPath}
+	if s.ResumeFrom != "" && !uuidRe.MatchString(s.ResumeFrom) {
+		return nil, fmt.Errorf("agent: ResumeFrom must be a session UUID, got %q", s.ResumeFrom)
+	}
+	args := append(append([]string{s.Bin}, resumeArgs(s.ResumeFrom)...), "--session-id", s.SessionID, "--settings", s.SettingsPath)
 	if s.Model != "" {
 		args = append(args, "--model", s.Model)
 	}
