@@ -128,6 +128,7 @@ type Options struct {
 	Budgets             Budgets         // sandboxed agents' spend limits (ADR 0027); zero: off
 	EventRetention      time.Duration   // reduced events older than this are deleted (ADR 0028); 0: kept
 	RestoreAgents       bool            // resume the agents the previous run's stop interrupted (ADR 0035)
+	HistoryDir          string          // saved terminals of every session (ADR 0036); "": not saved
 
 	// Message delivery timing (ADR 0018); zero values get the defaults. Tests
 	// shorten them.
@@ -286,6 +287,9 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		if !filepath.IsAbs(p) {
 			return nil, fmt.Errorf("engine: %s must be an absolute path, got %q", name, p)
 		}
+	}
+	if opts.HistoryDir != "" && !filepath.IsAbs(opts.HistoryDir) {
+		return nil, fmt.Errorf("engine: HistoryDir must be an absolute path, got %q", opts.HistoryDir)
 	}
 	if opts.Store == nil || opts.ClaudeBin == "" || opts.HookCommand == "" {
 		return nil, errors.New("engine: Store, ClaudeBin and HookCommand are required")
@@ -797,6 +801,7 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "pid", term.Pid(),
 		"branch", branch, "worktree", wtPath, "model", e.modelOf(l.def), "role_name", l.def.Name,
 		"inherit_user_settings", e.opts.InheritUserSettings)
+	e.keepHistory(a)
 	e.wg.Add(1)
 	go e.watch(a)
 	return view, nil
@@ -1067,6 +1072,7 @@ func (e *Engine) removeAgent(ctx context.Context, id string, force bool) (Remove
 	e.order = slices.DeleteFunc(e.order, func(s string) bool { return s == id })
 	e.publishLocked(Update{Type: "agent_removed", ID: id})
 	e.mu.Unlock()
+	e.removeHistory(id)
 	e.log.Info("agent removed", "agent_id", id, "worktree", res.Worktree, "branch", res.Branch, "discarded", force)
 	return res, nil
 }

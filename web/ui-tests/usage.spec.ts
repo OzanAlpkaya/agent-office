@@ -79,3 +79,24 @@ test("an exited agent's terminal explains the resume line and resumes it", async
   await expect.poll(() => daemon.requests.filter((r) => r.startsWith("POST /api/agents/d0e1f2000009/resume")).length).toBe(2);
   expect(errors).toEqual([]);
 });
+
+test("an agent from an earlier daemon run shows its saved sessions", async ({ page }) => {
+  const world = team(10);
+  const id = "d0e1f2000009";
+  world.agents = world.agents.map((a) => a.id === id
+    ? { ...a, state: "exited", has_terminal: false, exit_reason: "daemon_restart", session_id: `${id}-s2`, resumable: true }
+    : a);
+  const daemon = new MockDaemon(world);
+  const errors = await open(page, daemon);
+  await page.locator(".card", { hasText: id }).click();
+  const saved = page.getByTestId("saved-terminal");
+  await expect(saved.locator(".xterm-rows")).toContainText(`saved output of ${id}-s2`);
+  const picker = page.getByLabel("Session");
+  await expect(picker.locator("option")).toHaveCount(2);
+  await picker.selectOption(`${id}-s1`);
+  await expect(saved.locator(".xterm-rows")).toContainText(`saved output of ${id}-s1`);
+  await page.screenshot({ path: `${screens}/saved-terminal.png` });
+  await saved.getByRole("button", { name: "Resume" }).click();
+  await expect.poll(() => daemon.requests).toContain(`POST /api/agents/${id}/resume {"prompt":""}`);
+  expect(errors).toEqual([]);
+});

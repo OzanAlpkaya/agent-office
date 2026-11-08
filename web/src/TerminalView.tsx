@@ -2,7 +2,7 @@ import { type JSX, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { type Agent, wsURL } from "./api";
+import { type Agent, type SessionInfo, api, wsURL } from "./api";
 
 interface Props {
   agent: Agent;
@@ -11,9 +11,73 @@ interface Props {
 
 type Status = { kind: "connecting" } | { kind: "live" } | { kind: "closed"; reason: string; exited: boolean };
 
-// TerminalView attaches to an agent's PTY. The daemon first replays the
-// scrollback, then streams live output; input and resize go back as JSON.
+const termOptions = {
+  fontFamily: "ui-monospace, 'JetBrains Mono', Menlo, monospace",
+  fontSize: 13,
+  theme: { background: "#0f1115" },
+};
+
+// TerminalView shows an agent's terminal: the live one while its process
+// runs, else a saved session's output, read-only (ADR 0036). A picker lists
+// every session of the agent.
 export function TerminalView({ agent, onResume }: Props): JSX.Element {
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [choice, setChoice] = useState(""); // "": the live session, else the newest saved one
+  const exited = agent.state === "exited";
+  useEffect(() => {
+    let alive = true;
+    // Fire and forget: the effect's cleanup drops a late answer.
+    void api.agentSessions(agent.id).then((ss) => { if (alive) setSessions(ss); }).catch(() => { if (alive) setSessions([]); });
+    return () => { alive = false; };
+  }, [agent.id, agent.session_id, exited]);
+
+  const saved = sessions.filter((s) => s.terminal && !s.live);
+  const live = agent.has_terminal && (choice === "" || choice === agent.session_id);
+  const shown = live ? agent.session_id : (choice || saved[0]?.id);
+  const pickable = sessions.filter((s) => s.terminal);
+  return (
+    <div className="terminal-col">
+      {(pickable.length > 1 || !agent.has_terminal) && pickable.length > 0 && (
+        <div className="session-picker row small">
+          <label>
+            Session{" "}
+            <select value={shown ?? ""} onChange={(e) => setChoice(e.target.value)} aria-label="Session">
+              {pickable.map((s) => (
+                <option key={s.id} value={s.id}>{sessionLabel(s)}</option>
+              ))}
+            </select>
+          </label>
+          {!live && <span className="muted">Saved output, read-only.</span>}
+        </div>
+      )}
+      {live && <LiveTerminal key={agent.session_id} agent={agent} onResume={onResume} />}
+      {!live && shown && <SavedTerminal key={shown} agentId={agent.id} sid={shown} agent={agent} onResume={onResume} />}
+      {!live && !shown && (
+        <div className="terminal-wrap">
+          <div className="terminal" />
+          <div className="terminal-banner" data-testid="no-history">
+            <span>
+              No terminal output was saved for this agent{agent.has_terminal ? "" : " (it ran before the daemon restarted)"}.
+            </span>
+            {agent.resumable && <button onClick={onResume}>Resume</button>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function sessionLabel(s: SessionInfo): string {
+  const t = new Date(s.started_at).toLocaleString();
+  const parts = [s.live ? `${t} (live)` : t];
+  if (s.resumed_from) parts.push("resumed");
+  parts.push(`${s.turns} turn${s.turns === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
+// LiveTerminal attaches to an agent's PTY. The daemon first replays the
+// scrollback, then streams live output; input and resize go back as JSON.
+function LiveTerminal({ agent, onResume }: Props): JSX.Element {
   const agentId = agent.id;
   const host = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
@@ -21,12 +85,7 @@ export function TerminalView({ agent, onResume }: Props): JSX.Element {
 
   useEffect(() => {
     if (!host.current) return;
-    const term = new Terminal({
-      cursorBlink: true,
-      fontFamily: "ui-monospace, 'JetBrains Mono', Menlo, monospace",
-      fontSize: 13,
-      theme: { background: "#0f1115" },
-    });
+    const term = new Terminal({ ...termOptions, cursorBlink: true });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host.current);
@@ -79,15 +138,61 @@ export function TerminalView({ agent, onResume }: Props): JSX.Element {
           {status.exited ? (
             <span>
               The agent process has exited.{" "}
-              <span className="muted" data-testid="resume-note">
-                Claude Code’s “Resume this session with: claude --resume …” line does not apply here: the
-                session belongs to this agent’s workspace and config{agent.sandbox === "podman" ? " in its sandbox" : ""}.
-                {agent.resumable ? " Use Resume to continue it in agent-office." : ""}
-              </span>{" "}
+              <ResumeNote agent={agent} />{" "}
               {agent.resumable && <button onClick={onResume}>Resume</button>}
             </span>
           ) : `Disconnected: ${status.reason}.`}
           {!status.exited && <button onClick={() => setAttempt((n) => n + 1)}>Reconnect</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ResumeNote({ agent }: { agent: Agent }): JSX.Element {
+  return (
+    <span className="muted" data-testid="resume-note">
+      Claude Code’s “Resume this session with: claude --resume …” line does not apply here: the
+      session belongs to this agent’s workspace and config{agent.sandbox === "podman" ? " in its sandbox" : ""}.
+      {agent.resumable ? " Use Resume to continue it in agent-office." : ""}
+    </span>
+  );
+}
+
+// SavedTerminal replays a session's saved output into a read-only terminal.
+function SavedTerminal({ agentId, sid, agent, onResume }: { agentId: string; sid: string } & Props): JSX.Element {
+  const host = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!host.current) return;
+    const term = new Terminal({ ...termOptions, disableStdin: true, cursorBlink: false });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(host.current);
+    fit.fit();
+    let alive = true;
+    // Fire and forget: the effect's cleanup drops a late answer.
+    void api.sessionTerminal(agentId, sid)
+      .then((data) => { if (alive) term.write(data); })
+      .catch((e: unknown) => { if (alive) setError(e instanceof Error ? e.message : String(e)); });
+    const observer = new ResizeObserver(() => fit.fit());
+    observer.observe(host.current);
+    return () => {
+      alive = false;
+      observer.disconnect();
+      term.dispose();
+    };
+  }, [agentId, sid]);
+  return (
+    <div className="terminal-wrap" data-testid="saved-terminal">
+      <div className="terminal" ref={host} />
+      {(error || agent.resumable) && (
+        <div className="terminal-banner">
+          <span>
+            {error ? `Saved output not available: ${error}.` : "This session has ended."}{" "}
+            <ResumeNote agent={agent} />
+          </span>
+          {agent.resumable && <button onClick={onResume}>Resume</button>}
         </div>
       )}
     </div>

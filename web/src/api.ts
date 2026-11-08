@@ -114,6 +114,23 @@ export interface Budgets {
 }
 
 // SessionUsage is one agent session's usage; live updates send the same shape.
+// SessionInfo is one of an agent's sessions, for its history (ADR 0036).
+export interface SessionInfo {
+  id: string;
+  started_at: string;
+  ended_at?: string;
+  resumed_from?: string;
+  turns: number;
+  tool_calls: number;
+  live: boolean; // the running process's session
+  terminal: boolean; // its terminal output was saved (or is live)
+}
+
+export function isSessionInfo(v: unknown): v is SessionInfo {
+  return isObj(v) && typeof v.id === "string" && typeof v.started_at === "string" && typeof v.live === "boolean" &&
+    typeof v.terminal === "boolean" && typeof v.turns === "number";
+}
+
 export interface SessionUsage {
   session_id: string;
   agent_id: string;
@@ -616,6 +633,16 @@ export const api = {
   importAgent: (id: string): Promise<ImportInfo> => request("POST", `/api/agents/${id}/import`),
   resumeAgent: (id: string, prompt = ""): Promise<Agent> => request("POST", `/api/agents/${id}/resume`, { prompt }),
   saveWork: (id: string): Promise<ImportInfo> => request("POST", `/api/agents/${id}/save-work`),
+  agentSessions: async (id: string): Promise<SessionInfo[]> => {
+    const ss: unknown = await request("GET", `/api/agents/${id}/sessions`);
+    return Array.isArray(ss) ? ss.filter(isSessionInfo) : [];
+  },
+  // The bytes one session's terminal received, to replay into a read-only terminal.
+  sessionTerminal: async (id: string, sid: string): Promise<Uint8Array> => {
+    const res = await fetch(`/api/agents/${id}/sessions/${sid}/terminal`, { headers: { Accept: "application/octet-stream" } });
+    if (!res.ok) throw new ApiError(`GET saved terminal: ${res.status}`, res.status, undefined);
+    return new Uint8Array(await res.arrayBuffer());
+  },
   agentEvents: async (id: string): Promise<SandboxEvent[]> => {
     const evs: unknown = await request("GET", `/api/agents/${id}/events`);
     return Array.isArray(evs) ? evs.filter(isSandboxEvent) : [];

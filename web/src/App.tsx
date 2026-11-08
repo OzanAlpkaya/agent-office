@@ -322,11 +322,10 @@ export function App(): JSX.Element {
               onReadInbox={(i) => void run(() => api.readInbox(i.id))}
               onReplyInbox={(i, body) => ok(() => api.replyInbox(i.id, body))}
             />
-          ) : current.has_terminal ? (
+          ) : (
+            // Live while it runs, else its saved sessions (ADR 0036).
             <TerminalView key={`${current.id}-${current.session_id ?? ""}`} agent={current}
               onResume={() => void run(() => api.resumeAgent(current.id))} />
-          ) : (
-            <div className="empty">This agent ran before the daemon restarted; its terminal is no longer available.</div>
           )}
         </section>
       </main>

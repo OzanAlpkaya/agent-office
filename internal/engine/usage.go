@@ -713,6 +713,7 @@ func (e *Engine) retentionLoop(ctx context.Context) {
 	for {
 		pctx, cancel := context.WithTimeout(ctx, time.Minute)
 		e.pruneEvents(pctx)
+		e.pruneHistory() // saved terminals follow the same retention (ADR 0036)
 		cancel()
 		select {
 		case <-ctx.Done():

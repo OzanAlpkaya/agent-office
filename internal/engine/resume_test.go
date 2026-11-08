@@ -59,6 +59,7 @@ func TestResumeKeepsAgentAndWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	from := log.mark()
 	r, err := e.Resume(ctx, a.ID, "")
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +68,7 @@ func TestResumeKeepsAgentAndWorkspace(t *testing.T) {
 		r.ResumedFrom != a.SessionID || r.Resumable {
 		t.Fatalf("resumed %+v\nfrom %+v", r, a)
 	}
-	log.wait(t, 5*time.Second, agentState(a.ID, hooks.Idle))
+	log.waitFrom(t, 5*time.Second, from, agentState(a.ID, hooks.Idle))
 	out := screen(t, e, a.ID, "RESUMED:"+a.SessionID)
 	if strings.Contains(out, "PROMPT:") {
 		t.Fatalf("a resume without a prompt sent one:\n%s", out)
@@ -82,7 +83,7 @@ func TestResumeKeepsAgentAndWorkspace(t *testing.T) {
 
 	// Again, with the user's prompt: it continues the second session, and the
 	// prompt carries no memory section (the conversation has it).
-	from := log.mark()
+	from = log.mark()
 	typeLine(t, e, a.ID, "exit")
 	log.waitFrom(t, 5*time.Second, from, agentGone(a.ID))
 	r2, err := e.Resume(ctx, a.ID, "Please also add a test.")

@@ -556,7 +556,7 @@ func serve(args []string) error {
 		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
 		Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version, GitHub: ghOpts,
-		Roles: roles, QA: cfg.qa, RestoreAgents: cfg.restoreAgents,
+		Roles: roles, QA: cfg.qa, RestoreAgents: cfg.restoreAgents, HistoryDir: filepath.Join(cfg.dataDir, "terminals"),
 		Prices: prices, Budgets: budgets, EventRetention: time.Duration(cfg.eventRetentionDays) * 24 * time.Hour,
 	})
 	if err != nil {

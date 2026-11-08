@@ -86,6 +86,8 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/pull-requests/{id}/accept", s.prAction(s.acceptFlagged))
 	mux.HandleFunc("POST /api/agents/{id}/message", s.messageAgent)
 	mux.HandleFunc("POST /api/agents/{id}/resume", s.resumeAgent)
+	mux.HandleFunc("GET /api/agents/{id}/sessions", s.agentSessions)
+	mux.HandleFunc("GET /api/agents/{id}/sessions/{sid}/terminal", s.sessionTerminal)
 	mux.HandleFunc("GET /api/inbox", s.listInbox)
 	mux.HandleFunc("GET /api/specs", s.listSpecs)
 	mux.HandleFunc("GET /api/qa-runs", s.listQARuns)
@@ -310,6 +312,31 @@ func (s *server) resumeAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a)
+}
+
+// agentSessions lists an agent's sessions, newest first (ADR 0036).
+func (s *server) agentSessions(w http.ResponseWriter, r *http.Request) {
+	out, err := s.eng.Sessions(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// sessionTerminal returns one session's terminal output, as the bytes the
+// terminal received; the UI writes them into a read-only terminal.
+func (s *server) sessionTerminal(w http.ResponseWriter, r *http.Request) {
+	data, err := s.eng.SessionTerminal(r.Context(), r.PathValue("id"), r.PathValue("sid"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *server) listMemory(w http.ResponseWriter, r *http.Request) {

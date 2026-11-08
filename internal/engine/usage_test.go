@@ -441,11 +441,12 @@ func TestHostUsageForkedTranscript(t *testing.T) {
 	if err := e.Stop(a.ID); err != nil {
 		t.Fatal(err)
 	}
+	from := log.mark()
 	r, err := e.Resume(ctx, a.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	log.wait(t, 5*time.Second, agentState(a.ID, hooks.Idle))
+	log.waitFrom(t, 5*time.Second, from, agentState(a.ID, hooks.Idle))
 	typeLine(t, e, a.ID, "usage-fork")
 	var fork SessionUsage
 	for i := 0; ; i++ {
