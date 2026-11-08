@@ -341,7 +341,7 @@ the user, a Tech Lead executes it in dependency order and stays for follow-ups, 
 tests the result, an Assistant keeps the user briefed, parallel work does not silently collide,
 and every agent reaches the user or the agent above it.
 
-**Scope** (see `docs/plans/phase-12.md`, sub-phases 12.1–12.7)
+**Scope** (see ADRs 0029–0034, `docs/roles.md` and `docs/plans/phase-12.md`, sub-phases 12.1–12.7)
 - Roles as data (role packs: prompt, team tools, denied tools, model, read-only or read-write
   workspace, reports-to) over six engine behaviours; model per role.
 - Architect (read-only) produces a plan (design, sub-tasks, dependencies, files, acceptance
@@ -355,30 +355,53 @@ and every agent reaches the user or the agent above it.
   `report_done`, relaunch to resolve after a PR merges.
 
 **Definition of Done**
-- [ ] Roles are YAML (built-in and user-owned); a new worker-behaviour role (e.g. `docs`) runs
-      without code changes, with its own prompt, model, tools and workspace mode.
-- [ ] A lead that reported its goal stays idle until the goal is marked done or stopped, and
-      takes follow-up work typed into its terminal.
-- [ ] An Architect's plan is shown, edited and approved in the UI; approval commits
-      `docs/specs/<goal>.md` and creates the sub-tasks; the Tech Lead starts on it.
-- [ ] A lead can make a sub-task depend on others; it starts only after they are done, from
-      their work; overlapping files without a dependency are refused.
-- [ ] Conflicts with the default branch and other open agent branches are detected on
-      `report_done` and shown in the UI (tested with two branches editing the same lines).
-- [ ] After a merge, a worker whose branch conflicts can be relaunched to resolve it.
-- [ ] QA merges the reported branches, reports pass or fail with bugs as sub-tasks, and gates
-      the goal report.
-- [ ] Any agent without someone above it can message the user; the message appears on its task
-      card and in the inbox, and the user's reply reaches the agent.
-- [ ] The Assistant gives a briefing from daemon data and proposes memory that reaches other
-      agents only once the user accepts it.
+- [x] Roles are YAML (built-in and user-owned); a new worker-behaviour role (e.g. `docs`) runs
+      without code changes, with its own prompt, model, tools and workspace mode
+      (`TestRolesAreData`: a user's `devops` role with its model, prompt, deny rules and two team
+      tools; `TestLoadInvalid`, `TestUserRoles`, `TestBehaviourTools`; built-in `docs` and
+      `security` roles).
+- [x] A lead that reported its goal stays idle until the goal is marked done or stopped, and
+      takes follow-up work typed into its terminal (`TestReportDone`: still running after its
+      report, a new sub-task moves the goal back to in progress, marking the goal done ends it with
+      `goal_done`; live in `TestTeamEndToEnd` and `TestTeamWorkflowEndToEnd`).
+- [x] An Architect's plan is shown, edited and approved in the UI; approval commits
+      `docs/specs/<goal>.md` and creates the sub-tasks; the Tech Lead starts on it
+      (`TestArchitectPlanToTechLead`, `TestEscalationRevisesThePlan`; Playwright "a proposed plan is
+      shown on the goal and approved by the user"; live in `TestTeamWorkflowEndToEnd`).
+- [x] A lead can make a sub-task depend on others; it starts only after they are done, from
+      their work; overlapping files without a dependency are refused
+      (`TestDependenciesAndFileOwnership`, including a merge of two dependencies;
+      `TestOverlapCountsAssignmentsInFlight`; live: the dependent branch had its dependency's file).
+- [x] Conflicts with the default branch and other open agent branches are detected on
+      `report_done` and shown in the UI (tested with two branches editing the same lines):
+      `TestConflictsOnReportAndResolve`; Playwright "task cards show dependencies, conflicts, QA and
+      their roles".
+- [x] After a merge, a worker whose branch conflicts can be relaunched to resolve it
+      (`TestMergeRelaunchesConflictingWorker`: automatic after a GitHub merge;
+      `TestConflictsOnReportAndResolve`: Resolve conflict by hand, report refused until the merge is
+      committed).
+- [x] QA merges the reported branches, reports pass or fail with bugs as sub-tasks, and gates
+      the goal report (`TestQAGatesTheGoal`, `TestQAPassNeedsTheBranches`, `TestQAExitWithoutReport`,
+      `TestGoalNeedsEverySubTask`; live in `TestTeamWorkflowEndToEnd`).
+- [x] Any agent without someone above it can message the user; the message appears on its task
+      card and in the inbox, and the user's reply reaches the agent (`TestMessageUserAndChain`,
+      `TestArchitectChain`, `TestOneLineDeliveryCannotForgeTheUser`; Playwright "the inbox shows the
+      team's questions and sends the answer").
+- [x] The Assistant gives a briefing from daemon data and proposes memory that reaches other
+      agents only once the user accepts it (`TestAssistantBriefingAndMemory`,
+      `TestMemorySectionIsCapped`; Playwright "project memory proposals wait for the user").
 
 **Backlog** (from the Phase 8 review, 2026-11-08)
-- Investigate the intermittent `TestTeamAuthorization` failure (`internal/engine`): it failed once
-  in a full `make check` under load during Phase 8, then passed 15 of 15 on its own and in every
-  later full run. Reproduce under load (e.g. `go test -race -count=50 -run TestTeamAuthorization`
-  next to other packages, or `-cpu 1,2,8`), capture the failure message and fix the race or the
-  test's timing assumption. Placed here because Phase 12 reworks the team code it tests.
+- [x] Investigate the intermittent `TestTeamAuthorization` failure: a real data race (`Start` read
+      the agent's view after releasing the engine lock while its first hook changed it), fixed;
+      plus a test timing assumption (a 2 s hook timeout in the fake CLI under load).
+
+**Backlog** (from Phase 12)
+- QA's integration branch carries the tests QA added, but only worker branches become pull
+  requests: offer the integration branch as a pull request (or a sub-task that moves QA's tests
+  onto the default branch).
+- Several goals in parallel (one Tech Lead, architect and QA at a time today, ADR 0017).
+- Per-task relevance and export of project memory (Phase 9).
 
 ---
 

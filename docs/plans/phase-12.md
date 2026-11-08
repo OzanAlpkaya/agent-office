@@ -1,6 +1,6 @@
 # Phase 12 plan: Team workflow and roles
 
-- **Status:** In progress on `phase-12/team-workflow`. Written 2026-11-08 with the recommended
+- **Status:** Done on `phase-12/team-workflow`, waiting for Ozan's review (not merged). Written 2026-11-08 with the recommended
   option for every open question and executed straight away, as Ozan asked ("Write the Phase 12
   plan to docs/plans/phase-12.md using your recommended options, then execute it immediately
   without asking me anything"). Every decision is listed in the end-of-phase summary; nothing is
@@ -378,4 +378,95 @@ The phase is large, so it is split into sub-phases on the one phase branch, each
 
 ## Changes during the phase
 
-(appended while the phase runs)
+- **ADRs as planned:** 0029 (roles as data, model per role, the Tech Lead stays), 0030 (escalation
+  chain and messages to the user), 0031 (architect plans and specs), 0032 (dependencies, file
+  ownership, conflicts), 0033 (QA), 0034 (assistant and project memory). `docs/roles.md` is the
+  role file reference.
+- **One migration for the phase** (0008), as planned: `agents.kind` + `agents.role`, plan fields
+  and conflicts on tasks, `messages.from_user`, `pull_requests.conflict_rounds`, `inbox`, `specs`,
+  `qa_runs`, `memory`. Leads become `kind=lead, role=tech-lead`
+  (`TestMigration0008KeepsPhase8Rows`).
+- **Deny rules checked before relying on them:** with Claude Code 2.1.319 and haiku, a
+  `permissions.deny: ["Write"]` in `--settings` removes the tool even under
+  `--dangerously-skip-permissions`. Read-only roles therefore get deny rules plus, sandboxed, a
+  `:ro` workspace mount.
+- **Prompts split between the role and the engine:** a role's prompt comes first; the goal, task,
+  plan, reporting protocol, network rule, framing and accepted memory are appended by the engine,
+  so a role file cannot change how work is reported. The reviewer's instructions moved into its
+  role file; the engine adds the pull request's data.
+- **A user role may replace a built-in** by name (it must keep the behaviour), unlike stack packs:
+  a role cannot widen the sandbox, and it makes customizing the Tech Lead one file.
+- **Escalation to an exited architect relaunches it** (ADR 0022's relaunch now allows architects);
+  the lead's message is queued after the relaunch, so it arrives at the architect's first Stop.
+- **Dependencies are met at `review`** (reported), and a dependent sub-task's branch starts from
+  their work: one head, or a `merge-tree` + `commit-tree` merge of several made in the main
+  repository. `assign_task` also refuses a sub-task whose declared files overlap a running one
+  without a dependency between them. These rules live in `deps.go` and landed with 12.3, since the
+  approved plan's sub-tasks needed them.
+- **QA gate also requires QA's bug sub-tasks to be closed** (reported, or marked done by the user),
+  not only a passing run on the current heads; otherwise a second passing run could report a goal
+  whose bugs were never fixed.
+- **Assistant briefing button:** `POST /api/assistant/briefing` starts the assistant or sends a
+  running one "Please give me a new briefing." as the user's message.
+- **Snapshot:** `/api/events` now carries the inbox, specs, QA runs and memory; the UI accepts an
+  older daemon's snapshot without them.
+- **UI:** header Inbox (unread count), Memory (proposals) and Briefing; goal cards show the current
+  plan (edit as a new version, approve), the last QA run and their inbox items; task cards show
+  role, dependencies (Start agent disabled while they are unreported), files, acceptance criteria
+  and conflicts with **Resolve conflict**; Start agent offers worker roles; goals get Start
+  architect and Start Tech Lead. Helpers in `web/src/workflow.ts` (first named `team.ts`, renamed
+  because `Team.tsx` differs only in case).
+- **Found and fixed, pre-existing:**
+  - `TestTeamAuthorization` (the Phase 8 backlog item): a real data race. `Start` returned the
+    agent's view after releasing `Engine.mu` while its SessionStart hook could already change its
+    state. Reproduced in 6 of 120 runs under load (`-race -count=40 -cpu 1,2,8` next to a full test
+    run), 0 races after the fix. Under the same load 2 of 120 runs still timed out waiting for an
+    agent to start: the fake CLI's 2 s hook timeout dropped a SessionStart; it is now 8 s (Claude
+    Code's is 10 s) and the team helpers wait up to 15 s.
+  - `TestGitHubLoop` failed once with "rounds 0": `decideFollowup` claimed a follow-up and counted
+    its round in two statements; now one transaction.
+  - `TestRestartReoffersFollowup` waited for the follow-up claim, which happens before the
+    relaunch runs, and could shut the daemon down too early; it now waits for the relaunched
+    worker.
+- **Process slip, corrected before review:** staging hunks with zero-context patches put one line
+  of the race fix into the wrong function in three intermediate commits (the final tree was
+  right). Those commits were rebuilt from `6936bea` so each commit builds and vets; the branch has
+  not been pushed.
+- **With `--qa=false`** the Tech Lead's prompt says QA is off (found while writing the e2e).
+- **Independent review** (a separate reviewer agent on the branch diff; no blockers, ten
+  should-fix, nine taken):
+  - typed (idle) delivery collapsed line breaks and with them the `> ` quoting, so an agent's
+    message could contain a readable "From the user:" header: typed bodies are now JSON strings;
+  - the file-overlap check and the "being assigned" mark were separate steps (two assignments at
+    once could both pass), and a plan approval could rewrite a sub-task whose worker was starting:
+    in-flight assignments now count as running and as touched;
+  - an unlocked read of an agent's info in `message_user`;
+  - `report_done` now refuses kinds other than worker and lead (defence in depth);
+  - QA's pass must contain every branch it was given (checked with `merge-base --is-ancestor`);
+  - a goal can only be reported when every sub-task is reported or closed by the user;
+  - an escalation relaunches the architect at most 3 times per goal; plan versions are limited to
+    5 per goal per 10 minutes and 30 in all;
+  - nits taken: the spec branch moves after the approval is recorded; the lead cannot message
+    reviewers; a conflict relaunch keeps the worker's role; deleted dependencies do not block;
+    `**` globs overlap by literal prefix; briefings are the assistant's only; `CommitFile` needs an
+    absolute temporary directory; the assistant's prompt marks agent text in briefings as
+    information;
+  - not taken: a worker whose lead was stopped may still message the user, because ADR 0030 treats
+    a stopped lead as no lead (otherwise that worker can reach nobody, the original problem).
+    Noted, not changed: `report_done` runs its `merge-tree` checks synchronously (fast for the
+    handful of branches of a goal); the sibling conflict entries are display-only and can lose an
+    update when two reports finish at the same moment; `FetchBranch` force-updates
+    `refs/remotes/<remote>/<base>` in the main repository (the remote-tracking ref, as `git fetch`
+    does; ADR 0032).
+- **Found by the real e2e runs:** the first full `make e2e` passed (host, sandbox, team, workflow;
+  GitHub not configured). After the review fixes the workflow test stalled once: haiku as Tech
+  Lead read alpha's report, listed the tasks and ended its turn without assigning beta. Reports to
+  the lead now name the sub-tasks that became ready, or say that everything is reported and to
+  call `start_qa`; a passing QA result says to report the goal. Then 3 of 3 workflow runs passed
+  (83–98 s each).
+- **Tests run at the end:** `make check` (Go with `-race`, 151 Vitest tests, typecheck, build);
+  `make ui-test` (21 Playwright tests, 4 new); `make sandbox-test` against rootless Podman (one
+  skip that needs internet, as before); `make e2e`: `TestEndToEnd`, `TestSandboxEndToEnd`,
+  `TestTeamEndToEnd`, `TestTeamWorkflowEndToEnd` passed on the branch before the review fixes;
+  after them all four passed again (`TestTeamWorkflowEndToEnd` 3 of 3). `TestGitHubEndToEnd` was skipped (`AO_E2E_GITHUB_REPO`
+  unset); the after-merge relaunch is covered against the GitHub fake.
