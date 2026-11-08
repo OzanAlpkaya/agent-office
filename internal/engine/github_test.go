@@ -671,8 +671,14 @@ func TestRestartReoffersFollowup(t *testing.T) {
 	gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return p.State == PROpen })
 	_ = gf.e.Stop(w.ID)
 	r := gf.reviewer(t, 1)
+	mark := gf.log.mark()
 	gf.submit(t, r, mcp.SubmitReviewInput{Verdict: review.VerdictChangesRequested, Summary: "fix"})
 	gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return len(p.Reviews) == 1 && p.Reviews[0].Followup == FollowupStarted })
+	// "started" is claimed before the relaunch runs: wait for the relaunched
+	// worker, so the daemon dies after the follow-up began, as the test means.
+	gf.log.waitFrom(t, startWait, mark, func(u Update) bool {
+		return u.Type == "agent" && u.Agent.ID == w.ID && u.Agent.State == string(hooks.Idle) && u.Agent.ExitedAt == nil
+	})
 	gf.e.Shutdown()
 	g := *gf.f.opts.GitHub
 	g.PollFast = time.Hour

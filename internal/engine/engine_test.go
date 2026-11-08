@@ -155,6 +155,12 @@ func fakeClaude() int {
 			}
 			fmt.Println("committed all")
 		default:
+			if rev, ok := strings.CutPrefix(strings.TrimSpace(in.Text()), "merge "); ok {
+				out, err := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "merge",
+					"--no-edit", rev).CombinedOutput()
+				fmt.Printf("merge done (err=%v): %s\n", err != nil, strings.ReplaceAll(string(out), "\n", " "))
+				continue
+			}
 			if rest, ok := strings.CutPrefix(strings.TrimSpace(in.Text()), "write "); ok {
 				// write <path> <text>: the file's whole content becomes <text> plus a newline
 				name, text, _ := strings.Cut(rest, " ")

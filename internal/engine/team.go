@@ -507,6 +507,12 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 	if _, err := e.setTaskStatus(ctx, task, StatusReview); err != nil {
 		return out, err
 	}
+	// ADR 0032: will it merge? Against the base branch and the goal's other open
+	// sub-tasks, in the main repository. Shown, never a refusal.
+	var conflicts []Conflict
+	if head, err := e.git.RevParse(ctx, e.project.RepoPath, "refs/heads/"+out.Branch); err == nil {
+		conflicts = e.checkConflicts(ctx, task, out.Branch, head)
+	}
 
 	e.mu.Lock()
 	a.followup = nil // this round is answered
@@ -520,6 +526,10 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 	if lead != nil {
 		body := fmt.Sprintf("Report from worker %s on sub-task %q (%s): moved to review; branch %s, %d commit(s).\n\nSummary: %s",
 			agentName(info.ID), task.Title, task.ID, out.Branch, out.Commits, summary)
+		if len(conflicts) > 0 {
+			body += "\n\nagent-office found conflicts: " + describeConflicts(conflicts) + ". Decide the order: let one " +
+				"sub-task wait for the other, or assign a sub-task that resolves it."
+		}
 		if _, err := e.sendMessage(ctx, info.ID, lead.info.ID, truncateRunes(body, MaxMessageLen), false); err != nil {
 			e.log.Warn("notify lead", "agent_id", info.ID, "lead", lead.info.ID, "err", err)
 		} else {
@@ -527,6 +537,10 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 		}
 	}
 	out.Next = "Done. End your turn now."
+	if len(conflicts) > 0 {
+		out.Conflicts = describeConflicts(conflicts)
+		out.Next = "Done; your branch conflicts " + out.Conflicts + ". The lead (or the user) decides what to do. End your turn now."
+	}
 	if team {
 		out.Next += " agent-office ends your session when this turn ends."
 	}

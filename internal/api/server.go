@@ -80,6 +80,7 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/access-requests/{id}/deny", s.decideAccess(false))
 	mux.HandleFunc("GET /api/pull-requests", s.listPullRequests)
 	mux.HandleFunc("POST /api/tasks/{id}/pull-request", s.openPullRequest)
+	mux.HandleFunc("POST /api/tasks/{id}/resolve-conflict", s.resolveConflict)
 	mux.HandleFunc("POST /api/pull-requests/{id}/review", s.prAction(s.requestReview))
 	mux.HandleFunc("POST /api/pull-requests/{id}/follow-up", s.prAction(s.followUp))
 	mux.HandleFunc("POST /api/pull-requests/{id}/accept", s.prAction(s.acceptFlagged))
@@ -257,6 +258,16 @@ func (s *server) listAccess(w http.ResponseWriter, r *http.Request) {
 
 // decideAccess approves or denies an access request: the human decision
 // ADR 0019 requires. POST, so the origin guard applies.
+// resolveConflict relaunches a task's worker to merge the base branch and
+// resolve the conflict (ADR 0032).
+func (s *server) resolveConflict(w http.ResponseWriter, r *http.Request) {
+	if err := s.eng.ResolveConflict(r.Context(), r.PathValue("id")); err != nil {
+		s.engineError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // bodyRequest is a JSON body with one text field: a message or a reply.
 type bodyRequest struct {
 	Body string `json:"body"`

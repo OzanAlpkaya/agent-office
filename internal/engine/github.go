@@ -1170,6 +1170,11 @@ func (e *Engine) pollPR(ctx context.Context, prID int64) {
 				_, _ = e.setTaskStatus(ctx, t, StatusDone)
 			}
 		}
+		if row.State == PRMerged {
+			merged := row
+			// ADR 0032: the base moved; other open pull requests may conflict now.
+			e.background(10*time.Minute, func(ctx context.Context) { e.afterMerge(ctx, merged) })
+		}
 		e.publishPR(ctx, row)
 		return
 	}

@@ -181,6 +181,7 @@ type ReportDoneOutput struct {
 	Branch       string `json:"branch,omitempty"`
 	Commits      int    `json:"commits"`
 	LeadNotified bool   `json:"lead_notified"`
+	Conflicts    string `json:"conflicts,omitempty"` // files that would not merge (ADR 0032)
 	Next         string `json:"next"`
 }
 
