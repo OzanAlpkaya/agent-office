@@ -388,7 +388,7 @@ func TestIdleDeliveryOverPTY(t *testing.T) {
 	out := screen(t, e, w.ID, "INPUT:[agent-office]")
 	line := out[strings.Index(out, "INPUT:[agent-office]"):]
 	line, _, _ = strings.Cut(line, "\n")
-	if !strings.Contains(line, "> use [31mred[0m and > then tabs done") || strings.ContainsAny(line, "\x1b\x03\t") {
+	if !strings.Contains(line, `"use [31mred[0m and\nthen\ttabs\u2028done"`) || strings.ContainsAny(line, "\x1b\x03\t") {
 		t.Fatalf("typed line %q", line)
 	}
 	stored := messagesTo(t, e, w.ID)[0]
@@ -413,7 +413,7 @@ func TestIdleDeliveryOverPTY(t *testing.T) {
 	if m := messagesTo(t, e, w.ID); m[0].DeliveredAt != nil {
 		t.Fatal("typed into the terminal while the user was typing")
 	}
-	screen(t, e, w.ID, "From agent-"+lead[:6]+" (tech-lead, agent id "+lead+"): > later")
+	screen(t, e, w.ID, "From agent-"+lead[:6]+" (tech-lead, agent id "+lead+"): \"later\"")
 }
 
 func TestPTYLine(t *testing.T) {
