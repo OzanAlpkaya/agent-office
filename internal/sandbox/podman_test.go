@@ -173,3 +173,30 @@ func TestHelperArgs(t *testing.T) {
 		t.Fatalf("helper command %q", args[img+1:])
 	}
 }
+
+// A read-only role's workspace is mounted :ro (ADR 0029); others read-write.
+func TestWorkerArgsReadOnlyWorkspace(t *testing.T) {
+	s := workerSpec()
+	mountOf := func(args []string) string {
+		for _, v := range flagValues(args, "-v") {
+			if strings.HasPrefix(v, s.Workspace+":"+WorkspaceDir) {
+				return v
+			}
+		}
+		return ""
+	}
+	args, err := WorkerArgs(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := mountOf(args); m != s.Workspace+":"+WorkspaceDir {
+		t.Fatalf("read-write workspace mount %q", m)
+	}
+	s.ReadOnlyWorkspace = true
+	if args, err = WorkerArgs(s); err != nil {
+		t.Fatal(err)
+	}
+	if m := mountOf(args); m != s.Workspace+":"+WorkspaceDir+":ro" {
+		t.Fatalf("read-only workspace mount %q", m)
+	}
+}
