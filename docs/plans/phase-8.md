@@ -1,6 +1,6 @@
 # Phase 8 plan: Observability & cost
 
-- **Status:** Done on `phase-8/observability-cost`, waiting for Ozan's review. Written 2026-11-08 with the recommended
+- **Status:** Done on `phase-8/observability-cost`; approved by Ozan and merged into `main` (2026-11-08). Written 2026-11-08 with the recommended
   option for every open question and executed straight away, as Ozan asked ("write the Phase 8
   plan using your recommended options, then execute it immediately without asking me anything").
   Every decision is listed in the end-of-phase summary; nothing is merged until Ozan has read it.
@@ -306,3 +306,7 @@ daemon through its hooks, team tool calls and API requests by one correlation id
 - **Seen, not changed (pre-existing):** after a daemon restart, a sandboxed agent's card says
   "user settings on" where it said "off" before; the setting does not apply to sandboxed agents
   (ADR 0003), so only the label is inconsistent. A Phase 9 or 11 item.
+- **After the review (Ozan):** all decisions approved. The live Usage tab screenshot moved from the
+  session scratchpad to `docs/screenshots/usage.png` (shown in `docs/usage.md`). Two backlog items
+  went into `docs/plan.md`: the intermittent `TestTeamAuthorization` failure under load (Phase 12)
+  and the "user settings" label flipping on sandboxed agents after a restart (Phase 9).

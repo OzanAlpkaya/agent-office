@@ -273,7 +273,14 @@ derived from Claude Code hooks.
 
 **Backlog** (from Ozan's end-to-end test, 2026-11-08)
 - Make the "Resume this session" line meaningful: resume a stopped agent's session from
-  agent-office (same agent, workspace and sandbox), then drop the Phase 8 interim that hides it.
+  agent-office (same agent, workspace and sandbox), then drop the Phase 8 note that explains it
+  under exited agents' terminals.
+
+**Backlog** (from the Phase 8 review, 2026-11-08)
+- After a daemon restart, a sandboxed agent's card switches from "user settings off" to "user
+  settings on". The setting does not apply to sandboxed agents (ADR 0003), so the label is wrong,
+  not the behaviour: restore the value the agent ran with (or hide the label for sandboxed agents)
+  when agents are loaded from the database.
 
 ---
 
@@ -357,6 +364,13 @@ parallel work does not silently collide, and every agent can reach the user.
 - [ ] A lead can make a sub-task depend on others; it starts only after they are done.
 - [ ] After a merge, a worker whose branch conflicts can be relaunched to resolve it.
 - [ ] Any agent can message the user; the message appears on its task card.
+
+**Backlog** (from the Phase 8 review, 2026-11-08)
+- Investigate the intermittent `TestTeamAuthorization` failure (`internal/engine`): it failed once
+  in a full `make check` under load during Phase 8, then passed 15 of 15 on its own and in every
+  later full run. Reproduce under load (e.g. `go test -race -count=50 -run TestTeamAuthorization`
+  next to other packages, or `-cpu 1,2,8`), capture the failure message and fix the race or the
+  test's timing assumption. Placed here because Phase 12 reworks the team code it tests.
 
 ---
 

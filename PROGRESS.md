@@ -1,7 +1,6 @@
 # Progress
 
-**Current phase:** Phase 8 (Observability & cost), done on `phase-8/observability-cost`, waiting for
-Ozan's review; next: Phase 12
+**Current phase:** Phase 12 (Team workflow), not started; Phase 8 merged
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -139,3 +138,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   stream path, saturating money math, ...). A pre-existing two-step write in review follow-ups
   (`setFollowup`) is now one transaction. `make check`, `make ui-test`, `make sandbox-test` and
   `make e2e` (host, sandbox with a real budget refusal, team) pass.
+- 2026-11-08: Phase 8 review: all decisions approved. The live Usage tab screenshot is in
+  `docs/screenshots/usage.png`. Backlog in `docs/plan.md`: the intermittent `TestTeamAuthorization`
+  failure under load (Phase 12) and the "user settings" label flipping on sandboxed agents after a
+  restart (Phase 9). Merged into `main` (`--no-ff`).

@@ -18,6 +18,8 @@ Host-mode sessions also show Claude Code's own cost figure (its `cost-state` rec
 agent-office's. They usually agree; Claude Code's can be a little higher because some of its internal
 requests are not written to the transcript.
 
+![The Usage tab by session: one sandboxed haiku session with its turns, tool calls, tokens and estimated cost](screenshots/usage.png)
+
 The **Usage** tab shows totals and tables by goal, task, agent, session and model. Agent and task
 cards show their tokens and estimated cost; a goal also shows its team's (the lead, its workers and
 their reviewers). `GET /api/usage` returns the same data.
