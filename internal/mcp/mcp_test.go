@@ -83,6 +83,16 @@ func (f *fakeTeam) SubmitPlan(_ context.Context, caller string, in SubmitPlanInp
 	return SubmitPlanOutput{SpecID: 1, Version: 1, Status: "proposed"}, f.err
 }
 
+func (f *fakeTeam) StartQA(_ context.Context, caller string) (StartQAOutput, error) {
+	f.record(caller, ToolStartQA, nil)
+	return StartQAOutput{RunID: 1}, f.err
+}
+
+func (f *fakeTeam) ReportQA(_ context.Context, caller string, in ReportQAInput) (ReportQAOutput, error) {
+	f.record(caller, ToolReportQA, in)
+	return ReportQAOutput{RunID: 1, Status: "passed"}, f.err
+}
+
 func (f *fakeTeam) MessageUser(_ context.Context, caller string, in MessageUserInput) (MessageUserOutput, error) {
 	f.record(caller, ToolMessageUser, in)
 	return MessageUserOutput{MessageID: 9, Status: "shown"}, f.err

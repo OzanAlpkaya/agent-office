@@ -51,9 +51,22 @@ func (g Git) ObjectsDir(ctx context.Context, repo string) (string, error) {
 // objects of repo borrowed through objects/info/alternates. It is the only
 // operation allowed to run git under an untrusted root, and it runs before the
 // agent has had access to path. On failure, path is removed again.
-func (g Git) CreateSharedClone(ctx context.Context, repo, path, branch, base string) (err error) {
+func (g Git) CreateSharedClone(ctx context.Context, repo, path, branch, base string) error {
+	return g.CreateSharedCloneWith(ctx, repo, path, branch, base, nil)
+}
+
+// CreateSharedCloneWith is CreateSharedClone with extra agent-office
+// branches (name -> commit in repo) set in the new repository, e.g. the
+// sub-task branches QA merges (ADR 0033). They are created during setup,
+// before the agent has access.
+func (g Git) CreateSharedCloneWith(ctx context.Context, repo, path, branch, base string, extra map[string]string) (err error) {
 	if !g.ValidBranch(ctx, branch) || !strings.HasPrefix(branch, BranchPrefix) {
 		return fmt.Errorf("git: invalid agent branch name %q", branch)
+	}
+	for name, sha := range extra {
+		if name == branch || !g.ValidBranch(ctx, name) || !strings.HasPrefix(name, BranchPrefix) || !shaRe.MatchString(sha) {
+			return fmt.Errorf("git: invalid extra branch %q at %q", name, sha)
+		}
 	}
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("git: clone path must be absolute: %q", path)
@@ -89,11 +102,12 @@ func (g Git) CreateSharedClone(ctx context.Context, repo, path, branch, base str
 	if err := os.WriteFile(filepath.Join(info, "alternates"), []byte(objects+"\n"), 0o644); err != nil {
 		return err
 	}
-	for _, args := range [][]string{
-		{"update-ref", "refs/heads/" + branch, base},
-		{"symbolic-ref", "HEAD", "refs/heads/" + branch},
-		{"reset", "--hard", "--quiet"},
-	} {
+	steps := [][]string{{"update-ref", "refs/heads/" + branch, base}}
+	for name, sha := range extra {
+		steps = append(steps, []string{"update-ref", "refs/heads/" + name, sha})
+	}
+	steps = append(steps, []string{"symbolic-ref", "HEAD", "refs/heads/" + branch}, []string{"reset", "--hard", "--quiet"})
+	for _, args := range steps {
 		if _, err := g.exec(ctx, path, args...); err != nil {
 			return err
 		}

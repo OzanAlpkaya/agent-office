@@ -136,9 +136,3 @@ func (e *Engine) Roles() []RoleInfo {
 	}
 	return out
 }
-
-// qaGate refuses a goal's report until QA passed on the current work (ADR
-// 0033); filled in with QA. Without --qa it always passes.
-func (e *Engine) qaGate(ctx context.Context, goal db.Task, children []db.Task) error {
-	return nil
-}

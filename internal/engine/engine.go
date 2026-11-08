@@ -204,9 +204,10 @@ type Update struct {
 	Message       *Message       `json:"message,omitempty"`
 	AccessRequest *AccessRequest `json:"access_request,omitempty"`
 	PullRequest   *PullRequest   `json:"pull_request,omitempty"`
-	Usage         *SessionUsage  `json:"usage,omitempty"` // a running session's usage (ADR 0026)
-	Inbox         *InboxItem     `json:"inbox,omitempty"` // a message to the user (ADR 0030)
-	Spec          *Spec          `json:"spec,omitempty"`  // a version of a goal's plan (ADR 0031)
+	Usage         *SessionUsage  `json:"usage,omitempty"`  // a running session's usage (ADR 0026)
+	Inbox         *InboxItem     `json:"inbox,omitempty"`  // a message to the user (ADR 0030)
+	Spec          *Spec          `json:"spec,omitempty"`   // a version of a goal's plan (ADR 0031)
+	QARun         *QARun         `json:"qa_run,omitempty"` // a QA run (ADR 0033)
 }
 
 type agentProc struct {
@@ -430,6 +431,7 @@ func (e *Engine) reconcile(ctx context.Context) error {
 	if n > 0 {
 		e.log.Info("agents from the previous run marked exited", "count", n, "reason", ExitDaemonRestart)
 	}
+	e.expireQARuns(ctx)
 	if e.opts.Sandbox != nil {
 		e.reconcileSandbox(ctx, interrupted)
 	}
@@ -469,11 +471,12 @@ type StartRequest struct {
 	Role   string // a role name (ADR 0029); empty: worker; "lead": tech-lead
 
 	// Set by the engine for reviewers (ADR 0021); never from the API.
-	base     string // start from this commit instead of HEAD
-	reviewPR int    // reviewers: the pull request number, for the branch name
-	reviewID int64  // reviewers: the review row
-	prompt   string // initial prompt instead of the task prompt
-	qa       bool   // a QA run started by start_qa (ADR 0033)
+	base      string            // start from this commit instead of HEAD
+	reviewPR  int               // reviewers: the pull request number, for the branch name
+	reviewID  int64             // reviewers: the review row
+	prompt    string            // initial prompt instead of the task prompt
+	qa        bool              // a QA run started by start_qa (ADR 0033)
+	extraRefs map[string]string // sandbox: more branches in the agent's repository (QA's sub-task branches)
 }
 
 // Start creates a worktree and launches a new agent in it.
@@ -567,7 +570,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		}
 		mode, kind = SandboxPodman, KindClone
 		wtPath = filepath.Join(e.opts.Sandbox.WorkspaceRoot, e.project.Slug, id)
-		if undoWorktree, err = e.createClone(ctx, id, wtPath, branch, base); err != nil {
+		if undoWorktree, err = e.createClone(ctx, id, wtPath, branch, base, req.extraRefs); err != nil {
 			return AgentInfo{}, err
 		}
 	} else {
@@ -849,6 +852,9 @@ func (e *Engine) watch(a *agentProc) {
 	close(a.afterExit)
 	if a.reviewID != 0 {
 		e.reviewerExited(a.reviewID, a.info.ID)
+	}
+	if a.info.Kind == KindQA {
+		e.qaExited(a.info.ID)
 	}
 }
 

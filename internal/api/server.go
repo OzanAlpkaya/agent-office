@@ -87,6 +87,7 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/agents/{id}/message", s.messageAgent)
 	mux.HandleFunc("GET /api/inbox", s.listInbox)
 	mux.HandleFunc("GET /api/specs", s.listSpecs)
+	mux.HandleFunc("GET /api/qa-runs", s.listQARuns)
 	mux.HandleFunc("PUT /api/specs/{id}", s.specAction(false))
 	mux.HandleFunc("POST /api/specs/{id}/approve", s.specAction(true))
 	mux.HandleFunc("POST /api/inbox/{id}/read", s.inboxAction(false))
@@ -285,6 +286,15 @@ func (s *server) messageAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, m)
+}
+
+func (s *server) listQARuns(w http.ResponseWriter, r *http.Request) {
+	runs, err := s.eng.QARuns(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, runs)
 }
 
 func (s *server) listSpecs(w http.ResponseWriter, r *http.Request) {
@@ -756,6 +766,11 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusInternalError, "could not load the plans")
 		return
 	}
+	qaRuns, err := s.eng.QARuns(r.Context())
+	if err != nil {
+		c.Close(websocket.StatusInternalError, "could not load the QA runs")
+		return
+	}
 	ctx := c.CloseRead(r.Context())
 
 	write := func(v any) error {
@@ -766,7 +781,7 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := write(map[string]any{"type": "snapshot", "agents": s.eng.List(), "tasks": tasks,
 		"access_requests": access, "pull_requests": prs, "inbox": inbox,
-		"specs": specs}); err != nil {
+		"specs": specs, "qa_runs": qaRuns}); err != nil {
 		return
 	}
 	for {

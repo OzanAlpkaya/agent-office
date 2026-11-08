@@ -50,6 +50,39 @@ type Team interface {
 	SubmitReview(ctx context.Context, caller string, in SubmitReviewInput) (SubmitReviewOutput, error)
 	MessageUser(ctx context.Context, caller string, in MessageUserInput) (MessageUserOutput, error)
 	SubmitPlan(ctx context.Context, caller string, in SubmitPlanInput) (SubmitPlanOutput, error)
+	StartQA(ctx context.Context, caller string) (StartQAOutput, error)
+	ReportQA(ctx context.Context, caller string, in ReportQAInput) (ReportQAOutput, error)
+}
+
+// StartQAOutput is start_qa's result (ADR 0033).
+type StartQAOutput struct {
+	RunID    int64    `json:"run_id"`
+	AgentID  string   `json:"agent_id"`
+	Branch   string   `json:"branch"`   // QA's integration branch
+	Branches []string `json:"branches"` // the sub-task branches it merges
+	Next     string   `json:"next"`
+}
+
+// QABug is one problem QA found.
+type QABug struct {
+	Title       string `json:"title" jsonschema:"Short title of the bug (1-200 characters)."`
+	Description string `json:"description" jsonschema:"What happens, how to reproduce it, what should happen (at most 4000 characters)."`
+	TaskID      string `json:"task_id,omitempty" jsonschema:"The sub-task it belongs to, if known."`
+}
+
+// ReportQAInput is report_qa's input.
+type ReportQAInput struct {
+	Verdict string  `json:"verdict" jsonschema:"pass (the tests pass and every acceptance criterion holds) or fail."`
+	Summary string  `json:"summary" jsonschema:"What you merged, ran and checked, and the result (1-4000 characters)."`
+	Bugs    []QABug `json:"bugs,omitempty" jsonschema:"One entry per problem (at most 10); each becomes a sub-task for the Tech Lead."`
+}
+
+// ReportQAOutput is report_qa's result.
+type ReportQAOutput struct {
+	RunID    int64    `json:"run_id"`
+	Status   string   `json:"status"`
+	BugTasks []string `json:"bug_tasks"`
+	Next     string   `json:"next"`
 }
 
 // PlanSubTask is one sub-task of an architect's plan (ADR 0031).
@@ -315,6 +348,17 @@ func NewServer(team Team, caller string, tools []string, version string, log *sl
 		"that is not approved yet."},
 		func(ctx context.Context, in SubmitPlanInput) (SubmitPlanOutput, error) {
 			return team.SubmitPlan(ctx, caller, in)
+		})
+	add(s, t, &sdk.Tool{Name: ToolStartQA, Description: "Start QA on your goal (Tech Lead only), once every sub-task " +
+		"is reported: a QA agent merges the reported branches into an integration branch, runs the tests, adds tests " +
+		"for the acceptance criteria, exercises the app and reports; its bugs become sub-tasks. The goal can only be " +
+		"reported after QA passed on the current work."},
+		func(ctx context.Context, _ struct{}) (StartQAOutput, error) { return team.StartQA(ctx, caller) })
+	add(s, t, &sdk.Tool{Name: ToolReportQA, Description: "Report the QA result once (QA only), after committing your " +
+		"merges and tests: pass, or fail with the bugs. agent-office imports your branch, creates a sub-task per bug, " +
+		"tells the Tech Lead and ends your session after this turn."},
+		func(ctx context.Context, in ReportQAInput) (ReportQAOutput, error) {
+			return team.ReportQA(ctx, caller, in)
 		})
 	add(s, t, &sdk.Tool{Name: ToolMessageUser, Description: "Send a message to the human user; it appears in the " +
 		"agent-office inbox and on your task card. Only agents with nobody above them may do this (the architect, the " +

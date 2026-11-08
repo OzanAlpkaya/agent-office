@@ -159,7 +159,7 @@ func (e *Engine) prepareSandboxStart(ctx context.Context, agentName, role string
 }
 
 // createClone sets up the agent repository (ADR 0014) and returns an undo.
-func (e *Engine) createClone(ctx context.Context, id, path, branch, base string) (func(), error) {
+func (e *Engine) createClone(ctx context.Context, id, path, branch, base string, extra map[string]string) (func(), error) {
 	s := e.opts.Sandbox
 	undo := func() {
 		cctx := context.Background()
@@ -171,7 +171,7 @@ func (e *Engine) createClone(ctx context.Context, id, path, branch, base string)
 		}
 		_ = e.git.UnprotectBase(cctx, e.project.RepoPath, id)
 	}
-	if err := e.git.CreateSharedClone(ctx, e.project.RepoPath, path, branch, base); err != nil {
+	if err := e.git.CreateSharedCloneWith(ctx, e.project.RepoPath, path, branch, base, extra); err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
 	}
 	if err := e.git.ProtectBase(ctx, e.project.RepoPath, id, base); err != nil {
