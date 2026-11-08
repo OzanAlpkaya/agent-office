@@ -195,7 +195,7 @@ type AgentInfo struct {
 // Update is one change broadcast to subscribers.
 type Update struct {
 	// "agent" | "agent_removed" | "task" | "task_deleted" | "sandbox_event" | "message" | "access_request" |
-	// "pull_request" | "usage"
+	// "pull_request" | "usage" | "inbox" | "spec" | "qa_run" | "memory"
 	Type          string         `json:"type"`
 	Agent         *AgentInfo     `json:"agent,omitempty"`
 	Task          *Task          `json:"task,omitempty"`
@@ -205,6 +205,7 @@ type Update struct {
 	AccessRequest *AccessRequest `json:"access_request,omitempty"`
 	PullRequest   *PullRequest   `json:"pull_request,omitempty"`
 	Usage         *SessionUsage  `json:"usage,omitempty"` // a running session's usage (ADR 0026)
+	Inbox         *InboxItem     `json:"inbox,omitempty"` // a message to the user (ADR 0030)
 }
 
 type agentProc struct {

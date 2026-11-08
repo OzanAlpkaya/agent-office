@@ -271,8 +271,41 @@ func (e *Engine) resolveRecipient(ctx context.Context, caller, to string) (strin
 	if to == "" {
 		return "", invalid("to is required")
 	}
-	if role == KindReviewer {
+	switch role {
+	case KindReviewer:
 		return "", forbidden("reviewers do not send messages; put everything into submit_review")
+	case KindAssistant:
+		return "", forbidden("the assistant talks to the user only (message_user)")
+	case KindArchitect:
+		// The architect answers the goal's Tech Lead (ADR 0030).
+		if to != "lead" {
+			e.mu.Lock()
+			l := e.agents[to]
+			ok := l != nil && l.info.Kind == KindLead && l.info.TaskID == taskID
+			e.mu.Unlock()
+			if !ok {
+				return "", forbidden(`the architect messages the goal's Tech Lead (to="lead") or the user (message_user)`)
+			}
+		}
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		l := e.leadOfGoalLocked(taskID)
+		if l == nil {
+			return "", invalid("your goal has no running Tech Lead; tell the user with message_user")
+		}
+		return l.info.ID, nil
+	case KindQA:
+		// QA works on the goal itself; its lead is the goal's lead.
+		if to != "lead" {
+			return "", forbidden(`QA messages its lead only (to="lead")`)
+		}
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		l := e.leadOfGoalLocked(taskID)
+		if l == nil {
+			return "", invalid("your goal has no running lead")
+		}
+		return l.info.ID, nil
 	}
 	if role == KindWorker {
 		if to != "lead" {
@@ -308,6 +341,9 @@ func (e *Engine) resolveRecipient(ctx context.Context, caller, to string) (strin
 	if to == "lead" || to == caller {
 		return "", invalid("you are the lead; address a worker by its agent id")
 	}
+	if to == "architect" {
+		return e.architectFor(ctx, caller, taskID)
+	}
 	e.mu.Lock()
 	w, ok := e.agents[to]
 	var wTask string
@@ -315,6 +351,9 @@ func (e *Engine) resolveRecipient(ctx context.Context, caller, to string) (strin
 		wTask = w.info.TaskID
 	}
 	e.mu.Unlock()
+	if ok && wTask == taskID && w.info.Kind == KindQA {
+		return to, nil // the goal's QA
+	}
 	if !ok || wTask == "" {
 		return "", forbidden("agent %q is not a worker of your goal", to)
 	}

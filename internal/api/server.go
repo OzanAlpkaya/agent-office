@@ -83,6 +83,10 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/pull-requests/{id}/review", s.prAction(s.requestReview))
 	mux.HandleFunc("POST /api/pull-requests/{id}/follow-up", s.prAction(s.followUp))
 	mux.HandleFunc("POST /api/pull-requests/{id}/accept", s.prAction(s.acceptFlagged))
+	mux.HandleFunc("POST /api/agents/{id}/message", s.messageAgent)
+	mux.HandleFunc("GET /api/inbox", s.listInbox)
+	mux.HandleFunc("POST /api/inbox/{id}/read", s.inboxAction(false))
+	mux.HandleFunc("POST /api/inbox/{id}/reply", s.inboxAction(true))
 	mux.HandleFunc("GET /api/events", s.eventsWS)
 	if ui != nil {
 		mux.HandleFunc("GET /", s.serveUI)
@@ -250,6 +254,60 @@ func (s *server) listAccess(w http.ResponseWriter, r *http.Request) {
 
 // decideAccess approves or denies an access request: the human decision
 // ADR 0019 requires. POST, so the origin guard applies.
+// bodyRequest is a JSON body with one text field: a message or a reply.
+type bodyRequest struct {
+	Body string `json:"body"`
+}
+
+// messageAgent sends the user's words to a running agent (ADR 0030).
+func (s *server) messageAgent(w http.ResponseWriter, r *http.Request) {
+	var req bodyRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	m, err := s.eng.MessageAgent(r.Context(), r.PathValue("id"), req.Body)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, m)
+}
+
+func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
+	items, err := s.eng.Inbox(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// inboxAction marks an inbox item read, or answers it (reply).
+func (s *server) inboxAction(reply bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id < 1 {
+			writeError(w, http.StatusBadRequest, "invalid inbox id")
+			return
+		}
+		var it engine.InboxItem
+		if reply {
+			var req bodyRequest
+			if !decodeJSON(w, r, &req) {
+				return
+			}
+			it, err = s.eng.ReplyInbox(r.Context(), id, req.Body)
+		} else {
+			it, err = s.eng.MarkInboxRead(r.Context(), id)
+		}
+		if err != nil {
+			s.engineError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, it)
+	}
+}
+
 func (s *server) decideAccess(approve bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -634,6 +692,11 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		c.Close(websocket.StatusInternalError, "could not load pull requests")
 		return
 	}
+	inbox, err := s.eng.Inbox(r.Context())
+	if err != nil {
+		c.Close(websocket.StatusInternalError, "could not load the inbox")
+		return
+	}
 	ctx := c.CloseRead(r.Context())
 
 	write := func(v any) error {
@@ -643,7 +706,7 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		return c.Write(wctx, websocket.MessageText, b)
 	}
 	if err := write(map[string]any{"type": "snapshot", "agents": s.eng.List(), "tasks": tasks,
-		"access_requests": access, "pull_requests": prs}); err != nil {
+		"access_requests": access, "pull_requests": prs, "inbox": inbox}); err != nil {
 		return
 	}
 	for {

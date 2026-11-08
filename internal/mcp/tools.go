@@ -48,6 +48,20 @@ type Team interface {
 	ReportNoChange(ctx context.Context, caller string, in ReportNoChangeInput) (ReportNoChangeOutput, error)
 	RequestAccess(ctx context.Context, caller string, in RequestAccessInput) (RequestAccessOutput, error)
 	SubmitReview(ctx context.Context, caller string, in SubmitReviewInput) (SubmitReviewOutput, error)
+	MessageUser(ctx context.Context, caller string, in MessageUserInput) (MessageUserOutput, error)
+}
+
+// MessageUserInput is message_user's input (ADR 0030).
+type MessageUserInput struct {
+	Kind string `json:"kind" jsonschema:"question (you need an answer), blocked (you cannot go on without the user), info (no answer needed) or briefing (the assistant's summary)."`
+	Body string `json:"body" jsonschema:"The message (1-4000 characters). Put every question into one message."`
+}
+
+// MessageUserOutput is message_user's result.
+type MessageUserOutput struct {
+	MessageID int64  `json:"message_id"`
+	Status    string `json:"status"`
+	Next      string `json:"next"`
 }
 
 // CreateTaskInput is create_task's input.
@@ -248,6 +262,13 @@ func NewServer(team Team, caller string, tools []string, version string, log *sl
 				return team.ReportNoChange(ctx, caller, in)
 			})
 	}
+	add(s, t, &sdk.Tool{Name: ToolMessageUser, Description: "Send a message to the human user; it appears in the " +
+		"agent-office inbox and on your task card. Only agents with nobody above them may do this (the architect, the " +
+		"assistant, a Tech Lead without an architect, a worker without a lead); others are told whom to ask. For a " +
+		"question, end your turn after sending: the user's answer is delivered to you as new input."},
+		func(ctx context.Context, in MessageUserInput) (MessageUserOutput, error) {
+			return team.MessageUser(ctx, caller, in)
+		})
 	add(s, t, &sdk.Tool{Name: ToolRequestAccess, Description: "Ask a human for network access to one more host " +
 		"name (kind \"domain\"). Nothing is granted until a human approves it in the agent-office UI; you get a " +
 		"message with the decision. Only for sandboxed agents."},

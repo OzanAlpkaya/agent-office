@@ -139,3 +139,9 @@ func (e *Engine) Roles() []RoleInfo {
 func (e *Engine) qaGate(ctx context.Context, goal db.Task, children []db.Task) error {
 	return nil
 }
+
+// relaunchArchitect starts an exited architect again for an escalation (ADR
+// 0031); filled in with specs.
+func (e *Engine) relaunchArchitect(ctx context.Context, id, lead string) (string, error) {
+	return "", invalid("your goal's architect has ended; tell the user with message_user")
+}

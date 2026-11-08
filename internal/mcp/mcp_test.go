@@ -78,6 +78,11 @@ func (f *fakeTeam) SubmitReview(_ context.Context, caller string, in SubmitRevie
 	return SubmitReviewOutput{ReviewID: 5, Posted: true, Next: "end your turn"}, f.err
 }
 
+func (f *fakeTeam) MessageUser(_ context.Context, caller string, in MessageUserInput) (MessageUserOutput, error) {
+	f.record(caller, ToolMessageUser, in)
+	return MessageUserOutput{MessageID: 9, Status: "shown"}, f.err
+}
+
 var quiet = slog.New(slog.DiscardHandler)
 
 // The built-in roles' tool lists (internal/role, which this package cannot
@@ -89,8 +94,9 @@ const (
 )
 
 var roleTools = map[string][]string{
-	RoleLead: {ToolCreateTask, ToolAssignTask, ToolListTasks, ToolSendMessage, ToolReportDone, ToolRequestAccess},
-	RoleWorker: {ToolListTasks, ToolSendMessage, ToolReportDone, ToolReportNoChange,
+	RoleLead: {ToolCreateTask, ToolAssignTask, ToolListTasks, ToolSendMessage, ToolMessageUser, ToolReportDone,
+		ToolRequestAccess},
+	RoleWorker: {ToolListTasks, ToolSendMessage, ToolMessageUser, ToolReportDone, ToolReportNoChange,
 		ToolRequestAccess},
 	RoleReviewer: {ToolListTasks, ToolSubmitReview},
 }
@@ -147,12 +153,13 @@ func toolNames(t *testing.T, cs *sdk.ClientSession) []string {
 
 func TestToolsPerRole(t *testing.T) {
 	lead := toolNames(t, connect(t, &fakeTeam{}, "l1", RoleLead))
-	want := []string{ToolAssignTask, ToolCreateTask, ToolListTasks, ToolReportDone, ToolRequestAccess, ToolSendMessage}
+	want := []string{ToolAssignTask, ToolCreateTask, ToolListTasks, ToolMessageUser, ToolReportDone, ToolRequestAccess,
+		ToolSendMessage}
 	if !slices.Equal(lead, want) {
 		t.Fatalf("lead tools %v", lead)
 	}
 	worker := toolNames(t, connect(t, &fakeTeam{}, "w1", RoleWorker))
-	want = []string{ToolListTasks, ToolReportDone, ToolReportNoChange, ToolRequestAccess, ToolSendMessage}
+	want = []string{ToolListTasks, ToolMessageUser, ToolReportDone, ToolReportNoChange, ToolRequestAccess, ToolSendMessage}
 	if !slices.Equal(worker, want) {
 		t.Fatalf("worker tools %v", worker)
 	}
