@@ -27,6 +27,13 @@ const (
 const (
 	ToolCreateTask     = "create_task"
 	ToolAssignTask     = "assign_task"
+	ToolMessageUser    = "message_user"     // a message to the human (ADR 0030)
+	ToolSubmitPlan     = "submit_plan"      // the architect's plan (ADR 0031)
+	ToolStartQA        = "start_qa"         // the Tech Lead starts QA on the goal (ADR 0033)
+	ToolReportQA       = "report_qa"        // QA's verdict and bugs (ADR 0033)
+	ToolGetBriefing    = "get_briefing"     // the assistant's facts (ADR 0034)
+	ToolListMemory     = "list_memory"      // project memory (ADR 0034)
+	ToolProposeMemory  = "propose_memory"   // a memory entry for the user to accept (ADR 0034)
 	ToolListTasks      = "list_tasks"
 	ToolSendMessage    = "send_message"
 	ToolReportDone     = "report_done"
