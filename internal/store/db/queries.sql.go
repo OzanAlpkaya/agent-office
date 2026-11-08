@@ -2528,7 +2528,7 @@ func (q *Queries) MarkAgentExited(ctx context.Context, arg MarkAgentExitedParams
 }
 
 const markAgentRemoved = `-- name: MarkAgentRemoved :exec
-UPDATE agents SET removed_at = ? WHERE id = ?
+UPDATE agents SET removed_at = ?, resume_state = '' WHERE id = ?
 `
 
 type MarkAgentRemovedParams struct {
@@ -2635,7 +2635,8 @@ func (q *Queries) RemoveTask(ctx context.Context, id string) (int64, error) {
 }
 
 const reopenAgent = `-- name: ReopenAgent :exec
-UPDATE agents SET state = 'starting', activity = '', exited_at = NULL, exit_code = NULL, exit_reason = ''
+UPDATE agents SET state = 'starting', activity = '', exited_at = NULL, exit_code = NULL, exit_reason = '',
+    resume_state = ''
 WHERE id = ? AND state = 'exited'
 `
 

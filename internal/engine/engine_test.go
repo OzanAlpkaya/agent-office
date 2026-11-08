@@ -33,10 +33,13 @@ func TestMain(m *testing.M) {
 }
 
 func fakeClaude() int {
-	var sid string
+	var sid, resume string
 	for i, a := range os.Args {
 		if a == "--session-id" && i+1 < len(os.Args) {
 			sid = os.Args[i+1]
+		}
+		if a == "--resume" && i+1 < len(os.Args) && slices.Contains(os.Args, "--fork-session") {
+			resume = os.Args[i+1]
 		}
 	}
 	sock := os.Getenv(agent.SocketEnv)
@@ -65,12 +68,24 @@ func fakeClaude() int {
 	if os.Getenv("AO_FAKE_BAD_SESSION") == "1" {
 		sid = "00000000-0000-4000-8000-000000000000"
 	}
+	if resume != "" {
+		if _, err := os.Stat(".fake-no-conversation"); err == nil {
+			// What Claude Code 2.1.319 does for an unknown session: no SessionStart.
+			fmt.Println("No conversation found with session ID: " + resume)
+			return 1
+		}
+		fmt.Println("RESUMED:" + resume)
+	}
 	fmt.Println("fake claude ready")
 	if n := len(os.Args); os.Getenv("AO_FAKE_PROMPT") == "1" && n >= 2 && os.Args[n-2] == "--" {
 		// The initial prompt, on one line, so tests can look for it on screen.
 		fmt.Println("PROMPT:" + strings.ReplaceAll(os.Args[n-1], "\n", " | "))
 	}
-	send("SessionStart", `,"source":"startup"`)
+	if resume != "" {
+		send("SessionStart", `,"source":"fork"`)
+	} else {
+		send("SessionStart", `,"source":"startup"`)
+	}
 	in := bufio.NewScanner(os.Stdin)
 	for in.Scan() {
 		switch strings.Trim(in.Text(), " \t\r\x1b") {
@@ -102,6 +117,14 @@ func fakeClaude() int {
 			send("PreToolUse", `,"tool_name":"Bash"`)
 			send("PostToolUse", `,"tool_name":"Bash"`)
 			send("SubagentStop", `,"agent_id":"a1b2c3"`)
+			send("Stop", `,"stop_hook_active":false`)
+		case "usage-fork": // a resumed session's transcript: the parent's records copied, one new message, a cumulative cost-state (ADR 0035)
+			src := os.Getenv("AO_FAKE_TRANSCRIPT_SRC")
+			main, _ := os.ReadFile(filepath.Join(src, usageFixtureSession+".jsonl"))
+			main = append(main, []byte(`{"type":"assistant","requestId":"req_01DDDD","message":{"id":"msg_01DDDD","model":"claude-haiku-5-5","role":"assistant","content":[],"usage":{"input_tokens":100,"output_tokens":50}}}`+"\n"+
+				`{"type":"cost-state","totalCostUSD":0.069864}`+"\n")...)
+			_ = os.WriteFile(transcript, main, 0o600)
+			send("UserPromptSubmit", `,"prompt":"SENSITIVE"`)
 			send("Stop", `,"stop_hook_active":false`)
 		case "usage-late": // the Stop hook runs before the transcript is written, as seen in the e2e run
 			src := os.Getenv("AO_FAKE_TRANSCRIPT_SRC")

@@ -420,3 +420,56 @@ func TestLogsFollowOneSession(t *testing.T) {
 		}
 	}
 }
+
+// A resumed host session (ADR 0035): Claude Code's forked transcript repeats
+// the parent's messages and its cost-state includes the parent's cost; only
+// what is new counts for the new session.
+func TestHostUsageForkedTranscript(t *testing.T) {
+	f, _, _ := usageFixture(t)
+	e := f.engine(t)
+	log := record(t, e)
+	ctx := context.Background()
+	a, err := e.Start(ctx, StartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 5*time.Second, agentState(a.ID, hooks.Idle))
+	typeLine(t, e, a.ID, "usage")
+	log.wait(t, 5*time.Second, func(u Update) bool {
+		return u.Type == "usage" && u.Usage.SessionID == a.SessionID && u.Usage.Messages == 3 && u.Usage.CLICostMicroUSD != nil
+	})
+	if err := e.Stop(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	r, err := e.Resume(ctx, a.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 5*time.Second, agentState(a.ID, hooks.Idle))
+	typeLine(t, e, a.ID, "usage-fork")
+	var fork SessionUsage
+	for i := 0; ; i++ {
+		rep, err := e.Usage(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range rep.Sessions {
+			if s.SessionID == r.SessionID {
+				fork = s
+			}
+		}
+		if fork.CLICostMicroUSD != nil && fork.Messages > 0 {
+			if rep.Totals.Messages != 4 {
+				t.Fatalf("totals count the copied messages again: %+v", rep.Totals)
+			}
+			break
+		}
+		if i > 50 {
+			t.Fatalf("forked session never read: %+v", fork)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if fork.Messages != 1 || *fork.CLICostMicroUSD != 1000 || fork.Tokens.Input != 100 || fork.Tokens.Output != 50 {
+		t.Fatalf("forked session usage %+v (cli %d)", fork, *fork.CLICostMicroUSD)
+	}
+}

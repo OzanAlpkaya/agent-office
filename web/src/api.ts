@@ -43,6 +43,8 @@ export interface Agent {
   exit_code?: number;
   exit_reason?: string;
   last_import?: ImportInfo; // sandboxed agents
+  resumable: boolean; // exited and can continue its conversation (ADR 0035)
+  resumed_from?: string; // the session this one continues
 }
 
 // ImportInfo is one import of a sandboxed agent's branch into the repository.
@@ -612,6 +614,7 @@ export const api = {
   removeAgent: (id: string): Promise<RemoveResult> => request("DELETE", `/api/agents/${id}`),
   discardAgent: (id: string): Promise<RemoveResult> => request("POST", `/api/agents/${id}/discard`),
   importAgent: (id: string): Promise<ImportInfo> => request("POST", `/api/agents/${id}/import`),
+  resumeAgent: (id: string, prompt = ""): Promise<Agent> => request("POST", `/api/agents/${id}/resume`, { prompt }),
   saveWork: (id: string): Promise<ImportInfo> => request("POST", `/api/agents/${id}/save-work`),
   agentEvents: async (id: string): Promise<SandboxEvent[]> => {
     const evs: unknown = await request("GET", `/api/agents/${id}/events`);

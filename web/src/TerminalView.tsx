@@ -2,17 +2,19 @@ import { type JSX, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { wsURL } from "./api";
+import { type Agent, wsURL } from "./api";
 
 interface Props {
-  agentId: string;
+  agent: Agent;
+  onResume: () => void;
 }
 
 type Status = { kind: "connecting" } | { kind: "live" } | { kind: "closed"; reason: string; exited: boolean };
 
 // TerminalView attaches to an agent's PTY. The daemon first replays the
 // scrollback, then streams live output; input and resize go back as JSON.
-export function TerminalView({ agentId }: Props): JSX.Element {
+export function TerminalView({ agent, onResume }: Props): JSX.Element {
+  const agentId = agent.id;
   const host = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
   const [attempt, setAttempt] = useState(0);
@@ -78,9 +80,11 @@ export function TerminalView({ agentId }: Props): JSX.Element {
             <span>
               The agent process has exited.{" "}
               <span className="muted" data-testid="resume-note">
-                The “Resume this session with: claude --resume …” line above cannot be used with agent-office yet:
-                the session belongs to this agent’s own config{" "}(and sandbox). Resuming from agent-office comes in Phase 9.
-              </span>
+                Claude Code’s “Resume this session with: claude --resume …” line does not apply here: the
+                session belongs to this agent’s workspace and config{agent.sandbox === "podman" ? " in its sandbox" : ""}.
+                {agent.resumable ? " Use Resume to continue it in agent-office." : ""}
+              </span>{" "}
+              {agent.resumable && <button onClick={onResume}>Resume</button>}
             </span>
           ) : `Disconnected: ${status.reason}.`}
           {!status.exited && <button onClick={() => setAttempt((n) => n + 1)}>Reconnect</button>}

@@ -60,6 +60,7 @@ const (
 	ExitFollowUp      = "follow_up"        // ended to be relaunched with review feedback (ADR 0022)
 	ExitGoalDone      = "goal_done"        // the user marked the agent's goal done (Phase 12)
 	ExitPlanApproved  = "plan_approved"    // an architect whose plan the user approved (ADR 0031)
+	ExitResumeFailed  = "resume_failed"    // a resumed CLI exited before its first hook: no conversation to load (ADR 0035)
 )
 
 // Worktree statuses (ADR 0010).
@@ -189,7 +190,9 @@ type AgentInfo struct {
 	ExitedAt            *time.Time  `json:"exited_at,omitempty"`
 	ExitCode            *int        `json:"exit_code,omitempty"`
 	ExitReason          string      `json:"exit_reason,omitempty"`
-	LastImport          *ImportInfo `json:"last_import,omitempty"` // sandboxed agents (ADR 0014)
+	LastImport          *ImportInfo `json:"last_import,omitempty"`  // sandboxed agents (ADR 0014)
+	Resumable           bool        `json:"resumable"`              // exited and can continue its conversation (ADR 0035)
+	ResumedFrom         string      `json:"resumed_from,omitempty"` // the session this one continues
 }
 
 // Update is one change broadcast to subscribers.
@@ -232,6 +235,9 @@ type agentProc struct {
 	since      time.Time      // this session's start: older messages are not delivered to it (ADR 0022)
 	usage      *sessionUsage  // this session's token usage (ADR 0026); nil for agents of a previous run
 	log        *slog.Logger   // this session's logger: agent, session and task ids (ADR 0028)
+	resumeFrom string         // the session this one continues (ADR 0035); "" for a fresh one
+
+	sessionStarted bool // the main agent's SessionStart arrived; guarded by Engine.mu
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
 	hasPrompt     bool        // started with an initial prompt
@@ -671,6 +677,8 @@ type launchInfo struct {
 	reviewID                            int64          // reviewers (ADR 0021)
 	prev                                *agentProc     // a relaunch: the exited agent it replaces (ADR 0022)
 	followup                            *followupRound // a relaunch to address a review (ADR 0022)
+	resumeFrom                          string         // a resume: the session whose conversation continues (ADR 0035)
+	since                               time.Time      // messages from this time on are delivered; zero: started
 }
 
 // roleName is the launched role's name ("" if a test left it out).
@@ -684,7 +692,11 @@ func (l launchInfo) roleName() string {
 // registerLocked adds a freshly launched agent, or replaces the exited one a
 // relaunch started again (keeping its place, start time and last import).
 func (e *Engine) registerLocked(a *agentProc, l launchInfo) {
-	a.reviewID, a.since, a.followup = l.reviewID, l.started, l.followup
+	a.reviewID, a.since, a.followup, a.resumeFrom = l.reviewID, l.started, l.followup, l.resumeFrom
+	a.info.ResumedFrom = l.resumeFrom
+	if !l.since.IsZero() {
+		a.since = l.since
+	}
 	if l.prev != nil {
 		a.info.StartedAt, a.info.LastImport = l.prev.info.StartedAt, l.prev.info.LastImport
 		a.info.WorktreeStatus = l.prev.info.WorktreeStatus
@@ -733,7 +745,7 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 		cmd, err = e.adapter.Command(agent.LaunchSpec{
 			SessionID: sid, Model: e.modelOf(l.def), WorkDir: wtPath, SettingsPath: settingsPath,
 			InheritUserSettings: e.opts.InheritUserSettings, SocketPath: ln.Path(), BaseEnv: e.opts.BaseEnv,
-			InitialPrompt: l.prompt, MCPConfigPath: mcpConfig,
+			InitialPrompt: l.prompt, MCPConfigPath: mcpConfig, ResumeFrom: l.resumeFrom,
 		})
 	}
 	var term *terminal.Session
@@ -822,6 +834,9 @@ func (e *Engine) watch(a *agentProc) {
 	reason := a.exitReason
 	if reason == "" {
 		reason = ExitProcess
+		if resumeFailed(a) {
+			reason = ExitResumeFailed
+		}
 	}
 	a.status = hooks.Status{State: hooks.Exited}
 	a.info.ExitedAt, a.info.ExitCode, a.info.ExitReason = &t, &code, reason
@@ -878,6 +893,9 @@ func (e *Engine) hookHandler(id string, log *slog.Logger) hooks.Handler {
 		}
 		if ev.SessionID != a.info.SessionID {
 			return nil, ErrSession
+		}
+		if ev.Kind == agent.SessionStarted && !ev.Subagent {
+			a.sessionStarted = true
 		}
 		e.countLocked(ctx, a, ev, log)
 		e.transcriptHookLocked(a, ev, log)
@@ -1238,6 +1256,7 @@ func (a *agentProc) view() AgentInfo {
 	v := a.info
 	v.State, v.Activity = string(a.status.State), a.status.Activity
 	v.HasTerminal = a.term != nil
+	v.Resumable = a.status.State == hooks.Exited && !a.busy && resumable(v.Kind) && v.WorktreeStatus != WorktreeRemoved
 	return v
 }
 

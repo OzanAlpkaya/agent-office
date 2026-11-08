@@ -311,7 +311,8 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	}
 
 	command, err := agent.ContainerArgs(agent.ContainerSpec{Bin: sandbox.ClaudeBin, SessionID: sid,
-		Model: e.modelOf(l.def), SettingsPath: sandbox.SettingsFile, MCPConfigPath: sandbox.MCPConfigFile, InitialPrompt: l.prompt})
+		Model: e.modelOf(l.def), SettingsPath: sandbox.SettingsFile, MCPConfigPath: sandbox.MCPConfigFile, InitialPrompt: l.prompt,
+		ResumeFrom: l.resumeFrom})
 	if err != nil {
 		return fail(err)
 	}

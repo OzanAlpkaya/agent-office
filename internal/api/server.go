@@ -85,6 +85,7 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/pull-requests/{id}/follow-up", s.prAction(s.followUp))
 	mux.HandleFunc("POST /api/pull-requests/{id}/accept", s.prAction(s.acceptFlagged))
 	mux.HandleFunc("POST /api/agents/{id}/message", s.messageAgent)
+	mux.HandleFunc("POST /api/agents/{id}/resume", s.resumeAgent)
 	mux.HandleFunc("GET /api/inbox", s.listInbox)
 	mux.HandleFunc("GET /api/specs", s.listSpecs)
 	mux.HandleFunc("GET /api/qa-runs", s.listQARuns)
@@ -292,6 +293,23 @@ func (s *server) messageAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, m)
+}
+
+// resumeAgent continues an exited agent's conversation, with an optional
+// prompt from the user (ADR 0035).
+func (s *server) resumeAgent(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Prompt string `json:"prompt"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	a, err := s.eng.Resume(r.Context(), r.PathValue("id"), req.Prompt)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, a)
 }
 
 func (s *server) listMemory(w http.ResponseWriter, r *http.Request) {

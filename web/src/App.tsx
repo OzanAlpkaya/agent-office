@@ -33,6 +33,7 @@ const exitLabel: Record<string, string> = {
   follow_up: "ended for a follow-up",
   goal_done: "goal marked done",
   plan_approved: "plan approved",
+  resume_failed: "resume failed: Claude Code could not load the previous conversation",
 };
 
 // What each kind of agent does (ADR 0029); the role name is shown next to it.
@@ -262,6 +263,7 @@ export function App(): JSX.Element {
                 onDiscard={() => void run(() => api.discardAgent(a.id))}
                 onImport={() => void run(() => api.importAgent(a.id))}
                 onSaveWork={() => void run(() => api.saveWork(a.id))}
+                onResume={() => void run(() => api.resumeAgent(a.id))}
                 events={events[a.id] ?? []}
                 messages={messages[a.id] ?? []}
                 usage={usageByAgent.get(a.id)}
@@ -321,7 +323,8 @@ export function App(): JSX.Element {
               onReplyInbox={(i, body) => ok(() => api.replyInbox(i.id, body))}
             />
           ) : current.has_terminal ? (
-            <TerminalView key={current.id} agentId={current.id} />
+            <TerminalView key={`${current.id}-${current.session_id ?? ""}`} agent={current}
+              onResume={() => void run(() => api.resumeAgent(current.id))} />
           ) : (
             <div className="empty">This agent ran before the daemon restarted; its terminal is no longer available.</div>
           )}
@@ -342,13 +345,15 @@ interface CardProps {
   onDiscard: () => void;
   onImport: () => void;
   onSaveWork: () => void;
+  onResume: () => void;
   events: SandboxEvent[];
   messages: Message[];
   usage?: UsageRow; // all of the agent's sessions (ADR 0026)
 }
 
 function AgentCard({
-  agent: a, taskTitle, nowMs, selected, onSelect, onStop, onRemove, onDiscard, onImport, onSaveWork, events, messages, usage,
+  agent: a, taskTitle, nowMs, selected, onSelect, onStop, onRemove, onDiscard, onImport, onSaveWork, onResume, events, messages,
+  usage,
 }: CardProps): JSX.Element {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const stuck = a.state === "starting" && nowMs - Date.parse(a.started_at) > stuckAfterMs;
@@ -405,6 +410,11 @@ function AgentCard({
       {messages.length > 0 && <MessageList agentId={a.id} messages={messages} />}
       <div className="card-actions row" onClick={(e) => e.stopPropagation()}>
         {a.state !== "exited" && <button onClick={onStop}>Stop</button>}
+        {a.resumable && !confirmDiscard && (
+          <button onClick={onResume} title="Continue this agent's conversation in its workspace (claude --resume, in agent-office)">
+            Resume
+          </button>
+        )}
         {sandboxed && a.worktree_status !== "removed" && (
           <button onClick={onImport} title="Bring the agent's commits into your repository now">Import now</button>
         )}
