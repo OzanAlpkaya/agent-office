@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 9 (Memory & persistence), not started; Phase 12 merged
+**Current phase:** Phase 9 (Memory & persistence) done on `phase-9/memory-persistence`, waiting for review; next: Phase 10
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -18,7 +18,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 6: Stack packs
 - [x] Phase 7: Pixel office UI
 - [x] Phase 8: Observability & cost
-- [ ] Phase 9: Memory & persistence
+- [x] Phase 9: Memory & persistence
 - [ ] Phase 10: Remote access (PWA over Tailscale)
 - [ ] Phase 11: Portfolio polish
 - [x] Phase 12: Team workflow and roles
@@ -165,3 +165,21 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   architect no longer claims a plan is approved when "approved" is typed into its terminal (it
   points to the UI's Approve button), and the inbox's plan notice has Review plan and Approve plan
   buttons. Merged into `main` (`--no-ff`).
+- 2026-11-08: Phase 9 done on `phase-9/memory-persistence`; plan written with the recommended options
+  and executed without a separate approval, as Ozan asked (`docs/plans/phase-9.md`). A spike against
+  Claude Code 2.1.319 showed `--resume <old> --fork-session --session-id <new>` continues a
+  conversation under the daemon's id (and that a fork's transcript repeats its parent's messages
+  with a cumulative cost-state). ADRs 0035 (resume and restore), 0036 (session history), 0037
+  (relevant memory); migrations 0009 and 0010; no new dependencies. Exited workers, architects,
+  leads and assistants can be resumed with their conversation (Resume button, replaces the Phase 8
+  note); a restart restores the agents the stop interrupted (`--restore-agents`, default on), a
+  mid-turn one with a short "you were cut off" prompt, and an inbox notice says what came back.
+  Every session's terminal output is saved and replayed read-only with a session picker. Memory
+  entries can be scoped to roles and files; prompts get the relevant ones first; `list_memory` for
+  every behaviour but reviewers; Markdown export. Backlog: the sandboxed settings label after a
+  restart is fixed. A pre-existing race in pull request updates (stale row, fresh reviews) surfaced
+  as a flaky `TestGitHubLoop` and is fixed. An independent review led to 4 fixes (a failed resume
+  poisoned later resumes, a shutdown during a restore cleared states, `prView` narrowed, history vs.
+  removal). `make check`, `make ui-test`, `make sandbox-test` and `make e2e` (host, sandbox, team,
+  workflow; a host agent and a sandboxed worker recalled their earlier conversation after a SIGKILL
+  and restart) pass; the GitHub e2e was not run.

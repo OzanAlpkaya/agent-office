@@ -1,6 +1,6 @@
 # Phase 9 plan: Memory & persistence
 
-- **Status:** In progress on `phase-9/memory-persistence`. Written 2026-11-08 with the recommended
+- **Status:** Done on `phase-9/memory-persistence`, waiting for Ozan's review (not merged). Written 2026-11-08 with the recommended
   option for every open question and executed straight away, as Ozan asked ("write the Phase 9
   plan using your recommended options, then execute it immediately without asking me anything").
   Every decision is listed in the end-of-phase summary; nothing is merged until Ozan has read it.
@@ -23,16 +23,16 @@ demand, and which the user can export.
 
 ## Definition of Done (from docs/plan.md, refined)
 
-- [ ] A restarted daemon restores agents, tasks and history: agents interrupted by the restart are
+- [x] A restarted daemon restores agents, tasks and history: agents interrupted by the restart are
       resumed with their conversation (same agent, workspace, branch and sandbox config), tasks are
       unchanged, and every session's terminal output and counters stay viewable after a restart.
-- [ ] Agents can read relevant project memory at task start: the memory section of an agent's first
+- [x] Agents can read relevant project memory at task start: the memory section of an agent's first
       prompt puts entries scoped to its role or its task's files first and leaves out entries scoped
       to other roles or files; every agent except reviewers can read all accepted entries with
       `list_memory`.
-- [ ] Memory is inspectable and editable by the user (Phase 12 built the panel): scopes are shown and
+- [x] Memory is inspectable and editable by the user (Phase 12 built the panel): scopes are shown and
       edited there, and the memory exports as Markdown.
-- [ ] Backlog: the "Resume this session" line is meaningful (Resume in agent-office); the Phase 8
+- [x] Backlog: the "Resume this session" line is meaningful (Resume in agent-office); the Phase 8
       note is replaced. A sandboxed agent's settings label no longer flips after a restart.
 
 ## What exists and what it means
@@ -256,4 +256,30 @@ demand, and which the user can export.
 
 ## Changes during the phase
 
-(appended during the phase)
+- **`TestGitHubLoop` became flaky (about one run in five) with the new relaunch timing.** Cause: a
+  pre-existing race in building a pull request's view from a row read earlier plus reviews read
+  later, so an update could show a started follow-up whose round was not counted yet. First fixed
+  by reading both in one transaction inside `prView`; the review below narrowed it: `prView` shows
+  the caller's row again (it may carry an unsaved error), and only published updates re-read the
+  row and its reviews in one transaction. 8 of 8 runs pass (they also did on `main`).
+- **Session history shows earlier daemon runs too.** The UI used to render "terminal no longer
+  available" for agents of a previous run before the terminal pane was reached; it now always opens
+  the terminal pane, which shows the saved sessions.
+- **Restore waits for the sandbox restart imports** (`restartImports`), so a restored worker never
+  starts before its work is in the main repository.
+- **Independent review** (a separate reviewer agent on the diff) found two bugs and two smaller
+  issues, all fixed with tests: a failed resume left its session row as the "latest" one, so every
+  later resume pointed at a conversation that never existed (the row and its saved terminal are now
+  deleted; `TestResumeFailed` resumes again and continues the original); a shutdown during a restore
+  could clear the states of agents not yet restored (states are now cleared per agent, and the
+  restore stops at a shutdown; `TestRestoreStopsAtShutdown`); the `prView` narrowing above; and a
+  history file that the exit's last save could write after the agent's removal (removal waits for
+  it).
+- **e2e:** the host test's first restart now runs with `--restore-agents=false` (its checks of
+  exited agents stay), then resumes an agent that must recall a codeword from its first
+  conversation, crashes the daemon and checks the automatic restore. The sandbox test checks that
+  the crashed worker is restored after its restart import and recalls the file it created; its
+  budget part moved to a later restart.
+- **Not run:** `TestGitHubEndToEnd` (needs `AO_E2E_GITHUB_REPO` and pushes to GitHub); the phase
+  touches GitHub code only in how a pull request update is read, which `TestGitHubLoop` and the
+  other GitHub tests cover against the fake.
