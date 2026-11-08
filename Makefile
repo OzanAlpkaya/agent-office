@@ -2,13 +2,15 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # sqlc runs pinned via `go run` so its large dependency tree stays out of go.mod.
 SQLC_VERSION ?= v1.31.1
+# gitleaks runs pinned via `go run` too (secret scan of the whole history, Phase 11).
+GITLEAKS_VERSION ?= v8.30.1
 # Development runs and tests never use the real data dir (~/.local/share/agent-office).
 # Outside the repo on purpose: Claude Code loads CLAUDE.md from parent folders, so
 # worktrees under this repo would pick up agent-office's own rules.
 DEV_ROOT ?= $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/agent-office-dev
 DEV_DATA_DIR ?= $(DEV_ROOT)/data
 
-.PHONY: pair build web test web-test ui-test lint check dev serve clean generate e2e sandbox-test worker-image
+.PHONY: secret-scan pair build web test web-test ui-test lint check dev serve clean generate e2e sandbox-test worker-image
 
 # Static (CGO_ENABLED=0): the same binary is mounted into worker containers, whose
 # glibc may be older than the host's (Spike F).
@@ -84,6 +86,12 @@ pair:
 #   terminal 2: make dev   (then open http://localhost:5173)
 dev: web/node_modules
 	cd web && npm run dev
+
+# Scan every commit of every ref and the working tree for secrets (gitleaks, redacted output).
+# The repository is public: run it before a release and after adding fixtures or captured data.
+secret-scan:
+	go run github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION) git --log-opts=--all --redact --no-banner .
+	go run github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION) dir --redact --no-banner .
 
 # Regenerate internal/store/db from internal/store/{migrations,queries.sql}.
 generate:
