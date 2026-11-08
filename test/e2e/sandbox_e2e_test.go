@@ -231,36 +231,60 @@ func TestSandboxEndToEnd(t *testing.T) {
 	if !containerExists(a.ID) {
 		t.Log("the worker container ended with the daemon; the restart has no orphan to remove")
 	}
-	// The restarted daemon has a tiny session budget (ADR 0027): agent B's first
-	// request may pass, a later one is refused on the API socket.
-	d.args = append(d.args, "--budget-session-usd", "0.000001")
+	// Phase 9 (ADR 0035): the restart imports A's work, then restores A in a
+	// new worker with its conversation (its config dir outlives the container).
 	d.start()
 	var after agentInfoImport
-	deadline := time.Now().Add(time.Minute)
+	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		var list []agentInfoImport
 		d.json("GET", "/api/agents", nil, 200, &list)
-		if len(list) == 1 && list[0].LastImport != nil && list[0].LastImport.Trigger == "restart" {
+		if len(list) == 1 && list[0].LastImport != nil && list[0].LastImport.Trigger == "restart" && list[0].HasTerminal &&
+			list[0].SessionID != a.SessionID {
 			after = list[0]
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no restart import: %+v", list)
+			t.Fatalf("no restart import and restore: %+v", list)
 		}
 		time.Sleep(500 * time.Millisecond)
-	}
-	if after.State != "exited" || after.ExitReason != "daemon_restart" || after.HasTerminal {
-		t.Errorf("after restart: %+v", after.agentInfo)
 	}
 	if after.LastImport.Outcome != "up_to_date" || after.LastImport.Head != imp.Head {
 		t.Errorf("restart import %+v, want up_to_date at %s", after.LastImport, imp.Head)
 	}
-	if containerExists(a.ID) {
-		t.Error("orphaned worker container still exists after the restart")
+	w = watch(t, ctx, d.base)
+	w.waitFor(t, a.ID, "the restored A to be idle", 2*time.Minute, func(h []string) bool { return len(h) > 0 && h[len(h)-1] == "idle" })
+	ta := attach(t, ctx, d.base, a.ID)
+	time.Sleep(2 * time.Second)
+	m := w.mark(a.ID)
+	ta.typeLine(ctx, "Which file containing the single word hi did you create earlier in this conversation? "+
+		"Reply with only its file name. Do not use any tools.")
+	w.waitFor(t, a.ID, "A's answer", 2*time.Minute, reachedAfter(m, "idle"))
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && strings.Count(ta.text(), "sandbox-e2e.txt") < 1 {
+		time.Sleep(500 * time.Millisecond)
 	}
+	if !strings.Contains(ta.text(), "sandbox-e2e.txt") {
+		t.Errorf("the restored sandboxed session did not recall its file:\n%s", tail(ta.text(), 30))
+	}
+	checkSandboxUsage(t, data, a.ID, after.SessionID, a.SessionID)
+	d.json("POST", "/api/agents/"+a.ID+"/stop", nil, 200, nil)
+	if containerExists(a.ID) {
+		t.Error("A's worker container still exists after stop")
+	}
+
+	// The next daemon has a tiny session budget (ADR 0027): agent B's first
+	// request may pass, a later one is refused on the API socket. A was
+	// stopped by hand, so nothing is restored.
+	d.signal(syscall.SIGTERM)
+	d.args = append(d.args, "--budget-session-usd", "0.000001")
+	d.start()
 
 	// Agent B: stop removes its container.
 	w = watch(t, ctx, d.base)
+	if code, _ := d.do("GET", "/api/agents/"+a.ID+"/sessions", nil); code != 200 {
+		t.Errorf("A's sessions: %d", code)
+	}
 	var b agentInfo
 	d.json("POST", "/api/agents", map[string]string{}, 201, &b)
 	agentIDs = append(agentIDs, b.ID)
