@@ -96,8 +96,8 @@ func (e *Engine) architectOfGoalLocked(goalID string) *agentProc {
 
 // mayTellUser decides whether caller may message the user, and if not, who
 // it should ask instead (ADR 0030).
-func (e *Engine) mayTellUser(ctx context.Context, a *agentProc) error {
-	info := a.info
+// info is a copy taken under the engine lock.
+func (e *Engine) mayTellUser(ctx context.Context, info AgentInfo) error {
 	switch info.Kind {
 	case KindArchitect, KindAssistant:
 		return nil
@@ -157,11 +157,18 @@ func (e *Engine) messageUser(ctx context.Context, caller, kind, body string) (In
 	}
 	e.mu.Lock()
 	a, err := e.callerLocked(caller)
+	var info AgentInfo
+	if err == nil {
+		info = a.info
+	}
 	e.mu.Unlock()
 	if err != nil {
 		return InboxItem{}, err
 	}
-	if err := e.mayTellUser(ctx, a); err != nil {
+	if kind == InboxBriefing && info.Kind != KindAssistant {
+		return InboxItem{}, invalid("briefings are the assistant's; use info")
+	}
+	if err := e.mayTellUser(ctx, info); err != nil {
 		return InboxItem{}, err
 	}
 	n, err := e.q.CountInboxFromSince(ctx, db.CountInboxFromSinceParams{AgentID: nullString(caller),
@@ -178,12 +185,12 @@ func (e *Engine) messageUser(ctx context.Context, caller, kind, body string) (In
 		return InboxItem{}, fmt.Errorf("%w: the user has %d unread messages from you; wait for them to be read", ErrLimit, n)
 	}
 	var goal string
-	if a.info.TaskID != "" {
-		if t, err := e.getTask(ctx, a.info.TaskID); err == nil {
+	if info.TaskID != "" {
+		if t, err := e.getTask(ctx, info.TaskID); err == nil {
 			goal = goalOfTask(t)
 		}
 	}
-	return e.addInbox(ctx, caller, a.info.TaskID, goal, a.info.Role, kind, body)
+	return e.addInbox(ctx, caller, info.TaskID, goal, info.Role, kind, body)
 }
 
 // addInbox stores and publishes an inbox item; agent "" is agent-office.

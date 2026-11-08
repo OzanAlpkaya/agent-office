@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"slices"
@@ -48,9 +49,11 @@ func (e *Engine) unmetDependencies(ctx context.Context, task db.Task) ([]string,
 	var out []string
 	for _, d := range jsonList(task.DependsOn) {
 		dep, err := e.getTask(ctx, d)
+		if errors.Is(err, ErrNotFound) {
+			continue // deleted (e.g. dropped by a revised plan): nothing to wait for
+		}
 		if err != nil {
-			out = append(out, d+" (deleted)")
-			continue
+			return nil, err
 		}
 		if dep.Status != StatusReview && dep.Status != StatusDone {
 			out = append(out, fmt.Sprintf("%s %q (%s)", dep.ID, dep.Title, dep.Status))
@@ -103,6 +106,9 @@ func (e *Engine) subTaskBase(ctx context.Context, task db.Task) (string, error) 
 	base := ""
 	var merged []string
 	for _, d := range deps {
+		if _, err := e.getTask(ctx, d); errors.Is(err, ErrNotFound) {
+			continue // deleted: no work to start from
+		}
 		branch, head, err := e.branchOfTask(ctx, d)
 		if err != nil {
 			return "", err
@@ -161,6 +167,9 @@ func (e *Engine) checkFileOverlap(ctx context.Context, task db.Task) error {
 		if a.info.Kind == KindWorker && a.running() {
 			running[a.info.TaskID] = true
 		}
+	}
+	for id := range e.assigning { // being started right now
+		running[id] = true
 	}
 	e.mu.Unlock()
 	for _, s := range siblings {
@@ -221,6 +230,11 @@ func patternsOverlap(p, q string) bool {
 		return true
 	}
 	pg, qg := hasMeta(p), hasMeta(q)
+	if strings.Contains(p, "**") || strings.Contains(q, "**") {
+		// path.Match has no "**": compare what comes before the first wildcard.
+		a, b := literalPrefix(p), literalPrefix(q)
+		return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
+	}
 	switch {
 	case pg && qg:
 		a, b := literalPrefix(p), literalPrefix(q)

@@ -432,3 +432,10 @@ RETURNING *;
 
 -- name: DeleteMemory :execrows
 DELETE FROM memory WHERE id = ?;
+
+-- name: CountAgentSessions :one
+-- An agent's sessions: one per start or relaunch (ADR 0022, 0031).
+SELECT count(*) FROM sessions WHERE agent_id = ?;
+
+-- name: CountSpecsSince :one
+SELECT count(*) FROM specs WHERE goal_id = ? AND created_at >= ?;

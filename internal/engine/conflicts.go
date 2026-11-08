@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/role"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
@@ -276,7 +277,7 @@ func (e *Engine) resolveConflict(ctx context.Context, taskID string, auto bool) 
 			}
 		}
 	}
-	prompt := e.conflictPrompt(task, info.Branch, baseName, ref, base, files)
+	prompt := e.conflictPrompt(e.roleOf(info.Role, info.Kind), task, info.Branch, baseName, ref, base, files)
 	if _, err := e.relaunch(ctx, info.ID, prompt, &followupRound{prID: prID, number: number, head: head,
 		conflict: true}); err != nil {
 		return err
@@ -320,9 +321,9 @@ func (e *Engine) endIdleWorker(ctx context.Context, a *agentProc, auto bool) err
 }
 
 // conflictPrompt is the prompt of a worker relaunched to resolve a conflict.
-func (e *Engine) conflictPrompt(task db.Task, branch, baseName, ref, base string, files []string) string {
+func (e *Engine) conflictPrompt(def *role.Role, task db.Task, branch, baseName, ref, base string, files []string) string {
 	var b strings.Builder
-	b.WriteString(e.expandPrompt(e.opts.Roles.Default("worker")) + "\n\n")
+	b.WriteString(e.expandPrompt(def) + "\n\n")
 	b.WriteString("Task: " + task.Title + "\n")
 	if task.Description != "" {
 		b.WriteString("\n" + task.Description + "\n")

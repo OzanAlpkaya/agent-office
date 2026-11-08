@@ -321,6 +321,21 @@ func (e *Engine) reportQA(ctx context.Context, caller string, in mcp.ReportQAInp
 		}
 	}
 
+	// A pass must be about the work QA was given: every branch merged into its
+	// head (review finding: a pass on an empty branch would open the gate).
+	if in.Verdict == "pass" {
+		var missing []string
+		for _, b := range qaRunFromRow(run).Merged {
+			if !e.isAncestor(ctx, b.Head, head) {
+				missing = append(missing, b.Branch)
+			}
+		}
+		if len(missing) > 0 {
+			return mcp.ReportQAOutput{}, invalid("your branch does not contain %s: merge every listed branch, commit, "+
+				"then report again (or report fail with what stopped you)", strings.Join(missing, ", "))
+		}
+	}
+
 	// Each bug becomes a sub-task of the goal, within the goal's limit.
 	var bugTasks, unfiled []string
 	for i := range bugs {

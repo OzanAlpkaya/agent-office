@@ -201,6 +201,18 @@ func (q *Queries) ClaimReviewFollowup(ctx context.Context, arg ClaimReviewFollow
 	return i, err
 }
 
+const countAgentSessions = `-- name: CountAgentSessions :one
+SELECT count(*) FROM sessions WHERE agent_id = ?
+`
+
+// An agent's sessions: one per start or relaunch (ADR 0022, 0031).
+func (q *Queries) CountAgentSessions(ctx context.Context, agentID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAgentSessions, agentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countChildTasks = `-- name: CountChildTasks :one
 SELECT count(*) FROM tasks WHERE parent_task_id = ?
 `
@@ -293,6 +305,22 @@ SELECT count(*) FROM memory WHERE project_id = ? AND status = 'proposed'
 
 func (q *Queries) CountProposedMemory(ctx context.Context, projectID string) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countProposedMemory, projectID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countSpecsSince = `-- name: CountSpecsSince :one
+SELECT count(*) FROM specs WHERE goal_id = ? AND created_at >= ?
+`
+
+type CountSpecsSinceParams struct {
+	GoalID    string
+	CreatedAt time.Time
+}
+
+func (q *Queries) CountSpecsSince(ctx context.Context, arg CountSpecsSinceParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countSpecsSince, arg.GoalID, arg.CreatedAt)
 	var count int64
 	err := row.Scan(&count)
 	return count, err

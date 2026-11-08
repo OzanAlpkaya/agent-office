@@ -34,12 +34,15 @@ const (
 
 // Plan limits.
 const (
-	maxPlanSummary    = 2000
-	maxPlanDesign     = 20000
-	maxPlanRisks      = 4000
-	maxPlanFiles      = 50
-	maxPlanAcceptance = 20
-	maxCriterionLen   = 500
+	maxArchitectRelaunches = 3  // escalations that start an exited architect again, per goal
+	maxPlansPerWindow      = 5  // plan versions per goal per sendWindow (architect and user)
+	maxPlanVersions        = 30 // plan versions per goal
+	maxPlanSummary         = 2000
+	maxPlanDesign          = 20000
+	maxPlanRisks           = 4000
+	maxPlanFiles           = 50
+	maxPlanAcceptance      = 20
+	maxCriterionLen        = 500
 )
 
 // Plan is an architect's plan, as submitted and as stored (JSON).
@@ -317,6 +320,9 @@ func (e *Engine) submitPlan(ctx context.Context, caller string, p Plan) (Spec, e
 	if err := e.validatePlan(&p); err != nil {
 		return Spec{}, err
 	}
+	if err := e.planRate(ctx, goal.ID); err != nil {
+		return Spec{}, err
+	}
 	s, err := e.saveSpec(ctx, goal, caller, p)
 	if err != nil {
 		return Spec{}, err
@@ -329,6 +335,24 @@ func (e *Engine) submitPlan(ctx context.Context, caller string, p Plan) (Spec, e
 	e.log.Info("plan submitted", "agent_id", caller, "task_id", goal.ID, "spec_id", s.ID, "version", s.Version,
 		"sub_tasks", len(p.SubTasks))
 	return s, nil
+}
+
+// planRate bounds new plan versions per goal (review finding): each one is
+// stored and announced in the inbox.
+func (e *Engine) planRate(ctx context.Context, goalID string) error {
+	n, err := e.q.CountSpecsSince(ctx, db.CountSpecsSinceParams{GoalID: goalID, CreatedAt: now().Add(-sendWindow)})
+	if err != nil {
+		return err
+	}
+	if n >= maxPlansPerWindow {
+		return fmt.Errorf("%w: at most %d plan versions per %s; wait for the user", ErrLimit, maxPlansPerWindow, sendWindow)
+	}
+	if total, err := e.q.NextSpecVersion(ctx, goalID); err != nil {
+		return err
+	} else if total > maxPlanVersions {
+		return fmt.Errorf("%w: the goal has %d plan versions; ask the user", ErrLimit, maxPlanVersions)
+	}
+	return nil
 }
 
 // saveSpec stores a new proposed version of goal's plan; earlier proposals
@@ -410,6 +434,9 @@ func (e *Engine) EditSpec(ctx context.Context, id int64, p Plan) (Spec, error) {
 	if err := e.validatePlan(&p); err != nil {
 		return Spec{}, err
 	}
+	if err := e.planRate(ctx, goal.ID); err != nil {
+		return Spec{}, err
+	}
 	return e.saveSpec(ctx, goal, "", p)
 }
 
@@ -473,9 +500,6 @@ func (e *Engine) ApproveSpec(ctx context.Context, id int64) (ApproveResult, erro
 	if err != nil {
 		return ApproveResult{}, fmt.Errorf("commit the spec: %w", err)
 	}
-	if err := e.git.SetBranch(ctx, repo, branch, commit, old); err != nil {
-		return ApproveResult{}, fmt.Errorf("spec branch: %w", err)
-	}
 
 	// 2. The sub-tasks, in one transaction with the approval.
 	res := ApproveResult{Created: []string{}, Updated: []string{}, Deleted: []string{}, Kept: []string{}}
@@ -494,6 +518,14 @@ func (e *Engine) ApproveSpec(ctx context.Context, id int64) (ApproveResult, erro
 	})
 	if err != nil {
 		return ApproveResult{}, err
+	}
+	// The branch moves only once the approval is recorded (review finding):
+	// a refused approval leaves no orphan commit on it. The transaction made
+	// this the one approval of this version, so the compare-and-swap holds
+	// unless someone moved the branch by hand.
+	if err := e.git.SetBranch(ctx, repo, branch, commit, old); err != nil {
+		e.log.Warn("spec branch not moved; the approved spec is the commit recorded on it", "task_id", goal.ID,
+			"branch", branch, "commit", short(commit), "err", err)
 	}
 	e.publishSpecs(ctx, goal.ID)
 	if tasks, err := e.q.ListChildTasks(ctx, nullString(goal.ID)); err == nil {
@@ -550,8 +582,8 @@ func listOrNone(ids []string) string {
 	return strings.Join(ids, ", ")
 }
 
-// touchedTasks returns the tasks any agent ever worked on (they are kept
-// when a revised plan changes them).
+// touchedTasks returns the tasks any agent ever worked on, or one is being
+// assigned to right now (they are kept when a revised plan changes them).
 func (e *Engine) touchedTasks() map[string]bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -560,6 +592,9 @@ func (e *Engine) touchedTasks() map[string]bool {
 		if a.info.TaskID != "" && a.info.Kind == KindWorker {
 			out[a.info.TaskID] = true
 		}
+	}
+	for id := range e.assigning {
+		out[id] = true
 	}
 	return out
 }
@@ -579,6 +614,9 @@ func (e *Engine) applyPlanLocked(ctx context.Context, q *db.Queries, goal db.Tas
 			byKey[t.SpecKey] = t
 		}
 	}
+	// Status as of this transaction: a worker start that committed first has
+	// moved its task to in_progress; one that commits later finds the row
+	// deleted or updated and starts with what is there (review finding).
 	untouched := func(t db.Task) bool { return t.Status == StatusTodo && !touched[t.ID] }
 	inPlan := map[string]bool{}
 	for _, st := range p.SubTasks {
@@ -711,6 +749,12 @@ func (e *Engine) relaunchArchitect(ctx context.Context, id, lead string) (string
 	}
 	if goal.Status == StatusDone {
 		return "", invalid("the goal is done")
+	}
+	if n, err := e.q.CountAgentSessions(ctx, id); err != nil {
+		return "", err
+	} else if n > maxArchitectRelaunches {
+		return "", invalid("the architect was started again %d times for this goal already; tell the user with "+
+			"message_user what broke", maxArchitectRelaunches)
 	}
 	def := e.roleOf(info.Role, info.Kind)
 	var b strings.Builder

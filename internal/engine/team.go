@@ -183,9 +183,6 @@ func (t team) AssignTask(ctx context.Context, caller string, in mcp.AssignTaskIn
 		return mcp.AssignTaskOutput{}, userErr(invalid("task %s waits for the sub-tasks it depends on: %s; assign it once "+
 			"they are reported", task.ID, strings.Join(unmet, ", ")))
 	}
-	if err := e.checkFileOverlap(ctx, task); err != nil {
-		return mcp.AssignTaskOutput{}, userErr(err)
-	}
 	e.mu.Lock()
 	busy := e.assigning[task.ID]
 	for _, a := range e.agents {
@@ -203,6 +200,11 @@ func (t team) AssignTask(ctx context.Context, caller string, in mcp.AssignTaskIn
 		delete(e.assigning, task.ID)
 		e.mu.Unlock()
 	}()
+	// After marking this task as assigning, so two assignments of overlapping
+	// sub-tasks at once see each other (review finding).
+	if err := e.checkFileOverlap(ctx, task); err != nil {
+		return mcp.AssignTaskOutput{}, userErr(err)
+	}
 	if goal.Status == StatusReview || goal.Status == StatusDone {
 		// Follow-up work on a reported goal: it is in progress again.
 		if goal.Status == StatusDone {
@@ -381,15 +383,17 @@ func (e *Engine) resolveRecipient(ctx context.Context, caller, to string) (strin
 	}
 	e.mu.Lock()
 	w, ok := e.agents[to]
-	var wTask string
+	var wTask, wKind string
 	if ok {
-		wTask = w.info.TaskID
+		wTask, wKind = w.info.TaskID, w.info.Kind
 	}
 	e.mu.Unlock()
-	if ok && wTask == taskID && w.info.Kind == KindQA {
+	if ok && wTask == taskID && wKind == KindQA {
 		return to, nil // the goal's QA
 	}
-	if !ok || wTask == "" {
+	// Workers only: reviewers read the most injectable input there is and take
+	// no messages (review finding).
+	if !ok || wTask == "" || wKind != KindWorker {
 		return "", forbidden("agent %q is not a worker of your goal", to)
 	}
 	task, err := e.getTask(ctx, wTask)
@@ -439,8 +443,12 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 		a.reporting = false
 		e.mu.Unlock()
 	}()
-	if info.Kind == KindReviewer {
+	switch info.Kind {
+	case KindWorker, KindLead:
+	case KindReviewer:
 		return mcp.ReportDoneOutput{}, forbidden("reviewers report with submit_review")
+	default: // defence in depth: no role lists it for these kinds (review finding)
+		return mcp.ReportDoneOutput{}, forbidden("a %s does not report with report_done", info.Kind)
 	}
 	if info.TaskID == "" {
 		return mcp.ReportDoneOutput{}, invalid("you have no task to report")
@@ -572,6 +580,18 @@ func (e *Engine) reportGoal(ctx context.Context, a *agentProc, goal db.Task, sum
 	}
 	if err := e.qaGate(ctx, goal, children); err != nil {
 		return mcp.ReportDoneOutput{}, err
+	}
+	// Planned work does not disappear silently (review finding): every
+	// sub-task is reported or done; the user closes the ones not needed.
+	var unstarted []string
+	for _, c := range children {
+		if c.Status == StatusTodo || c.Status == StatusBlocked {
+			unstarted = append(unstarted, c.ID)
+		}
+	}
+	if len(unstarted) > 0 {
+		return mcp.ReportDoneOutput{}, invalid("sub-tasks not done yet: %s; assign them, or ask the user (message_user, "+
+			"or the architect) to close the ones that are not needed", strings.Join(unstarted, ", "))
 	}
 	if _, err := e.setTaskStatus(ctx, goal, StatusReview); err != nil {
 		return mcp.ReportDoneOutput{}, err

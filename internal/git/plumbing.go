@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -74,8 +75,8 @@ func (g Git) CommitFile(ctx context.Context, repo, base, p string, content []byt
 	if !validRepoPath(p) {
 		return "", fmt.Errorf("git: invalid path %q", p)
 	}
-	if strings.HasPrefix(base, "-") || strings.TrimSpace(message) == "" {
-		return "", errors.New("git: CommitFile needs a base and a message")
+	if strings.HasPrefix(base, "-") || strings.TrimSpace(message) == "" || !filepath.IsAbs(tmpDir) {
+		return "", errors.New("git: CommitFile needs a base, a message and an absolute temporary directory")
 	}
 	idx, err := os.CreateTemp(tmpDir, "index-*")
 	if err != nil {

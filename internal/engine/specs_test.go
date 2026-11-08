@@ -84,6 +84,8 @@ func TestPatternsOverlap(t *testing.T) {
 		{"internal/api/*", "internal/store/*", false},
 		{"internal/*", "internal/api/*", true},
 		{"README.md", "docs/README.md", false},
+		{"internal/**/x.go", "internal/a/b/x.go", true}, // path.Match has no "**"
+		{"web/**", "internal/a.go", false},
 	}
 	for _, c := range cases {
 		if got := patternsOverlap(c.p, c.q); got != c.want {
