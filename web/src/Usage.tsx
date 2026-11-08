@@ -200,7 +200,9 @@ function SessionTable({ sessions, title, onOpenAgent, agentKnown }: {
       <tbody>
         {newest.map((s) => (
           <tr key={s.session_id}>
-            <td className="name mono" title={s.session_id}>{new Date(s.started_at).toLocaleString()}</td>
+            <td className="mono" title={`${s.session_id}, started ${new Date(s.started_at).toLocaleString()}`}>
+              {new Date(s.started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+            </td>
             <td>{agentKnown(s.agent_id)
               ? <button className="link" onClick={() => onOpenAgent(s.agent_id)}>{s.role} {s.agent_id.slice(0, 6)}</button>
               : `${s.role} ${s.agent_id.slice(0, 6)}`}</td>
