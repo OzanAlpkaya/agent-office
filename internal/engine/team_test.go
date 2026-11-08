@@ -790,6 +790,13 @@ func TestPrompts(t *testing.T) {
 	if strings.Contains(p, "{max_") {
 		t.Errorf("placeholder left: %s", p)
 	}
+	if !strings.Contains(p, "QA is off for this run") {
+		t.Error("the lead is not told that QA is off")
+	}
+	e.opts.QA = true
+	if p := e.initialPrompt(context.Background(), e.opts.Roles.Default(role.Lead), goal, "b"); strings.Contains(p, "QA is off") {
+		t.Error("QA is on, but the lead is told it is off")
+	}
 	sub := &db.Task{ID: "s1", Title: "Add column", ParentTaskID: sql.NullString{String: "g1", Valid: true}}
 	p = e.initialPrompt(context.Background(), e.opts.Roles.Default(role.Worker), sub, "agent-office/x")
 	for _, want := range []string{"software engineer", "Task: Add column", "agent-office/x", "report_done", `to="lead"`} {

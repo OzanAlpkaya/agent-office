@@ -99,6 +99,9 @@ func (e *Engine) initialPrompt(ctx context.Context, def *role.Role, task *db.Tas
 			if p := e.planSection(ctx, task); p != "" {
 				b.WriteString("\n" + p)
 			}
+			if !e.opts.QA {
+				b.WriteString("\nQA is off for this run: report the goal once every sub-task is reported; start_qa is optional.\n")
+			}
 		}
 	case KindArchitect:
 		if task != nil {
