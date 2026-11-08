@@ -1,9 +1,11 @@
 import { type JSX, Suspense, lazy, useEffect, useState } from "react";
 import {
-  type AccessRequest, type Agent, type AgentState, ApiError, type ImportInfo, type Message, type Project, type Role,
-  type SandboxEvent, type Status, type Task, type TaskStatus, api,
+  type AccessRequest, type Agent, type AgentState, ApiError, type ImportInfo, type Kind, type Message, type Project,
+  type Role, type RoleInfo, type SandboxEvent, type Status, type Task, type TaskStatus, api,
 } from "./api";
 import { Board } from "./Board";
+import { InboxPanel, MemoryPanel } from "./Team";
+import { unread } from "./workflow";
 import { TerminalView } from "./TerminalView";
 import { useWorld } from "./useAgents";
 import { type UsageRow, formatMoney, formatTokens, sessionList, totalTokens, usageBy } from "./usage";
@@ -28,7 +30,19 @@ const exitLabel: Record<string, string> = {
   start_failed: "start failed",
   reported_done: "reported done",
   review_submitted: "review submitted",
-  follow_up: "ended for a review follow-up",
+  follow_up: "ended for a follow-up",
+  goal_done: "goal marked done",
+  plan_approved: "plan approved",
+};
+
+// What each kind of agent does (ADR 0029); the role name is shown next to it.
+const kindHelp: Record<Kind, string> = {
+  architect: "Agrees the plan with you before work starts; reads the repository only",
+  lead: "Tech Lead: executes the goal's plan, assigns sub-tasks, stays until the goal is done",
+  worker: "Works on one task on its own branch",
+  qa: "Merges the reported branches, tests them and reports bugs",
+  reviewer: "Reviews one pull request; never edits, pushes or merges",
+  assistant: "Briefs you across goals and proposes project memory; no code",
 };
 
 const importOutcome: Record<string, string> = {
@@ -69,7 +83,10 @@ const stuckAfterMs = 20_000;
 type View = { kind: "board" } | { kind: "office" } | { kind: "usage" } | { kind: "agent"; id: string };
 
 export function App(): JSX.Element {
-  const { agents, tasks, events, messages, accessRequests, pullRequests, usage, connection } = useWorld();
+  const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, connection } =
+    useWorld();
+  const [roles, setRoles] = useState<RoleInfo[]>([]);
+  const [panel, setPanel] = useState<"inbox" | "memory">();
   const [view, setView] = useState<View>({ kind: "board" });
   const [project, setProject] = useState<Project>();
   const [version, setVersion] = useState("");
@@ -90,6 +107,8 @@ export function App(): JSX.Element {
   // every (re)connect, since a reconnect may mean a restarted daemon.
   useEffect(() => {
     if (connection === "open") void api.status().then(setStatus, () => setStatus(undefined));
+    // Roles belong to the daemon run as well (ADR 0029); a failure only hides the role picker.
+    if (connection === "open") void api.roles().then(setRoles, () => setRoles([]));
   }, [connection]);
 
   // Fall back to the board if the open agent disappears.
@@ -126,6 +145,11 @@ export function App(): JSX.Element {
 
   const running = agents.filter((a) => a.state !== "exited").length;
   const leadRunning = agents.some((a) => a.kind === "lead" && a.state !== "exited");
+  const architectRunning = agents.some((a) => a.kind === "architect" && a.state !== "exited");
+  const unreadCount = unread(inbox);
+  const proposed = memory.filter((m) => m.status === "proposed").length;
+  const ok = async (fn: () => Promise<unknown>): Promise<boolean> => (await run(fn)) !== undefined;
+  const togglePanel = (p: "inbox" | "memory"): void => setPanel((cur) => (cur === p ? undefined : p));
   const pending = accessRequests.filter((r) => r.status === "pending");
   const current = view.kind === "agent" ? agents.find((a) => a.id === view.id) : undefined;
   const taskTitle = (id?: string): string | undefined => tasks.find((t) => t.id === id)?.title;
@@ -158,6 +182,20 @@ export function App(): JSX.Element {
             GitHub · {status.github.repo} · review: {status.github.reviewer}
           </span>
         )}
+        <span className="header-actions">
+          <button className={`badge inbox-button ${unreadCount ? "has-unread" : ""}`} aria-expanded={panel === "inbox"}
+            onClick={() => togglePanel("inbox")} title="Messages to you from the team (ADR 0030)">
+            Inbox{unreadCount > 0 && ` · ${unreadCount}`}
+          </button>
+          <button className="badge" aria-expanded={panel === "memory"} onClick={() => togglePanel("memory")}
+            title="Notes every agent starts with (ADR 0034)">
+            Memory{proposed > 0 && ` · ${proposed} proposed`}
+          </button>
+          <button className="badge" title="Ask the assistant for a briefing (starts it if needed)"
+            onClick={() => void run(async () => { await api.askBriefing(); setPanel("inbox"); return true; })}>
+            Briefing
+          </button>
+        </span>
         <span className={`conn conn-${connection}`}>{connection === "open" ? "connected" : connection}</span>
       </header>
       {status?.sandbox === "host" && (
@@ -167,6 +205,18 @@ export function App(): JSX.Element {
         </div>
       )}
       {showPack && status?.sandbox === "podman" && <PackPanel status={status} />}
+      {panel === "inbox" && (
+        <InboxPanel items={inbox} tasks={tasks} onOpenAgent={(id) => setView({ kind: "agent", id })}
+          onRead={(i) => void run(() => api.readInbox(i.id))}
+          onReply={(i, body) => ok(() => api.replyInbox(i.id, body))} />
+      )}
+      {panel === "memory" && (
+        <MemoryPanel entries={memory}
+          onAdd={(k, t, b) => ok(() => api.addMemory(k, t, b))}
+          onEdit={(m, patch) => ok(() => api.editMemory(m.id, patch))}
+          onAccept={(m) => void run(() => api.acceptMemory(m.id))}
+          onDelete={(m) => void run(async () => { await api.deleteMemory(m.id); return true; })} />
+      )}
       {status?.warnings.map((w) => <div key={w} className="banner warn">{w}</div>)}
       {pending.length > 0 && (
         <Approvals requests={pending} agents={agents} taskTitle={taskTitle}
@@ -239,6 +289,17 @@ export function App(): JSX.Element {
               onRequestReview={(pr) => void run(() => api.requestReview(pr.id))}
               onSendToWorker={(pr, r) => void run(() => api.sendToWorker(pr.id, r.id))}
               onAcceptFlagged={(pr) => void run(() => api.acceptFlagged(pr.id, pr.flagged.map((f) => f.commit)))}
+              roles={roles} specs={specs} qaRuns={qaRuns} inbox={inbox} architectRunning={architectRunning}
+              onStartRole={(t, role) => void startAgent(t.id, role)}
+              onSaveSpec={(s, plan) => ok(() => api.editSpec(s.id, plan))}
+              onApproveSpec={(s) => void run(async () => {
+                const res = await api.approveSpec(s.id);
+                if (res.lead_error) setError(`Plan approved; the Tech Lead did not start: ${res.lead_error}`);
+                return res;
+              })}
+              onResolve={(t) => void run(async () => { await api.resolveConflict(t.id); return true; })}
+              onReadInbox={(i) => void run(() => api.readInbox(i.id))}
+              onReplyInbox={(i, body) => ok(() => api.replyInbox(i.id, body))}
             />
           ) : current.has_terminal ? (
             <TerminalView key={current.id} agentId={current.id} />
@@ -281,10 +342,7 @@ function AgentCard({
         <span className={`badge state-${a.state}`}>{stateLabel[a.state]}</span>
       </div>
       <div className="row">
-        <span className={`chip role-${a.kind}`} title={a.kind === "lead"
-          ? "Plans the goal and assigns sub-tasks to workers"
-          : a.kind === "reviewer" ? "Reviews one pull request; never edits, pushes or merges"
-          : "Works on one task on its own branch"}>{a.role}</span>
+        <span className={`chip role-${a.kind}`} title={kindHelp[a.kind]}>{a.role}</span>
         {sandboxed
           ? <span className="chip sandboxed" title="Rootless Podman worker; permission prompts off inside it">sandboxed</span>
           : <span className="chip unsandboxed" title="Runs on the host with permission prompts on">unsandboxed</span>}
@@ -451,7 +509,9 @@ function MessageList({ agentId, messages }: { agentId: string; messages: Message
         {messages.map((m) => (
           <li key={m.id}>
             <span className="muted">
-              {timeOf(m.created_at)} {m.to === agentId ? `from ${m.from ? m.from.slice(0, 6) : "agent-office"}` : `to ${m.to.slice(0, 6)}`}
+              {timeOf(m.created_at)} {m.to === agentId
+                ? `from ${m.from_user ? "you" : m.from ? m.from.slice(0, 6) : "agent-office"}`
+                : `to ${m.to.slice(0, 6)}`}
               {" · "}
               {m.delivered_at ? `delivered ${deliveryLabel[m.delivery ?? ""] ?? ""}` : "not delivered yet"}
             </span>

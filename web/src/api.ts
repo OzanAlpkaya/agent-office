@@ -1,5 +1,6 @@
 // Types mirror internal/engine (AgentInfo, Task, Update, RemoveResult,
-// ImportInfo, Status, Message, AccessRequest, PullRequest, Review, UsageReport, SessionUsage),
+// ImportInfo, Status, Message, AccessRequest, PullRequest, Review, UsageReport, SessionUsage,
+// InboxItem, Spec, QARun, MemoryEntry, RoleInfo, ApproveResult), internal/mcp (Plan),
 // internal/sandbox (Event), internal/usage (Tokens) and the API in internal/api.
 // Written by hand for now (ADR 0005); keep them in sync.
 
@@ -86,6 +87,7 @@ export interface Status {
   github?: { repo: string; base: string; remote: string; reviewer: string; rounds: number };
   prices?: PriceInfo;
   budgets?: Budgets;
+  qa?: boolean; // goals need a passing QA run (ADR 0033)
 }
 
 // Token usage (ADR 0026). Money is integer micro-USD (1 USD = 1 000 000), never a float.
@@ -200,6 +202,121 @@ export interface Task {
   created_by?: string; // agent id; absent: created by you
   created_at: string;
   updated_at: string;
+  // A sub-task's plan (ADR 0032). Absent in older fixtures: treat as empty.
+  depends_on?: string[];
+  files?: string[];
+  acceptance?: string[];
+  role?: string;
+  spec_key?: string;
+  conflicts?: Conflict[];
+  conflicts_checked_at?: string;
+}
+
+// Conflict: files that would not merge (ADR 0032); with absent = the base branch.
+export interface Conflict {
+  with?: string;
+  branch: string;
+  files: string[];
+}
+
+// RoleInfo is a team role (ADR 0029); the prompt stays in the role file.
+export interface RoleInfo {
+  name: string;
+  description: string;
+  behaviour: Kind;
+  model: string; // the model it runs with; "" = Claude Code's default
+  reports_to: string;
+  read_only: boolean;
+  team_tools: string[];
+  deny: string[] | null;
+  source: string;
+}
+
+// InboxItem is a message to the user (ADR 0030); agent_id absent = agent-office.
+// The body is agent-written: render it as text only.
+export interface InboxItem {
+  id: number;
+  agent_id?: string;
+  task_id?: string;
+  goal_id?: string;
+  role?: string;
+  kind: "question" | "info" | "blocked" | "briefing" | "plan";
+  body: string;
+  created_at: string;
+  read_at?: string;
+  answered_at?: string;
+  reply?: string;
+}
+
+// The architect's plan (ADR 0031); its text is agent- or user-written.
+export interface PlanSubTask {
+  key: string;
+  title: string;
+  description: string;
+  role?: string;
+  depends_on?: string[];
+  files?: string[];
+  acceptance?: string[];
+}
+
+export interface Plan {
+  summary: string;
+  design: string;
+  sub_tasks: PlanSubTask[];
+  risks?: string;
+}
+
+export interface Spec {
+  id: number;
+  goal_id: string;
+  version: number;
+  status: "proposed" | "approved" | "superseded";
+  author?: string; // the architect; absent: you
+  plan: Plan;
+  markdown: string;
+  branch?: string;
+  commit?: string;
+  path?: string;
+  created_at: string;
+  approved_at?: string;
+}
+
+export interface ApproveResult {
+  spec: Spec;
+  created: string[];
+  updated: string[];
+  deleted: string[];
+  kept: string[];
+  lead?: Agent;
+  lead_error?: string;
+}
+
+// QARun is one QA run of a goal (ADR 0033); summary and bugs are agent-written.
+export interface QARun {
+  id: number;
+  goal_id: string;
+  agent_id?: string;
+  status: "running" | "passed" | "failed" | "error";
+  branch: string;
+  head?: string;
+  merged: { task_id: string; title: string; branch: string; head: string }[];
+  summary?: string;
+  bugs: { title: string; description: string; task_id?: string; bug_task_id?: string }[];
+  error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// MemoryEntry is a project memory entry (ADR 0034); a proposal's text is the assistant's.
+export interface MemoryEntry {
+  id: number;
+  kind: "decision" | "convention" | "lesson";
+  title: string;
+  body: string;
+  status: "proposed" | "accepted";
+  source?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // Message between agents (ADR 0018). from is absent for agent-office itself.
@@ -207,6 +324,7 @@ export interface Task {
 export interface Message {
   id: number;
   from?: string;
+  from_user?: boolean; // the user's own words (ADR 0030)
   to: string;
   body: string;
   created_at: string;
@@ -246,7 +364,15 @@ export interface RemoveResult {
 }
 
 export type EventMessage =
-  | { type: "snapshot"; agents: Agent[]; tasks: Task[]; accessRequests: AccessRequest[]; pullRequests: PullRequest[] }
+  | {
+    type: "snapshot"; agents: Agent[]; tasks: Task[]; accessRequests: AccessRequest[]; pullRequests: PullRequest[];
+    inbox: InboxItem[]; specs: Spec[]; qaRuns: QARun[]; memory: MemoryEntry[];
+  }
+  | { type: "inbox"; item: InboxItem }
+  | { type: "spec"; spec: Spec }
+  | { type: "qa_run"; run: QARun }
+  | { type: "memory"; entry: MemoryEntry }
+  | { type: "memory_deleted"; id: string }
   | { type: "agent"; agent: Agent }
   | { type: "agent_removed"; id: string }
   | { type: "task"; task: Task }
@@ -334,11 +460,60 @@ export function isUsageReport(v: unknown): v is UsageReport {
     Array.isArray(v.sessions) && v.sessions.every(isSessionUsage) && Array.isArray(v.models) && v.models.every(isModelUsage);
 }
 
+const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
+const optStrings = (v: unknown): boolean => v === undefined || v === null || isStrings(v);
+
+function isConflict(v: unknown): v is Conflict {
+  return isObj(v) && typeof v.branch === "string" && isStrings(v.files) && (v.with === undefined || typeof v.with === "string");
+}
+
 function isTask(v: unknown): v is Task {
   return isObj(v) && typeof v.id === "string" && typeof v.title === "string" &&
     typeof v.description === "string" && typeof v.status === "string" &&
     (taskStatuses as readonly string[]).includes(v.status) &&
-    (v.parent_task_id === undefined || typeof v.parent_task_id === "string");
+    (v.parent_task_id === undefined || typeof v.parent_task_id === "string") &&
+    optStrings(v.depends_on) && optStrings(v.files) && optStrings(v.acceptance) &&
+    (v.conflicts === undefined || v.conflicts === null || (Array.isArray(v.conflicts) && v.conflicts.every(isConflict)));
+}
+
+const inboxKinds: readonly string[] = ["question", "info", "blocked", "briefing", "plan"];
+
+export function isInboxItem(v: unknown): v is InboxItem {
+  return isObj(v) && typeof v.id === "number" && typeof v.kind === "string" && inboxKinds.includes(v.kind) &&
+    typeof v.body === "string" && typeof v.created_at === "string" &&
+    (v.agent_id === undefined || typeof v.agent_id === "string");
+}
+
+function isPlan(v: unknown): v is Plan {
+  return isObj(v) && typeof v.summary === "string" && typeof v.design === "string" && Array.isArray(v.sub_tasks) &&
+    v.sub_tasks.every((s) => isObj(s) && typeof s.key === "string" && typeof s.title === "string" &&
+      typeof s.description === "string" && optStrings(s.depends_on) && optStrings(s.files) && optStrings(s.acceptance));
+}
+
+export function isSpec(v: unknown): v is Spec {
+  return isObj(v) && typeof v.id === "number" && typeof v.goal_id === "string" && typeof v.version === "number" &&
+    (v.status === "proposed" || v.status === "approved" || v.status === "superseded") && isPlan(v.plan) &&
+    typeof v.markdown === "string" && typeof v.created_at === "string";
+}
+
+const qaStatuses: readonly string[] = ["running", "passed", "failed", "error"];
+
+export function isQARun(v: unknown): v is QARun {
+  return isObj(v) && typeof v.id === "number" && typeof v.goal_id === "string" && typeof v.status === "string" &&
+    qaStatuses.includes(v.status) && typeof v.branch === "string" && Array.isArray(v.merged) && Array.isArray(v.bugs) &&
+    v.bugs.every((b) => isObj(b) && typeof b.title === "string" && typeof b.description === "string");
+}
+
+export function isMemoryEntry(v: unknown): v is MemoryEntry {
+  return isObj(v) && typeof v.id === "number" && typeof v.title === "string" && typeof v.body === "string" &&
+    (v.kind === "decision" || v.kind === "convention" || v.kind === "lesson") &&
+    (v.status === "proposed" || v.status === "accepted");
+}
+
+// listOf validates an optional snapshot list: absent (an older daemon) is empty.
+function listOf<T>(v: unknown, ok: (x: unknown) => x is T): T[] | undefined {
+  if (v === undefined || v === null) return [];
+  return Array.isArray(v) && v.every(ok) ? v : undefined;
 }
 
 // parseEventMessage validates a message from /api/events; it returns undefined
@@ -352,12 +527,28 @@ export function parseEventMessage(raw: string): EventMessage | undefined {
   }
   if (!isObj(m)) return undefined;
   switch (m.type) {
-    case "snapshot":
+    case "snapshot": {
+      const inbox = listOf(m.inbox, isInboxItem), specs = listOf(m.specs, isSpec);
+      const qaRuns = listOf(m.qa_runs, isQARun), memory = listOf(m.memory, isMemoryEntry);
       return Array.isArray(m.agents) && m.agents.every(isAgent) && Array.isArray(m.tasks) && m.tasks.every(isTask) &&
         Array.isArray(m.access_requests) && m.access_requests.every(isAccessRequest) &&
-        Array.isArray(m.pull_requests) && m.pull_requests.every(isPullRequest)
-        ? { type: "snapshot", agents: m.agents, tasks: m.tasks, accessRequests: m.access_requests, pullRequests: m.pull_requests }
+        Array.isArray(m.pull_requests) && m.pull_requests.every(isPullRequest) && inbox && specs && qaRuns && memory
+        ? {
+          type: "snapshot", agents: m.agents, tasks: m.tasks, accessRequests: m.access_requests, pullRequests: m.pull_requests,
+          inbox, specs, qaRuns, memory,
+        }
         : undefined;
+    }
+    case "inbox":
+      return isInboxItem(m.inbox) ? { type: "inbox", item: m.inbox } : undefined;
+    case "spec":
+      return isSpec(m.spec) ? { type: "spec", spec: m.spec } : undefined;
+    case "qa_run":
+      return isQARun(m.qa_run) ? { type: "qa_run", run: m.qa_run } : undefined;
+    case "memory":
+      return isMemoryEntry(m.memory) ? { type: "memory", entry: m.memory } : undefined;
+    case "memory_deleted":
+      return typeof m.id === "string" ? { type: "memory_deleted", id: m.id } : undefined;
     case "agent":
       return isAgent(m.agent) ? { type: "agent", agent: m.agent } : undefined;
     case "task":
@@ -443,6 +634,21 @@ export const api = {
     request("POST", `/api/pull-requests/${prId}/follow-up`, { review_id: reviewId }),
   acceptFlagged: (prId: number, commits: string[]): Promise<PullRequest> =>
     request("POST", `/api/pull-requests/${prId}/accept`, { commits }),
+  // Phase 12 (ADR 0029-0034).
+  roles: (): Promise<RoleInfo[]> => request("GET", "/api/roles"),
+  readInbox: (id: number): Promise<InboxItem> => request("POST", `/api/inbox/${id}/read`),
+  replyInbox: (id: number, body: string): Promise<InboxItem> => request("POST", `/api/inbox/${id}/reply`, { body }),
+  messageAgent: (id: string, body: string): Promise<Message> => request("POST", `/api/agents/${id}/message`, { body }),
+  editSpec: (id: number, plan: Plan): Promise<Spec> => request("PUT", `/api/specs/${id}`, plan),
+  approveSpec: (id: number): Promise<ApproveResult> => request("POST", `/api/specs/${id}/approve`),
+  resolveConflict: (taskId: string): Promise<void> => request("POST", `/api/tasks/${taskId}/resolve-conflict`),
+  addMemory: (kind: MemoryEntry["kind"], title: string, body: string): Promise<MemoryEntry> =>
+    request("POST", "/api/memory", { kind, title, body }),
+  editMemory: (id: number, patch: Partial<Pick<MemoryEntry, "kind" | "title" | "body">>): Promise<MemoryEntry> =>
+    request("PATCH", `/api/memory/${id}`, patch),
+  acceptMemory: (id: number): Promise<MemoryEntry> => request("POST", `/api/memory/${id}/accept`),
+  deleteMemory: (id: number): Promise<void> => request("DELETE", `/api/memory/${id}`),
+  askBriefing: (): Promise<Agent> => request("POST", "/api/assistant/briefing"),
 };
 
 export function wsURL(path: string): string {

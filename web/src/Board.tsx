@@ -1,5 +1,10 @@
 import { type FormEvent, type JSX, useState } from "react";
-import { type Agent, type PullRequest, type Review, type Task, type TaskStatus, taskStatuses } from "./api";
+import {
+  type Agent, type InboxItem, type Plan, type PullRequest, type QARun, type Review, type RoleInfo, type Spec, type Task,
+  type TaskStatus, taskStatuses,
+} from "./api";
+import { InboxEntry, PlanPanel, QAPanel, TaskPlanInfo } from "./Team";
+import { currentSpec, inboxFor, latestQA, waitsFor, workerRoles } from "./workflow";
 import { type UsageRow, formatMoney, formatTokens, totalTokens } from "./usage";
 
 const columnTitle: Record<TaskStatus, string> = {
@@ -29,6 +34,18 @@ interface Props {
   onAcceptFlagged: (pr: PullRequest) => void;
   usageByTask?: Map<string, UsageRow>; // token usage per task (ADR 0026)
   usageByGoal?: Map<string, UsageRow>; // per goal: the lead, its workers and their reviewers
+  // Phase 12 (ADR 0029-0034).
+  roles?: RoleInfo[];
+  specs?: Spec[];
+  qaRuns?: QARun[];
+  inbox?: InboxItem[];
+  architectRunning?: boolean;
+  onStartRole?: (task: Task, role: string) => void;
+  onSaveSpec?: (spec: Spec, plan: Plan) => Promise<boolean>;
+  onApproveSpec?: (spec: Spec) => void;
+  onResolve?: (task: Task) => void;
+  onReadInbox?: (i: InboxItem) => void;
+  onReplyInbox?: (i: InboxItem, body: string) => Promise<boolean>;
 }
 
 export function Board(p: Props): JSX.Element {
@@ -107,10 +124,17 @@ interface CardProps extends Props {
 
 function TaskCard(p: CardProps): JSX.Element {
   const { task, agents, goal, canStart, leadRunning, onStatus, onStart, onStartLead, onDelete, onOpenAgent, prs } = p;
-  const running = agents.some((a) => a.state !== "exited" && a.kind !== "reviewer");
+  const running = agents.some((a) => a.state !== "exited" && a.kind !== "reviewer" && a.kind !== "qa");
   const canOpenPR = p.github && task.status === "review" && agents.some((a) => a.kind === "worker") &&
     !prs.some((pr) => pr.state === "open");
   const isGoal = !task.parent_task_id;
+  const roles = workerRoles(p.roles ?? []);
+  const [role, setRole] = useState(task.role || "worker");
+  const spec = isGoal ? currentSpec(p.specs ?? [], task.id) : undefined;
+  const qa = isGoal ? latestQA(p.qaRuns ?? [], task.id) : undefined;
+  const waiting = waitsFor(task, p.tasks);
+  // Unanswered or unread messages to you about this task (ADR 0030).
+  const notes = inboxFor(p.inbox ?? [], task).filter((i) => !i.read_at || (!i.answered_at && i.kind === "question")).slice(0, 3);
   return (
     <article className="task">
       {(goal || task.created_by) && (
@@ -121,6 +145,18 @@ function TaskCard(p: CardProps): JSX.Element {
       )}
       <div className="task-title">{task.title}</div>
       {task.description && <div className="task-desc small muted">{task.description}</div>}
+      <TaskPlanInfo task={task} tasks={p.tasks} agents={agents} onResolve={(t) => p.onResolve?.(t)} />
+      {spec && <PlanPanel spec={spec} roles={p.roles ?? []} onSave={p.onSaveSpec ?? (async () => false)}
+        onApprove={(s) => p.onApproveSpec?.(s)} />}
+      {qa && <QAPanel run={qa} onOpenAgent={onOpenAgent} />}
+      {notes.length > 0 && (
+        <ul className="task-inbox">
+          {notes.map((i) => (
+            <InboxEntry key={i.id} item={i} onRead={(x) => p.onReadInbox?.(x)}
+              onReply={p.onReplyInbox ?? (async () => false)} onOpenAgent={onOpenAgent} />
+          ))}
+        </ul>
+      )}
       {agents.length > 0 && (
         <div className="task-agents">
           {agents.map((a) => (
@@ -137,15 +173,31 @@ function TaskCard(p: CardProps): JSX.Element {
         <select value={task.status} onChange={(e) => onStatus(task, e.target.value as TaskStatus)}>
           {taskStatuses.map((s) => <option key={s} value={s}>{columnTitle[s]}</option>)}
         </select>
-        <button disabled={!canStart || running} title={running ? "An agent is already working on this task" : ""}
-          onClick={() => onStart(task)}>
+        {roles.length > 1 && (
+          <select aria-label="Role" value={role} onChange={(e) => setRole(e.target.value)}
+            title={roles.find((r) => r.name === role)?.description}>
+            {roles.map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
+          </select>
+        )}
+        <button disabled={!canStart || running || waiting.length > 0}
+          title={running ? "An agent is already working on this task"
+            : waiting.length ? "It starts after the sub-tasks it depends on are reported" : ""}
+          onClick={() => (role === "worker" || !p.onStartRole ? onStart(task) : p.onStartRole(task, role))}>
           Start agent
         </button>
         {isGoal && (
+          <button disabled={!canStart || running || p.architectRunning}
+            title={p.architectRunning ? "An architect is already running"
+              : "An architect agrees a plan with you first (read-only); for small goals start the Tech Lead directly"}
+            onClick={() => p.onStartRole?.(task, "architect")}>
+            Start architect
+          </button>
+        )}
+        {isGoal && (
           <button disabled={!canStart || running || leadRunning}
-            title={leadRunning ? "A lead is already running" : "A lead agent plans this goal and assigns sub-tasks to workers"}
+            title={leadRunning ? "A Tech Lead is already running" : "A Tech Lead executes the goal: it assigns sub-tasks to workers"}
             onClick={() => onStartLead(task)}>
-            Start lead
+            Start Tech Lead
           </button>
         )}
         {canOpenPR && (
