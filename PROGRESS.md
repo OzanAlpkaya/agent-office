@@ -1,6 +1,7 @@
 # Progress
 
-**Current phase:** Phase 9 (Memory & persistence) done on `phase-9/memory-persistence`, waiting for review; next: Phase 10
+**Current phase:** Phase 10 (Remote access) done on `phase-10/remote-access`, waiting for review (the check on
+Ozan's own phone is open); next: Phase 11
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -19,7 +20,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 7: Pixel office UI
 - [x] Phase 8: Observability & cost
 - [x] Phase 9: Memory & persistence
-- [ ] Phase 10: Remote access (PWA over Tailscale)
+- [x] Phase 10: Remote access (PWA over Tailscale)
 - [ ] Phase 11: Portfolio polish
 - [x] Phase 12: Team workflow and roles
 - [ ] Phase 13: Office v2
@@ -183,3 +184,19 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   removal). `make check`, `make ui-test`, `make sandbox-test` and `make e2e` (host, sandbox, team,
   workflow; a host agent and a sandboxed worker recalled their earlier conversation after a SIGKILL
   and restart) pass; the GitHub e2e was not run.
+- 2026-11-08: Phase 9 merged into `main` (`--no-ff`).
+- 2026-11-08: Phase 10 done on `phase-10/remote-access`; plan written with the recommended options and
+  executed without a separate approval, as Ozan asked (`docs/plans/phase-10.md`). ADRs 0038 (the
+  loopback daemon behind `tailscale serve`, `--remote-host` `*.ts.net` only, Funnel refused, optional
+  `--remote-users`), 0039 (paired devices: one-time codes from `agent-office pair` or the Devices
+  panel, SHA-256-stored tokens in HttpOnly cookies, every route needs a device, revocation with
+  lineage closes WebSockets), 0040 (PWA with an offline-page service worker, phone layout, terminal
+  key bar, the focused terminal sets the size, Ctrl+Shift+C/V and copy on selection, strict CSP).
+  New package `auth`, migration 0011, `docs/remote.md`; no new dependencies. Remote access was
+  checked live against the real daemon through a proxy that behaves like `tailscale serve`
+  (Chromium with a phone profile: pairing, terminals, revocation, installability, no CSP
+  violations). An independent security review found no bypass and led to 6 fixes (device lineage
+  on revocation, `--remote-users`, strict CSP, a planted `/tmp` runtime dir, no login in logs, the
+  pairing code out of the URL). `make check`, `make ui-test` (36), `make sandbox-test` and `make e2e`
+  (host, sandbox, team, workflow; the team tests on a rerun after an e2e harness fix) pass; the
+  GitHub e2e was not run. Open: installing the app on Ozan's phone over his tailnet.

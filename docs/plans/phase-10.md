@@ -1,6 +1,7 @@
 # Phase 10 plan: Remote access (PWA over Tailscale)
 
-- **Status:** In progress on `phase-10/remote-access`. Written 2026-11-08 with the recommended option
+- **Status:** Done on `phase-10/remote-access`, waiting for Ozan's review (not merged); the live
+  check on Ozan's own phone is open. Written 2026-11-08 with the recommended option
   for every open question and executed straight away, as Ozan asked ("Write the Phase 10 plan to
   docs/plans/phase-10.md using your recommended options, then execute it immediately without asking
   me anything"). Every decision is listed in the end-of-phase summary; nothing is merged until Ozan
@@ -22,20 +23,20 @@ from anywhere else and every request proves it comes from a device the user pair
 
 ## Definition of Done (from docs/plan.md, refined)
 
-- [ ] The PWA installs on a phone and shows the board, terminals and approvals: a valid manifest,
+- [x] The PWA installs on a phone and shows the board, terminals and approvals: a valid manifest,
       icons and a service worker (Chromium reports no installability errors, tested); at phone width
       the board, an agent's terminal (with a key bar for Esc, Tab, arrows, Ctrl-C, Enter and paste)
       and the approval queue are usable without horizontal page scrolling (Playwright with phone
       viewports). Live check on Ozan's phone over Tailscale.
-- [ ] The daemon is not reachable outside localhost/Tailscale: it still listens on loopback only
+- [x] The daemon is not reachable outside localhost/Tailscale: it still listens on loopback only
       (`--addr` refuses anything else); remote access goes through `tailscale serve`, and the daemon
       accepts a remote Host only for the configured `*.ts.net` names, with Tailscale's identity
       header and without its Funnel header (tested through a proxy that mimics `tailscale serve`).
-- [ ] Unauthenticated requests are rejected: every API route and both WebSockets answer 401 without
+- [x] Unauthenticated requests are rejected: every API route and both WebSockets answer 401 without
       a paired device's credential (a test walks the route table, so a new route is covered by
       default); the only public endpoints are the UI's static files, health, the session check and
       pairing. A revoked device is refused at once and its open WebSockets are closed.
-- [ ] Backlog: copy and paste in the browser terminal: Ctrl+C still interrupts, Ctrl+Shift+C copies
+- [x] Backlog: copy and paste in the browser terminal: Ctrl+C still interrupts, Ctrl+Shift+C copies
       the selection (and does not open devtools), Ctrl+Shift+V pastes, a mouse selection is copied;
       a Paste button on phones.
 
@@ -207,4 +208,43 @@ from anywhere else and every request proves it comes from a device the user pair
 
 ## Changes during the phase
 
-(appended while the phase runs)
+- **WebSockets and revocation.** coder/websocket closes a connection itself when a read's context
+  ends, so the first version never sent the "signed out" close frame (the test saw a plain EOF).
+  WebSocket reads and writes now use a context detached from the request's, and the handlers watch
+  the request's context to send close code 4401. A device revoked while its events snapshot was
+  loading got "internal error"; it now gets 4401 too.
+- **Phone layout bug found by the phone test:** on an iPhone-sized screen the tab bar shrank to 7 px
+  and the terminal pane did not shrink, so the page scrolled; fixed with `min-height: 0` and a fixed
+  tab bar. The phone tests now assert that the page scrolls in neither direction.
+- **Ctrl+Shift+V** turned out to paste for real in headless Chromium (the browser's paste event
+  reached xterm); the test asserts the pasted text instead of only "no ^V".
+- **Independent security review** (a separate auditor agent on the diff) found no authentication
+  bypass; fixed after it, with tests:
+  - a stolen phone could pair the thief's browser, which survived the phone's revocation: devices
+    now record which device paired them (`paired_by`, migration 0011 amended before any release),
+    revocation takes that lineage and its open codes along; **Sign out all other devices**;
+  - any user of a shared tailnet reached the pairing screen: `--remote-users` (this changes open
+    question 5: the allowlist is in this phase, optional);
+  - the CSP was only `frame-ancestors`: now a strict policy without eval; PixiJS loads
+    `pixi.js/unsafe-eval` (part of pixi.js, no new dependency); checked live without violations;
+  - the `/tmp` fallback runtime dir (pre-existing, Phase 1) followed a planted symlink: every level
+    must be a real directory owned by the user;
+  - the Tailscale login (an email) was logged at pairing: the log says only `tailscale`;
+  - a `#pair=` link opened in an already paired browser kept the code in its history: the Gate
+    removes it on every load.
+  - Accepted and recorded in ADR 0039/0040: the global wrong-code counter (denial of service only),
+    cookies reaching other loopback ports (local processes, same boundary as the control socket),
+    the socket umask (0700 directory), copy on selection (asked for; the guide warns).
+- **e2e harness:** dropping the device token in a cleanup ran before the tests' own cleanups (LIFO),
+  which still call the API: `TestTeamEndToEnd` and `TestTeamWorkflowEndToEnd` answered 401 at the
+  very end (the workflow itself had passed). The token is now fetched at every daemon start and
+  never dropped; both pass on a rerun.
+- **Live checks** (no tokens beyond an idle agent's start): the real daemon behind a TLS proxy that
+  behaves like `tailscale serve` (Host kept, `Tailscale-*` stripped, login added) with Chromium
+  resolving `box.tail1234.ts.net:443` to it: pairing with a code from `agent-office pair`, a Secure
+  HttpOnly SameSite=Strict cookie, the events WebSocket, the device listed as paired over Tailscale,
+  revocation from the desktop sending the phone back to pairing, no installability errors, and under
+  the final CSP the office, a real Claude Code terminal and the phone layout without a violation. No
+  token or login in the daemon log.
+- **Not done here:** the check on Ozan's own phone and tailnet (Tailscale is not installed on this
+  machine; installing it needs sudo), and whether Ctrl+Shift+C still opens devtools in his Chrome.

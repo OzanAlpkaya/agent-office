@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 0 design, updated through Phase 9 (memory and persistence; Phase 12 came before it), based on the spikes in `spikes/` and
+Status: Phase 0 design, updated through Phase 10 (remote access; Phase 12 came before Phase 9), based on the spikes in `spikes/` and
 the ADRs in `docs/adr/`. Parts marked *(later)* belong to later phases and will be detailed then.
 
 ## Overview
@@ -68,7 +68,8 @@ flowchart LR
 | `pack` | Stack packs (ADR 0023): strict YAML loader and validation, built-in `go` and `node` packs, user packs from a user-owned directory, build files for the pack image, skills, secret files. |
 | `usage` | Token usage and cost (ADR 0026): transcript reader and API response meter (numbers and ids only), the price table (built in plus a user file; integer nano-USD). |
 | `role` | Team roles (ADR 0029): strict YAML loader over six behaviours (architect, lead, worker, qa, reviewer, assistant), built-in roles and user roles from a user-owned directory, model overrides. |
-| `api` | HTTP + WebSocket for the UI; serves the embedded UI build; request ids. |
+| `auth` | Paired devices (ADR 0039): one-time pairing codes in memory, device tokens stored as SHA-256, 30-day idle expiry, revocation that cancels the device's open connections. |
+| `api` | HTTP + WebSocket for the UI; serves the embedded UI build (a PWA, ADR 0040); request ids; one route table whose every route needs a paired device unless it is public; Host, Origin and Tailscale header checks (ADR 0038); the control socket's handler (pairing codes, script tokens). |
 
 ## Key flows
 
@@ -377,6 +378,38 @@ sequenceDiagram
   ones first, within 6 000 characters; `list_memory` (all behaviours but reviewers) shows every
   accepted entry marked `applies_to_you`; `GET /api/memory/export` downloads Markdown.
 
+**Remote access (Phase 10, ADR 0038–0040).**
+
+```mermaid
+sequenceDiagram
+  participant P as Phone (PWA)
+  participant T as tailscale serve (this machine)
+  participant D as Daemon (127.0.0.1:7680)
+  participant C as agent-office pair (terminal)
+  C->>D: control socket (0600): POST /pairing-codes
+  D-->>C: ABCD-EFGH, 5 minutes, once (printed in the user's terminal only)
+  P->>T: https://box.tail1234.ts.net/ (WireGuard, Tailscale's certificate)
+  T->>D: same Host; Tailscale-User-Login added, client copies stripped
+  D->>D: guard: remote Host, tailnet user, no Funnel, https Origin for writes
+  P->>D: POST /api/auth/pair {code, name}
+  D-->>P: Set-Cookie ao_session (HttpOnly, Secure, SameSite=Strict); only its SHA-256 is stored
+  P->>D: /api/*, /api/events, terminals with the cookie; revoked → 401 / close 4401
+```
+
+- The daemon still listens on loopback only; `tailscale serve` is the only way in from the tailnet,
+  and `--remote-host` names the `*.ts.net` Host it accepts (port 443 only). Remote requests arrive
+  from loopback, so **every** request needs a device, local ones too (ADR 0039). Public: the UI's
+  static files, `GET /api/health` (no version), `GET /api/auth/session`, `POST /api/auth/pair`.
+- `--remote-users` limits the tailnet logins; devices remember which device paired them, and
+  revoking one revokes its lineage (ADR 0039).
+- Every response carries a strict Content-Security-Policy (own scripts only, no eval, connections to
+  the daemon only, no framing), `X-Frame-Options: DENY`, `nosniff` and `no-referrer`; API answers are
+  `no-store`.
+- The UI is an installable PWA: manifest, icons drawn in code, a service worker that only serves an
+  offline page; a phone layout (Agents tab, swiping board, 44 px targets) and a terminal key bar;
+  the focused terminal sets the PTY size; copy and paste with Ctrl+Shift+C/V and on selection (ADR
+  0040). Guide: `docs/remote.md`.
+
 **Isolation (Phase 3).** Each sandboxed worker is a rootless Podman container with
 `--network none`, a read-only rootfs and no capabilities (ADR 0007). It mounts its own shared
 clone (the main repository's objects read-only), its per-agent sockets and the read-only
@@ -422,6 +455,7 @@ events: logged, stored (rate-limited), pushed to the UI live and listed by
 | **PullRequest** | id, task_id, agent_id (the worker), branch, base, number, url, state (pending / open / merged / closed), head, checks, pending / accepted flagged commits, rounds, error | One per pushed branch (migration 0005, ADR 0020). |
 | **Review** | id, pr_id, reviewer (internal / coderabbit / human), head, status (queued / running / done / failed / timed_out), verdict, summary, comments, agent_id, github_review_id, followup, reply, reply_url | One per reviewed head; people's reviews are recorded, never acted on automatically (ADR 0021, 0022). |
 | **Event** | id, agent_id, session_id, kind, at, summary | Hook events, reduced to non-sensitive fields. |
+| **Device** | id, name, kind (browser / token), token_hash, paired_via (local / tailscale:&lt;login&gt;), paired_by, created_at, last_seen_at | A browser or script allowed to use the API; the token itself is never stored; revoking deletes the row (ADR 0039). |
 
 ## Threat model (first draft, updated in Phases 3 and 4)
 
@@ -437,7 +471,16 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 
 | Threat | Mitigation | Phase |
 |---|---|---|
-| A website drives the local daemon (CSRF / cross-site WebSocket) | Bind to loopback only; WebSocket same-origin check (tested in Spike A); later an auth token for the API | 1, 10 |
+| A website drives the local daemon (CSRF / cross-site WebSocket) | Bind to loopback only; Host check (DNS rebinding); every API route and WebSocket needs a paired device (ADR 0039); the session cookie is SameSite=Strict and HttpOnly; writes and WebSockets need a same-origin Origin. Tested: `TestEveryRouteNeedsADevice` (walks the route table), `TestRejectsCrossOriginWrites`, `TestCrossOriginWebSocketRejected`, `TestBehindTailscaleServe` (cross-site WebSocket with the cookie refused) | 1, 10 |
+| A local process drives the daemon through its API | Every request needs a device token; tokens are only in the paired browsers (HttpOnly cookies) and the user's own scripts. Residual: a process of the same user can ask the control socket for a code or token, as it can reach the agent sockets (same trust boundary) | 10 |
+| The daemon becomes reachable beyond the tailnet | Loopback-only listener; remote Hosts must be `*.ts.net` names given with `--remote-host`, port 443 only; requests with Tailscale's Funnel marker or without a tailnet user's identity are refused (ADR 0038). Tested: `TestRemoteHostRules`, `TestParseRemoteHosts`. Residual: a reverse proxy the user sets up themselves in front of loopback is outside agent-office's control; pairing still applies | 10 |
+| Another user of a shared tailnet reaches the daemon | Pairing is still needed; `--remote-users` admits only the named Tailscale logins (`TestRemoteUsers`); Tailscale ACLs are the outer layer. Residual: without `--remote-users`, tailnet peers can reach the pairing screen and use up the wrong-code budget (pairing stops for 10 minutes) | 10 |
+| A stolen phone pairs another device to keep access | Devices record which device's code paired them; revoking a device revokes everything paired through it and its open codes; "Sign out all other devices" (`TestRevokeTakesThePairedDevicesAlong`, `TestSignOutOtherDevices`) | 10 |
+| A rendering slip turns agent-written text into script | React renders text; the CSP allows only the daemon's own scripts, no eval, connections only to the daemon, no plugins, base or framing (`TestSecurityHeaders`; live: office, terminals and phone layout without a violation) | 10 |
+| Pairing codes are guessed | 40-bit codes, 5 minutes, single use, at most 5 open, compared in constant time; 10 wrong codes in 10 minutes drop every open code and stop pairing for the window. Tested: `TestWrongCodesLockPairing`, `TestPairingLocksAfterWrongCodes`, `TestCodesExpireAndAreLimited` | 10 |
+| A device token leaks (lost phone, logs, history) | 256-bit random tokens, stored as SHA-256 only, never in a response body (cookies only), logs or URLs (pairing codes travel in a URL fragment that the page removes); revocable from any device, which closes its WebSockets at once; 30 days idle and it ends. Tested: `TestPairWithCode`, `TestPairingAndSignOut`, `TestRevokeClosesWebSockets`, `TestIdleDevicesExpire`; the live check found no token in the daemon log. Residual: a stolen, unlocked phone works until it is signed out | 10 |
+| Clickjacking the approval buttons | CSP `frame-ancestors 'none'` and `X-Frame-Options: DENY` on every response (`TestSecurityHeaders`) | 10 |
+| A stale cached UI or cached data on a device | The service worker caches only an offline page and an icon, never the app or `/api/`; API answers are `no-store`; the page, manifest and worker are revalidated on every load | 10 |
 | Another local process forges hook events or MCP calls | Per-agent unix sockets (hooks, MCP), mode 0600, in a 0700 dir under `$XDG_RUNTIME_DIR`; hooks: `session_id` checked against the socket's agent; MCP: one server per agent bound to its socket, the caller never comes from arguments. Tested: `TestListenerIdentity`, `TestMCPOverAgentSocket`, `TestSandboxedTeamWorker` (through the in-container bridge). Residual: any process of the same user can reach the sockets (same as hooks) | 1, 4 |
 | Agent reads host secrets (`~/.ssh`, credential stores) | Container mounts only its own repository, the read-only object store and its sockets; env built from an allowlist (no `SSH_AUTH_SOCK`, tokens) (Spike F). Claude Code's own sandbox is not enough: reads are open by default and file tools are not covered (Spike E). Tested: `TestWorkerIsolation` (no host files beyond the mounts, read-only mounts refuse writes, no SSH or git credentials), `TestWorkerArgsIsolation` | 3 |
 | Agent exfiltrates data over the network | `--network none`; per-agent CONNECT proxy, :443 and allowlisted names only, denials logged and shown (ADR 0016). Tested: `TestWorkerIsolation` (no DNS or direct TCP; other hosts, ports and plain HTTP refused), `TestWorkerEgress` (registries reachable, GitHub blocked). Residual: allowlisted registries (e.g. `proxy.golang.org` fetching arbitrary module paths) can carry data out | 3 |

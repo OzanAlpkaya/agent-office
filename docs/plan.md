@@ -307,19 +307,41 @@ derived from Claude Code hooks.
 
 **Goal:** Use agent-office from a phone or another machine over Tailscale.
 
-**Scope**
-- Installable PWA; responsive UI.
-- Access over Tailscale only; authentication for the UI/API.
+**Scope** (see ADRs 0038–0040, `docs/remote.md` and `docs/plans/phase-10.md`)
+- Installable PWA (manifest, icons drawn in code, an offline-page service worker); a phone layout
+  with a terminal key bar.
+- Access over Tailscale only: the loopback daemon behind `tailscale serve`, `--remote-host`
+  (`*.ts.net`), optional `--remote-users`; Funnel refused.
+- Authentication for every request: devices paired with one-time codes (`agent-office pair`, the
+  Devices panel), tokens in HttpOnly cookies, revocation that closes WebSockets; a strict CSP.
 
 **Definition of Done**
-- [ ] The PWA installs on a phone and shows the board, terminals and approvals.
-- [ ] The daemon is not reachable outside localhost/Tailscale; unauthenticated requests are rejected.
+- [x] The PWA installs on a phone and shows the board, terminals and approvals: Chromium reports no
+      installability errors, on the mocked UI and on the real daemon (Playwright "Chromium finds no
+      installability errors…", live check); phone viewports (Pixel 7, iPhone 14) show the board,
+      approvals with 44 px buttons, the Agents tab and a terminal with its key bar, without the page
+      scrolling (Playwright "on a phone …"); live: a phone-profile Chromium paired over HTTPS
+      through a proxy set up like `tailscale serve` and used a real Claude Code terminal. **Open:**
+      installing on Ozan's own phone over his tailnet (needs Tailscale on this machine, sudo).
+- [x] The daemon is not reachable outside localhost/Tailscale; unauthenticated requests are
+      rejected: loopback-only listener; remote Hosts only for `--remote-host` names with a tailnet
+      user's identity and no Funnel marker (`TestRemoteHostRules`, `TestRemoteUsers`,
+      `TestBehindTailscaleServe`); every route but three public ones and both WebSockets answer 401
+      without a device (`TestEveryRouteNeedsADevice` walks the route table); a revoked device's
+      WebSockets close with 4401 (`TestRevokeClosesWebSockets`).
 
 **Backlog** (from Ozan's end-to-end test, 2026-11-08)
-- Copy and paste in the browser terminal: Ctrl+C must keep interrupting the agent, Ctrl+Shift+C
+- [x] Copy and paste in the browser terminal (Playwright "copy and paste in the terminal", "Paste on
+  the phone key bar…"; that Ctrl+Shift+C no longer opens devtools is a manual check). Original item:
+  Copy and paste in the browser terminal: Ctrl+C must keep interrupting the agent, Ctrl+Shift+C
   opens Chrome's devtools, and a mouse selection is not copied. Support Ctrl+Shift+C / Ctrl+Shift+V
   and copy on selection, like a normal terminal (xterm.js key handler and selection API; the
   clipboard API needs a secure context, which loopback is). Needed on a phone too.
+
+**Backlog** (from Phase 10)
+- Push notifications for approvals and questions waiting on the user (Web Push: a push service and
+  VAPID keys; ADR 0040).
+- A QR code for pairing a phone (needs a QR encoder; the 8-character code is typed today).
 
 ---
 

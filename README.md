@@ -5,14 +5,15 @@ A lead agent plans the work and assigns tasks; each worker agent gets its own gi
 sandbox; a web UI shows a task board, live terminals and, later, a pixel-art office where you can
 watch the team at work.
 
-> **Status:** in development; Phases 0–9 and 12 are done: sandboxed Claude Code agents (rootless
+> **Status:** in development; Phases 0–10 and 12 are done: sandboxed Claude Code agents (rootless
 > Podman), a team MCP server, a GitHub PR loop with code review, stack packs, a pixel-art office,
 > token usage, cost estimates and budgets ([docs/usage.md](docs/usage.md)), a team workflow
 > with roles as data ([docs/roles.md](docs/roles.md)): an architect agrees the plan with you, a
 > Tech Lead executes it in dependency order, QA tests the integrated result, an assistant briefs
 > you; and persistence: agents resume their conversations (also after a daemon restart), every
-> session's terminal output is kept, and project memory reaches the agents it applies to. See
-> [PROGRESS.md](PROGRESS.md).
+> session's terminal output is kept, and project memory reaches the agents it applies to; and remote
+> access: an installable app for your phone over Tailscale, with paired devices
+> ([docs/remote.md](docs/remote.md)). See [PROGRESS.md](PROGRESS.md).
 
 ![The Office tab: agents at their desks, the lead's whiteboard with sub-tasks, two agents waiting for approval](docs/screenshots/office.png)
 
@@ -25,15 +26,19 @@ Requires Go 1.27+, Node 26+ and Claude Code on `PATH`.
 ```sh
 make build
 ./bin/agent-office serve --repo ~/path/to/a/git/repo --model haiku
-# open http://127.0.0.1:7680, add a task and click "Start agent"
+# in another terminal: pair your browser once (prints a one-time code and a link)
+./bin/agent-office pair
+# open the link, add a task and click "Start agent"
 ```
 
 Agents work in worktrees under `~/.local/share/agent-office/worktrees/`; removing an agent never
 deletes uncommitted work. Trust the repository once in Claude Code; its worktrees inherit that.
 Configuration flags and `AGENT_OFFICE_*` variables are listed in `.env.example` and
 `agent-office serve -h`. `make check` runs lint, tests and the build; `make e2e` runs real Claude
-Code sessions (opt-in, costs a few cents). The daemon only listens on loopback. Agents run on the host with Claude
-Code's normal permission prompts. Sandboxed full-permission agents come in Phase 3.
+Code sessions (opt-in, costs a few cents). The daemon only listens on loopback, and every request
+needs a paired device; for your phone, put `tailscale serve` in front of it
+([docs/remote.md](docs/remote.md)). Agents run in rootless Podman by default (`--sandbox host` runs
+them on the host with Claude Code's permission prompts).
 
 ## Planned features
 
