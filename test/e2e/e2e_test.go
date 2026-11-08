@@ -85,16 +85,14 @@ func (d *daemon) start() {
 }
 
 // tokens holds each daemon's device token by base URL (ADR 0039), for the
-// WebSocket helpers that only get the base.
+// WebSocket helpers that only get the base. Entries are never deleted: a
+// test's own cleanups still talk to its daemon, and a later daemon on a reused
+// port overwrites its entry when it starts.
 var tokens sync.Map
 
-// pair gets a device token for scripts from the running daemon once; it is
-// stored in the data dir, so it survives restarts.
+// pair gets a device token for scripts from the daemon each time it starts.
 func (d *daemon) pair() {
 	d.t.Helper()
-	if _, ok := tokens.Load(d.base); ok {
-		return
-	}
 	dataDir := ""
 	for i, a := range d.args {
 		if a == "--data-dir" && i+1 < len(d.args) {
@@ -107,9 +105,7 @@ func (d *daemon) pair() {
 	if err != nil {
 		d.t.Fatalf("agent-office pair --token: %v", err)
 	}
-	tok := strings.TrimSpace(string(out))
-	tokens.Store(d.base, tok)
-	d.t.Cleanup(func() { tokens.Delete(d.base) })
+	tokens.Store(d.base, strings.TrimSpace(string(out)))
 }
 
 // authHeader authenticates a request to the daemon at base.
