@@ -1,6 +1,6 @@
 # Phase 11 plan: Portfolio polish
 
-- **Status:** In progress on `phase-11/portfolio-polish`. Written 2026-11-08 with the recommended
+- **Status:** Done on `phase-11/portfolio-polish`, waiting for Ozan's review (not merged). Written 2026-11-08 with the recommended
   option for every open question and executed straight away, as Ozan asked ("Write the Phase 11
   plan to docs/plans/phase-11.md using your recommended options, then execute it immediately
   without asking me anything"). Every decision is listed in the end-of-phase summary; nothing is
@@ -24,40 +24,40 @@ binary. The three Phase 11 backlog items are closed.
 
 ## Definition of Done (from docs/plan.md, refined)
 
-- [ ] **README rewrite.** In this order: a one-paragraph pitch; a demo GIF of a real team run in the
+- [x] **README rewrite.** In this order: a one-paragraph pitch; a demo GIF of a real team run in the
       Office tab; what it does in a few bullets with screenshots from `docs/screenshots/`; an
       architecture diagram in Mermaid (GitHub renders it); the key design decisions with links to
       their ADRs (at least: sandbox model, token injection, bundle hand-off, roles as data); a
       quickstart; "How this was built"; the rest (docs map, stack, inspiration, license). Plus an
       ADR index (`docs/adr/README.md`) so the 40+ ADRs can be browsed by topic.
-- [ ] **Demo GIF from a real run.** Recorded by a checked-in Playwright script (`make demo`) that
+- [x] **Demo GIF from a real run.** Recorded by a checked-in Playwright script (`make demo`) that
       starts a real daemon (scratch data dir, sandboxed haiku team, throwaway clone of the
       playground), pairs the browser through `agent-office pair`, gives the Tech Lead a goal and
       records the Office tab until the team has reported; ffmpeg turns the video into a GIF
       (`docs/screenshots/team-run.gif`, under 10 MB). No captured agent data other than what the
       GIF itself shows (fictional playground work, no local paths).
-- [ ] **A fresh Linux machine can install and run it by following the README:** the documented
+- [x] **A fresh Linux machine can install and run it by following the README:** the documented
       prerequisites alone build it in a clean Debian container (`make build`, `agent-office
       version`); on this machine, a fresh `git clone` follows the quickstart literally (build,
       worker image, serve with a scratch data dir, pair, start a sandboxed agent on a task, see it
       finish), and the README is corrected wherever reality differed.
-- [ ] **Secret and personal-data scan of the whole git history:** gitleaks (pinned, `make
+- [x] **Secret and personal-data scan of the whole git history:** gitleaks (pinned, `make
       secret-scan`) over every commit of every ref, plus a targeted scan for personal data (author
       identities, e-mail addresses, home paths, IPs, session ids, captured payloads, files that
       should have been ignored). Findings are reported to Ozan **before** anything changes history;
       this phase does not rewrite history.
-- [ ] **Tagged v0.1.0 release with a binary:** an annotated tag `v0.1.0`; `make release` builds a
+- [x] **Tagged v0.1.0 release with a binary:** an annotated tag `v0.1.0`; `make release` builds a
       static linux/amd64 binary from the tagged, clean tree into a tarball with `SHA256SUMS`;
       release notes in `docs/releases/v0.1.0.md`; step-by-step instructions for Ozan to create the
       release on the GitHub website.
-- [ ] **Architecture write-up linking the ADRs:** the README's design-decisions section and the ADR
+- [x] **Architecture write-up linking the ADRs:** the README's design-decisions section and the ADR
       index; `docs/architecture.md` stays the long form.
-- [ ] **Backlog: reproducible worker images.** Debian packages in the base image and the built-in
+- [x] **Backlog: reproducible worker images.** Debian packages in the base image and the built-in
       pack images come from a fixed `snapshot.debian.org` timestamp with exact versions, so the same
       Containerfile builds the same packages (tested: `make worker-image`, `make sandbox-test`).
-- [ ] **Backlog: `python3` in the worker image** (pinned like the rest), so agents that reach for it
+- [x] **Backlog: `python3` in the worker image** (pinned like the rest), so agents that reach for it
       can use it.
-- [ ] **Backlog: closing keywords in agents' commit messages** (`fixes #12`) are flagged at push
+- [x] **Backlog: closing keywords in agents' commit messages** (`fixes #12`) are flagged at push
       time like the existing identity and `.github/` checks: the push waits until the user accepts
       those commits (tested), and the worker prompt asks agents not to write them.
 
@@ -206,4 +206,46 @@ binary. The three Phase 11 backlog items are closed.
 
 ## Changes during the phase
 
-(appended as the phase goes)
+- **Scan results (reported, history not rewritten).** gitleaks v8.30.1 found no secrets in the 231
+  non-merge commits of every ref (243 with merges) or in the working tree. The personal-data scan of
+  every blob ever committed and every commit message found:
+  - every commit's author and committer is Ozan's personal Gmail address (486 identity fields). It is
+    in no file, only in commit metadata. This is the one real finding; rewriting it would change
+    every hash of a published history, so it is Ozan's call (a `.mailmap` does not change what
+    GitHub shows for existing commits);
+  - his GitHub handle and name (LICENSE, module path, playground links), and the Unix user name in
+    one spike (`spikes/sandbox-claude/main.go` probes that `/home/<user>` is not visible in the
+    sandbox): public anyway;
+  - one example Claude Code session id in `docs/usage.md` (a random local identifier, not a
+    credential), fixture UUIDs, documentation IPs and canary tokens (`sk-ant-oat01-aoCanary`) in
+    tests;
+  - no captured payloads, transcripts, `.env` files, databases or logs; fixtures are redacted shapes
+    (`SENSITIVE`, `/redacted/...`); the committed screenshots show only fictional or playground work.
+- **Closing keywords and NUL bytes.** git prints a commit message only up to a NUL byte, so a keyword
+  after a NUL would be invisible to the gate. The bundle import's existing `transfer.fsckObjects`
+  already refuses such commits (`nulInCommit`); a test pins that, and the message reader fails
+  closed on any record it cannot parse. Problems of one commit are now merged into one flagged entry
+  (`addFlag`), so the `.github/` check and the new check do not list the same commit twice.
+- **The demo run was faster than planned:** the haiku team finished in 55-61 seconds in both
+  recordings, so the GIF is about 35 seconds at about 2× instead of a heavy speed-up. The first
+  recording showed a `-dirty` version in the header; the committed GIF is from the second recording,
+  made from a clean commit. GIF settings were tuned for size: 800 px, 6 fps, 64 colours, 6.2 MB
+  (the first try at 960 px, 10 fps, 128 colours was 20 MB).
+- **What the demo shows by itself:** each sandboxed agent's card shows "Network blocked": Claude Code
+  tries `downloads.claude.ai` and `github.com` at start-up, and the egress allowlist refuses them.
+  Both sub-tasks changed overlapping lines, so the board shows the ADR 0032 conflict between the
+  two branches. Both are real behaviour and are explained in `docs/demo.md` rather than hidden.
+- **Fresh-clone findings:** Node's official tarball needs `libatomic1`, which a minimal Debian lacks
+  (noted in the README). A worker the user starts on a task stays open after `report_done` (only
+  lead-managed workers exit, `team.go`); the README's quick start said otherwise and was corrected.
+  An unverified README sentence (the repository needs a commit) was removed.
+- **`make release` and removals.** A first version of the recipe used variable paths in `rm -rf`,
+  which Claude Code's safety check refused to write through the shell; the recipe now removes only
+  the fixed `dist/src` and `dist/stage`.
+- **GitHub e2e not run:** the push gate is covered by the engine tests against the GitHub fake;
+  `TestGitHubEndToEnd` would open a pull request on the playground repository, which was not run in
+  Phases 9 and 10 either.
+- **Checks at the end:** `make check`, `make ui-test` (41 passed), `make sandbox-test` (and
+  `TestWorkerEgress` with `AO_SANDBOX_NET=1`), `make e2e` (TestEndToEnd, TestSandboxEndToEnd,
+  TestTeamEndToEnd, TestTeamWorkflowEndToEnd), `make secret-scan`, two `make release` dry runs in a
+  scratch clone with the same checksum.

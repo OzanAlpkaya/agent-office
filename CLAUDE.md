@@ -28,6 +28,8 @@ These rules apply to every session in this repo.
 | `docs/adr/` | Architecture Decision Records |
 | `docs/architecture.md` | Components, flows, domain model, threat model |
 | `docs/research/` | Verified library/API notes and external tool research |
+| `docs/releases/` | Release notes per tag (`make release` packs them; ADR 0042) |
+| `docs/screenshots/` | README images and the demo GIF (`make demo`, `docs/demo.md`) |
 | `spikes/` | Throwaway experiments, each its own Go module; never imported by `internal/` |
 | `PROGRESS.md` | Phase checklist and progress log |
 

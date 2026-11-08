@@ -355,25 +355,46 @@ derived from Claude Code hooks.
 
 **Goal:** Make the project easy to understand, run and evaluate.
 
-**Scope**
-- README with screenshots/GIF, architecture overview, quick start.
-- Release builds, demo script, write-up of key decisions.
-- Pin Debian package versions in the worker image (reproducible builds); Phase 3 pins only the
-  base image digest and the Go download.
-- Closing keywords in agents' commit messages (`fixes #N`): Phase 5 neutralizes them in PR titles,
-  bodies and reviews, but pushes commits as they are, so merging such a PR closes the issue. Flag
-  them at push time (like flagged commits) or have the daemon rewrite the PR's merge message
-  (ADR 0020, residual).
+**Scope** (see ADRs 0041, 0042, `docs/demo.md` and `docs/plans/phase-11.md`)
+- README rewrite: pitch, a GIF of a real team run, screenshots, a Mermaid architecture diagram, the
+  key design decisions with their ADRs, a quick start verified from a fresh clone, "How this was
+  built"; an ADR index by topic.
+- `make demo` records a real sandboxed team run in the Office tab (Playwright) and makes the GIF.
+- `make secret-scan` (gitleaks, pinned) over the whole history; a personal-data scan; findings
+  reported, history not rewritten.
+- `make release`: a deterministic linux/amd64 tarball from a clean, exactly tagged tree; v0.1.0.
+- Worker images from a pinned Debian snapshot with exact versions; `python3` in the base image.
+- Closing keywords in agents' commit messages flagged at push time.
 
 **Definition of Done**
-- [ ] A fresh Linux machine can install and run it by following the README.
-- [ ] Tagged release with binaries.
-- [ ] A short demo video/GIF and an architecture write-up linking the ADRs.
+- [x] A fresh Linux machine can install and run it by following the README: a clean Debian
+      container with only the documented build prerequisites builds it from a fresh clone; on this
+      machine a fresh clone followed the quick start (worker image, serve with a scratch data dir,
+      pair, a sandboxed worker on a task, its branch in the repository). Two README corrections came
+      out of it (a user-started worker stays after reporting; `libatomic1` for Node's tarball on a
+      minimal Debian).
+- [x] Tagged release with binaries: `v0.1.0`, built by `make release` (static linux/amd64, a
+      deterministic tarball: two builds of the tag gave the same checksum) with release notes in
+      `docs/releases/v0.1.0.md`; uploading it on GitHub is Ozan's step.
+- [x] A short demo video/GIF and an architecture write-up linking the ADRs: `docs/screenshots/team-run.gif`
+      (a real haiku team, 55 seconds of real time at about 2×, 6 MB), the README's design-decisions
+      table and Mermaid diagram (rendered with mermaid 11 to check it), `docs/adr/README.md`.
 
-**Backlog** (from Ozan's end-to-end test, 2026-11-08)
-- The worker image has no `python3`; agents reach for it to edit files and fail. Either add
-  `python3` to the base image (pinned with the other Debian packages above) or tell agents in the
-  packs' skills that it is not available and which tools are.
+**Backlog** (planned for this phase)
+- [x] Pin Debian package versions in the worker image: apt sources pinned to the base image's own
+      `snapshot.debian.org` timestamp, exact versions in the base and pack images; a `--no-cache`
+      rebuild installs the same 128 package versions (ADR 0041, `TestWorkerImageAndInit`).
+- [x] Closing keywords in agents' commit messages: flagged at push time, accepted through the
+      existing flagged-commit flow; the task prompt asks agents not to write them (ADR 0020 amended,
+      `TestClosingKeywordsBlockPush`, `TestClosingReferences`, `TestCommitMessages`).
+- [x] `python3` in the base image (ADR 0041). Original item: the worker image has no `python3`;
+      agents reach for it to edit files and fail.
+
+**Backlog** (from Phase 11)
+- CI (GitHub Actions) running `make check` on pushes and pull requests; a change under `.github/`.
+- Signed release artifacts (for example Sigstore), and linux/arm64 builds once they can be tested.
+- Personal data in the public history: every commit's author and committer is a personal Gmail
+  address (reported to Ozan; not rewritten). Future commits could use GitHub's noreply address.
 
 ---
 
