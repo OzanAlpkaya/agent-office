@@ -2,13 +2,15 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # sqlc runs pinned via `go run` so its large dependency tree stays out of go.mod.
 SQLC_VERSION ?= v1.31.1
+# gitleaks runs pinned via `go run` too (secret scan of the whole history, Phase 11).
+GITLEAKS_VERSION ?= v8.30.1
 # Development runs and tests never use the real data dir (~/.local/share/agent-office).
 # Outside the repo on purpose: Claude Code loads CLAUDE.md from parent folders, so
 # worktrees under this repo would pick up agent-office's own rules.
 DEV_ROOT ?= $(or $(XDG_CACHE_HOME),$(HOME)/.cache)/agent-office-dev
 DEV_DATA_DIR ?= $(DEV_ROOT)/data
 
-.PHONY: pair build web test web-test ui-test lint check dev serve clean generate e2e sandbox-test worker-image
+.PHONY: release demo secret-scan pair build web test web-test ui-test lint check dev serve clean generate e2e sandbox-test worker-image
 
 # Static (CGO_ENABLED=0): the same binary is mounted into worker containers, whose
 # glibc may be older than the host's (Spike F).
@@ -69,6 +71,17 @@ sandbox-test: build
 ui-test: web
 	cd web && npm run ui-test
 
+# Record the README's demo: a real sandboxed haiku team (Tech Lead and two workers) on a throwaway
+# clone of AO_DEMO_REPO, with a scratch data dir; costs a few cents of tokens. Needs podman, the
+# OAuth token file, the go pack image (make worker-image PACK=go) and Playwright's Chromium. The
+# video, stills and the GIF land in AO_DEMO_OUT (docs/demo.md).
+#   make demo AO_DEMO_REPO=~/projects/agent-office-playground AO_DEMO_OUT=/tmp/demo
+demo: build
+	@test -n "$(AO_DEMO_REPO)" || (echo "set AO_DEMO_REPO to a trusted git repository"; exit 1)
+	@test -n "$(AO_DEMO_OUT)" || (echo "set AO_DEMO_OUT to an output directory"; exit 1)
+	cd web && AO_BIN=../bin/agent-office AO_DEMO_REPO="$(AO_DEMO_REPO)" AO_DEMO_OUT="$(AO_DEMO_OUT)" node demo/record-team-run.ts
+	web/demo/to-gif.sh "$(AO_DEMO_OUT)" "$(AO_DEMO_OUT)/team-run.gif"
+
 # Run the built daemon against DEV_DATA_DIR, never the real data dir.
 #   make serve REPO=~/projects/agent-office-playground [ARGS="--dev --addr 127.0.0.1:7690"]
 serve: build
@@ -84,6 +97,36 @@ pair:
 #   terminal 2: make dev   (then open http://localhost:5173)
 dev: web/node_modules
 	cd web && npm run dev
+
+# Scan every commit of every ref and the working tree for secrets (gitleaks, redacted output).
+# The repository is public: run it before a release and after adding fixtures or captured data.
+secret-scan:
+	go run github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION) git --log-opts=--all --redact --no-banner .
+	go run github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION) dir --redact --no-banner .
+
+# Release build (ADR 0042). HEAD must be a clean commit with an exact tag and release notes in
+# docs/releases/<tag>.md. Builds in a fresh worktree of the tag (dist/src: npm ci, make build), so
+# nothing local leaks in, and writes dist/agent-office_<tag>_linux_amd64.tar.gz (binary, LICENSE,
+# README, RELEASE-NOTES.md) and dist/SHA256SUMS. The tarball is deterministic: fixed file order,
+# owner and mtime (the tagged commit's time), gzip without a timestamp. Upload both on GitHub.
+release:
+	@test -z "$$(git status --porcelain)" || (echo "release: the working tree is not clean"; exit 1)
+	@git describe --tags --exact-match >/dev/null 2>&1 || (echo "release: HEAD has no tag; git tag -a vX.Y.Z first"; exit 1)
+	@test -f "docs/releases/$$(git describe --tags --exact-match).md" || (echo "release: docs/releases/<tag>.md is missing"; exit 1)
+	rm -rf dist/src dist/stage
+	git worktree prune
+	git worktree add -q --detach dist/src "$$(git describe --tags --exact-match)"
+	$(MAKE) -C dist/src build
+	@set -eu; tag=$$(git describe --tags --exact-match); name=agent-office_$${tag}_linux_amd64; \
+	  test "$$(dist/src/bin/agent-office version)" = "$$tag"; \
+	  mkdir -p "dist/stage/$$name"; \
+	  cp dist/src/bin/agent-office dist/src/LICENSE dist/src/README.md "dist/stage/$$name/"; \
+	  cp "dist/src/docs/releases/$$tag.md" "dist/stage/$$name/RELEASE-NOTES.md"; \
+	  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$$(git log -1 --format=%ct "$$tag")" \
+	    -C dist/stage -cf - "$$name" | gzip -n -9 > "dist/$$name.tar.gz"; \
+	  cd dist && sha256sum "$$name.tar.gz" > SHA256SUMS && cat SHA256SUMS
+	git worktree remove --force dist/src
+	rm -rf dist/stage
 
 # Regenerate internal/store/db from internal/store/{migrations,queries.sql}.
 generate:

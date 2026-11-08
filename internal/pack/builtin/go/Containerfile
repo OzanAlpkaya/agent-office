@@ -3,8 +3,9 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
+# Versions pinned in the base image's Debian snapshot (ADR 0041).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends gcc libc6-dev \
+ && apt-get install -y --no-install-recommends gcc=4:14.2.0-1 libc6-dev=2.41-12+deb13u4 \
  && rm -rf /var/lib/apt/lists/*
 
 # Go from go.dev, checked against the official SHA-256 (go.dev/dl/?mode=json).

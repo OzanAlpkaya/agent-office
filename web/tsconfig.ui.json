@@ -4,5 +4,5 @@
     "jsx": "react-jsx",
     "types": ["node"]
   },
-  "include": ["ui-tests", "playwright.config.ts"]
+  "include": ["ui-tests", "demo", "playwright.config.ts"]
 }

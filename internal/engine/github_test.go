@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -604,6 +605,49 @@ func TestWorkflowChangesBlockPush(t *testing.T) {
 	}
 	if p, err := gf.e.AcceptFlagged(ctx, p.ID, []string{p.Flagged[0].Commit}); err != nil || p.State != PROpen {
 		t.Fatalf("after accepting: %+v %v", p, err)
+	}
+}
+
+// ADR 0020: a commit message with a closing keyword ("Fixes #12") would close
+// that issue when a human merges, whatever the merge method, so the push waits
+// until the user accepts the commit. Ordinary messages pass.
+func TestClosingKeywordsBlockPush(t *testing.T) {
+	gf := newGHFixture(t, nil)
+	ctx := context.Background()
+	task, _ := gf.e.CreateTask(ctx, TaskInput{Title: "Add tags"})
+	w, err := gf.e.Start(ctx, StartRequest{TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gf.log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
+	for i, msg := range []string{"fix: handle #12 in the parser", "feat: tags\n\nFixes #12, closes octo/shelf#3"} {
+		if err := os.WriteFile(filepath.Join(w.WorktreePath, fmt.Sprintf("f%d.txt", i)), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitIn(t, w.WorktreePath, "add", ".")
+		gitIn(t, w.WorktreePath, "commit", "-q", "-m", msg)
+	}
+	flagged := strings.TrimSpace(gitIn(t, w.WorktreePath, "rev-parse", "HEAD"))
+	_, err = gf.e.OpenPullRequest(ctx, task.ID)
+	if !errors.Is(err, ErrFlagged) {
+		t.Fatalf("want ErrFlagged, got %v", err)
+	}
+	p := gf.waitPR(t, 5*time.Second, func(p *PullRequest) bool { return len(p.Flagged) == 1 })
+	if p.Flagged[0].Commit != flagged || !strings.Contains(p.Flagged[0].Problem, "Fixes #12, closes octo/shelf#3") ||
+		len(gf.srv.PRs) != 0 {
+		t.Fatalf("pull request %+v", p)
+	}
+	if p, err := gf.e.AcceptFlagged(ctx, p.ID, []string{flagged}); err != nil || p.State != PROpen {
+		t.Fatalf("after accepting: %+v %v", p, err)
+	}
+}
+
+func TestAddFlagMergesProblemsOfOneCommit(t *testing.T) {
+	found := addFlag(nil, "a", "one")
+	found = addFlag(found, "b", "two")
+	found = addFlag(found, "a", "three")
+	if len(found) != 2 || found[0].Problem != "one; three" || found[1].Problem != "two" {
+		t.Fatalf("%+v", found)
 	}
 }
 

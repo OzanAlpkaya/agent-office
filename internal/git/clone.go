@@ -370,6 +370,50 @@ type Commit struct {
 	CoAuthors                                                    []string // Co-Authored-By trailer values
 }
 
+// maxMessages caps what CommitMessages reads (all messages of a branch).
+const maxMessages = 4 << 20
+
+// CommitMessages returns the full message of every commit on branch since base
+// in repo, keyed by commit hash. Records are NUL-separated (git log -z); git
+// prints a message only up to a NUL byte, and a record that does not start
+// with a commit hash is an error, so a caller that gates on messages fails
+// closed. Imports refuse commits with a NUL (fsck's nulInCommit), so branches
+// imported from a sandbox have none.
+func (g Git) CommitMessages(ctx context.Context, repo, base, branch string) (map[string]string, error) {
+	out, err := g.run(ctx, repo, "log", "-z", "--format=%H%n%B", base+"..refs/heads/"+branch, "--")
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > maxMessages {
+		return nil, fmt.Errorf("git: commit messages of %s exceed %d bytes", branch, maxMessages)
+	}
+	msgs := map[string]string{}
+	for _, rec := range strings.Split(out, "\x00") {
+		rec = strings.TrimPrefix(rec, "\n")
+		if rec == "" {
+			continue
+		}
+		hash, msg, ok := strings.Cut(rec, "\n")
+		if !ok || !isCommitHash(hash) {
+			return nil, fmt.Errorf("git: unreadable commit message record on %s", branch)
+		}
+		msgs[hash] = msg
+	}
+	return msgs, nil
+}
+
+func isCommitHash(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // BranchCommits lists the commits on branch since base in repo, newest first.
 func (g Git) BranchCommits(ctx context.Context, repo, base, branch string) ([]Commit, error) {
 	out, err := g.run(ctx, repo, "log",

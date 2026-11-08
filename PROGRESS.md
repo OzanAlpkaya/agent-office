@@ -1,7 +1,7 @@
 # Progress
 
-**Current phase:** Phase 10 (Remote access) merged into `main` (the check on Ozan's own phone is open);
-next: Phase 11
+**Current phase:** Phase 11 (Portfolio polish) done on `phase-11/portfolio-polish`, tagged `v0.1.0`,
+waiting for Ozan's review (not merged); next: Phase 13
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -21,7 +21,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 8: Observability & cost
 - [x] Phase 9: Memory & persistence
 - [x] Phase 10: Remote access (PWA over Tailscale)
-- [ ] Phase 11: Portfolio polish
+- [x] Phase 11: Portfolio polish (waiting for review)
 - [x] Phase 12: Team workflow and roles
 - [ ] Phase 13: Office v2
 
@@ -216,3 +216,19 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   in a sandboxed fullscreen session (plain selection, and Shift+drag with Ctrl+Shift+C) and that
   a4fc81 resumes again. Merged into `main` (`--no-ff`). Open: installing the app on his phone over
   his tailnet.
+- 2026-11-08: Phase 11 done on `phase-11/portfolio-polish`; plan written with the recommended options
+  and executed without a separate approval, as Ozan asked (`docs/plans/phase-11.md`). README
+  rewritten around a GIF of a real sandboxed haiku team run (`make demo`: Playwright drives a real
+  daemon on a throwaway clone; 55 seconds, about two cents), a Mermaid architecture diagram, the key
+  design decisions with their ADRs, a quick start verified from a fresh clone (in a clean Debian
+  container and on this machine) and "How this was built"; `docs/adr/README.md` indexes the ADRs;
+  `docs/demo.md`. `make secret-scan` (gitleaks v8.30.1 via `go run`): no secrets in any commit; the
+  personal-data scan's one real finding is the personal Gmail address on every commit (reported, not
+  rewritten). Backlog: worker images from a pinned Debian snapshot with exact versions and `python3`
+  (ADR 0041; a `--no-cache` rebuild installs the same 128 versions); closing keywords in agents'
+  commit messages flagged at push time (ADR 0020 amended). `make release` (ADR 0042) builds a
+  deterministic tarball from a fresh worktree of an exact tag (two builds, same checksum); v0.1.0
+  tagged locally, release notes in `docs/releases/v0.1.0.md`. No new dependencies (gitleaks runs
+  pinned outside `go.mod`; mermaid was only downloaded to check the diagram renders). `make check`,
+  `make ui-test` (41), `make sandbox-test` (with `AO_SANDBOX_NET=1` for the egress test) and
+  `make e2e` (host, sandbox, team, workflow) pass; the GitHub e2e was not run.
