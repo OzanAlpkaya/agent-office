@@ -1321,6 +1321,23 @@ func (e *Engine) getPR(ctx context.Context, id int64) (db.PullRequest, error) {
 }
 
 func (e *Engine) prView(ctx context.Context, r db.PullRequest) PullRequest {
+	// The row and its reviews are read in one transaction: a caller's row may
+	// be older than a follow-up's claim, which counts the round in the same
+	// transaction that starts the review's follow-up (seen in Phase 9:
+	// TestGitHubLoop read a started follow-up with rounds 0).
+	var rows []db.Review
+	err := e.st.Tx(ctx, func(q *db.Queries) error {
+		cur, err := q.GetPullRequest(ctx, r.ID)
+		if err != nil {
+			return err
+		}
+		r = cur
+		rows, err = q.ListReviews(ctx, db.ListReviewsParams{PrID: r.ID, Limit: 20})
+		return err
+	})
+	if err != nil {
+		rows = nil
+	}
 	v := PullRequest{ID: r.ID, TaskID: r.TaskID.String, AgentID: r.AgentID, Branch: r.Branch, Base: r.Base,
 		Number: int(r.Number), URL: r.Url, State: r.State, Head: r.Head, Checks: r.Checks, Rounds: int(r.Rounds),
 		Error: r.Error, CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(), FailedChecks: []string{},
@@ -1330,11 +1347,8 @@ func (e *Engine) prView(ctx context.Context, r db.PullRequest) PullRequest {
 	if r.State != PRPending {
 		v.Flagged = []FlaggedCommit{}
 	}
-	rows, err := e.q.ListReviews(ctx, db.ListReviewsParams{PrID: r.ID, Limit: 20})
-	if err == nil {
-		for _, rv := range rows {
-			v.Reviews = append(v.Reviews, reviewView(rv))
-		}
+	for _, rv := range rows {
+		v.Reviews = append(v.Reviews, reviewView(rv))
 	}
 	return v
 }
