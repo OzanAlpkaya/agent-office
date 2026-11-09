@@ -124,7 +124,7 @@ for (const [name, device] of phones) {
     test.use(device);
 
     test("board, approvals, agents and a terminal with its key bar", async ({ page }) => {
-      const daemon = new MockDaemon(team(6));
+      const daemon = new MockDaemon(team(8)); // a host agent at a permission prompt, and a network request
       const errors = await open(page, daemon);
       const slug = name.replace(/\s+/g, "-").toLowerCase();
 
@@ -132,7 +132,7 @@ for (const [name, device] of phones) {
       await expect(page.locator(".board")).toBeVisible();
       await noHorizontalScroll(page);
       await page.screenshot({ path: `${screens}/phone-${slug}-board.png` });
-      await page.getByRole("button", { name: "Approvals: 1 waiting" }).click();
+      await page.getByRole("button", { name: "Approvals: 2 waiting" }).click();
       const allow = page.getByRole("dialog", { name: "Approvals" }).getByRole("button", { name: "Allow for this agent" });
       await expect(allow).toBeVisible();
       expect((await allow.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);

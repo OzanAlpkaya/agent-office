@@ -1,6 +1,7 @@
 // The office as data: who sits where, in which pose, and what the lead's
 // whiteboard shows. The scene draws this; the HTML nameplates label it. Pure.
 import type { AccessRequest, Agent, Message, Task, TaskStatus } from "../api";
+import { waitingOnUser } from "../waiting";
 import { noteGrid } from "./art";
 import { type Assignment, type Slot, assignDesks } from "./layout";
 import { type Look, type Pose, lookOf, poseOf } from "./pose";
@@ -40,7 +41,8 @@ export function buildOffice(
   // An exited agent leaves: its desk is free for the next agent (ADR 0024).
   const present = agents.filter((a) => a.state !== "exited");
   const assignment = assignDesks(prev, present);
-  const waiting = new Set(accessRequests.filter((r) => r.status === "pending").map((r) => r.agent_id));
+  // The same list as the Approvals badge, so "waiting for you" matches it (ADR 0044).
+  const waiting = new Set(waitingOnUser(present, accessRequests).map((w) => w.agent.id));
   const title = (id?: string): string | undefined => tasks.find((t) => t.id === id)?.title;
   const byId = new Map(present.map((a) => [a.id, a]));
 

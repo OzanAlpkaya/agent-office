@@ -140,7 +140,9 @@ export function team(n = 10): World {
     id: 1, agent_id: "b8c9d0000007", kind: "domain", value: "pkg.go.dev", reason: "read the docs of a module",
     status: "pending", created_at: iso(9),
   }];
-  return { agents: agents.slice(0, n), tasks, accessRequests, messages: [] };
+  // The daemon expires an agent's requests when it exits, so a request always has its agent.
+  const listed = new Set(agents.slice(0, n).map((a) => a.id));
+  return { agents: agents.slice(0, n), tasks, accessRequests: accessRequests.filter((r) => listed.has(r.agent_id)), messages: [] };
 }
 
 export const status: Status = {

@@ -313,6 +313,8 @@ kbd { font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem; padding: 
 .drawer-body { flex: 1; overflow-y: auto; padding: 0.75rem 1rem; }
 .approvals li { padding: 0.6rem; border: 1px solid var(--border); border-radius: 8px; background: #1d1828; }
 .approvals-empty { margin: 0; }
+.waiting-item { display: flex; flex-direction: column; gap: 0.25rem; padding-top: 0.4rem; border-top: 1px dashed var(--border); }
+.waiting-item.permission > div:first-child { color: #ffb454; }
 .approvals-button.has-pending { color: #c49bff; border-color: #c49bff; font-weight: 600; animation: approvals-pulse 2s ease-in-out 3; }
 .approvals-button.has-pending .count { background: #c49bff; color: #0b1020; }
 @keyframes approvals-pulse { 50% { box-shadow: 0 0 0 4px rgba(196, 155, 255, 0.35); } }

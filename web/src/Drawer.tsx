@@ -1,7 +1,7 @@
 // Drawer is a panel over the page's right edge (a bottom sheet on a phone).
 // It lies over the content, so opening it or changing what it holds never
 // moves the page (ADR 0044). Escape or the backdrop closes it.
-import { type JSX, type ReactNode, useEffect, useRef } from "react";
+import { type JSX, type ReactNode, useLayoutEffect, useRef } from "react";
 
 export function Drawer({ title, label, onClose, children }: {
   title: ReactNode;
@@ -12,7 +12,7 @@ export function Drawer({ title, label, onClose, children }: {
   const panel = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = onClose;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     panel.current?.focus();
     const onKey = (e: KeyboardEvent): void => {

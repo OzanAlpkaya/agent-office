@@ -13,7 +13,7 @@ describe("poseOf", () => {
     ["idle", "reviewer", false, "idle"],
     ["waiting_permission", "worker", false, "waiting"],
     ["waiting_permission", "reviewer", false, "waiting"],
-    // a pending access request waits for the user too, whatever the state
+    // an agent on the waiting list (waiting.ts) waits for the user, whatever the state
     ["working", "worker", true, "waiting"],
     ["idle", "lead", true, "waiting"],
     ["starting", "worker", true, "waiting"],
@@ -21,7 +21,7 @@ describe("poseOf", () => {
     ["exited", "worker", false, "away"],
     ["exited", "worker", true, "away"],
   ];
-  it.each(cases)("%s %s (pending access: %s) is %s", (state, kind, pending, want) => {
+  it.each(cases)("%s %s (waiting on the user: %s) is %s", (state, kind, pending, want) => {
     expect(poseOf({ state, kind }, pending)).toBe(want);
   });
 });

@@ -2,7 +2,7 @@
 // opens it (ADR 0044). Agents that are not exited are grouped by goal; exited
 // agents come last, so they stay reachable. A dialog over the page; a
 // full-screen sheet on a phone.
-import { type JSX, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type JSX, type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Agent, AgentState, Task } from "./api";
 import { searchAgents, shortId } from "./agents";
 
@@ -26,7 +26,8 @@ export function AgentSwitcher({ agents, tasks, current, waiting, onPick, onClose
   const flat = groups.flatMap((g) => g.agents);
   const title = (id?: string): string | undefined => tasks.find((t) => t.id === id)?.title;
 
-  useEffect(() => {
+  // Focus before the first paint, so keys typed right after opening reach the search.
+  useLayoutEffect(() => {
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     input.current?.focus();
     return () => before?.focus({ preventScroll: true });

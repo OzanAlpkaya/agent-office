@@ -1,4 +1,4 @@
-import { type JSX, Suspense, lazy, useEffect, useState } from "react";
+import { type JSX, Suspense, lazy, useEffect, useLayoutEffect, useState } from "react";
 import {
   type AccessRequest, type Agent, type AgentState, ApiError, type ApproveResult, type AuthSession, type ImportInfo, type Kind, type Message,
   type Project, type Role, type RoleInfo, type SandboxEvent, type Spec, type Status, type Task, type TaskStatus, api,
@@ -12,6 +12,7 @@ import { DevicesPanel } from "./Devices";
 import { narrowQuery, useMedia } from "./useMedia";
 import { InboxPanel, MemoryPanel } from "./Team";
 import { unread } from "./workflow";
+import { type Waiting, waitingOnUser } from "./waiting";
 import { TerminalView } from "./TerminalView";
 import { useWorld } from "./useAgents";
 import { type UsageRow, formatMoney, formatTokens, sessionList, totalTokens, usageBy } from "./usage";
@@ -167,8 +168,9 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
     document.querySelector(`.agent-tab button[data-agent="${openId}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [openId, tabs]);
 
-  // "/" opens the agent switcher, except while typing or in a terminal.
-  useEffect(() => {
+  // "/" opens the agent switcher, except while typing or in a terminal. A
+  // layout effect, so the shortcut works from the first painted frame.
+  useLayoutEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || typingTarget(e.target)) return;
       e.preventDefault();
@@ -178,11 +180,14 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // The tab title counts approvals waiting for the user, so they show in other tabs too.
-  const pendingCount = accessRequests.filter((r) => r.status === "pending").length;
+  // Everything waiting on the user, from one list: the badge, the drawer, the
+  // tab title, the cards, the switcher and the Office all count it (ADR 0044).
+  const waiting = waitingOnUser(agents, accessRequests);
+  const waitingCount = waiting.length;
+  // The tab title shows the count, so it is seen from other browser tabs too.
   useEffect(() => {
-    document.title = pendingCount > 0 ? `(${pendingCount}) agent-office` : "agent-office";
-  }, [pendingCount]);
+    document.title = waitingCount > 0 ? `(${waitingCount}) agent-office` : "agent-office";
+  }, [waitingCount]);
 
   // run executes an API call from a click handler and shows its error. It
   // never rejects, so callers can discard the promise with `void`.
@@ -250,9 +255,8 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
       card?.focus({ preventScroll: true });
     }, 0);
   };
-  const pending = accessRequests.filter((r) => r.status === "pending");
   const current = view.kind === "agent" ? agents.find((a) => a.id === view.id) : undefined;
-  const waitingAgents = new Set(pending.map((r) => r.agent_id));
+  const waitingAgents = new Set(waiting.map((w) => w.agent.id));
   const label = (id: string): string => labelOf(agents, id);
   const byId = new Map(agents.map((a) => [a.id, a]));
   const tabAgents = tabs.order.map((id) => byId.get(id)).filter((a): a is Agent => a !== undefined);
@@ -293,10 +297,11 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
             </span>
           )}
           <span className="header-actions">
-            <button className={`badge approvals-button ${pending.length ? "has-pending" : ""}`} aria-expanded={approvalsOpen}
-              aria-label={pending.length ? `Approvals: ${pending.length} waiting` : "Approvals: none waiting"}
-              onClick={() => setApprovalsOpen((v) => !v)} title="Requests from agents waiting for your decision (ADR 0019)">
-              Approvals{pending.length > 0 && <span className="count">{pending.length}</span>}
+            <button className={`badge approvals-button ${waitingCount ? "has-pending" : ""}`} aria-expanded={approvalsOpen}
+              aria-label={waitingCount ? `Approvals: ${waitingCount} waiting` : "Approvals: none waiting"}
+              onClick={() => setApprovalsOpen((v) => !v)}
+              title="Agents waiting on you: access requests and permission prompts (ADR 0019, 0044)">
+              Approvals{waitingCount > 0 && <span className="count">{waitingCount}</span>}
             </button>
             <button className={`badge inbox-button ${unreadCount ? "has-unread" : ""}`} aria-expanded={panel === "inbox"}
               onClick={() => togglePanel("inbox")} title="Messages to you from the team (ADR 0030)">
@@ -348,8 +353,8 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
         {status?.warnings.map((w) => <div key={w} className="banner warn">{w}</div>)}
         {approvalsOpen && (
           <Drawer label="Approvals" onClose={() => setApprovalsOpen(false)}
-            title={<>Waiting for your approval{pending.length > 0 && <span className="muted"> · {pending.length}</span>}</>}>
-            <Approvals requests={pending} agents={agents} taskTitle={taskTitle} onOpenAgent={(id) => {
+            title={<>Waiting for you{waitingCount > 0 && <span className="muted"> · {waitingCount}</span>}</>}>
+            <Approvals waiting={waiting} taskTitle={taskTitle} onOpenAgent={(id) => {
               setApprovalsOpen(false);
               openAgent(id);
             }}
@@ -377,7 +382,7 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
                   {list.map((a) => (
                     <AgentCard key={a.id} agent={a} taskTitle={taskTitle(a.task_id)} nowMs={nowMs}
                       selected={current?.id === a.id} label={label}
-                      approvals={pending.filter((r) => r.agent_id === a.id).length}
+                      waiting={waiting.find((w) => w.agent.id === a.id)}
                       onApprovals={() => setApprovalsOpen(true)}
                       onSelect={() => openAgent(a.id)}
                       onStop={() => void run(() => api.stopAgent(a.id))}
@@ -524,7 +529,7 @@ interface CardProps {
   nowMs: number;
   selected: boolean;
   label: (id: string) => string; // another agent's name
-  approvals: number; // its access requests waiting for the user
+  waiting?: Waiting; // what of this agent waits on the user
   onApprovals: () => void;
   onSelect: () => void;
   onStop: () => void;
@@ -539,7 +544,7 @@ interface CardProps {
 }
 
 function AgentCard({
-  agent: a, taskTitle, nowMs, selected, label, approvals, onApprovals, onSelect, onStop, onRemove, onDiscard, onImport, onSaveWork,
+  agent: a, taskTitle, nowMs, selected, label, waiting, onApprovals, onSelect, onStop, onRemove, onDiscard, onImport, onSaveWork,
   onResume, events, messages, usage,
 }: CardProps): JSX.Element {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -552,12 +557,13 @@ function AgentCard({
         <AgentName agent={a} />
         <span className={`badge state-${a.state}`}>{stateLabel[a.state]}</span>
       </div>
-      {approvals > 0 && (
+      {waiting && waiting.requests.length > 0 && (
         <button className="approval-link" onClick={(e) => {
           e.stopPropagation();
           onApprovals();
         }}>
-          {approvals === 1 ? "1 request waits for your approval" : `${approvals} requests wait for your approval`}
+          {waiting.requests.length === 1 ? "1 request waits for your approval"
+            : `${waiting.requests.length} requests wait for your approval`}
         </button>
       )}
       <div className="row">
@@ -681,45 +687,63 @@ function EventList({ events }: { events: SandboxEvent[] }): JSX.Element {
   );
 }
 
-// Approvals is the human approval queue for access requests (ADR 0019).
-// Nothing is granted until a button here is pressed; the reason is the
-// agent's own text.
-function Approvals({ requests, agents, taskTitle, onOpenAgent, onApprove, onDeny }: {
-  requests: AccessRequest[];
-  agents: Agent[];
+// Approvals lists every agent waiting on the user (ADR 0019, 0044). Access
+// requests are decided here: nothing is granted until a button is pressed,
+// and the reason is the agent's own text. A permission prompt can only be
+// answered in the agent's terminal, so its entry leads there.
+function Approvals({ waiting, taskTitle, onOpenAgent, onApprove, onDeny }: {
+  waiting: Waiting[];
   taskTitle: (id?: string) => string | undefined;
   onOpenAgent: (id: string) => void;
   onApprove: (r: AccessRequest) => void;
   onDeny: (r: AccessRequest) => void;
 }): JSX.Element {
-  if (requests.length === 0) {
-    return <p className="muted approvals-empty">Nothing is waiting. Agents ask here before using a host outside their allowlist.</p>;
+  if (waiting.length === 0) {
+    return (
+      <p className="muted approvals-empty">
+        Nothing is waiting. Agents ask here before using a host outside their allowlist, and agents on the host show their
+        permission prompts here.
+      </p>
+    );
   }
   return (
     <section className="approvals">
       <ul>
-        {requests.map((r) => {
-          const a = agents.find((x) => x.id === r.agent_id);
-          return (
-            <li key={r.id}>
-              <div>
-                <button className="link agent-link" onClick={() => onOpenAgent(r.agent_id)}>
-                  <AgentName agent={a} id={r.agent_id} />
-                </button>
-                {a && <> ({a.role}{taskTitle(a.task_id) ? `, “${taskTitle(a.task_id)}”` : ""})</>} asks for{" "}
-                {r.kind === "domain" ? <>network access to <span className="mono strong">{r.value}</span></> : `${r.kind} ${r.value}`}
+        {waiting.map(({ agent: a, requests, permission }) => (
+          <li key={a.id} className="waiting-entry" data-agent={a.id}>
+            <div>
+              <button className="link agent-link" onClick={() => onOpenAgent(a.id)}><AgentName agent={a} /></button>
+              {" "}({a.role}{taskTitle(a.task_id) ? `, “${taskTitle(a.task_id)}”` : ""})
+            </div>
+            {permission && (
+              <div className="waiting-item permission">
+                <div>Waits for you to answer a permission prompt in its terminal.</div>
+                <div className="row">
+                  <button onClick={() => onOpenAgent(a.id)} title="Open its terminal; the prompt is answered there">
+                    Go to terminal
+                  </button>
+                  <span className="small muted">Runs on the host with permission prompts on</span>
+                </div>
               </div>
-              <div className="small muted">Agent&apos;s reason: <span className="quote">{r.reason}</span></div>
-              <div className="row">
-                <button onClick={() => onApprove(r)} title="Adds the host to this agent's allowlist until it exits">
-                  Allow for this agent
-                </button>
-                <button className="danger" onClick={() => onDeny(r)}>Deny</button>
-                <span className="small muted">Requested {timeOf(r.created_at)} · applies to this agent only</span>
+            )}
+            {requests.map((r) => (
+              <div key={r.id} className="waiting-item request">
+                <div>
+                  Asks for{" "}
+                  {r.kind === "domain" ? <>network access to <span className="mono strong">{r.value}</span></> : `${r.kind} ${r.value}`}
+                </div>
+                <div className="small muted">Agent&apos;s reason: <span className="quote">{r.reason}</span></div>
+                <div className="row">
+                  <button onClick={() => onApprove(r)} title="Adds the host to this agent's allowlist until it exits">
+                    Allow for this agent
+                  </button>
+                  <button className="danger" onClick={() => onDeny(r)}>Deny</button>
+                  <span className="small muted">Requested {timeOf(r.created_at)} · applies to this agent only</span>
+                </div>
               </div>
-            </li>
-          );
-        })}
+            ))}
+          </li>
+        ))}
       </ul>
     </section>
   );
