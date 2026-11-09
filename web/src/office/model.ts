@@ -26,6 +26,8 @@ export interface OfficeModel {
   seats: Seat[]; // one per agent that has not exited
   exited: number; // agents that left the office; they stay in the agent list
   goal?: { title: string; notes: Note[] }; // the lead's goal and its sub-tasks
+  gone: string[]; // agents that exited, still listed by the daemon
+  taskStatus: Record<string, TaskStatus | undefined>; // every agent's task status, for errands (ADR 0045)
 }
 
 // The whiteboard has room for this many notes, as many as the sub-tasks a
@@ -67,7 +69,10 @@ export function buildOffice(
       .map((t) => ({ id: t.id, title: t.title, status: t.status }));
     goal = { title: goalTask.title, notes };
   }
-  return { assignment, desks: assignment.desks.length, seats, goal, exited: agents.length - present.length };
+  const taskStatus: Record<string, TaskStatus | undefined> = {};
+  for (const a of agents) taskStatus[a.id] = tasks.find((t) => t.id === a.task_id)?.status;
+  const gone = agents.filter((a) => a.state === "exited").map((a) => a.id);
+  return { assignment, desks: assignment.desks.length, seats, goal, exited: gone.length, gone, taskStatus };
 }
 
 // freshMessages returns the messages not seen before that were created at or

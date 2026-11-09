@@ -134,6 +134,8 @@ button.badge.pack { background: none; color: #ffd580; cursor: pointer; font: inh
 .nameplate-text { display: flex; flex-direction: column; min-width: 0; }
 .nameplate-task { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .whiteboard-label { position: absolute; }
+/* Phase 13: room names over the floor plan (ADR 0045) */
+.room-label { position: absolute; padding: 0 0.3rem; font-size: 0.62rem; line-height: 1.3; letter-spacing: 0.02em; color: #c8cede; background: rgba(15, 17, 21, 0.7); border-radius: 3px; white-space: nowrap; pointer-events: auto; user-select: none; }
 .pose-typing { color: #6aa3ff; }
 .pose-reviewing { color: #5fd3c7; }
 .pose-waiting { color: #ffb454; }

@@ -1,7 +1,7 @@
 // Desk assignment and office geometry (ADR 0024). Pure: the scene and the
 // HTML nameplates both place things from these numbers, in world pixels.
 import type { Agent } from "../api";
-import { wallHeight, whiteboardSize } from "./art";
+import { type FloorPlan, type Point, cell, floorPlan, margin } from "./floor";
 
 // Assignment says who sits where. desks[i] is the agent at regular desk i.
 export interface Assignment {
@@ -48,13 +48,16 @@ export function assignDesks(prev: Assignment, agents: readonly Agent[]): Assignm
 }
 
 // ---------------------------------------------------------------- geometry
+// The floor plan (floor.ts, ADR 0045) holds the rooms; this part picks the
+// grid of desks and the scale.
+
+export { cell } from "./floor";
 
 export const minRows = 2;
-export const cell = { w: 64, h: 52 } as const;
-export const world = { margin: 16, leadRowY: wallHeight, leadRowH: 58, bottom: 10 } as const;
 
 // Columns of regular desks the office may use; the one that shows the office
-// largest in the pane wins (ties go to the one closest to four).
+// largest in the pane wins (ties go to the one closest to four). Three
+// columns stack the rooms, which suits a phone.
 export const columnChoices = [3, 4, 5, 6] as const;
 const preferredColumns = 4;
 // Largest drawing scale, in CSS pixels per world pixel.
@@ -69,11 +72,13 @@ export function gridFor(desks: number, columns: number): Grid {
   return { columns, rows: Math.max(minRows, Math.ceil(desks / columns)) };
 }
 
+export function planOf(g: Grid): FloorPlan {
+  return floorPlan(g.columns, g.rows);
+}
+
 export function worldSize(g: Grid): { w: number; h: number } {
-  return {
-    w: g.columns * cell.w + 2 * world.margin,
-    h: world.leadRowY + world.leadRowH + g.rows * cell.h + world.bottom,
-  };
+  const p = planOf(g);
+  return { w: p.w, h: p.h };
 }
 
 // fitGrid picks the columns and the whole number k of device pixels per world
@@ -108,17 +113,18 @@ export function fitGrid(w: number, h: number, dpr: number, desks: number): { gri
 export type Slot = { kind: "lead" } | { kind: "desk"; index: number };
 
 // slotOrigin is the top-left corner of a slot's cell.
-export function slotOrigin(slot: Slot, g: Grid): { x: number; y: number } {
-  if (slot.kind === "lead") return { x: (worldSize(g).w - cell.w) / 2, y: world.leadRowY + 4 };
-  return {
-    x: world.margin + (slot.index % g.columns) * cell.w,
-    y: world.leadRowY + world.leadRowH + Math.floor(slot.index / g.columns) * cell.h,
+export function slotOrigin(slot: Slot, g: Grid): Point {
+  const p = planOf(g);
+  if (slot.kind === "lead") return p.lead;
+  return p.desks[slot.index] ?? {
+    x: margin + (slot.index % g.columns) * cell.w,
+    y: p.desks[0].y + Math.floor(slot.index / g.columns) * cell.h,
   };
 }
 
 // The lead's whiteboard hangs on the wall above the lead desk.
-export function whiteboardAt(g: Grid): { x: number; y: number } {
-  return { x: (worldSize(g).w - whiteboardSize.w) / 2, y: 6 };
+export function whiteboardAt(g: Grid): Point {
+  return planOf(g).whiteboard;
 }
 
 // Positions inside a cell.
