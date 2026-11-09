@@ -190,8 +190,6 @@ Opt-in suites run real rootless Podman (`make sandbox-test`), Playwright against
   Single user, one goal at a time, pre-1.0.
 - **Stack:** Go (`net/http`, `coder/websocket`, `creack/pty`, MCP Go SDK, SQLite via modernc + sqlc,
   go-github, `log/slog`); React, Vite, TypeScript, xterm.js and PixiJS for the UI.
-- **Inspiration:** ideas from [jsm-hq](https://github.com/jsmastery-pro/jsm-hq) and
-  [AgentSpace](https://muratify.com). No code, names or assets are reused.
 
 ## License
 
