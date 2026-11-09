@@ -272,3 +272,15 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   (goal reported after 50 s instead of 107, under two cents), README, screenshots and the review
   page updated. The README's inspiration line is removed, and the originality rule in `CLAUDE.md` no
   longer names other projects (only: do not copy code, names or assets from other projects).
+- 2026-11-09: Phase 13, Ozan's second review: rooms for every role. A planning room (the
+  architect's drafting table), a QA lab (test bench), a lobby (front door, the assistant at
+  reception) and the user's office, whose door has a queue of the agents waiting on the user, as
+  many as the Approvals count, with a sign counting the same list; the architect brings its plan.
+  The list behind the badge now includes unanswered questions and plans waiting for approval (ADR
+  0044 amended); roles from role packs wear a shirt of their own colour (ADR 0045 amended). Two
+  bands of rooms on a desktop, three on a phone. An independent review led to 4 fixes (the office
+  redrew on every page render, an idle station agent kept it drawing, the queue order, plans of
+  several goals). `make check` (274 Vitest tests) and `make ui-test` (66) pass; office screenshots
+  refreshed. Not done: re-recording the GIF. `/etc/resolv.conf` on this machine became empty at
+  09:14, so the static daemon (Go's own resolver) cannot resolve `api.anthropic.com` and the team
+  never starts; two attempts timed out. Needs a fix with sudo, then `make demo`.

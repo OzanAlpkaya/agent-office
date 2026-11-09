@@ -204,3 +204,8 @@ None.
   questions and plans waiting for approval (ADR 0044 amended, ADR 0045 amended). Two bands of rooms
   on a desktop (the office draws at 2 CSS pixels per world pixel there instead of 3), three on a
   phone. The originality rule in `CLAUDE.md` no longer names other projects.
+- **GIF not re-recorded yet.** The rooms change what the GIF shows, so it needs a new recording,
+  but `/etc/resolv.conf` on the development machine became empty during the phase: the static
+  daemon's resolver then asks `localhost:53`, where nothing listens, and the agents' API calls fail.
+  A cgo build would use the system resolver, but the same binary is mounted into the workers'
+  Debian image, which must get a static one. Waiting for the resolver fix (sudo).
