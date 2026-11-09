@@ -42,6 +42,7 @@ interface Memo {
   status?: TaskStatus;
   phase: number;
   idleSince?: number;
+  waitingSince?: number; // when it joined the queue at the user's door
   reportUntil?: number;
   reportAt?: number; // when the report came in, to queue reporters fairly
   place: Place;
@@ -78,6 +79,8 @@ export class Director {
       m.phase = a.phase;
       if (m.pose === "idle") m.idleSince ??= now;
       else m.idleSince = undefined;
+      if (m.pose === "waiting") m.waitingSince ??= now;
+      else m.waitingSince = undefined;
     }
     for (const id of this.memo.keys()) if (!seen.has(id)) this.memo.delete(id);
   }
@@ -94,11 +97,13 @@ export class Director {
     }
     // Spots: whoever holds one keeps it; the others queue by when they asked, then id.
     const out = new Map<string, Errand>();
-    const taken: Record<Spot, Set<number>> = { whiteboard: new Set(), coffee: new Set(), review: new Set() };
+    const taken: Record<Spot, Set<number>> = { whiteboard: new Set(), coffee: new Set(), review: new Set(), queue: new Set() };
     const waiting: [string, Memo, Spot][] = [];
     for (const [id, place] of want) {
       const m = this.memo.get(id) as Memo;
-      if (place === "desk") {
+      if (place === "queue") {
+        waiting.push([id, m, place]); // a queue moves up: places are handed out afresh
+      } else if (place === "desk") {
         m.place = "desk";
         m.spot = -1;
         out.set(id, atDesk);
@@ -108,7 +113,9 @@ export class Director {
       } else waiting.push([id, m, place]);
     }
     const order = (m: Memo, place: Spot): number =>
-      place === "whiteboard" ? (m.reportAt ?? 0) : place === "coffee" ? (m.idleSince ?? 0) + this.coffeeDelay(m) : 0;
+      place === "whiteboard" ? (m.reportAt ?? 0)
+        : place === "coffee" ? (m.idleSince ?? 0) + this.coffeeDelay(m)
+        : place === "queue" ? (m.waitingSince ?? 0) : 0;
     waiting.sort(([ia, ma, pa], [ib, mb, pb]) => order(ma, pa) - order(mb, pb) || (ia < ib ? -1 : ia > ib ? 1 : 0));
     for (const [id, m, place] of waiting) {
       let spot = -1;
@@ -145,8 +152,9 @@ export class Director {
     if (!m.present) return reporting ? "whiteboard" : undefined;
     switch (m.pose) {
       case "waiting":
+        return "queue"; // the user comes first: to the user's door (ADR 0045)
       case "booting":
-        return "desk"; // the user, or a fresh start, comes first
+        return "desk"; // a fresh start
       default:
     }
     if (reporting) return "whiteboard";

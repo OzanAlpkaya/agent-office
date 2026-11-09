@@ -3,7 +3,7 @@ import type { TaskStatus } from "../api";
 import { type Capacity, Director, type Observed, atDesk, timing } from "./errands";
 import type { Pose } from "./pose";
 
-const cap: Capacity = { whiteboard: 3, coffee: 3, review: 2 };
+const cap: Capacity = { whiteboard: 3, coffee: 3, review: 2, queue: 3 };
 const seat = (id: string, pose: Pose, taskStatus?: TaskStatus, phase = 0): Observed => ({ id, present: true, pose, taskStatus, phase });
 const gone = (id: string, taskStatus?: TaskStatus): Observed => ({ id, present: false, taskStatus, phase: 0 });
 
@@ -12,7 +12,7 @@ const coffeeAt = timing.coffeeAfter; // phase 0
 describe("Director", () => {
   it("keeps everyone at their desk on the first view, and replays nothing", () => {
     const d = new Director();
-    d.observe([seat("a", "typing", "review"), seat("b", "waiting", "done"), seat("c", "booting")], 0);
+    d.observe([seat("a", "typing", "review"), seat("b", "idle", "done"), seat("c", "booting")], 0);
     const e = d.errands(0, cap);
     expect([...e.values()]).toEqual([atDesk, atDesk, atDesk]);
   });
@@ -63,11 +63,11 @@ describe("Director", () => {
     expect(d.errands(1, cap).has("w")).toBe(false);
   });
 
-  it("the user comes first: waiting beats a report, and a fresh start stays at the desk", () => {
+  it("the user comes first: waiting beats a report and goes to the user's door; a fresh start stays at the desk", () => {
     const d = new Director();
     d.observe([seat("w", "typing", "in_progress"), seat("n", "booting", "in_progress")], 0);
     d.observe([seat("w", "waiting", "review"), seat("n", "booting", "review")], 1);
-    expect(d.errands(1, cap).get("w")).toEqual(atDesk);
+    expect(d.errands(1, cap).get("w")).toEqual({ place: "queue", spot: 0 });
     expect(d.errands(1, cap).get("n")).toEqual(atDesk);
     // once the question is answered, the report window still runs
     d.observe([seat("w", "typing", "review"), seat("n", "booting", "review")], 2);
@@ -133,5 +133,28 @@ describe("Director", () => {
     d.observe([seat("a", "typing")], 0);
     d.observe([], 1);
     expect(d.errands(1, cap).size).toBe(0);
+  });
+
+  it("queues agents waiting on the user in the order they started waiting, and the queue moves up", () => {
+    const d = new Director();
+    d.observe([seat("b", "waiting"), seat("a", "typing"), seat("c", "typing")], 0); // already waiting: in the queue at once
+    d.observe([seat("b", "waiting"), seat("a", "waiting"), seat("c", "typing")], 5);
+    d.observe([seat("b", "waiting"), seat("a", "waiting"), seat("c", "waiting")], 6);
+    const e = d.errands(6, cap);
+    expect([e.get("b"), e.get("a"), e.get("c")]).toEqual([
+      { place: "queue", spot: 0 }, { place: "queue", spot: 1 }, { place: "queue", spot: 2 },
+    ]);
+    // b is answered: the others step forward
+    d.observe([seat("b", "typing"), seat("a", "waiting"), seat("c", "waiting")], 7);
+    const f = d.errands(7, cap);
+    expect([f.get("b"), f.get("a"), f.get("c")]).toEqual([atDesk, { place: "queue", spot: 0 }, { place: "queue", spot: 1 }]);
+  });
+
+  it("a queue longer than the line waits at the desk", () => {
+    const d = new Director();
+    d.observe(["a", "b", "c", "d"].map((id) => seat(id, "waiting")), 0);
+    const e = d.errands(0, cap);
+    expect([...e.values()].filter((x) => x.place === "queue")).toHaveLength(3);
+    expect(e.get("d")).toEqual(atDesk);
   });
 });

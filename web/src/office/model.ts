@@ -1,8 +1,9 @@
 // The office as data: who sits where, in which pose, and what the lead's
 // whiteboard shows. The scene draws this; the HTML nameplates label it. Pure.
-import type { AccessRequest, Agent, Message, Task, TaskStatus } from "../api";
-import { waitingOnUser } from "../waiting";
+import type { Agent, Message, Task, TaskStatus } from "../api";
+import type { Waiting } from "../waiting";
 import { noteGrid } from "./art";
+import { stationKinds } from "./floor";
 import { type Assignment, type Slot, assignDesks } from "./layout";
 import { type Look, type Pose, lookOf, poseOf } from "./pose";
 
@@ -27,6 +28,7 @@ export interface OfficeModel {
   exited: number; // agents that left the office; they stay in the agent list
   goal?: { title: string; notes: Note[] }; // the lead's goal and its sub-tasks
   gone: string[]; // agents that exited, still listed by the daemon
+  waiting: number; // agents waiting on the user: the Approvals count, and the queue at the user's door
   taskStatus: Record<string, TaskStatus | undefined>; // every agent's task status, for errands (ADR 0045)
 }
 
@@ -34,17 +36,18 @@ export interface OfficeModel {
 // lead may create (20, ADR 0017).
 export const maxNotes = noteGrid.cols * noteGrid.rows;
 
+// buildOffice takes waiting from waitingOnUser, the list the Approvals badge
+// counts, so "waiting for you" and the queue at the user's door match it (ADR 0044).
 export function buildOffice(
   prev: Assignment,
   agents: readonly Agent[],
   tasks: readonly Task[],
-  accessRequests: readonly AccessRequest[],
+  waitingList: readonly Waiting[],
 ): OfficeModel {
   // An exited agent leaves: its desk is free for the next agent (ADR 0024).
   const present = agents.filter((a) => a.state !== "exited");
   const assignment = assignDesks(prev, present);
-  // The same list as the Approvals badge, so "waiting for you" matches it (ADR 0044).
-  const waiting = new Set(waitingOnUser(present, accessRequests).map((w) => w.agent.id));
+  const waiting = new Set(waitingList.filter((w) => w.agent.state !== "exited").map((w) => w.agent.id));
   const title = (id?: string): string | undefined => tasks.find((t) => t.id === id)?.title;
   const byId = new Map(present.map((a) => [a.id, a]));
 
@@ -54,6 +57,10 @@ export function buildOffice(
   const seats: Seat[] = [];
   const lead = assignment.lead !== undefined ? byId.get(assignment.lead) : undefined;
   if (lead) seats.push(seat({ kind: "lead" }, lead));
+  for (const k of stationKinds) {
+    const a = assignment[k] !== undefined ? byId.get(assignment[k] as string) : undefined;
+    if (a) seats.push(seat({ kind: "station", station: k }, a));
+  }
   assignment.desks.forEach((id, index) => {
     const a = id !== undefined ? byId.get(id) : undefined;
     if (a) seats.push(seat({ kind: "desk", index }, a));
@@ -72,7 +79,7 @@ export function buildOffice(
   const taskStatus: Record<string, TaskStatus | undefined> = {};
   for (const a of agents) taskStatus[a.id] = tasks.find((t) => t.id === a.task_id)?.status;
   const gone = agents.filter((a) => a.state === "exited").map((a) => a.id);
-  return { assignment, desks: assignment.desks.length, seats, goal, exited: gone.length, gone, taskStatus };
+  return { assignment, desks: assignment.desks.length, seats, goal, exited: gone.length, gone, taskStatus, waiting: waiting.size };
 }
 
 // freshMessages returns the messages not seen before that were created at or

@@ -179,3 +179,28 @@ test("project memory proposals wait for the user", async ({ page }) => {
   await expect.poll(() => daemon.requests).toContain("POST /api/assistant/briefing");
   expect(errors.filter((e) => !e.includes("404"))).toEqual([]);
 });
+
+test("a question and a plan waiting for you are in Approvals, and the architect queues at your door with its plan", async ({ page }) => {
+  const daemon = new MockDaemon(workflow());
+  const errors = await open(page, daemon);
+  // one agent, the architect, waits on two things: its question and its plan (ADR 0044)
+  const badge = page.getByRole("button", { name: /^Approvals/ });
+  await expect(badge).toHaveAttribute("aria-label", "Approvals: 1 waiting");
+  await expect(page).toHaveTitle("(1) agent-office");
+  await badge.click();
+  const drawer = page.getByRole("dialog", { name: "Approvals" });
+  const entry = drawer.locator('.waiting-entry[data-agent="a7c4e1000001"]');
+  await expect(entry).toContainText("Asks you: Should tags be case-insensitive?");
+  await expect(entry).toContainText("Its plan for “Add tags to saved links” waits for your approval (version 2).");
+  await page.screenshot({ path: `${screens}/approvals-question-plan.png` });
+  await entry.getByRole("button", { name: "Answer in the inbox" }).click();
+  await expect(page.getByRole("region", { name: "Inbox" })).toContainText("Should tags be case-insensitive?");
+  await badge.click();
+  await page.getByRole("dialog", { name: "Approvals" }).getByRole("button", { name: "Review plan" }).click();
+  await expect(card(page, "Add tags to saved links").locator("details.plan")).toHaveAttribute("open", "");
+  // the Office: the architect stands in the queue at the user's door
+  await page.getByRole("button", { name: "Office", exact: true }).click();
+  await expect(page.locator('.nameplate[data-agent="a7c4e1000001"]')).toHaveAttribute("data-place", "queue");
+  await expect(page.locator(".queue-sign")).toHaveAttribute("data-waiting", "1");
+  expect(errors).toEqual([]);
+});

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AccessRequest } from "../api";
+import { waitingOnUser } from "../waiting";
 import { emptyAssignment } from "./layout";
 import { buildOffice, freshMessages, maxNotes } from "./model";
 import { agent, message, task } from "./testutil";
@@ -52,9 +53,25 @@ describe("buildOffice", () => {
     expect(gone.goal).toBeUndefined();
   });
 
-  it("shows a pending access request as waiting", () => {
-    const m = buildOffice(emptyAssignment, [agent("a"), agent("b")], [], [pending("a"), pending("b", "denied")]);
+  it("shows an agent on the waiting list as waiting, and counts the list", () => {
+    const agents = [agent("a"), agent("b")];
+    const m = buildOffice(emptyAssignment, agents, [], waitingOnUser(agents, [pending("a"), pending("b", "denied")]));
     expect(m.seats.map((s) => s.pose)).toEqual(["waiting", "typing"]);
+    expect(m.waiting).toBe(1);
+  });
+
+  it("seats the architect, QA and the assistant at their stations, other roles at desks", () => {
+    const m = buildOffice(emptyAssignment, [
+      agent("arch", { kind: "architect", role: "architect" }), agent("qa", { kind: "qa", role: "qa" }),
+      agent("asst", { kind: "assistant", role: "assistant" }), agent("docs", { role: "docs" }), agent("rev", { kind: "reviewer", role: "reviewer" }),
+    ], [], []);
+    const slot = (id: string) => m.seats.find((s) => s.agent.id === id)?.slot;
+    expect(slot("arch")).toEqual({ kind: "station", station: "architect" });
+    expect(slot("qa")).toEqual({ kind: "station", station: "qa" });
+    expect(slot("asst")).toEqual({ kind: "station", station: "assistant" });
+    expect(slot("docs")?.kind).toBe("desk");
+    expect(slot("rev")?.kind).toBe("desk");
+    expect(m.desks).toBe(2);
   });
 
   it("puts the lead's sub-tasks on the whiteboard in creation order", () => {

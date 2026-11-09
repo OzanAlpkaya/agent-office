@@ -255,7 +255,7 @@ test("clicks hit the right agent after a resize and a new row of desks", async (
   const daemon = new MockDaemon(team(10));
   await openOffice(page, daemon);
   const scaleBefore = await page.locator(".office").getAttribute("data-scale");
-  await page.setViewportSize({ width: 1100, height: 760 });
+  await page.setViewportSize({ width: 1920, height: 1200 });
   await expect(page.locator(".office")).not.toHaveAttribute("data-scale", scaleBefore ?? "");
   for (let i = 0; i < 9; i++) {
     daemon.addAgent(agent(`f1${String(i).padStart(10, "0")}`, "worker", "working", { started_at: new Date(Date.now() + i).toISOString() }));
@@ -324,7 +324,7 @@ test("the office has rooms with a purpose", async ({ page }) => {
   await openOffice(page, daemon);
   await expect(page.locator(".office")).toHaveAttribute("data-plan", "wide");
   const labels = page.locator(".room-label");
-  await expect(labels).toHaveText(["Tech Lead", "Review room", "Kitchen", "Workroom"]);
+  await expect(labels).toHaveText(["Planning", "Tech Lead", "Your office", "QA lab", "Review room", "Kitchen", "Lobby", "Workroom"]);
   for (const l of await labels.all()) await expect(l).toHaveAttribute("title", /\w+/);
   // the labels sit inside the drawn office
   const canvas = await page.locator(".office canvas").boundingBox();
@@ -390,17 +390,82 @@ test("an idle agent takes one coffee and comes back", async ({ page }) => {
   expect(errorsOf(page)).toEqual([]);
 });
 
-test("the user comes first: an agent that needs the user goes straight back to its desk", async ({ page }) => {
+test("agents waiting on you queue at your door, as many as the Approvals count", async ({ page }) => {
   const daemon = new MockDaemon(team(10));
   await openOffice(page, daemon);
+  const badge = page.getByRole("button", { name: /^Approvals/ });
+  const sign = page.locator(".queue-sign");
+  // a permission prompt and an access request: two agents, in the queue from the start
+  await expect(badge).toHaveAttribute("aria-label", "Approvals: 2 waiting");
+  await expect(sign).toHaveAttribute("data-waiting", "2");
+  await expect(sign).toHaveText("2 waiting");
+  await expect(page.locator('.nameplate[data-place="queue"]')).toHaveCount(2);
+  await expect(plate(page, "d4e5f6000003")).toHaveAttribute("title", /Waiting at your door/);
+  // the reviewer hits a permission prompt: it walks from the review room to the queue
   const priya = plate(page, "e5f6a7000004");
   await expect(priya).toHaveAttribute("data-place", "review");
   daemon.updateAgent("e5f6a7000004", { state: "waiting_permission" });
   await expect(priya).toHaveAttribute("data-place", "walking");
-  await expect(priya).toHaveAttribute("data-place", "desk", { timeout: 8000 });
-  await expect(priya).toHaveAttribute("data-pose", "waiting");
+  await expect(priya).toHaveAttribute("data-place", "queue", { timeout: 8000 });
+  await expect(badge).toHaveAttribute("aria-label", "Approvals: 3 waiting");
+  await expect(sign).toHaveAttribute("data-waiting", "3");
+  await expect(page.locator('.nameplate[data-place="queue"]')).toHaveCount(3);
+  await page.screenshot({ path: `${screens}/office-queue.png` });
+  // answered: it goes back to work, and the queue moves up
+  daemon.updateAgent("e5f6a7000004", { state: "working" });
+  await expect(sign).toHaveAttribute("data-waiting", "2");
+  await expect(priya).toHaveAttribute("data-place", "review", { timeout: 10_000 });
+  await expect(page.locator('.nameplate[data-place="queue"]')).toHaveCount(2);
   expect(errorsOf(page)).toEqual([]);
 });
+
+// officeTeam is team(10) with the roles that have rooms of their own (ADR 0045)
+// and two roles from role packs.
+function officeTeam(): ReturnType<typeof team> {
+  const w = team(10);
+  w.agents.push(
+    agent("a9c4e1000010", "architect", "working", { name: "Ines", task_id: "g00000000001", activity: "Read" }),
+    agent("b9a000000011", "qa", "working", { name: "Tomas", task_id: "g00000000001", activity: "Bash" }),
+    agent("c9a551000012", "assistant", "idle", { name: "Rosa" }),
+    agent("d9d0c5000013", "worker", "working", { name: "Leila", role: "docs", task_id: "t00000000005" }),
+    agent("e95ec0000014", "worker", "working", { name: "Marco", role: "security", task_id: "t00000000006" }),
+  );
+  return w;
+}
+
+test("the architect, QA and the assistant work at their own stations", async ({ page }) => {
+  const daemon = new MockDaemon(officeTeam());
+  await openOffice(page, daemon);
+  for (const id of ["a9c4e1000010", "b9a000000011", "c9a551000012"]) {
+    await expect(plate(page, id)).toHaveAttribute("data-place", "desk");
+    // a station's agent is drawn behind its furniture, and opens on a click
+    await figurePoint(page, id);
+  }
+  expect((await frameStats(page, 0)).trips).toBe(0);
+  const { x, y } = await figurePoint(page, "a9c4e1000010");
+  await page.mouse.click(x, y);
+  await expect(page.locator(".terminal-wrap")).toContainText("mock terminal of a9c4e1000010");
+  expect(errorsOf(page)).toEqual([]);
+});
+
+test("roles from role packs sit in the workroom in a shirt of their own", async ({ page }) => {
+  const daemon = new MockDaemon(officeTeam());
+  await openOffice(page, daemon);
+  const worker = await plate(page, "b2c3d4000001").getAttribute("data-shirt");
+  const docs = await plate(page, "d9d0c5000013").getAttribute("data-shirt");
+  const security = await plate(page, "e95ec0000014").getAttribute("data-shirt");
+  expect(new Set([worker, docs, security]).size).toBe(3);
+  await expect(plate(page, "d9d0c5000013")).toContainText("Leila docs");
+  await expect(plate(page, "e95ec0000014")).toContainText("Marco security");
+  // the role name has the shirt's colour
+  await expect(plate(page, "d9d0c5000013").locator(".nameplate-role")).toHaveCSS("color", hexToRgb(docs ?? ""));
+  expect(errorsOf(page)).toEqual([]);
+});
+
+const hexToRgb = (h: string): string => {
+  const n = parseInt(h.slice(1), 16);
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+};
 
 test("a new agent walks in through the front door to its desk", async ({ page }) => {
   const daemon = new MockDaemon(team(10));
@@ -526,7 +591,7 @@ test.describe("on a phone", () => {
     const daemon = new MockDaemon(team(10));
     await openOffice(page, daemon);
     await expect(page.locator(".office")).toHaveAttribute("data-plan", "stacked");
-    await expect(page.locator(".room-label")).toHaveCount(4);
+    await expect(page.locator(".room-label")).toHaveCount(8);
     const scale = Number(await page.locator(".office").getAttribute("data-scale"));
     expect(scale).toBeGreaterThanOrEqual(1.5);
     const boxes = await page.locator(".nameplate").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON() as DOMRect));
@@ -550,7 +615,14 @@ test.describe("on a phone", () => {
 
 test("showcase: a moment in the office, for the README", async ({ page }) => {
   test.setTimeout(60_000);
-  const daemon = new MockDaemon(team(10));
+  const world = officeTeam();
+  // the architect's plan waits for approval: it takes the plan to the user's door
+  world.agents = world.agents.map((a) => (a.id === "a9c4e1000010" ? { ...a, state: "idle" as const } : a));
+  world.specs = [{
+    id: 1, goal_id: "g00000000001", version: 1, status: "proposed", author: "a9c4e1000010", markdown: "", created_at: new Date().toISOString(),
+    plan: { summary: "Tags", design: "", sub_tasks: [] },
+  }];
+  const daemon = new MockDaemon(world);
   await openOffice(page, daemon);
   // Idle agents go for their coffee; then a worker reports while they are at the counter.
   await expect(plate(page, "f6a7b8000005")).toHaveAttribute("data-place", "coffee", { timeout: 15_000 });

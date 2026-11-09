@@ -657,3 +657,117 @@ export const counter = pixelMap([
   "kqqqqqqqqqqqqqqqqqqqqqqqqqqk",
   "kkkkkkkkkkkkkkkkkkkkkkkkkkkk",
 ]);
+
+// ---------------------------------------------------------------- more rooms (ADR 0045, review)
+
+// Blueprint colours: paper, lines, and a darker edge.
+export const blueprintPalette: Palette = { ...basePalette, B: 0x2f5fa8, b: 0x9cc4f2, N: 0x1f3f75 };
+
+// The architect's drafting table: a tilted board with a blueprint, on two legs.
+export const draftingSize = { w: 44, h: 22 } as const;
+export const draftingTable = grid(draftingSize.w, draftingSize.h, (x, y) => {
+  const { w } = draftingSize;
+  if (y <= 11) {
+    // the tilted board: wider at the front
+    const inset = Math.max(0, 3 - Math.floor(y / 3));
+    if (x < inset || x >= w - inset) return ".";
+    if (y === 0 || x === inset || x === w - inset - 1) return "q";
+    if (y === 11) return "q";
+    // the blueprint on it
+    if (x > inset + 2 && x < w - inset - 3 && y >= 2 && y <= 9) {
+      if (y === 2 || y === 9 || x === inset + 3 || x === w - inset - 4) return "N";
+      if ((y === 4 && x > 10 && x < 30) || (x === 18 && y > 4 && y < 9) || (y === 7 && x > 22 && x < 34)) return "b";
+      return "B";
+    }
+    return y === 10 ? "E" : "d";
+  }
+  if (y === 12) return x < 4 || x >= w - 4 ? "." : "q";
+  if (x === 8 || x === 9 || x === w - 10 || x === w - 9) return "n"; // legs
+  if (y === 16 && x > 8 && x < w - 9) return "n"; // footrest
+  return ".";
+});
+
+// Blueprints pinned to the planning room's wall.
+export const wallBlueprint = grid(26, 18, (x, y) => {
+  if (x === 0 || y === 0 || x === 25 || y === 17) return "N";
+  if (y === 1 && (x === 3 || x === 22)) return "r"; // pins
+  if ((y === 5 && x > 3 && x < 20) || (x === 12 && y > 5 && y < 14) || (y === 11 && x > 14 && x < 23)) return "b";
+  if ((x === 4 || x === 20) && y > 5 && y < 14) return "b";
+  return "B";
+});
+
+// QA's test bench: a grey bench (the table shape in metal) and a test rig on it.
+export const bench = (w: number): PixelMap => table(w);
+export const benchPalette: Palette = { ...basePalette, d: 0x9aa3b5, E: 0x7d8496, D: 0x5d6475, q: 0x2e3340, w: 0xd8e4d0, g: 0x8fd694 };
+export const testRig = pixelMap([
+  ".kkkkkkkkkkkk.",
+  "kffffffffffffk",
+  "kfxppxxrrxppfk",
+  "kfxxxxxxxxxxfk",
+  "kfxppxxppxppfk",
+  "kffffffffffffk",
+  ".kkkkkkkkkkkk.",
+  "...kGGGGGGk...",
+]);
+
+// A board of test results on the lab's wall: passing runs, one red.
+export const testBoard = grid(28, 18, (x, y) => {
+  if (x === 0 || y === 0 || x === 27 || y === 17) return "k";
+  if (x === 1 || y === 1 || x === 26 || y === 16) return "g";
+  if (y >= 4 && y <= 13 && x >= 4 && x <= 23 && (x - 4) % 4 < 3 && (y - 4) % 3 < 2) {
+    return x >= 16 && x <= 18 && y >= 10 && y <= 11 ? "r" : "p";
+  }
+  if (y === 2 && x >= 4 && x <= 14) return "n";
+  return "w";
+});
+
+// The reception counter in the lobby: a raised wooden front and a bell.
+export const receptionHeight = 18;
+export const reception = (w: number): PixelMap =>
+  grid(w, receptionHeight, (x, y) => {
+    const edgeX = x === 0 || x === w - 1;
+    if (y === 0) return edgeX ? "." : "k";
+    if (y <= 3) {
+      if (edgeX) return "k";
+      if (y === 1 && x >= w - 7 && x <= w - 5) return "u"; // the bell
+      return y === 3 ? "G" : "g";
+    }
+    if (y === 4) return "k";
+    if (y === receptionHeight - 1) return "k";
+    if (edgeX) return "k";
+    if (y === 8 && x > 2 && x < w - 3) return "q";
+    return "D";
+  });
+
+// Props for the queue at the user's door: a rolled-up plan and a note.
+export const blueprintRoll = pixelMap([
+  "NNNNNNNN",
+  "NBbBBbBN",
+  "NNNNNNNN",
+]);
+export const note = pixelMap([
+  "kkkk",
+  "kwwk",
+  "kgwk",
+  "kwwk",
+  "kkkk",
+]);
+
+// Shirts for roles the office has no colour for (a user's role pack, e.g.
+// docs or security): a role's colour comes from a hash of its name.
+export const roleShirts: readonly Swatch[] = [
+  { base: 0xd96aa8, shade: 0xb04f88 }, // pink
+  { base: 0xe0c14a, shade: 0xb89c30 }, // yellow
+  { base: 0x7a8c3a, shade: 0x5e6e28 }, // olive
+  { base: 0xa070d0, shade: 0x8050b0 }, // orchid
+  { base: 0xe08a4a, shade: 0xb86a30 }, // orange
+  { base: 0x5ab0d9, shade: 0x3a90b8 }, // sky
+  { base: 0xb0705a, shade: 0x8e5440 }, // clay
+  { base: 0x8a9aa8, shade: 0x6a7a88 }, // slate
+];
+
+// Floors of the new rooms: a blue carpet for planning, light tiles in the lab,
+// a warm rug in the user's office.
+export const planningPalette: Palette = { "0": 0x26375a, "1": 0x2d4068, "2": 0x22314f };
+export const labPalette: Palette = { "0": 0x5b6475, "1": 0x646e80, "2": 0x4a5263 };
+export const userPalette: Palette = { "0": 0x5a2f3a, "1": 0x683844, "2": 0x4e2832 };

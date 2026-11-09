@@ -10,11 +10,11 @@ import { Application, Container, Graphics, Rectangle, Sprite, type Texture, Tili
 import type { Kind, TaskStatus } from "../api";
 import * as art from "./art";
 import { type Capacity, Director, type Errand, type Place } from "./errands";
-import { type FloorKind, type FloorPlan, type Point, deskExit, roomAt } from "./floor";
+import { type FloorKind, type FloorPlan, type Point, type Station, deskExit, roomAt, stationKinds } from "./floor";
 import { type Grid, type Slot, fitGrid, gridFor, inCell, planOf, slotOrigin, worldSize } from "./layout";
 import type { Note, OfficeModel, Seat } from "./model";
 import { along, length, route } from "./paths";
-import type { Look, Pose } from "./pose";
+import { type Look, type Pose, shirtOf } from "./pose";
 import { TextureCache } from "./textures";
 
 export interface Transform {
@@ -81,6 +81,9 @@ const floorTextures: Record<FloorKind, [string, art.PixelMap, art.Palette]> = {
   tile: ["floor-tile", art.tileFloor, art.tilePalette],
   kitchen: ["floor-kitchen", art.tileFloor, art.kitchenPalette],
   wood: ["floor-wood", art.floorTile, art.floorPalette],
+  blue: ["floor-blue", art.carpetTile, art.planningPalette],
+  lab: ["floor-lab", art.tileFloor, art.labPalette],
+  rug: ["floor-rug", art.carpetTile, art.userPalette],
 };
 
 export class OfficeScene {
@@ -272,6 +275,12 @@ export class OfficeScene {
       let c = this.chars.get(s.agent.id);
       if (!c) {
         c = new Character(s.agent.id, s, this.figureLook(s));
+        if (s.slot.kind === "station") {
+          // no desk to sit at: placed at its station by its first errand
+          c.mode = "standing";
+          c.goal = "";
+          c.pos = this.plan.stations[s.slot.station].seat;
+        }
         this.chars.set(c.id, c);
         if (!first && !this.opts.reducedMotion) {
           c.mode = "standing";
@@ -282,7 +291,12 @@ export class OfficeScene {
         }
       } else {
         const moved = c.seat !== undefined && slotKey(c.seat.slot) !== slotKey(s.slot);
-        if (c.seat?.agent.kind !== s.agent.kind) {
+        if (moved && c.mode === "seated" && s.slot.kind === "station" && c.seat) {
+          // from a desk to its station (a role's own place came free)
+          this.standUp(c, slotOrigin(c.seat.slot, this.grid));
+          c.goal = "";
+        }
+        if (c.seat?.agent.kind !== s.agent.kind || c.seat.agent.role !== s.agent.role) {
           c.look = this.figureLook(s);
           c.figure?.setLook(c.look);
         }
@@ -439,6 +453,8 @@ export class OfficeScene {
     this.rooms.addChild(this.notes);
     put(this.rooms, t.get("wall-screen", art.wallScreen, art.wallScreenPalette), p.screen.x, p.screen.y);
     put(this.rooms, t.get("door", art.door, art.basePalette), p.door.x, p.door.y);
+    put(this.rooms, t.get("wall-blueprint", art.wallBlueprint, art.blueprintPalette), p.blueprints.x, p.blueprints.y);
+    put(this.rooms, t.get("test-board", art.testBoard, art.basePalette), p.testBoard.x, p.testBoard.y);
 
     // Furniture, depth-sorted with desks and characters by its front edge.
     const fur = (tex: Texture, x: number, y: number, z: number): void => {
@@ -455,6 +471,26 @@ export class OfficeScene {
     fur(t.get("cooler", art.waterCooler, art.basePalette), p.cooler.x, p.cooler.y, p.cooler.y + art.waterCooler.h);
     const plant = t.get("plant", art.plant, art.basePalette);
     for (const pl of p.plants) fur(plant, pl.x, pl.y, pl.y + art.plant.h);
+    // Stations (ADR 0045): their agents sit behind the furniture, drawn by figures.
+    for (const k of stationKinds) {
+      const st = p.stations[k];
+      const f = st.furniture;
+      fur(chair, st.seat.x - 8, f.y - 12, f.y - 2);
+      if (k === "architect") fur(t.get("drafting", art.draftingTable, art.blueprintPalette), f.x, f.y, f.y + f.h);
+      if (k === "qa") {
+        fur(t.get(`bench-${f.w}`, () => art.bench(f.w), art.benchPalette), f.x, f.y, f.y + f.h);
+        fur(t.get("test-rig", art.testRig, art.basePalette), f.x + f.w - art.testRig.w - 2, f.y - 6, f.y + f.h + 1);
+      }
+      if (k === "assistant") fur(t.get(`reception-${f.w}`, () => art.reception(f.w), art.basePalette), f.x, f.y, f.y + f.h);
+    }
+    // The user's own desk: a chair nobody sits in, a monitor with the prompt.
+    const u = p.userDesk;
+    fur(t.get("chair-user", art.chair, { ...art.basePalette, a: 0x3d5a80, A: 0x2a4060 }), u.x + inCell.chair.x, u.y + inCell.chair.y, u.y + inCell.chair.y + 12);
+    fur(t.get("desk", art.desk, art.basePalette), u.x + inCell.desk.x, u.y + inCell.desk.y, u.y + inCell.desk.y + art.desk.h);
+    fur(t.get("monitor", art.monitor, art.basePalette), u.x + inCell.monitor.x, u.y + inCell.monitor.y, u.y + inCell.desk.y + art.desk.h + 1);
+    fur(t.get("screen-user", () => art.screenPrompt()[0], art.screenPalette),
+      u.x + inCell.monitor.x + art.screenRect.x, u.y + inCell.monitor.y + art.screenRect.y, u.y + inCell.desk.y + art.desk.h + 2);
+    fur(t.get("mug", art.mug, art.basePalette), u.x + inCell.mug.x, u.y + inCell.mug.y, u.y + inCell.desk.y + art.desk.h + 2);
   }
 
   private drawNotes(notes: readonly Note[]): void {
@@ -484,11 +520,13 @@ export class OfficeScene {
 
   private figureLook(s: Seat): FigureLook {
     const l = s.look;
-    const palette = art.personPalette(art.skins[l.skin], art.hairColors[l.hair], art.shirts[s.agent.kind]);
-    const key = `${l.skin}-${l.hair}-${s.agent.kind}`;
+    const palette = art.personPalette(art.skins[l.skin], art.hairColors[l.hair], shirtOf(s.agent));
+    const key = `${l.skin}-${l.hair}-${s.agent.kind}-${s.agent.role}`;
     const t = this.textures;
     return {
       look: l, kind: s.agent.kind, palette,
+      roll: t.get("blueprint-roll", art.blueprintRoll, art.blueprintPalette),
+      note: t.get("note", art.note, art.basePalette),
       front: t.get(`body-${key}`, art.body, palette),
       back: t.get(`back-${key}`, art.bodyBack, palette),
       hair: t.get(`hair-${l.style}-${key}`, art.hair[l.style], palette),
@@ -528,7 +566,9 @@ export class OfficeScene {
   // errands moves everyone whose errand changed; instant places them at once.
   private errands(now: number, instant: boolean): void {
     const p = this.plan;
-    const capacity: Capacity = { whiteboard: p.spots.whiteboard.length, coffee: p.spots.coffee.length, review: p.spots.review.length };
+    const capacity: Capacity = {
+      whiteboard: p.spots.whiteboard.length, coffee: p.spots.coffee.length, review: p.spots.review.length, queue: p.spots.queue.length,
+    };
     const errands = this.director.errands(now, capacity);
     for (const c of [...this.chars.values()]) {
       const e = errands.get(c.id);
@@ -542,6 +582,8 @@ export class OfficeScene {
     const p = this.plan;
     if (goal === "out" || !e) return p.entrance;
     if (e.place === "desk") {
+      const st = stationOf(c);
+      if (st) return p.stations[st].seat;
       const o = c.seat ? slotOrigin(c.seat.slot, this.grid) : p.lead;
       return { x: o.x + deskExit.x, y: o.y + deskExit.y };
     }
@@ -607,6 +649,16 @@ export class OfficeScene {
         this.arrive(c);
         return;
       }
+      const st = stationOf(c);
+      if (st) {
+        // home is a station: sitting behind its furniture, drawn as a figure
+        c.pos = this.plan.stations[st].seat;
+        c.mode = "standing";
+        c.place = "desk";
+        this.ensureFigure(c).root.alpha = 1;
+        this.syncDesks();
+        return;
+      }
       c.mode = "seated";
       c.place = "desk";
       this.dropFigure(c);
@@ -670,7 +722,9 @@ export class OfficeScene {
           this.arrive(c);
         }
       } else if (c.mode === "standing" && c.figure) {
-        changed = c.figure.stand(c.pos, c.place, this.plan, t + c.look.look.phase * 10) || changed;
+        const st = c.place === "desk" ? stationOf(c) : undefined;
+        changed = c.figure.stand(c.pos, c.place, this.plan, t + c.look.look.phase * 10,
+          st ? this.plan.stations[st] : undefined, c.seat?.pose) || changed;
       }
     }
     for (let i = this.envelopes.length - 1; i >= 0; i--) {
@@ -704,13 +758,18 @@ const envelopeSeconds = 1.4;
 // tab was in the background).
 const maxEnvelopes = 20;
 
-const slotKey = (s: Slot): string => (s.kind === "lead" ? "lead" : `desk-${s.index}`);
+const slotKey = (s: Slot): string => (s.kind === "lead" ? "lead" : s.kind === "station" ? `station-${s.station}` : `desk-${s.index}`);
+// stationOf is the station a character's home is, if it has one.
+const stationOf = (c: { seat?: Seat }): Station["kind"] | undefined =>
+  c.seat?.slot.kind === "station" ? c.seat.slot.station : undefined;
 const errandKey = (e: Errand): string => (e.place === "desk" ? "desk" : `${e.place}:${e.spot}`);
 
 interface FigureLook {
   look: Look;
   kind: Kind;
   palette: art.Palette;
+  roll: Texture; // the architect's plan, carried to the user's door
+  note: Texture;
   front: Texture;
   back: Texture;
   hair: Texture;
@@ -804,24 +863,39 @@ class Figure {
   }
 
   // stand shows the character at its spot; it returns whether the frame changed.
-  stand(p: Point, place: Place | undefined, plan: FloorPlan, t: number): boolean {
+  // At a station it sits behind the furniture and moves with its pose.
+  stand(p: Point, place: Place | undefined, plan: FloorPlan, t: number, station?: Station, pose?: Pose): boolean {
     let frame: string;
     let moved: boolean;
-    if (place === "review") {
+    const seated = place === "review" || station !== undefined;
+    if (station) {
+      moved = this.placeAt(p.x - art.body.w / 2, station.sitY, station.furniture.y + 1);
+      frame = pose === "typing" ? `type${Math.floor(t * 6) % 2}`
+        : pose === "reviewing" ? `review${Math.floor(t * 1.5) % 2}`
+        : pose === "idle" ? `rest${Math.floor(t * 1.5) % 3}` : "rest0";
+    } else if (place === "review") {
       // seated behind the table, which hides the legs
       moved = this.placeAt(p.x - art.body.w / 2, plan.table.y - 15, plan.table.y + 1);
       frame = `review${Math.floor(t * 1.5) % 2}`;
+    } else if (place === "queue") {
+      // at the user's door, holding what it brings: a plan, or a note
+      moved = this.placeAt(p.x - art.body.w / 2, p.y - art.body.h - art.legs[0].h + 1, p.y);
+      frame = "hold";
     } else {
       moved = this.placeAt(p.x - art.body.w / 2, p.y - art.body.h - art.legs[0].h + 1, p.y);
       frame = place === "coffee" ? (t % 6 > 4.8 ? "sip" : "hold") : place === "whiteboard" ? "point" : "rest0";
     }
     if (frame === this.frameKey) return moved;
     this.frameKey = frame;
-    this.legs.visible = place !== "review";
+    this.legs.visible = !seated;
     this.legs.texture = this.look.legs[0];
     this.body.texture = this.look.front;
-    this.prop.visible = place === "review" || place === "coffee";
-    if (place === "review") {
+    this.prop.visible = place === "review" || place === "coffee" || place === "queue" || (seated && frame.startsWith("review"));
+    if (place === "queue") {
+      const plan = this.look.kind === "architect";
+      this.prop.texture = plan ? this.look.roll : this.look.note;
+      this.prop.position.set(plan ? 5 : 9, 13);
+    } else if (place === "review" || (seated && frame.startsWith("review"))) {
       this.prop.texture = this.look.magnifier;
       this.prop.position.set(-7, frame === "review1" ? 6 : 7);
     } else if (place === "coffee") {
@@ -953,10 +1027,10 @@ class DeskNode {
     this.mug.visible = seat !== undefined;
     this.bubble.visible = false;
     if (!seat) this.setHover(false);
-    if (seat && (prev?.agent.id !== seat.agent.id || prev.agent.kind !== seat.agent.kind)) {
+    if (seat && (prev?.agent.id !== seat.agent.id || prev.agent.kind !== seat.agent.kind || prev.agent.role !== seat.agent.role)) {
       const l = seat.look;
-      const palette = art.personPalette(art.skins[l.skin], art.hairColors[l.hair], art.shirts[seat.agent.kind]);
-      const key = `${l.skin}-${l.hair}-${seat.agent.kind}`;
+      const palette = art.personPalette(art.skins[l.skin], art.hairColors[l.hair], shirtOf(seat.agent));
+      const key = `${l.skin}-${l.hair}-${seat.agent.kind}-${seat.agent.role}`;
       this.bodyTextures = [
         this.textures.get(`body-${key}`, art.body, palette),
         this.textures.get(`blink-${key}`, art.bodyBlink, palette),
