@@ -1,4 +1,4 @@
-import { type JSX, Suspense, lazy, useEffect, useLayoutEffect, useState } from "react";
+import { type JSX, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   type AccessRequest, type Agent, type AgentState, ApiError, type ApproveResult, type AuthSession, type ImportInfo, type Kind, type Message,
   type Project, type Role, type RoleInfo, type SandboxEvent, type Spec, type Status, type Task, type TaskStatus, api,
@@ -185,7 +185,8 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
 
   // Everything waiting on the user, from one list: the badge, the drawer, the
   // tab title, the cards, the switcher and the Office all count it (ADR 0044).
-  const waiting = waitingOnUser(agents, accessRequests);
+  // Memoised: the Office redraws when this list changes, so it must not be new on every render.
+  const waiting = useMemo(() => waitingOnUser(agents, accessRequests, inbox, specs), [agents, accessRequests, inbox, specs]);
   const waitingCount = waiting.length;
   // The tab title shows the count, so it is seen from other browser tabs too.
   useEffect(() => {
@@ -303,7 +304,7 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
             <button className={`badge approvals-button ${waitingCount ? "has-pending" : ""}`} aria-expanded={approvalsOpen}
               aria-label={waitingCount ? `Approvals: ${waitingCount} waiting` : "Approvals: none waiting"}
               onClick={() => setApprovalsOpen((v) => !v)}
-              title="Agents waiting on you: access requests and permission prompts (ADR 0019, 0044)">
+              title="Agents waiting on you: access requests, permission prompts, questions and plans to approve (ADR 0019, 0044)">
               Approvals{waitingCount > 0 && <span className="count">{waitingCount}</span>}
             </button>
             <button className={`badge inbox-button ${unreadCount ? "has-unread" : ""}`} aria-expanded={panel === "inbox"}
@@ -361,6 +362,14 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
               setApprovalsOpen(false);
               openAgent(id);
             }}
+              onOpenInbox={() => {
+                setApprovalsOpen(false);
+                setPanel("inbox");
+              }}
+              onReviewPlan={(goalId) => {
+                setApprovalsOpen(false);
+                reviewPlan(goalId);
+              }}
               onApprove={(r) => void run(() => api.approveAccess(r.id))}
               onDeny={(r) => void run(() => api.denyAccess(r.id))}
             />
@@ -479,7 +488,7 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
             </nav>
             {view.kind === "office" ? (
               <Suspense fallback={<div className="empty">Loading the office…</div>}>
-                <Office agents={agents} tasks={tasks} messages={messages} accessRequests={accessRequests}
+                <Office agents={agents} tasks={tasks} messages={messages} waiting={waiting}
                   onOpenAgent={openAgent} />
               </Suspense>
             ) : view.kind === "usage" ? (
@@ -693,26 +702,29 @@ function EventList({ events }: { events: SandboxEvent[] }): JSX.Element {
 // Approvals lists every agent waiting on the user (ADR 0019, 0044). Access
 // requests are decided here: nothing is granted until a button is pressed,
 // and the reason is the agent's own text. A permission prompt can only be
-// answered in the agent's terminal, so its entry leads there.
-function Approvals({ waiting, taskTitle, onOpenAgent, onApprove, onDeny }: {
+// answered in the agent's terminal, a question in the inbox and a plan on its
+// goal's card, so those entries lead there.
+function Approvals({ waiting, taskTitle, onOpenAgent, onOpenInbox, onReviewPlan, onApprove, onDeny }: {
   waiting: Waiting[];
   taskTitle: (id?: string) => string | undefined;
   onOpenAgent: (id: string) => void;
+  onOpenInbox: () => void;
+  onReviewPlan: (goalId: string) => void;
   onApprove: (r: AccessRequest) => void;
   onDeny: (r: AccessRequest) => void;
 }): JSX.Element {
   if (waiting.length === 0) {
     return (
       <p className="muted approvals-empty">
-        Nothing is waiting. Agents ask here before using a host outside their allowlist, and agents on the host show their
-        permission prompts here.
+        Nothing is waiting. Agents ask here before using a host outside their allowlist, agents on the host show their
+        permission prompts here, and questions and plans waiting for you are listed here too.
       </p>
     );
   }
   return (
     <section className="approvals">
       <ul>
-        {waiting.map(({ agent: a, requests, permission }) => (
+        {waiting.map(({ agent: a, requests, permission, questions, plans }) => (
           <li key={a.id} className="waiting-entry" data-agent={a.id}>
             <div>
               <button className="link agent-link" onClick={() => onOpenAgent(a.id)}><AgentName agent={a} /></button>
@@ -729,6 +741,24 @@ function Approvals({ waiting, taskTitle, onOpenAgent, onApprove, onDeny }: {
                 </div>
               </div>
             )}
+            {questions.map((q) => (
+              <div key={`q${q.id}`} className="waiting-item question">
+                <div>{q.kind === "blocked" ? "Is blocked and asks you:" : "Asks you:"} <span className="quote">{q.body}</span></div>
+                <div className="row">
+                  <button onClick={onOpenInbox} title="Answers go from the inbox to the agent (ADR 0030)">Answer in the inbox</button>
+                  <span className="small muted">Asked {timeOf(q.created_at)}</span>
+                </div>
+              </div>
+            ))}
+            {plans.map((plan) => (
+              <div key={`p${plan.id}`} className="waiting-item plan">
+                <div>Its plan for “{taskTitle(plan.goal_id) ?? plan.goal_id}” waits for your approval (version {plan.version}).</div>
+                <div className="row">
+                  <button onClick={() => onReviewPlan(plan.goal_id)} title="The plan is open on the goal's card">Review plan</button>
+                  <span className="small muted">Proposed {timeOf(plan.created_at)}</span>
+                </div>
+              </div>
+            ))}
             {requests.map((r) => (
               <div key={r.id} className="waiting-item request">
                 <div>

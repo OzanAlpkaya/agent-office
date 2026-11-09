@@ -475,23 +475,46 @@ and every agent reaches the user or the agent above it.
 
 ## Phase 13: Office v2
 
-Design backlog from Ozan (2026-11-08); a late phase, or part of Phase 11.
+Design backlog from Ozan (2026-11-08); the last planned phase.
 
 **Goal:** The office tells more of the story: characters move between places that mean
 something, in an office with rooms.
 
-**Scope**
-- Characters walk instead of only sitting at desks: to the lead's whiteboard to report
-  (`report_done`), to a coffee machine when idle, to the review room when reviewing.
-- Separate rooms: a lead's room, a review/meeting room and a workroom; desks still stay assigned
-  (ADR 0024).
-- Keep the Phase 7 performance budget: walking means continuous animation, so render on demand
-  stays the rule (frames only while someone moves), with a measured budget for a busy office;
-  `prefers-reduced-motion` moves characters without walking.
+**Scope** (see ADR 0045 and `docs/plans/phase-13.md`)
+- A floor plan with the Tech Lead's room (whiteboard), a planning room (the architect's drafting
+  table), a review room (table, wall screen), a QA lab (test bench), a kitchen (coffee machine), a
+  lobby (front door, the assistant at reception), the user's office and the workroom; two bands of
+  rooms on a desktop, three stacked on a phone. Roles from role packs get a shirt of their own.
+  Desks stay assigned (ADR 0024).
+- Characters walk routed paths (walkability grid, BFS, string pulling) on errands derived from what
+  the UI already sees: a report goes to the whiteboard, a reviewer reviews in the review room, an
+  idle agent takes one coffee, new agents walk in through the front door, leavers walk out.
+- Render on demand stays; `prefers-reduced-motion` moves characters without walking.
+- Showcase refreshed: a new README GIF of a real team run and current screenshots.
 
 **Definition of Done**
-- [ ] Characters walk between their desk and the places their events point to, and back.
-- [ ] The office has at least three rooms with a clear purpose.
-- [ ] An office where nothing moves still renders nothing; with 10 agents walking, a drawn frame
-      stays within the Phase 7 budget (p95 under 8 ms in the UI tests).
-- [ ] All new art is original or properly licensed.
+- [x] Characters walk between their desk and the places their events point to, and back: Vitest
+      `errands.test.ts` (every rule, priorities, spots, report then exit) and `floor.test.ts`
+      (a clear route from every desk to every spot and the door, in every plan); Playwright
+      "a report sends the worker to the whiteboard, then back to its desk", "a worker that reports
+      and exits reports first, then leaves by the front door", "an idle agent takes one coffee and
+      comes back", "the user comes first…", "a new agent walks in through the front door…",
+      "a character away from its desk opens its terminal when clicked"; live in the `make demo`
+      run (workers walking in, reporting at the whiteboard, leaving).
+- [x] The office has at least three rooms with a clear purpose: eight (Planning, Tech Lead, Your
+      office, QA lab, Review room, Kitchen, Lobby, Workroom), each with an HTML label and a tooltip
+      saying what it is for; the architect, QA and the assistant work at stations of their own, and
+      agents waiting on the user queue at its door, as many as the Approvals count (Playwright "agents
+      waiting on you queue at your door…", "the architect, QA and the assistant work at their own
+      stations", "roles from role packs sit in the workroom in a shirt of their own", "a question and
+      a plan waiting for you are in Approvals…"; Playwright
+      "the office has rooms with a purpose"; on a phone the stacked plan, "the office stacks its
+      rooms and stays readable").
+- [x] An office where nothing moves still renders nothing; with 10 agents walking, a drawn frame
+      stays within the Phase 7 budget: ten characters walking out at once drew 64 frames at p95
+      0.4 to 0.6 ms (max about 6 ms) in headless Chromium with WebGL, and 2.3 to 3.1 ms (max 15 ms)
+      while an Android emulator kept nine cores busy; the emptied office then
+      drew no frames (Playwright "a busy office…", "an office where nothing moves does not
+      redraw"); reduced motion changes places without a single walking frame.
+- [x] All new art is original or properly licensed: pixel maps drawn in code
+      (`web/src/office/ART.md`), checked by `art.test.ts`.

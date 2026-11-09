@@ -120,4 +120,4 @@ Phase 5. Keep it small and realistic; its backlog is in its `TODO.md`.
 
 ## Originality
 
-- Inspired by jsm-hq and AgentSpace. Do not copy their names, text, code or assets.
+- Do not copy code, names or assets from other projects.

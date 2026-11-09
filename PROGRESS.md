@@ -1,7 +1,7 @@
 # Progress
 
-**Current phase:** UI/UX polish pass on `ui/ux-polish` (before Phase 13), waiting for Ozan's review;
-next: Phase 13
+**Current phase:** Phase 13 (Office v2) done on `phase-13/office-v2`, waiting for Ozan's review;
+it is the last planned phase
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -23,7 +23,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 10: Remote access (PWA over Tailscale)
 - [x] Phase 11: Portfolio polish
 - [x] Phase 12: Team workflow and roles
-- [ ] Phase 13: Office v2
+- [x] Phase 13: Office v2 (waiting for review)
 
 ## Log
 
@@ -249,4 +249,39 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   retrying assertions; throttling also found the `/` shortcut attached after the first paint.
   Agents see teammates' names in prompts, messages and tool outputs (ADR 0043 extended). The open
   tab keeps a readable task.
-
+- 2026-11-09: Phase 13 done on `phase-13/office-v2`; plan written with the recommended options and
+  executed without a separate approval, as Ozan asked (`docs/plans/phase-13.md`). ADR 0045 (floor
+  plan, routes on a walkability grid, errands derived from what the UI sees); no daemon changes,
+  no new dependencies. The office has four rooms (Tech Lead with the whiteboard, review room,
+  kitchen with the coffee machine and the front door, workroom), side by side on a desktop and
+  stacked on a phone. Characters walk routed paths: in through the front door, to the whiteboard
+  when their task moves to review or done, to the review table while reviewing, one coffee per
+  idle spell, straight back when they need the user, and out when they exit; nameplates stay on
+  desks and say where their character is. Render on demand stays: ten characters walking drew at
+  p95 0.4 to 0.6 ms (2.3 to 3.1 ms with an Android emulator busy on nine cores), an emptied office
+  draws nothing. The UI tests found a click race after a tab remount and two grid-change bugs
+  during walks (fixed); an independent review led to 5 fixes (a return to the desk never drawn
+  with reduced motion, a stuck hover, a fade-in restarting, resumed leavers, the no-route
+  fallback). Showcase refreshed: a new GIF from a real sandboxed haiku team (`make demo`) and current
+  screenshots. `make check` and `make ui-test` (61) pass; `make e2e`
+  was not run (daemon, hooks, engine and worktrees unchanged).
+- 2026-11-09: Phase 13, before the merge (Ozan's review): the demo goal now names each sub-task's
+  files (`internal/httpapi` for the health check, `internal/bookmark` for duplicate URLs), so the
+  Tech Lead declares disjoint files and both workers run in parallel; the earlier goal had both
+  edit the handler, and file ownership (ADR 0032) ran them one after the other. GIF re-recorded
+  (goal reported after 50 s instead of 107, under two cents), README, screenshots and the review
+  page updated. The README's inspiration line is removed, and the originality rule in `CLAUDE.md` no
+  longer names other projects (only: do not copy code, names or assets from other projects).
+- 2026-11-09: Phase 13, Ozan's second review: rooms for every role. A planning room (the
+  architect's drafting table), a QA lab (test bench), a lobby (front door, the assistant at
+  reception) and the user's office, whose door has a queue of the agents waiting on the user, as
+  many as the Approvals count, with a sign counting the same list; the architect brings its plan.
+  The list behind the badge now includes unanswered questions and plans waiting for approval (ADR
+  0044 amended); roles from role packs wear a shirt of their own colour (ADR 0045 amended). Two
+  bands of rooms on a desktop, three on a phone. An independent review led to 4 fixes (the office
+  redrew on every page render, an idle station agent kept it drawing, the queue order, plans of
+  several goals). `make check` (274 Vitest tests) and `make ui-test` (66) pass; office screenshots
+  refreshed. `/etc/resolv.conf` on this machine had become empty at 09:14, so the static daemon (Go's
+  own resolver) could not resolve `api.anthropic.com` and two recordings timed out; after Ozan
+  fixed it (a symlink to systemd-resolved's stub), the GIF and the real-run stills were recorded
+  again in the new office (goal reported after 57 s, $0.0237).

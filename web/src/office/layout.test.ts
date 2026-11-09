@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { type Assignment, assignDesks, cell, columnChoices, emptyAssignment, fitGrid, gridFor, inCell, maxScale, slotOrigin, whiteboardAt, world, worldSize } from "./layout";
-import { whiteboardSize } from "./art";
+import { type Assignment, assignDesks, cell, columnChoices, emptyAssignment, fitGrid, gridFor, inCell, maxScale, slotOrigin, whiteboardAt, worldSize } from "./layout";
+import { wallHeight, whiteboardSize } from "./art";
 import { agent } from "./testutil";
 
 const at = (min: number): string => `2026-11-08T10:${String(min).padStart(2, "0")}:00Z`;
@@ -89,7 +89,7 @@ describe("geometry", () => {
           expect(overlap, `cells ${i} and ${j}`).toBe(false);
         }
       }
-      expect(slotOrigin({ kind: "lead" }, grid).y).toBeGreaterThanOrEqual(world.leadRowY);
+      expect(slotOrigin({ kind: "lead" }, grid).y).toBeGreaterThanOrEqual(wallHeight);
       const wb = whiteboardAt(grid);
       expect(wb.x).toBeGreaterThanOrEqual(0);
       expect(wb.x + whiteboardSize.w).toBeLessThanOrEqual(size.w);
@@ -104,12 +104,12 @@ describe("geometry", () => {
 describe("fitGrid", () => {
   it("uses the columns that draw the office largest", () => {
     // a wide, short pane: more columns, fewer rows
-    const wide = fitGrid(1120, 650, 1, 9);
+    const wide = fitGrid(1300, 1100, 1, 9);
     expect(wide.grid.columns).toBeGreaterThan(4);
     expect(wide.k).toBe(3);
     const size = worldSize(wide.grid);
-    expect(size.w * wide.k).toBeLessThanOrEqual(1120);
-    expect(size.h * wide.k).toBeLessThanOrEqual(650);
+    expect(size.w * wide.k).toBeLessThanOrEqual(1300);
+    expect(size.h * wide.k).toBeLessThanOrEqual(1100);
   });
 
   it("prefers four columns when several fit equally", () => {
@@ -123,9 +123,9 @@ describe("fitGrid", () => {
 
   it("works in device pixels", () => {
     // at 1.5 device pixels per CSS pixel, k counts device pixels
-    const r = fitGrid(1120, 650, 1.5, 9);
+    const r = fitGrid(1300, 1100, 1.5, 9);
     const size = worldSize(r.grid);
-    expect((size.w * r.k) / 1.5).toBeLessThanOrEqual(1120);
+    expect((size.w * r.k) / 1.5).toBeLessThanOrEqual(1300);
     expect(r.k).toBeGreaterThanOrEqual(4);
   });
 

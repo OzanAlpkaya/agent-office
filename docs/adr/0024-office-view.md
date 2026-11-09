@@ -1,6 +1,7 @@
 # 0024. Office view: a lazy-loaded PixiJS scene, art drawn in code, labels in HTML
 
-- **Status:** Accepted; amended 2026-11-09 (exited agents leave the office, see the end)
+- **Status:** Accepted; amended 2026-11-09 (exited agents leave the office, see the end); the floor
+  plan, walking and errands are in [ADR 0045](0045-office-floor-plan-and-errands.md) (Phase 13)
 - **Date:** 2026-11-08
 
 ## Context
@@ -79,3 +80,4 @@ A resumed agent comes back to the lowest free desk. When the lead exits, the lea
 whiteboard empty. The bar above the scene counts who left. Exited agents stay in the agent list
 (in a collapsed group), in the switcher (ADR 0044), in their saved sessions and in Usage. The
 walk is a straight line over the furniture; proper paths between rooms are Phase 13's.
+Phase 13 replaced it: leavers walk a routed path out through the kitchen's front door (ADR 0045).

@@ -1,15 +1,20 @@
-// The Pixi scene of the office (ADR 0024). It draws an OfficeModel and
-// animates poses; it holds no state of its own beyond what is on screen and
-// has no actions except telling its owner which agent was clicked.
+// The Pixi scene of the office (ADR 0024, ADR 0045). It draws an OfficeModel
+// on a floor plan with rooms, animates poses and walks characters between
+// their desk and the places their errands point to. It holds no state beyond
+// what is on screen and has no actions except telling its owner which agent
+// was clicked.
 // The daemon's Content-Security-Policy has no unsafe-eval (ADR 0040); this pixi.js module
 // replaces its generated shader and uniform code with eval-free versions.
 import "pixi.js/unsafe-eval";
 import { Application, Container, Graphics, Rectangle, Sprite, type Texture, TilingSprite } from "pixi.js";
-import type { TaskStatus } from "../api";
+import type { Kind, TaskStatus } from "../api";
 import * as art from "./art";
-import { type Grid, type Slot, cell, fitGrid, gridFor, inCell, slotOrigin, whiteboardAt, world, worldSize } from "./layout";
+import { type Capacity, Director, type Errand, type Place } from "./errands";
+import { type FloorKind, type FloorPlan, type Point, type Station, deskExit, roomAt, stationKinds } from "./floor";
+import { type Grid, type Slot, fitGrid, gridFor, inCell, planOf, slotOrigin, worldSize } from "./layout";
 import type { Note, OfficeModel, Seat } from "./model";
-import type { Pose } from "./pose";
+import { along, length, route } from "./paths";
+import { type Look, type Pose, shirtOf } from "./pose";
 import { TextureCache } from "./textures";
 
 export interface Transform {
@@ -29,12 +34,28 @@ export interface FrameStats {
   p95Ms: number;
   maxMs: number;
   left: number; // characters that walked out since the scene started (exited agents)
+  walking: number; // characters walking right now
+  trips: number; // walks started since the scene started
+  busyFrames: number; // frames drawn while at least busyWalkers characters walked
+  busyP95Ms: number;
+  busyMaxMs: number;
+  // Heads of characters away from their desk, in CSS pixels inside the canvas.
+  figures: Record<string, { x: number; y: number }>;
 }
+
+// The budget's "busy office": this many characters walking at once (ADR 0045).
+export const busyWalkers = 10;
+
+// Where a character is, for the nameplates and the UI tests.
+export type Whereabouts = Place | "walking";
 
 export interface SceneOptions {
   reducedMotion: boolean;
   onOpen: (agentId: string) => void;
   onHover: (agentId: string | undefined) => void;
+  onPlaces?: (places: Record<string, Whereabouts>) => void;
+  // The office changed size by itself (a held row of desks went once the last leaver left).
+  onTransform?: (t: Transform) => void;
 }
 
 const noteColors: Record<TaskStatus, art.Swatch> = {
@@ -47,37 +68,57 @@ const noteColors: Record<TaskStatus, art.Swatch> = {
 
 const background = 0x0f1115;
 
+// Walking: a steady pace, but no trip shorter or longer than these.
+const walkSpeed = 64; // world pixels per second
+const minTrip = 0.6;
+const maxTrip = 4.5;
+const stride = 5; // pixels per step
+const fadeDistance = 12; // characters fade in and out over this much of the door's way
+const maxWalkers = 40; // beyond this, characters change places without walking
+
+const floorTextures: Record<FloorKind, [string, art.PixelMap, art.Palette]> = {
+  carpet: ["floor-carpet", art.carpetTile, art.carpetPalette],
+  tile: ["floor-tile", art.tileFloor, art.tilePalette],
+  kitchen: ["floor-kitchen", art.tileFloor, art.kitchenPalette],
+  wood: ["floor-wood", art.floorTile, art.floorPalette],
+  blue: ["floor-blue", art.carpetTile, art.planningPalette],
+  lab: ["floor-lab", art.tileFloor, art.labPalette],
+  rug: ["floor-rug", art.carpetTile, art.userPalette],
+};
+
 export class OfficeScene {
   private readonly textures = new TextureCache();
   private readonly world = new Container();
-  private readonly floor: TilingSprite;
-  private readonly decor = new Container();
+  private readonly rooms = new Container(); // floors, walls and what hangs on them
   private readonly notes = new Container();
-  private readonly desks = new Container();
-  private readonly walking = new Container();
+  private readonly sorted = new Container(); // desks, furniture and characters, by depth
+  private furniture: Sprite[] = []; // furniture in the sorted layer, rebuilt with the floor plan
   private readonly flying = new Container();
   private readonly nodes: DeskNode[] = [];
   private readonly envelopes: { sprite: Sprite; from: Point; to: Point; start: number }[] = [];
-  private readonly walkers: Walker[] = [];
+  private readonly chars = new Map<string, Character>();
+  private readonly director = new Director();
   private left = 0;
+  private trips = 0;
   private grid: Grid = gridFor(0, 4);
-  private wall: TilingSprite;
+  private plan: FloorPlan = planOf(this.grid);
   private model?: OfficeModel;
   private hovered?: string;
   private size = { w: 1, h: 1 };
+  private shownDesks = 0; // desks the grid was laid out for
   private destroyed = false;
   private dirty = true;
   private notesKey = "";
+  private placesKey = "";
   private ticks = 0;
   private renders = 0;
   private readonly costs: number[] = []; // ms of the last rendered frames
+  private readonly busyCosts: number[] = []; // ms of the last frames drawn while the office was busy
+  private busyFrames = 0;
 
   private constructor(private readonly app: Application, private readonly opts: SceneOptions) {
-    const t = this.textures;
-    this.floor = new TilingSprite({ texture: t.get("floor", art.floorTile, art.floorPalette), width: 1, height: 1 });
-    this.floor.y = art.wallHeight;
-    this.wall = new TilingSprite({ texture: t.get("wall", art.wallTile, art.wallPalette), width: 1, height: art.wallHeight });
-    this.world.addChild(this.floor, this.wall, this.decor, this.desks, this.walking, this.flying);
+    this.sorted.sortableChildren = true;
+    this.world.addChild(this.rooms, this.sorted, this.flying);
     app.stage.addChild(this.world);
     // Render only frames where something changed: an idle office then costs
     // a few cheap ticks per second instead of 30 full renders.
@@ -110,14 +151,35 @@ export class OfficeScene {
   }
 
   stats(): FrameStats {
-    const sorted = this.costs.slice().sort((a, b) => a - b);
-    return {
-      ticks: this.ticks,
-      renders: this.renders,
-      left: this.left,
-      p95Ms: sorted.length > 0 ? sorted[Math.floor(sorted.length * 0.95)] : 0,
-      maxMs: sorted.length > 0 ? sorted[sorted.length - 1] : 0,
+    const p95 = (xs: number[]): [number, number] => {
+      const s = xs.slice().sort((a, b) => a - b);
+      return s.length > 0 ? [s[Math.floor(s.length * 0.95)], s[s.length - 1]] : [0, 0];
     };
+    const [p95Ms, maxMs] = p95(this.costs);
+    const [busyP95Ms, busyMaxMs] = p95(this.busyCosts);
+    const figures: FrameStats["figures"] = {};
+    const sc = this.world.scale.x;
+    for (const c of this.chars.values()) {
+      const r = c.figure?.root;
+      if (!r || c.mode === "seated") continue;
+      figures[c.id] = { x: this.world.x + (r.x + art.body.w / 2) * sc, y: this.world.y + (r.y + 7) * sc };
+    }
+    return {
+      ticks: this.ticks, renders: this.renders, left: this.left, p95Ms, maxMs, walking: this.walkingCount(), trips: this.trips,
+      busyFrames: this.busyFrames, busyP95Ms, busyMaxMs, figures,
+    };
+  }
+
+  // leaving says whether a character without a seat is still in the office.
+  private leaving(): boolean {
+    for (const c of this.chars.values()) if (!c.seat) return true;
+    return false;
+  }
+
+  private walkingCount(): number {
+    let n = 0;
+    for (const c of this.chars.values()) if (c.mode === "walking") n++;
+    return n;
   }
 
   private frame(): void {
@@ -125,11 +187,23 @@ export class OfficeScene {
     this.ticks++;
     const changed = this.tick(start / 1000);
     if (!changed && !this.dirty) return;
+    this.draw(start);
+  }
+
+  // draw renders the stage and records what it cost since start.
+  private draw(start: number): void {
     this.dirty = false;
+    const walking = this.walkingCount();
     this.app.render();
     this.renders++;
-    this.costs.push(performance.now() - start);
+    const cost = performance.now() - start;
+    this.costs.push(cost);
     if (this.costs.length > 300) this.costs.shift();
+    if (walking >= busyWalkers) {
+      this.busyFrames++;
+      this.busyCosts.push(cost);
+      if (this.busyCosts.length > 300) this.busyCosts.shift();
+    }
   }
 
   destroy(): void {
@@ -142,7 +216,9 @@ export class OfficeScene {
   // resize fits the office into a pane of w×h CSS pixels (see fitGrid).
   resize(w: number, h: number): Transform {
     this.size = { w: Math.max(1, w), h: Math.max(1, h) };
-    return this.layout();
+    const t = this.layout();
+    this.draw(performance.now());
+    return t;
   }
 
   // layout picks the grid and a whole number of device pixels per world
@@ -153,7 +229,11 @@ export class OfficeScene {
     // screen change it.
     const dpr = window.devicePixelRatio || 1;
     const { w, h } = this.size;
-    const { grid, k } = fitGrid(w, h, dpr, this.model?.desks ?? 0);
+    // While someone walks out, the office keeps its size: a row of desks
+    // vanishing under their feet would cut the walk short.
+    const want = this.model?.desks ?? 0;
+    this.shownDesks = this.leaving() ? Math.max(want, this.shownDesks) : want;
+    const { grid, k } = fitGrid(w, h, dpr, this.shownDesks);
     if (grid.columns !== this.grid.columns || grid.rows !== this.grid.rows || this.nodes.length === 0) this.setGrid(grid);
     const { w: W, h: H } = worldSize(grid);
     const scale = k / dpr;
@@ -172,19 +252,70 @@ export class OfficeScene {
   // changed (the office gained or lost a row of desks).
   update(model: OfficeModel): Transform | undefined {
     const before = this.grid;
-    // Agents that lost their seat (exited or removed) walk out from where
-    // they sat, before the grid may change under them (ADR 0024).
-    const seated = new Set(model.seats.map((s) => s.agent.id));
-    for (const n of this.nodes) {
-      const id = n.agentId;
-      if (id === undefined || seated.has(id)) continue;
-      const look = n.leaver();
-      if (look) this.walkOut(look);
+    const first = this.model === undefined;
+    const now = performance.now() / 1000;
+    // Characters whose agent lost its seat (exited or removed) stand up where
+    // they sat, before the grid may change under them.
+    const seats = new Map(model.seats.map((s) => [s.agent.id, s]));
+    for (const c of this.chars.values()) {
+      if (seats.has(c.id) || c.seat === undefined) continue;
+      if (c.mode === "seated") this.standUp(c, slotOrigin(c.seat.slot, this.grid));
+      c.seat = undefined;
+    }
+    // Characters that are still (or again) seated get their seat before the
+    // layout, so a grid change knows who is coming back (a resumed agent).
+    for (const s of model.seats) {
+      const c = this.chars.get(s.agent.id);
+      if (c && c.seat === undefined) c.seat = s;
     }
     this.model = model;
     const t = this.layout();
+    // New characters: at their desk on the first view, else in through the door.
+    for (const s of model.seats) {
+      let c = this.chars.get(s.agent.id);
+      if (!c) {
+        c = new Character(s.agent.id, s, this.figureLook(s));
+        if (s.slot.kind === "station") {
+          // no desk to sit at: placed at its station by its first errand
+          c.mode = "standing";
+          c.goal = "";
+          c.pos = this.plan.stations[s.slot.station].seat;
+        }
+        this.chars.set(c.id, c);
+        if (!first && !this.opts.reducedMotion) {
+          c.mode = "standing";
+          c.goal = "enter"; // it is at the door; its errand sends it to its desk
+          c.pos = this.plan.entrance;
+          c.fadeIn = true;
+          this.ensureFigure(c);
+        }
+      } else {
+        const moved = c.seat !== undefined && slotKey(c.seat.slot) !== slotKey(s.slot);
+        if (moved && c.mode === "seated" && s.slot.kind === "station" && c.seat) {
+          // from a desk to its station (a role's own place came free)
+          this.standUp(c, slotOrigin(c.seat.slot, this.grid));
+          c.goal = "";
+        }
+        if (c.seat?.agent.kind !== s.agent.kind || c.seat.agent.role !== s.agent.role) {
+          c.look = this.figureLook(s);
+          c.figure?.setLook(c.look);
+        }
+        // A character walking to a desk that is no longer its own picks a new way.
+        if (moved && c.mode !== "seated" && c.goal === "desk") c.goal = "";
+      }
+      c.seat = s;
+    }
     const bySlot = new Map(model.seats.map((s) => [slotKey(s.slot), s]));
     for (const n of this.nodes) n.setSeat(bySlot.get(slotKey(n.slot)));
+    this.director.observe([
+      ...model.seats.map((s) => ({
+        id: s.agent.id, present: true, pose: s.pose, taskStatus: model.taskStatus[s.agent.id], phase: s.look.phase,
+        waitingSince: model.waitingSince[s.agent.id],
+      })),
+      ...model.gone.map((id) => ({ id, present: false, taskStatus: model.taskStatus[id], phase: 0 })),
+    ], now);
+    if (first) this.errands(now, true);
+    this.syncDesks();
     const notes = model.goal?.notes ?? [];
     const notesKey = `${model.goal !== undefined}|${notes.map((n) => `${n.id}:${n.status}`).join(",")}`;
     if (notesKey !== this.notesKey) {
@@ -192,104 +323,177 @@ export class OfficeScene {
       this.drawNotes(notes);
     }
     this.dirty = true;
-    if (this.hovered && !model.seats.some((s) => s.agent.id === this.hovered)) this.hover(undefined);
+    if (this.hovered && !this.chars.has(this.hovered)) this.hover(undefined);
+    this.publishPlaces();
+    // Draw now, not on the next tick: Pixi hit-tests against the transforms
+    // of the last render, so a click right after a change must see it.
+    this.draw(performance.now());
     return t.grid.columns !== before.columns || t.grid.rows !== before.rows ? t : undefined;
   }
 
-  // sendEnvelope flies a letter from one agent's desk to another's; a
-  // missing sender (agent-office itself) sends from the door.
+  // sendEnvelope flies a letter from one agent to another, wherever they
+  // are; a missing sender (agent-office itself) sends from the front door.
   sendEnvelope(fromAgent: string | undefined, toAgent: string): void {
     if (this.opts.reducedMotion || this.envelopes.length >= maxEnvelopes) return;
-    const to = this.deskPoint(toAgent);
+    const to = this.agentPoint(toAgent);
     if (!to) return;
-    const door = doorAt(this.grid);
-    const from = (fromAgent !== undefined ? this.deskPoint(fromAgent) : undefined) ?? { x: door.x + 6, y: art.wallHeight - 6 };
+    const door = { x: this.plan.door.x + art.door.w / 2 - 4, y: this.plan.door.y + 8 };
+    const from = (fromAgent !== undefined ? this.agentPoint(fromAgent) : undefined) ?? door;
     const sprite = new Sprite(this.textures.get("envelope", art.envelope, art.basePalette));
     this.flying.addChild(sprite);
     this.envelopes.push({ sprite, from, to, start: performance.now() / 1000 });
   }
 
-  // walkOut sends a character from its desk to the door, where it fades out.
-  // With reduced motion it is simply gone.
-  private walkOut(look: Leaver): void {
-    this.left++;
-    if (this.opts.reducedMotion || this.walkers.length >= maxWalkers) return;
-    const root = new Container();
-    const legs = art.legs.map((m, i) => this.textures.get(`legs-${i}`, m, look.palette));
-    const legSprite = new Sprite(legs[0]);
-    legSprite.y = art.body.h;
-    root.addChild(legSprite, new Sprite(look.body), new Sprite(look.hair));
-    root.position.set(look.x, look.y);
-    this.walking.addChild(root);
-    const door = doorAt(this.grid);
-    const to = { x: door.x + (art.door.w - art.body.w) / 2, y: door.y + art.door.h - art.body.h - art.legs[0].h };
-    this.walkers.push({ root, legs: legSprite, frames: legs, from: { x: look.x, y: look.y }, to, start: performance.now() / 1000 });
-  }
-
-  private deskPoint(agentId: string): Point | undefined {
-    const seat = this.model?.seats.find((s) => s.agent.id === agentId);
-    if (!seat) return undefined;
-    const o = slotOrigin(seat.slot, this.grid);
-    return { x: o.x + inCell.person.x + 4, y: o.y + inCell.person.y };
+  // agentPoint is where an envelope to or from an agent starts or lands: its
+  // head, at its desk or wherever it is.
+  private agentPoint(agentId: string): Point | undefined {
+    const c = this.chars.get(agentId);
+    if (!c) return undefined;
+    if (c.mode === "seated" && c.seat) {
+      const o = slotOrigin(c.seat.slot, this.grid);
+      return { x: o.x + inCell.person.x + 4, y: o.y + inCell.person.y };
+    }
+    return { x: c.pos.x - 4, y: c.pos.y - 22 };
   }
 
   hover(agentId: string | undefined): void {
     if (this.hovered === agentId) return;
     this.hovered = agentId;
     for (const n of this.nodes) n.setHover(n.agentId !== undefined && n.agentId === agentId);
+    for (const c of this.chars.values()) c.figure?.setHover(c.id === agentId);
     this.dirty = true;
     this.opts.onHover(agentId);
   }
 
+  // Called by desks and figures.
+  open(agentId: string): void {
+    this.opts.onOpen(agentId);
+  }
+
   private setGrid(grid: Grid): void {
+    const sameColumns = grid.columns === this.grid.columns && this.nodes.length > 0;
     this.grid = grid;
-    const { w, h } = worldSize(grid);
-    this.wall.width = w;
-    this.floor.width = w;
-    this.floor.height = h - art.wallHeight;
+    this.plan = planOf(grid);
     const want = 1 + grid.rows * grid.columns;
     while (this.nodes.length < want) {
       const i = this.nodes.length;
       const slot: Slot = i === 0 ? { kind: "lead" } : { kind: "desk", index: i - 1 };
       const node = new DeskNode(this, this.textures, slot, this.opts.reducedMotion);
       this.nodes.push(node);
-      this.desks.addChild(node.root);
+      this.sorted.addChild(node.root);
     }
     while (this.nodes.length > want) this.nodes.pop()?.root.destroy({ children: true });
-    // Nodes are added in desk order, so rows further back are drawn first.
     for (const n of this.nodes) n.place(grid);
-    this.buildDecor(grid);
+    this.buildRooms();
+    // With the same columns, rooms and desks stay where they were and only
+    // rows come or go: walkers find a new way from where they are. Otherwise
+    // positions belong to the old plan, and everyone away from their desk is
+    // where they were going, at once.
+    const now = performance.now() / 1000;
+    for (const c of [...this.chars.values()]) {
+      if (c.mode === "seated") continue;
+      if (sameColumns && c.mode === "walking") this.walkFrom(c, c.pos, now);
+      else if (sameColumns) continue;
+      else {
+        // a walk-in, or a leaver whose agent came back (resumed), sits down
+        if (c.goal === "enter" || (c.goal === "out" && c.seat)) c.goal = "desk";
+        c.pos = this.target(c, c.goal, c.errand);
+        this.arrive(c);
+      }
+    }
   }
 
-  private buildDecor(grid: Grid): void {
+  // buildRooms draws the floor plan: floors, back walls, partitions and the
+  // furniture that is not a desk.
+  private buildRooms(): void {
     const t = this.textures;
-    this.decor.removeChildren().forEach((c) => {
+    const p = this.plan;
+    this.rooms.removeChildren().forEach((c) => {
       if (c !== this.notes) c.destroy();
     });
-    const put = (tex: Texture, x: number, y: number): Sprite => {
+    for (const f of this.furniture) f.destroy();
+    this.furniture = [];
+    const put = (layer: Container, tex: Texture, x: number, y: number): Sprite => {
       const s = new Sprite(tex);
       s.position.set(x, y);
-      this.decor.addChild(s);
+      layer.addChild(s);
       return s;
     };
-    const { w, h } = worldSize(grid);
-    const lead = slotOrigin({ kind: "lead" }, grid);
-    put(t.get("rug", () => art.rug(cell.w + 24, world.leadRowH - 6), art.rugPalette), lead.x - 12, world.leadRowY + 2);
-    // Windows left of the whiteboard, and right of it where the door leaves room.
-    const wb = whiteboardAt(grid);
-    const door = doorAt(grid);
+    const tiles = (kind: FloorKind, x: number, y: number, w: number, h: number): void => {
+      const [key, map, palette] = floorTextures[kind];
+      const s = new TilingSprite({ texture: t.get(key, map, palette), width: w, height: h });
+      s.position.set(x, y);
+      s.tilePosition.set(-x, -y); // the pattern stays put across rooms
+      this.rooms.addChild(s);
+    };
+    for (const r of p.rooms) tiles(r.floor, r.rect.x, r.rect.y, r.rect.w, r.rect.h);
+    // Doorways show the floor of the room they lead into.
+    for (const d of p.doorways) tiles(roomAt(p, { x: d.x + 1, y: d.y + d.h + 1 })?.floor ?? "wood", d.x, d.y, d.w, d.h);
+    const wallTex = t.get("wall", art.wallTile, art.wallPalette);
+    for (const f of p.faces) {
+      const s = new TilingSprite({ texture: wallTex, width: f.w, height: f.h });
+      s.position.set(f.x, f.y);
+      s.tilePosition.set(-f.x, 0);
+      this.rooms.addChild(s);
+    }
+    const g = new Graphics();
+    for (const w of p.walls) {
+      g.rect(w.x, w.y, w.w, w.h).fill(art.wallTopColor);
+      if (w.w > w.h) g.rect(w.x, w.y + w.h - 1, w.w, 1).fill(art.wallEdgeColor);
+      else g.rect(w.x + w.w - 1, w.y, 1, w.h).fill(art.wallEdgeColor);
+    }
+    // Door frames where a doorway cuts through a back wall.
+    for (const d of p.doorways) {
+      if (d.h <= 4) continue;
+      g.rect(d.x - 1, d.y, 1, d.h).fill(art.wallEdgeColor);
+      g.rect(d.x + d.w, d.y, 1, d.h).fill(art.wallEdgeColor);
+    }
+    this.rooms.addChild(g);
     const win = t.get("window", art.windowMap, art.basePalette);
-    for (let x = wb.x - 44; x >= 20; x -= 44) put(win, x, 8);
-    for (let x = wb.x + art.whiteboardSize.w + 12; x + art.windowMap.w <= door.x - 8; x += 44) put(win, x, 8);
-    put(t.get("whiteboard", art.whiteboardMap, art.basePalette), wb.x, wb.y);
-    this.notes.position.set(wb.x + art.noteGrid.x, wb.y + art.noteGrid.y);
-    this.decor.addChild(this.notes);
-    put(t.get("door", art.door, art.basePalette), door.x, door.y);
-    put(t.get("cooler", art.waterCooler, art.basePalette), w - 14, art.wallHeight + 2);
+    for (const w of p.windows) put(this.rooms, win, w.x, w.y);
+    put(this.rooms, t.get("whiteboard", art.whiteboardMap, art.basePalette), p.whiteboard.x, p.whiteboard.y);
+    this.notes.position.set(p.whiteboard.x + art.noteGrid.x, p.whiteboard.y + art.noteGrid.y);
+    this.rooms.addChild(this.notes);
+    put(this.rooms, t.get("wall-screen", art.wallScreen, art.wallScreenPalette), p.screen.x, p.screen.y);
+    put(this.rooms, t.get("door", art.door, art.basePalette), p.door.x, p.door.y);
+    put(this.rooms, t.get("wall-blueprint", art.wallBlueprint, art.blueprintPalette), p.blueprints.x, p.blueprints.y);
+    put(this.rooms, t.get("test-board", art.testBoard, art.basePalette), p.testBoard.x, p.testBoard.y);
+
+    // Furniture, depth-sorted with desks and characters by its front edge.
+    const fur = (tex: Texture, x: number, y: number, z: number): void => {
+      const s = new Sprite(tex);
+      s.position.set(x, y);
+      s.zIndex = z;
+      this.sorted.addChild(s);
+      this.furniture.push(s);
+    };
+    const chair = t.get("chair", art.chair, art.basePalette);
+    for (const s of p.spots.review) fur(chair, s.x - 8, p.table.y - 12, p.table.y - 2);
+    fur(t.get(`table-${p.table.w}`, () => art.table(p.table.w), art.basePalette), p.table.x, p.table.y, p.table.y + p.table.h);
+    fur(t.get("counter", art.counter, art.basePalette), p.counter.x, p.counter.y, p.counter.y + art.counter.h);
+    fur(t.get("cooler", art.waterCooler, art.basePalette), p.cooler.x, p.cooler.y, p.cooler.y + art.waterCooler.h);
     const plant = t.get("plant", art.plant, art.basePalette);
-    put(plant, 2, art.wallHeight - 8);
-    put(plant, 2, h - world.bottom - art.plant.h);
-    put(plant, w - 14, h - world.bottom - art.plant.h);
+    for (const pl of p.plants) fur(plant, pl.x, pl.y, pl.y + art.plant.h);
+    // Stations (ADR 0045): their agents sit behind the furniture, drawn by figures.
+    for (const k of stationKinds) {
+      const st = p.stations[k];
+      const f = st.furniture;
+      fur(chair, st.seat.x - 8, f.y - 12, f.y - 2);
+      if (k === "architect") fur(t.get("drafting", art.draftingTable, art.blueprintPalette), f.x, f.y, f.y + f.h);
+      if (k === "qa") {
+        fur(t.get(`bench-${f.w}`, () => art.bench(f.w), art.benchPalette), f.x, f.y, f.y + f.h);
+        fur(t.get("test-rig", art.testRig, art.basePalette), f.x + f.w - art.testRig.w - 2, f.y - 6, f.y + f.h + 1);
+      }
+      if (k === "assistant") fur(t.get(`reception-${f.w}`, () => art.reception(f.w), art.basePalette), f.x, f.y, f.y + f.h);
+    }
+    // The user's own desk: a chair nobody sits in, a monitor with the prompt.
+    const u = p.userDesk;
+    fur(t.get("chair-user", art.chair, { ...art.basePalette, a: 0x3d5a80, A: 0x2a4060 }), u.x + inCell.chair.x, u.y + inCell.chair.y, u.y + inCell.chair.y + 12);
+    fur(t.get("desk", art.desk, art.basePalette), u.x + inCell.desk.x, u.y + inCell.desk.y, u.y + inCell.desk.y + art.desk.h);
+    fur(t.get("monitor", art.monitor, art.basePalette), u.x + inCell.monitor.x, u.y + inCell.monitor.y, u.y + inCell.desk.y + art.desk.h + 1);
+    fur(t.get("screen-user", () => art.screenPrompt()[0], art.screenPalette),
+      u.x + inCell.monitor.x + art.screenRect.x, u.y + inCell.monitor.y + art.screenRect.y, u.y + inCell.desk.y + art.desk.h + 2);
+    fur(t.get("mug", art.mug, art.basePalette), u.x + inCell.mug.x, u.y + inCell.mug.y, u.y + inCell.desk.y + art.desk.h + 2);
   }
 
   private drawNotes(notes: readonly Note[]): void {
@@ -315,24 +519,215 @@ export class OfficeScene {
     });
   }
 
+  // ------------------------------------------------------------ characters
+
+  private figureLook(s: Seat): FigureLook {
+    const l = s.look;
+    const palette = art.personPalette(art.skins[l.skin], art.hairColors[l.hair], shirtOf(s.agent));
+    const key = `${l.skin}-${l.hair}-${s.agent.kind}-${s.agent.role}`;
+    const t = this.textures;
+    return {
+      look: l, kind: s.agent.kind, palette,
+      roll: t.get("blueprint-roll", art.blueprintRoll, art.blueprintPalette),
+      note: t.get("note", art.note, art.basePalette),
+      front: t.get(`body-${key}`, art.body, palette),
+      back: t.get(`back-${key}`, art.bodyBack, palette),
+      hair: t.get(`hair-${l.style}-${key}`, art.hair[l.style], palette),
+      legs: art.legs.map((m, i) => t.get(`legs-${i}`, m, palette)),
+      mug: t.get("mug", art.mug, art.basePalette),
+      magnifier: t.get("magnifier", art.magnifier, art.basePalette),
+    };
+  }
+
+  private ensureFigure(c: Character): Figure {
+    if (!c.figure) {
+      c.figure = new Figure(this, c.id, c.look);
+      c.figure.setHover(this.hovered === c.id);
+      this.sorted.addChild(c.figure.root);
+    }
+    return c.figure;
+  }
+
+  // dropFigure removes a character's figure. A destroyed figure never sends
+  // pointerout, so a hover the pointer gave it ends here.
+  private dropFigure(c: Character): void {
+    if (!c.figure) return;
+    if (c.figure.pointerInside && this.hovered === c.id) this.hover(undefined);
+    c.figure.root.destroy({ children: true });
+    c.figure = undefined;
+  }
+
+  // standUp takes a character out of its chair into the aisle next to its desk.
+  private standUp(c: Character, origin: Point): void {
+    this.dirty = true;
+    c.mode = "standing";
+    c.place = undefined;
+    c.pos = { x: origin.x + deskExit.x, y: origin.y + deskExit.y };
+    this.ensureFigure(c);
+  }
+
+  // errands moves everyone whose errand changed; instant places them at once.
+  private errands(now: number, instant: boolean): void {
+    const p = this.plan;
+    const capacity: Capacity = {
+      whiteboard: p.spots.whiteboard.length, coffee: p.spots.coffee.length, review: p.spots.review.length, queue: p.spots.queue.length,
+    };
+    const errands = this.director.errands(now, capacity);
+    for (const c of [...this.chars.values()]) {
+      const e = errands.get(c.id);
+      const goal = e === undefined || (e.place === "desk" && !c.seat) ? "out" : errandKey(e);
+      if (goal === c.goal) continue;
+      this.go(c, goal, e, now, instant);
+    }
+  }
+
+  private target(c: Character, goal: string, e: Errand | undefined): Point {
+    const p = this.plan;
+    if (goal === "out" || !e) return p.entrance;
+    if (e.place === "desk") {
+      const st = stationOf(c);
+      if (st) return p.stations[st].seat;
+      const o = c.seat ? slotOrigin(c.seat.slot, this.grid) : p.lead;
+      return { x: o.x + deskExit.x, y: o.y + deskExit.y };
+    }
+    return p.spots[e.place][e.spot] ?? p.entrance;
+  }
+
+  private go(c: Character, goal: string, e: Errand | undefined, now: number, instant: boolean): void {
+    c.goal = goal;
+    c.errand = e;
+    if (c.mode === "seated") {
+      if (goal === "desk") return;
+      if (!c.seat) return;
+      this.standUp(c, slotOrigin(c.seat.slot, this.grid));
+    }
+    if (instant || this.opts.reducedMotion || this.walkingCount() >= maxWalkers) {
+      c.pos = this.target(c, goal, e);
+      this.arrive(c);
+      return;
+    }
+    if (this.walkFrom(c, c.pos, now)) this.trips++;
+  }
+
+  // walkFrom starts (or restarts) a character's walk from p to its goal; it
+  // returns false when it was already there.
+  private walkFrom(c: Character, p: Point, now: number): boolean {
+    const to = this.target(c, c.goal, c.errand);
+    const path = route(this.plan, p, to);
+    const total = length(path);
+    if (total < 1) {
+      c.pos = to;
+      this.arrive(c);
+      return false;
+    }
+    c.route = path;
+    c.total = total;
+    c.duration = Math.min(maxTrip, Math.max(minTrip, total / walkSpeed));
+    c.start = now;
+    c.mode = "walking";
+    c.place = undefined;
+    this.ensureFigure(c).root.alpha = c.fadeIn ? 0 : 1;
+    this.syncDesks();
+    return true;
+  }
+
+  // arrive ends a trip: the character sits at its desk, stands at its spot,
+  // sits at the review table, or leaves.
+  private arrive(c: Character): void {
+    c.route = undefined;
+    c.fadeIn = false;
+    this.dirty = true; // a figure appears, moves or goes; the desk may change too
+    const goal = c.goal;
+    if (goal === "out") {
+      this.dropFigure(c);
+      this.chars.delete(c.id);
+      this.left++;
+      this.syncDesks();
+      return;
+    }
+    if (goal === "desk" || goal === "enter" || c.errand === undefined || c.errand.place === "desk") {
+      if (!c.seat) {
+        // its desk is gone: leave instead
+        c.goal = "out";
+        this.arrive(c);
+        return;
+      }
+      const st = stationOf(c);
+      if (st) {
+        // home is a station: sitting behind its furniture, drawn as a figure
+        c.pos = this.plan.stations[st].seat;
+        c.mode = "standing";
+        c.place = "desk";
+        this.ensureFigure(c).root.alpha = 1;
+        this.syncDesks();
+        return;
+      }
+      c.mode = "seated";
+      c.place = "desk";
+      this.dropFigure(c);
+      this.syncDesks();
+      return;
+    }
+    c.pos = this.target(c, goal, c.errand);
+    c.mode = "standing";
+    c.place = c.errand.place;
+    const f = this.ensureFigure(c);
+    f.root.alpha = 1;
+    this.syncDesks();
+  }
+
+  // syncDesks shows a seated character at its desk and an empty chair when
+  // it is away.
+  private syncDesks(): void {
+    for (const n of this.nodes) {
+      const c = n.agentId !== undefined ? this.chars.get(n.agentId) : undefined;
+      n.setAway(c !== undefined && c.mode !== "seated");
+    }
+  }
+
+  private publishPlaces(): void {
+    const places: Record<string, Whereabouts> = {};
+    for (const c of this.chars.values()) {
+      if (!c.seat) continue;
+      places[c.id] = c.mode === "walking" ? "walking" : c.mode === "seated" ? "desk" : (c.place ?? "walking");
+    }
+    const key = JSON.stringify(places);
+    if (key === this.placesKey) return;
+    this.placesKey = key;
+    this.opts.onPlaces?.(places);
+  }
+
   // tick advances the animations; it returns whether anything changed.
   private tick(now: number): boolean {
     const t = this.opts.reducedMotion ? 0 : now;
-    let changed = this.envelopes.length > 0 || this.walkers.length > 0;
+    if (this.model) this.errands(now, false);
+    let changed = this.envelopes.length > 0;
     for (const n of this.nodes) changed = n.tick(t) || changed;
-    for (let i = this.walkers.length - 1; i >= 0; i--) {
-      const w = this.walkers[i];
-      const p = Math.min(1, (now - w.start) / walkSeconds);
-      // Out of the desk row first, then along the floor to the door.
-      const x = w.from.x + (w.to.x - w.from.x) * p;
-      const y = w.from.y + (w.to.y - w.from.y) * Math.min(1, p * 1.6);
-      const step = Math.floor(p * walkSeconds * 6) % 2;
-      w.legs.texture = w.frames[step];
-      w.root.position.set(Math.round(x), Math.round(y) - step);
-      w.root.alpha = p > 0.75 ? (1 - p) / 0.25 : 1;
-      if (p >= 1) {
-        w.root.destroy({ children: true });
-        this.walkers.splice(i, 1);
+    for (const c of [...this.chars.values()]) {
+      if (c.mode === "walking" && c.route) {
+        changed = true;
+        const p = Math.min(1, (now - c.start) / c.duration);
+        const d = p * c.total;
+        const { at, segment } = along(c.route, d);
+        c.pos = at;
+        const a = c.route[segment], b = c.route[segment + 1] ?? a;
+        const away = b.y - a.y < 0 && Math.abs(b.y - a.y) > Math.abs(b.x - a.x);
+        const step = Math.floor(d / stride) % 2;
+        const fig = this.ensureFigure(c);
+        fig.walk(at, step, away);
+        if (c.goal === "out") fig.root.alpha = Math.max(0, Math.min(1, (c.total - d) / fadeDistance));
+        else if (c.fadeIn) {
+          fig.root.alpha = Math.max(0, Math.min(1, d / fadeDistance));
+          if (d >= fadeDistance) c.fadeIn = false; // a re-route must not fade it in again
+        }
+        if (p >= 1) {
+          c.pos = c.route[c.route.length - 1];
+          this.arrive(c);
+        }
+      } else if (c.mode === "standing" && c.figure) {
+        const st = c.place === "desk" ? stationOf(c) : undefined;
+        changed = c.figure.stand(c.pos, c.place, this.plan, t + c.look.look.phase * 10,
+          st ? this.plan.stations[st] : undefined, c.seat?.pose) || changed;
       }
     }
     for (let i = this.envelopes.length - 1; i >= 0; i--) {
@@ -349,51 +744,172 @@ export class OfficeScene {
         this.envelopes.splice(i, 1);
       }
     }
+    // The last leaver is gone: the office may lose the rows it held for them.
+    if (this.model && this.shownDesks > this.model.desks && !this.leaving()) {
+      const before = this.grid;
+      const t = this.layout();
+      if (t.grid.rows !== before.rows || t.grid.columns !== before.columns) this.opts.onTransform?.(t);
+      changed = true;
+    }
+    this.publishPlaces();
     return changed;
   }
-
-  // Called by desks.
-  open(agentId: string): void {
-    this.opts.onOpen(agentId);
-  }
 }
 
-interface Point {
-  x: number;
-  y: number;
-}
-
-// The door stands at the right end of the wall.
-function doorAt(g: Grid): Point {
-  return { x: worldSize(g).w - art.door.w - 22, y: art.wallHeight - art.door.h };
-}
 const envelopeSeconds = 1.4;
-// How long an exited agent takes to walk to the door; at most this many walk at once.
-const walkSeconds = 1.6;
-const maxWalkers = 20;
-
-// Leaver is what a walking character looks like and where it starts.
-interface Leaver {
-  body: Texture;
-  hair: Texture;
-  palette: art.Palette;
-  x: number;
-  y: number;
-}
-
-interface Walker {
-  root: Container;
-  legs: Sprite;
-  frames: Texture[];
-  from: Point;
-  to: Point;
-  start: number;
-}
 // Envelopes in flight at most; more are skipped (e.g. many messages while the
 // tab was in the background).
 const maxEnvelopes = 20;
 
-const slotKey = (s: Slot): string => (s.kind === "lead" ? "lead" : `desk-${s.index}`);
+const slotKey = (s: Slot): string => (s.kind === "lead" ? "lead" : s.kind === "station" ? `station-${s.station}` : `desk-${s.index}`);
+// stationOf is the station a character's home is, if it has one.
+const stationOf = (c: { seat?: Seat }): Station["kind"] | undefined =>
+  c.seat?.slot.kind === "station" ? c.seat.slot.station : undefined;
+const errandKey = (e: Errand): string => (e.place === "desk" ? "desk" : `${e.place}:${e.spot}`);
+
+interface FigureLook {
+  look: Look;
+  kind: Kind;
+  palette: art.Palette;
+  roll: Texture; // the architect's plan, carried to the user's door
+  note: Texture;
+  front: Texture;
+  back: Texture;
+  hair: Texture;
+  legs: Texture[];
+  mug: Texture;
+  magnifier: Texture;
+}
+
+// Character is one agent's whereabouts: at its desk (drawn by the desk), or
+// away as a figure that walks, stands or sits elsewhere.
+class Character {
+  mode: "seated" | "walking" | "standing" = "seated";
+  goal = "desk"; // errandKey of where it is or goes, or "out"
+  errand?: Errand;
+  place?: Place; // where it stands or sits, once there
+  pos: Point = { x: 0, y: 0 }; // feet, in world pixels
+  route?: Point[];
+  total = 0;
+  duration = 1;
+  start = 0;
+  fadeIn = false;
+  figure?: Figure;
+
+  constructor(readonly id: string, public seat: Seat | undefined, public look: FigureLook) {}
+}
+
+// Figure is a character away from its desk: legs, body, hair, arms and a prop.
+class Figure {
+  readonly root = new Container();
+  private readonly legs = new Sprite();
+  private readonly body = new Sprite();
+  private readonly hair = new Sprite();
+  private readonly arms = new Graphics();
+  private readonly prop = new Sprite();
+  private readonly hoverBox = new Graphics();
+  private frameKey = "";
+  pointerInside = false;
+
+  constructor(private readonly scene: OfficeScene, private readonly agentId: string, private look: FigureLook) {
+    this.legs.y = art.body.h;
+    this.hoverBox.rect(-2.5, -3.5, art.body.w + 5, art.body.h + art.legs[0].h + 6).stroke({ color: 0x6aa3ff, width: 1, alpha: 0.9 });
+    this.hoverBox.visible = false;
+    this.prop.visible = false;
+    this.root.addChild(this.hoverBox, this.legs, this.body, this.hair, this.arms, this.prop);
+    this.root.eventMode = "static";
+    this.root.cursor = "pointer";
+    this.root.hitArea = new Rectangle(-2, -3, art.body.w + 4, art.body.h + art.legs[0].h + 5);
+    this.root.on("pointertap", () => this.scene.open(this.agentId));
+    this.root.on("pointerover", () => {
+      this.pointerInside = true;
+      this.scene.hover(this.agentId);
+    });
+    this.root.on("pointerout", () => {
+      this.pointerInside = false;
+      this.scene.hover(undefined);
+    });
+    this.setLook(look);
+  }
+
+  setLook(look: FigureLook): void {
+    this.look = look;
+    this.hair.texture = look.hair;
+    this.frameKey = "";
+  }
+
+  setHover(on: boolean): void {
+    this.hoverBox.visible = on;
+  }
+
+  // placeAt moves the figure; it returns whether it moved.
+  private placeAt(x: number, y: number, z: number): boolean {
+    const nx = Math.round(x), ny = Math.round(y);
+    const moved = nx !== this.root.x || ny !== this.root.y;
+    this.root.position.set(nx, ny);
+    this.root.zIndex = Math.round(z);
+    return moved;
+  }
+
+  // walk shows a step: feet at p, legs apart or together, facing away when
+  // walking up.
+  walk(p: Point, step: number, away: boolean): void {
+    this.placeAt(p.x - art.body.w / 2, p.y - art.body.h - art.legs[0].h + 1 - step, p.y);
+    const key = `walk${step}${away ? "b" : "f"}`;
+    if (key === this.frameKey) return;
+    this.frameKey = key;
+    this.legs.visible = true;
+    this.legs.texture = this.look.legs[step];
+    this.body.texture = away ? this.look.back : this.look.front;
+    this.prop.visible = false;
+    drawArms(this.arms, `walk${step}`, this.look.palette);
+  }
+
+  // stand shows the character at its spot; it returns whether the frame changed.
+  // At a station it sits behind the furniture and moves with its pose.
+  stand(p: Point, place: Place | undefined, plan: FloorPlan, t: number, station?: Station, pose?: Pose): boolean {
+    let frame: string;
+    let moved: boolean;
+    const seated = place === "review" || station !== undefined;
+    if (station) {
+      moved = this.placeAt(p.x - art.body.w / 2, station.sitY, station.furniture.y + 1);
+      frame = pose === "typing" ? `type${Math.floor(t * 6) % 2}`
+        : pose === "reviewing" ? `review${Math.floor(t * 1.5) % 2}`
+        : "rest0"; // idle, booting: still, so a quiet station draws nothing
+    } else if (place === "review") {
+      // seated behind the table, which hides the legs
+      moved = this.placeAt(p.x - art.body.w / 2, plan.table.y - 15, plan.table.y + 1);
+      frame = `review${Math.floor(t * 1.5) % 2}`;
+    } else if (place === "queue") {
+      // at the user's door, holding what it brings: a plan, or a note
+      moved = this.placeAt(p.x - art.body.w / 2, p.y - art.body.h - art.legs[0].h + 1, p.y);
+      frame = "hold";
+    } else {
+      moved = this.placeAt(p.x - art.body.w / 2, p.y - art.body.h - art.legs[0].h + 1, p.y);
+      frame = place === "coffee" ? (t % 6 > 4.8 ? "sip" : "hold") : place === "whiteboard" ? "point" : "rest0";
+    }
+    if (frame === this.frameKey) return moved;
+    this.frameKey = frame;
+    this.legs.visible = !seated;
+    this.legs.texture = this.look.legs[0];
+    this.body.texture = this.look.front;
+    this.prop.visible = place === "review" || place === "coffee" || place === "queue" || (seated && frame.startsWith("review"));
+    if (place === "queue") {
+      const plan = this.look.kind === "architect";
+      this.prop.texture = plan ? this.look.roll : this.look.note;
+      this.prop.position.set(plan ? 5 : 9, 13);
+    } else if (place === "review" || (seated && frame.startsWith("review"))) {
+      this.prop.texture = this.look.magnifier;
+      this.prop.position.set(-7, frame === "review1" ? 6 : 7);
+    } else if (place === "coffee") {
+      this.prop.texture = this.look.mug;
+      if (frame === "sip") this.prop.position.set(8, 7);
+      else this.prop.position.set(9, 13);
+    }
+    drawArms(this.arms, frame, this.look.palette);
+    return true;
+  }
+}
 
 // DeskNode is one desk: furniture, and the agent sitting there if any.
 class DeskNode {
@@ -408,6 +924,7 @@ class DeskNode {
   private readonly bubble = new Sprite();
   private readonly hoverBox = new Graphics();
   private seat?: Seat;
+  private away = false;
   private frameKey = "";
   private bodyTextures: Texture[] = [];
   private palette: art.Palette = art.basePalette;
@@ -468,43 +985,55 @@ class DeskNode {
   place(grid: Grid): void {
     const o = slotOrigin(this.slot, grid);
     this.root.position.set(o.x, o.y);
+    // Characters in the aisle in front of the desk are drawn over it.
+    this.root.zIndex = o.y + inCell.desk.y + art.desk.h;
   }
 
   get agentId(): string | undefined {
     return this.seat?.agent.id;
   }
 
-  // leaver describes the character sitting here, in world pixels, if one is.
-  leaver(): Leaver | undefined {
-    if (!this.seat || !this.body.visible || this.bodyTextures.length === 0) return undefined;
-    return {
-      body: this.bodyTextures[0], hair: this.hair.texture, palette: this.palette,
-      x: this.root.x + inCell.person.x, y: this.root.y + inCell.person.y,
-    };
-  }
-
   setHover(on: boolean): void {
     this.hoverBox.visible = on;
+  }
+
+  // setAway empties the chair while the agent's character is elsewhere; the
+  // monitor keeps showing its state.
+  setAway(away: boolean): void {
+    if (this.away === away) return;
+    this.away = away;
+    this.frameKey = "";
+    this.applyPresence();
+    this.tick(this.lastT);
+  }
+
+  private applyPresence(): void {
+    const seat = this.seat;
+    const present = seat !== undefined && seat.pose !== "away" && !this.away;
+    this.body.visible = present;
+    this.hair.visible = present;
+    this.arms.visible = present;
+    if (!present) {
+      this.magnifier.visible = false;
+      this.bubble.visible = false;
+      this.mug.position.set(inCell.mug.x, inCell.mug.y);
+    }
   }
 
   setSeat(seat: Seat | undefined): void {
     const prev = this.seat;
     this.seat = seat;
-    const present = seat !== undefined && seat.pose !== "away";
     this.root.eventMode = seat ? "static" : "none";
     this.root.cursor = seat ? "pointer" : "default";
     this.root.alpha = seat ? 1 : 0.8;
-    this.body.visible = present;
-    this.hair.visible = present;
-    this.arms.visible = present;
     this.magnifier.visible = false;
     this.mug.visible = seat !== undefined;
     this.bubble.visible = false;
     if (!seat) this.setHover(false);
-    if (seat && (prev?.agent.id !== seat.agent.id || prev.agent.kind !== seat.agent.kind)) {
+    if (seat && (prev?.agent.id !== seat.agent.id || prev.agent.kind !== seat.agent.kind || prev.agent.role !== seat.agent.role)) {
       const l = seat.look;
-      const palette = art.personPalette(art.skins[l.skin], art.hairColors[l.hair], art.shirts[seat.agent.kind]);
-      const key = `${l.skin}-${l.hair}-${seat.agent.kind}`;
+      const palette = art.personPalette(art.skins[l.skin], art.hairColors[l.hair], shirtOf(seat.agent));
+      const key = `${l.skin}-${l.hair}-${seat.agent.kind}-${seat.agent.role}`;
       this.bodyTextures = [
         this.textures.get(`body-${key}`, art.body, palette),
         this.textures.get(`blink-${key}`, art.bodyBlink, palette),
@@ -512,6 +1041,8 @@ class DeskNode {
       this.hair.texture = this.textures.get(`hair-${l.style}-${key}`, art.hair[l.style], palette);
       this.palette = palette;
     }
+    if (prev?.agent.id !== seat?.agent.id) this.away = false; // the scene says otherwise right after
+    this.applyPresence();
     this.frameKey = ""; // redraw on the next tick
     this.tick(this.lastT);
   }
@@ -527,10 +1058,7 @@ class DeskNode {
     const rate = pose === "typing" ? 6 : pose === "booting" ? 2 : 1.5;
     const screenFrame = Math.floor(t * rate) % frames.length;
     let changed = this.show(this.screen, frames[screenFrame]);
-    if (pose === "away") {
-      this.mug.position.set(inCell.mug.x, inCell.mug.y);
-      return changed;
-    }
+    if (pose === "away" || this.away) return changed;
 
     const blink = !this.still && t % 4 < 0.15 ? 1 : 0;
     changed = this.show(this.body, this.bodyTextures[blink]) || changed;
@@ -584,7 +1112,7 @@ class DeskNode {
 
 // drawArms draws sleeves and hands for a pose frame, in coordinates relative
 // to the person sprite (shoulders at y 12, desk top at y 15, keyboard at
-// x 2..13, y 18..20).
+// x 2..13, y 18..20; a standing figure's legs start at y 16).
 function drawArms(g: Graphics, frame: string, p: art.Palette): void {
   const shirt = p.c, shade = p.C, skin = p.s, line = p.k;
   g.clear();
@@ -603,6 +1131,21 @@ function drawArms(g: Graphics, frame: string, p: art.Palette): void {
     r(10, 17 - lift, 2, 2, skin);
     r(10, 19 - lift, 2, 1, line);
   };
+  // Arms hanging beside a standing figure; swing moves one hand forward.
+  const hanging = (side: "left" | "right", swing: number): void => {
+    const x = side === "left" ? 0 : 14;
+    r(x, 12, 2, 4 - swing, shade);
+    r(x, 16 - swing, 2, 2, skin);
+    r(x, 18 - swing, 2, 1, line);
+  };
+  const raised = (dx: number): void => {
+    r(14, 4, 4, 10, line);
+    r(15, 5, 2, 9, shirt);
+    r(16, 5, 1, 9, shade);
+    r(13 + dx, -1, 5, 6, line);
+    r(14 + dx, 0, 3, 4, skin);
+    r(14 + dx, 4, 3, 1, shirt);
+  };
   switch (frame) {
     case "type0":
       leftResting(1);
@@ -613,18 +1156,11 @@ function drawArms(g: Graphics, frame: string, p: art.Palette): void {
       rightResting(1);
       break;
     case "raise0":
-    case "raise1": {
+    case "raise1":
       // the right arm straight up beside the head, the hand waving
-      const dx = frame === "raise1" ? 1 : 0;
       leftResting(0);
-      r(14, 4, 4, 10, line);
-      r(15, 5, 2, 9, shirt);
-      r(16, 5, 1, 9, shade);
-      r(13 + dx, -1, 5, 6, line);
-      r(14 + dx, 0, 3, 4, skin);
-      r(14 + dx, 4, 3, 1, shirt);
+      raised(frame === "raise1" ? 1 : 0);
       break;
-    }
     case "review0":
     case "review1": {
       const up = frame === "review1" ? 1 : 0;
@@ -638,6 +1174,29 @@ function drawArms(g: Graphics, frame: string, p: art.Palette): void {
       r(13, 13, 2, 2, shade);
       r(11, 11, 2, 2, shirt);
       r(10, 10, 2, 2, skin);
+      break;
+    case "walk0":
+    case "walk1": {
+      const s = frame === "walk1" ? 1 : 0;
+      hanging("left", s);
+      hanging("right", 1 - s);
+      break;
+    }
+    case "point":
+      // at the whiteboard: one arm up to the board, a red marker in the hand
+      hanging("left", 0);
+      r(14, 3, 3, 10, line);
+      r(15, 4, 1, 9, shirt);
+      r(14, 0, 3, 4, line);
+      r(15, 1, 1, 2, skin);
+      r(15, -2, 1, 2, 0xe05a5a);
+      break;
+    case "hold":
+      // a mug held in front
+      hanging("left", 0);
+      r(13, 12, 2, 3, shade);
+      r(11, 14, 3, 1, shirt);
+      r(10, 14, 2, 2, skin);
       break;
     default:
       leftResting(0);

@@ -264,6 +264,32 @@ characters at desks, from the same `/api/events` stream as the board; the daemon
 - Tests: Vitest for the pure modules (`make check`); Playwright against a mocked daemon
   (`make ui-test`), including clicks on the canvas and the frame rate with 10 and 20 agents.
 
+**Office v2 (Phase 13, ADR 0045).** The office has a floor plan: the Tech Lead's room (desk and
+whiteboard), a review room (table, wall screen), a kitchen (coffee machine), a planning room
+(the architect's drafting table), a QA lab (test bench), a lobby (front door, the assistant at
+reception), the user's office (agents waiting on the user queue at its door, as many as the
+Approvals count) and the
+workroom with every other desk; side by side for 4 to 6 desk columns, stacked for 3 (phones).
+Characters leave their desk on errands the UI derives from data it already has, still without
+daemon changes:
+
+```mermaid
+flowchart LR
+  E["/api/events<br/>agents, tasks"] --> M["model.ts<br/>seats, poses, task status"]
+  M --> D["errands.ts (Director)<br/>report → whiteboard · reviewing → review room<br/>idle → one coffee · waiting/booting → desk"]
+  D --> S["scene.ts<br/>route (paths.ts on floor.ts) · walk · stand · sit"]
+  S --> N["HTML nameplates<br/>data-place, tooltip"]
+```
+
+- `floor.ts` computes rooms, walls, doorways, furniture and standing spots for a desk grid;
+  `paths.ts` turns it into a walkability grid and finds routes (BFS, string pulling) that never
+  cross a wall or furniture (tested for every plan, desk and spot).
+- `errands.ts` keeps a little memory per agent (last task status, idle since, report window) and
+  says where each character should be at a given time; the first view only records.
+- The scene depth-sorts desks, furniture and characters by their feet, walks new agents in through
+  the front door and leavers out, and keeps render on demand: with ten characters walking a drawn
+  frame stays far below the 8 ms p95 budget, and an empty office draws nothing.
+
 **Names and navigation (UI/UX polish, ADR 0043, 0044).** The daemon names each agent when it
 starts (`agents.name`, unique among listed agents); the id stays the key in the API, logs and
 branch names, and the UI shows the name with the short id. The tab strip holds the agents the

@@ -1,6 +1,6 @@
 # 0044. Agent switcher, open tabs and the approvals drawer
 
-- **Status:** Accepted; amended 2026-11-09 (what counts as waiting; crowded tabs; see the end)
+- **Status:** Accepted; amended 2026-11-09 (what counts as waiting; crowded tabs; questions and plans; see the end)
 - **Date:** 2026-11-09
 
 ## Context
@@ -102,3 +102,10 @@ Also amended:
   before the first paint. Under CPU throttling, a `/` pressed right after the page appeared was
   lost, and so could the first keys typed into the switcher.
 
+## Amendment (2026-11-09, Phase 13 review): questions and plans wait on the user too
+
+The one list behind the badge, the drawer, the tab title and the Office (`waitingOnUser`) now also
+holds an agent whose question to the user (an inbox question or blocked notice, ADR 0030) has no
+answer yet, and an architect whose plan waits for approval (ADR 0031). Still one entry per agent.
+The drawer shows each with a way to act: "Answer in the inbox" and "Review plan" (the goal's card,
+where the plan is open). The Office's queue at the user's door counts the same list (ADR 0045).

@@ -2,22 +2,29 @@
 // nameplates over it. It reads the same world as the rest of the UI and has
 // one action: open an agent.
 import { type JSX, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { AccessRequest, Agent, Message, Task, TaskStatus } from "../api";
-import { type Assignment, emptyAssignment, inCell, slotOrigin, whiteboardAt } from "./layout";
+import type { Agent, Message, Task, TaskStatus } from "../api";
+import type { Waiting } from "../waiting";
+import { type Assignment, emptyAssignment, inCell, planOf, slotOrigin, whiteboardAt } from "./layout";
 import { buildOffice, freshMessages } from "./model";
-import { type Pose, poseLabel } from "./pose";
+import { type Pose, cssColor, poseLabel, shirtOf } from "./pose";
 import { whiteboardSize } from "./art";
-import { OfficeScene, type Transform } from "./scene";
+import { OfficeScene, type Transform, type Whereabouts } from "./scene";
 
 export interface OfficeProps {
   agents: Agent[];
   tasks: Task[];
   messages: Record<string, Message[]>;
-  accessRequests: AccessRequest[];
+  waiting: Waiting[]; // waitingOnUser: what the Approvals badge counts (ADR 0044)
   onOpenAgent: (id: string) => void;
 }
 
 const poseOrder: Pose[] = ["typing", "reviewing", "waiting", "idle", "booting"];
+
+// Where a character is, in the nameplate's tooltip (ADR 0045).
+const whereLabel: Record<Whereabouts, string> = {
+  desk: "", walking: "Walking", whiteboard: "Reporting at the whiteboard", coffee: "At the coffee machine", review: "In the review room",
+  queue: "Waiting at your door",
+};
 
 const statusLabel: Record<TaskStatus, string> = {
   todo: "to do", in_progress: "in progress", review: "in review", done: "done", blocked: "blocked",
@@ -32,13 +39,14 @@ function reducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-export default function Office({ agents, tasks, messages, accessRequests, onOpenAgent }: OfficeProps): JSX.Element {
+export default function Office({ agents, tasks, messages, waiting, onOpenAgent }: OfficeProps): JSX.Element {
   const pane = useRef<HTMLDivElement>(null);
   const canvasHost = useRef<HTMLDivElement>(null);
   const [scene, setScene] = useState<OfficeScene>();
   const [failure, setFailure] = useState<string>();
   const [xf, setXf] = useState<Transform>();
   const [hovered, setHovered] = useState<string>();
+  const [places, setPlaces] = useState<Record<string, Whereabouts>>({});
   const root = useRef<HTMLDivElement>(null);
   const openedAt = useRef(Date.now());
   const seen = useRef(new Set<number>());
@@ -46,10 +54,10 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
   // assignDesks is idempotent, so recomputing with the stored assignment
   // (e.g. in StrictMode) gives the same seats.
   const model = useMemo(() => {
-    const m = buildOffice(keptAssignment, agents, tasks, accessRequests);
+    const m = buildOffice(keptAssignment, agents, tasks, waiting);
     keptAssignment = m.assignment;
     return m;
-  }, [agents, tasks, accessRequests]);
+  }, [agents, tasks, waiting]);
 
   // Latest callback for the scene, which is created once.
   const open = useRef(onOpenAgent);
@@ -64,6 +72,8 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
       reducedMotion: reducedMotion(),
       onOpen: (id) => open.current(id),
       onHover: (id) => setHovered(id),
+      onPlaces: (p) => setPlaces(p),
+      onTransform: (t) => setXf(t),
     }).then(
       (s) => {
         if (disposed) {
@@ -118,7 +128,8 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
     .filter(([, n]) => n > 0);
 
   return (
-    <div className="office" ref={root} data-renderer={scene?.renderer ?? ""} data-scale={xf?.scale ?? ""}>
+    <div className="office" ref={root} data-renderer={scene?.renderer ?? ""} data-scale={xf?.scale ?? ""}
+      data-plan={xf ? (planOf(xf.grid).stacked ? "stacked" : "wide") : ""}>
       <div className="office-bar">
         {counts.length === 0
           ? <span className="muted">
@@ -146,15 +157,16 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
           const left = xf.x + (o.x + inCell.nameplate.x) * xf.scale;
           const top = xf.y + (o.y + inCell.nameplate.y) * xf.scale;
           const a = s.agent;
+          const place = places[a.id] ?? "desk";
           const tip = [
-            `${a.name} · ${a.role} · ${a.id}`, poseLabel[s.pose], a.activity ? `tool: ${a.activity}` : "", s.taskTitle ?? "",
+            `${a.name} · ${a.role} · ${a.id}`, poseLabel[s.pose], whereLabel[place], a.activity ? `tool: ${a.activity}` : "", s.taskTitle ?? "",
             "Click to open its terminal",
           ].filter(Boolean).join("\n");
           return (
             <button key={a.id} type="button"
               className={`nameplate pose-${s.pose} ${hovered === a.id ? "hovered" : ""}`}
               style={{ left, top, maxWidth: Math.max(48, 60 * xf.scale) }}
-              data-agent={a.id} data-pose={s.pose} data-state={a.state}
+              data-agent={a.id} data-pose={s.pose} data-state={a.state} data-place={place} data-shirt={cssColor(shirtOf(a).base)}
               title={tip}
               onMouseEnter={() => scene?.hover(a.id)} onMouseLeave={() => scene?.hover(undefined)}
               onFocus={() => scene?.hover(a.id)} onBlur={() => scene?.hover(undefined)}
@@ -163,13 +175,32 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
               <span className="nameplate-text">
                 <span className="nameplate-name">
                   {a.name || a.id.slice(0, 6)}
-                  {a.kind !== "worker" && <span className="nameplate-role"> {a.role}</span>}
+                  {a.role !== "worker" && (
+                    <span className="nameplate-role" style={{ color: cssColor(shirtOf(a).base) }}> {a.role}</span>
+                  )}
                 </span>
                 {s.taskTitle && <span className="nameplate-task">{s.taskTitle}</span>}
               </span>
             </button>
           );
         })}
+        {xf && planOf(xf.grid).rooms.map((r) => (
+          <div key={r.id} className={`room-label room-${r.id}`} data-room={r.id} title={r.purpose}
+            style={{ left: xf.x + r.label.x * xf.scale, top: xf.y + r.label.y * xf.scale }}>
+            {r.name}
+          </div>
+        ))}
+        {xf && (() => {
+          // The sign at the user's door counts the same list as the Approvals badge.
+          const sign = planOf(xf.grid).queueSign;
+          return (
+            <div className={`queue-sign ${model.waiting > 0 ? "has-waiting" : ""}`} data-waiting={model.waiting}
+              title="Agents waiting on you queue at this door: the same count as Approvals"
+              style={{ left: xf.x + sign.x * xf.scale, top: xf.y + sign.y * xf.scale }}>
+              {model.waiting > 0 ? `${model.waiting} waiting` : "Nobody waiting"}
+            </div>
+          );
+        })()}
         {xf && model.goal && (
           <div className="whiteboard-label" role="note"
             style={{

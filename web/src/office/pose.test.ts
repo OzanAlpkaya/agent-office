@@ -53,3 +53,18 @@ describe("lookOf", () => {
     expect(hash("a")).toBe(0xe40c292c);
   });
 });
+
+describe("shirtOf", () => {
+  it("dresses built-in roles in their kind's colour and role-pack roles in a colour of their own", async () => {
+    const { shirtOf } = await import("./pose");
+    const { shirts, roleShirts } = await import("./art");
+    expect(shirtOf({ kind: "worker", role: "worker" })).toBe(shirts.worker);
+    expect(shirtOf({ kind: "architect", role: "architect" })).toBe(shirts.architect);
+    const docs = shirtOf({ kind: "worker", role: "docs" });
+    const security = shirtOf({ kind: "worker", role: "security" });
+    expect(roleShirts).toContain(docs);
+    expect(docs).not.toBe(shirts.worker);
+    expect(security).not.toBe(docs); // different roles, different shirts (for these two names)
+    expect(shirtOf({ kind: "worker", role: "docs" })).toBe(docs); // stable
+  });
+});

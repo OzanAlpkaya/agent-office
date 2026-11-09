@@ -8,8 +8,10 @@ React + Vite + TypeScript UI: xterm.js for terminals, PixiJS for the office view
   the daemon. Start the daemon with `--dev` so it accepts that origin.
 - API types in `src/api.ts` mirror the Go structs by hand; messages from the events WebSocket
   are validated before use.
-- `src/office/` is the Office tab (ADR 0024): pure modules (`art`, `pose`, `layout`, `model`)
-  and the Pixi scene (`scene`, `textures`) behind a lazy-loaded React component (`Office.tsx`).
+- `src/office/` is the Office tab (ADR 0024, ADR 0045): pure modules (`art`, `pose`, `layout`,
+  `model`, and from Phase 13 `floor` for the floor plan, `paths` for routes, `errands` for where
+  each character should be) and the Pixi scene (`scene`, `textures`) behind a lazy-loaded React
+  component (`Office.tsx`).
   The art is drawn in code; see `src/office/ART.md`.
 
 ## Tests (ADR 0025)

@@ -1,6 +1,6 @@
 // What each agent's character does, and how it looks (ADR 0024). Pure.
-import type { Agent } from "../api";
-import { type HairStyle, hairColors, hairStyles, skins } from "./art";
+import { type Agent, defaultRole } from "../api";
+import { type HairStyle, type Swatch, hairColors, hairStyles, roleShirts, shirts, skins } from "./art";
 
 export type Pose = "booting" | "idle" | "typing" | "reviewing" | "waiting" | "away";
 
@@ -57,3 +57,14 @@ export function lookOf(id: string): Look {
     phase: (Math.floor(h / 331) % 1000) / 1000,
   };
 }
+
+// shirtOf is an agent's shirt: its kind's colour for a built-in role, and for
+// a role from a role pack (docs, security, ...) a colour of its own from a
+// hash of the role's name, the same everywhere (ADR 0045).
+export function shirtOf(a: Pick<Agent, "kind" | "role">): Swatch {
+  if (a.role === defaultRole[a.kind]) return shirts[a.kind];
+  return roleShirts[hash(a.role) % roleShirts.length];
+}
+
+// cssColor turns a 0xRRGGBB colour into a CSS colour.
+export const cssColor = (c: number): string => `#${c.toString(16).padStart(6, "0")}`;

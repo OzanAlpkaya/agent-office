@@ -10,9 +10,15 @@ license or attribute beyond the repository's own licence.
   palette (`.` is transparent). Characters (head, body, five hair styles), chair, monitor,
   keyboard, mug, magnifier, envelope, plant, water cooler and speech bubbles are drawn by hand
   this way.
-- Larger or repetitive pieces (desk, floor planks, wall, windows, whiteboard, door, rug, monitor
+- Larger or repetitive pieces (desk, floor planks, wall, windows, whiteboard, door, monitor
   screens with code, diffs, prompts and dialogs) are built by small functions from the same
   alphabet, with a fixed pseudo-random noise so they never change between runs.
+- Phase 13 (ADR 0045) added, the same way: carpet and tile floors, a meeting table, a wall screen
+  with a diff, the kitchen counter with its coffee machine, the back of a character (its face
+  covered by hair, derived from the front) and standing arms (walking, pointing with a marker,
+  holding a mug). Partition walls are plain rectangles in two colours. Then the drafting table and
+  pinned blueprints, the QA bench, test rig and results board, the reception counter, a rolled-up
+  plan and a note for the queue, three more floors and the shirts for roles from role packs.
 - Arms and hands are drawn by `scene.ts` with whole-pixel rectangles, because they move per frame.
 - Each agent's skin, hair colour and hair style come from a hash of its id; the shirt colour
   comes from its role. `textures.ts` turns each map and palette into a texture once.

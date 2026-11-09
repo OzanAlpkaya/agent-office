@@ -36,15 +36,21 @@ mkdirSync(out, { recursive: true });
 const repo = join(work, "linkshelf");
 const dataDir = join(work, "data");
 
+// The two sub-tasks touch different files, so the Tech Lead can run them in parallel (file
+// ownership, ADR 0032): one in the HTTP package, one in the bookmark store.
 const goal = {
   title: "Health check and duplicate URLs",
   description:
-    "Split this goal into exactly two sub-tasks and assign both of them right away:\n" +
-    "1. Add GET /healthz, answering 200 with {\"status\":\"ok\"}, with a test.\n" +
-    "2. Reject a duplicate URL in POST /bookmarks with 409 Conflict, with a test.\n" +
-    "Each sub-task description must say what to change and that `go test ./...` must pass; the worker " +
-    "commits its change and then calls report_done. When both workers have reported, call report_done " +
-    "for the goal.",
+    "Split this goal into exactly two sub-tasks and assign both of them right away; they touch different " +
+    "files, so they run in parallel:\n" +
+    "1. Add GET /healthz, answering 200 with {\"status\":\"ok\"}, with a test. Files: " +
+    "internal/httpapi/handler.go and internal/httpapi/handler_test.go only.\n" +
+    "2. Make bookmark.Store.Create reject a URL that is already saved, with an error that wraps ErrInvalid " +
+    "(the HTTP API already answers 422 for it), with a test. Files: internal/bookmark/store.go and " +
+    "internal/bookmark/store_test.go only.\n" +
+    "Give each sub-task exactly those files. Each sub-task description must say what to change and that " +
+    "`go test ./...` must pass; the worker commits its change and then calls report_done. When both workers " +
+    "have reported, call report_done for the goal.",
 };
 
 interface Agent { id: string; state: string; kind: string; task_id?: string }
@@ -143,12 +149,21 @@ async function main() {
         stills++;
         mark("two workers working");
       }
+      // Office v2 (ADR 0045): a worker that reports walks to the Tech Lead's whiteboard.
+      const reported = tasks.some((t) => t.parent_task_id === g?.id && (t.status === "review" || t.status === "done"));
+      if (stills === 1 && reported) {
+        await sleep(2500);
+        await page.screenshot({ path: join(out, "office-worker-reporting.png") });
+        stills++;
+        mark("first report");
+      }
       const lead = agents.find((a) => a.kind === "lead");
       if (g?.status === "review" && lead?.state === "idle") break;
       await sleep(2000);
     }
     mark("goal reported");
-    await sleep(4000);
+    // The Tech Lead reports at its whiteboard; the last workers walk out.
+    await sleep(8000);
     await page.screenshot({ path: join(out, "office-goal-reported.png") });
     await tab(page, "Board");
     await sleep(4000);

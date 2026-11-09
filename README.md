@@ -5,14 +5,16 @@ agent-office a goal. A Tech Lead agent splits it into sub-tasks and assigns them
 agent (Claude Code) runs in its own rootless Podman sandbox with its own git clone, no network
 except an allowlist, and no access to your credentials. A local web UI shows the task board, every
 agent's live terminal, token costs, and a pixel-art office where you can see who is working,
-waiting or done. Workers hand their commits back as verified git bundles. Pushing, opening pull
+waiting for you, reporting at the Tech Lead's whiteboard or taking a coffee. Workers hand their commits back as verified git bundles. Pushing, opening pull
 requests and anything risky stays behind deterministic checks and your approval. It is a single Go
 binary with the UI embedded, Linux-first.
 
-![A real run: the goal goes on the board, a Tech Lead splits it, two sandboxed workers implement the sub-tasks in parallel and report back](docs/screenshots/team-run.gif)
+![A real run: the goal goes on the board, a Tech Lead splits it, two sandboxed workers walk in, implement the sub-tasks in parallel, report at the whiteboard and leave](docs/screenshots/team-run.gif)
 
 <sub>A real, unedited run at about 2× speed (`make demo`): a haiku Tech Lead and two sandboxed
-haiku workers add two features to a small Go service in 55 seconds, for about two cents.</sub>
+haiku workers add two features to a small Go service in parallel, in under a minute, for about
+two cents. The two sub-tasks touch different packages, so file ownership (ADR 0032) lets both run
+at once.</sub>
 
 ## What it does
 
@@ -38,13 +40,24 @@ haiku workers add two features to a small Go service in 55 seconds, for about tw
   project memory reaches the agents it applies to ([docs/usage.md](docs/usage.md)).
 - **From your phone.** An installable PWA over Tailscale, with every device paired by a one-time
   code ([docs/remote.md](docs/remote.md)).
+- **An office you can watch.** A pixel-art floor plan with a room for every role: the Tech Lead's
+  whiteboard, the architect's drafting table, the QA lab, a review room, a kitchen, a lobby with
+  the assistant at reception, and your own office, where agents waiting on you queue at the door
+  (as many as the Approvals count). Characters walk in through the front door, report at the
+  whiteboard, review at the table, take a coffee when idle and leave when they are done, all
+  derived from the same events as the board and drawn only when something moves
+  ([ADR 0045](docs/adr/0045-office-floor-plan-and-errands.md)).
 
 <p align="center">
-  <img src="docs/screenshots/board-team-run.png" alt="The board after the run: goal and sub-tasks in review, with cost per task and a conflict between the two branches" width="49%">
+  <img src="docs/screenshots/board-team-run.png" alt="The board after the run: goal and sub-tasks in review, with tokens and cost per task and for the team" width="49%">
   <img src="docs/screenshots/usage-team-run.png" alt="The Usage tab after the run: tokens and estimated cost by task" width="49%">
 </p>
 <p align="center">
-  <img src="docs/screenshots/office.png" alt="The Office with ten agents in every state: typing, waiting with a raised hand, reviewing, idle, starting, exited" width="80%">
+  <img src="docs/screenshots/office.png" alt="The Office: a worker reports at the Tech Lead's whiteboard, the architect and two agents queue at your door in the lobby, QA works at its bench, a reviewer at the review table, the assistant at reception, idle agents drink coffee in the kitchen, and the workroom shows workers and role-pack roles in their own shirt colours" width="80%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/office-live-team.png" alt="A real run in the Office: both sandboxed workers report at the Tech Lead's whiteboard, one on each side of the lead's desk" width="62%">
+  <img src="docs/screenshots/office-phone.png" alt="The Office on a phone: the rooms stacked above the workroom" width="17%">
 </p>
 
 ## Architecture
@@ -87,7 +100,7 @@ the domain model and the threat model, is in [docs/architecture.md](docs/archite
 
 ## Key design decisions
 
-The decisions are recorded as 42 ADRs, indexed by topic in [docs/adr/](docs/adr/README.md).
+The decisions are recorded as 45 ADRs, indexed by topic in [docs/adr/](docs/adr/README.md).
 The ones that shape the system most:
 
 | Decision | Why | ADR |
@@ -180,8 +193,6 @@ Opt-in suites run real rootless Podman (`make sandbox-test`), Playwright against
   Single user, one goal at a time, pre-1.0.
 - **Stack:** Go (`net/http`, `coder/websocket`, `creack/pty`, MCP Go SDK, SQLite via modernc + sqlc,
   go-github, `log/slog`); React, Vite, TypeScript, xterm.js and PixiJS for the UI.
-- **Inspiration:** ideas from [jsm-hq](https://github.com/jsmastery-pro/jsm-hq) and
-  [AgentSpace](https://muratify.com). No code, names or assets are reused.
 
 ## License
 

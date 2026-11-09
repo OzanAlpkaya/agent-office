@@ -1,60 +1,76 @@
 // Desk assignment and office geometry (ADR 0024). Pure: the scene and the
 // HTML nameplates both place things from these numbers, in world pixels.
 import type { Agent } from "../api";
-import { wallHeight, whiteboardSize } from "./art";
+import { type FloorPlan, type Point, type StationKind, cell, floorPlan, margin, stationKinds } from "./floor";
 
-// Assignment says who sits where. desks[i] is the agent at regular desk i.
+// Assignment says who sits where: the Tech Lead at the lead desk, the
+// architect, QA and the assistant at their stations (ADR 0045), everyone else
+// at a regular desk; desks[i] is the agent at regular desk i.
 export interface Assignment {
   readonly lead?: string;
+  readonly architect?: string;
+  readonly qa?: string;
+  readonly assistant?: string;
   readonly desks: readonly (string | undefined)[];
 }
 
 export const emptyAssignment: Assignment = { desks: [] };
+
+// The kinds with a place of their own, and the place's key in an Assignment.
+export const ownPlaces = ["lead", ...stationKinds] as const;
+export type OwnPlace = (typeof ownPlaces)[number];
 
 const byStart = (x: Agent, y: Agent): number =>
   Date.parse(x.started_at) - Date.parse(y.started_at) || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0);
 
 // assignDesks keeps every agent at the desk it already has for as long as it
 // exists. New agents take the lowest free desk, in start order; removed agents
-// free theirs. The lead desk belongs to the running lead, or else to the lead
-// already there; a lead that has exited moves to a regular desk when a new
-// lead starts. Applying it twice gives the same result.
+// free theirs. A kind's own place (the lead desk, a station) belongs to the
+// running agent of that kind, or else to the one already there; one that has
+// exited moves to a regular desk when a new one starts. Applying it twice
+// gives the same result.
 export function assignDesks(prev: Assignment, agents: readonly Agent[]): Assignment {
   const present = new Set(agents.map((a) => a.id));
   const desks = prev.desks.map((id) => (id !== undefined && present.has(id) ? id : undefined));
-  let lead = prev.lead !== undefined && present.has(prev.lead) ? prev.lead : undefined;
-
-  const leads = agents.filter((a) => a.kind === "lead").slice().sort(byStart);
-  const running = leads.find((a) => a.state !== "exited");
-  if (running && lead !== running.id) {
-    const i = desks.indexOf(running.id);
-    if (i !== -1) desks[i] = undefined;
-    lead = running.id; // a previous, exited lead is placed below like a new agent
-  }
-  if (lead === undefined) {
-    const free = leads.filter((a) => !desks.includes(a.id));
-    lead = free.length > 0 ? free[free.length - 1].id : undefined;
+  const own: Partial<Record<OwnPlace, string>> = {};
+  for (const place of ownPlaces) {
+    let holder = prev[place] !== undefined && present.has(prev[place] as string) ? prev[place] : undefined;
+    const ofKind = agents.filter((a) => a.kind === place).slice().sort(byStart);
+    const running = ofKind.find((a) => a.state !== "exited");
+    if (running && holder !== running.id) {
+      const i = desks.indexOf(running.id);
+      if (i !== -1) desks[i] = undefined;
+      holder = running.id; // a previous, exited one is placed below like a new agent
+    }
+    if (holder === undefined) {
+      const free = ofKind.filter((a) => !desks.includes(a.id));
+      holder = free.length > 0 ? free[free.length - 1].id : undefined;
+    }
+    if (holder !== undefined) own[place] = holder;
   }
 
   const placed = new Set<string>(desks.filter((id): id is string => id !== undefined));
-  if (lead !== undefined) placed.add(lead);
+  for (const id of Object.values(own)) placed.add(id);
   for (const a of agents.filter((x) => !placed.has(x.id)).sort(byStart)) {
     const free = desks.indexOf(undefined);
     if (free === -1) desks.push(a.id);
     else desks[free] = a.id;
   }
   while (desks.length > 0 && desks[desks.length - 1] === undefined) desks.pop();
-  return { lead, desks };
+  return { ...own, desks };
 }
 
 // ---------------------------------------------------------------- geometry
+// The floor plan (floor.ts, ADR 0045) holds the rooms; this part picks the
+// grid of desks and the scale.
+
+export { cell } from "./floor";
 
 export const minRows = 2;
-export const cell = { w: 64, h: 52 } as const;
-export const world = { margin: 16, leadRowY: wallHeight, leadRowH: 58, bottom: 10 } as const;
 
 // Columns of regular desks the office may use; the one that shows the office
-// largest in the pane wins (ties go to the one closest to four).
+// largest in the pane wins (ties go to the one closest to four). Three
+// columns stack the rooms, which suits a phone.
 export const columnChoices = [3, 4, 5, 6] as const;
 const preferredColumns = 4;
 // Largest drawing scale, in CSS pixels per world pixel.
@@ -69,11 +85,13 @@ export function gridFor(desks: number, columns: number): Grid {
   return { columns, rows: Math.max(minRows, Math.ceil(desks / columns)) };
 }
 
+export function planOf(g: Grid): FloorPlan {
+  return floorPlan(g.columns, g.rows);
+}
+
 export function worldSize(g: Grid): { w: number; h: number } {
-  return {
-    w: g.columns * cell.w + 2 * world.margin,
-    h: world.leadRowY + world.leadRowH + g.rows * cell.h + world.bottom,
-  };
+  const p = planOf(g);
+  return { w: p.w, h: p.h };
 }
 
 // fitGrid picks the columns and the whole number k of device pixels per world
@@ -105,20 +123,26 @@ export function fitGrid(w: number, h: number, dpr: number, desks: number): { gri
   return wide.k > fit.k ? wide : { ...fit, k: Math.max(1, fit.k) };
 }
 
-export type Slot = { kind: "lead" } | { kind: "desk"; index: number };
+export type Slot = { kind: "lead" } | { kind: "desk"; index: number } | { kind: "station"; station: StationKind };
 
-// slotOrigin is the top-left corner of a slot's cell.
-export function slotOrigin(slot: Slot, g: Grid): { x: number; y: number } {
-  if (slot.kind === "lead") return { x: (worldSize(g).w - cell.w) / 2, y: world.leadRowY + 4 };
-  return {
-    x: world.margin + (slot.index % g.columns) * cell.w,
-    y: world.leadRowY + world.leadRowH + Math.floor(slot.index / g.columns) * cell.h,
+// slotOrigin is the top-left corner of a desk slot's cell. A station has no
+// cell; its origin is chosen so that the nameplate lands under its furniture.
+export function slotOrigin(slot: Slot, g: Grid): Point {
+  const p = planOf(g);
+  if (slot.kind === "lead") return p.lead;
+  if (slot.kind === "station") {
+    const n = p.stations[slot.station].nameplate;
+    return { x: n.x - inCell.nameplate.x, y: n.y - inCell.nameplate.y };
+  }
+  return p.desks[slot.index] ?? {
+    x: margin + (slot.index % g.columns) * cell.w,
+    y: p.desks[0].y + Math.floor(slot.index / g.columns) * cell.h,
   };
 }
 
 // The lead's whiteboard hangs on the wall above the lead desk.
-export function whiteboardAt(g: Grid): { x: number; y: number } {
-  return { x: (worldSize(g).w - whiteboardSize.w) / 2, y: 6 };
+export function whiteboardAt(g: Grid): Point {
+  return planOf(g).whiteboard;
 }
 
 // Positions inside a cell.

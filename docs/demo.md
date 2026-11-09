@@ -22,12 +22,20 @@ What it does (`web/demo/record-team-run.ts`, run by Node with Playwright's Chrom
    end.
 3. Records 1280×800 video while it adds the goal on the board, clicks **Start Tech Lead** and
    switches to the Office tab. It waits until the goal is in review and the Tech Lead is idle
-   (20-minute limit), then shows the board and the Usage tab.
+   (20-minute limit), keeps the Office on screen for eight more seconds (the Tech Lead reports at
+   its whiteboard, the last workers walk out; ADR 0045), then shows the board and the Usage tab.
 4. Stops the agents and the daemon, removes the containers, the clone and the data dir
-   (`AO_DEMO_KEEP=1` keeps them), and writes `team-run.webm`, four PNG stills and `markers.json`
+   (`AO_DEMO_KEEP=1` keeps them), and writes `team-run.webm`, PNG stills and `markers.json`
    (seconds into the video at each step) to `AO_DEMO_OUT`.
 5. `web/demo/to-gif.sh` speeds the video up to about 35 seconds, then scales it to 800 px at 6 fps
-   with 64 colours, which is about 6 MB.
+   with 64 colours, which is 4 to 6 MB.
+
+The stills are `office-goal-reported.png`, `board-goal-reported.png` and `usage-team-run.png`,
+plus `office-team-working.png` when two workers work at the same time and
+`office-worker-reporting.png` when the first worker reports. The goal names the files of each
+sub-task (`internal/httpapi` for the health check, `internal/bookmark` for duplicate URLs), so the
+Tech Lead declares disjoint files and both workers run at once; sub-tasks that share a file are
+run one after the other (ADR 0032), and then the first of those two stills is missing.
 
 Before committing a new GIF or still, look at the stills and at frames across the GIF
 (`ffmpeg -ss <s> -i team-run.gif -frames:v 1 f.png`). Check for local paths, names and anything
@@ -48,9 +56,11 @@ the README's GIF open as a fallback in case the network or the API is slow.
    every time, and that is the risky part. agent-office lets several of them do that, inside a
    sandbox, while you keep the decisions.
 2. **Give the team a goal (1 min).** On the board, add "Health check and duplicate URLs" (the two
-   playground backlog items) and click **Start Tech Lead**. Open the **Office** tab. The lead's
-   whiteboard fills with sub-tasks, two workers sit down and start typing, and messages fly to the
-   lead when they report.
+   playground backlog items, one in `internal/httpapi` and one in `internal/bookmark`, so they can
+   run in parallel; the full text is in `web/demo/record-team-run.ts`) and click **Start Tech Lead**. Open the **Office** tab. The lead's
+   whiteboard fills with sub-tasks, workers walk in through the lobby's front door to their
+   desks and start typing, and each one walks to the Tech Lead's whiteboard when it reports, then
+   leaves. The idle lead takes a coffee meanwhile (ADR 0045).
 3. **Look inside (1 min).** Open a worker's terminal tab: it is a real Claude Code session, live.
    Point at the agent card's "sandbox events": Claude Code tried to reach `downloads.claude.ai`, and
    the egress allowlist refused it. The worker has no network of its own and no credential. Its

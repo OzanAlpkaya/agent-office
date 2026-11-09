@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AccessRequest } from "./api";
+import type { AccessRequest, InboxItem, Spec } from "./api";
 import { agent } from "./office/testutil";
 import { waitingOnUser } from "./waiting";
 
@@ -29,5 +29,51 @@ describe("waitingOnUser", () => {
 
   it("is empty when nothing waits", () => {
     expect(waitingOnUser([agent("a", { state: "idle" })], [req(1, "a", 1, "approved")])).toEqual([]);
+  });
+
+  const question = (id: number, agentId: string | undefined, minute: number, over: Partial<InboxItem> = {}): InboxItem => ({
+    id, agent_id: agentId, kind: "question", body: "Which database?", created_at: `2026-11-09T10:0${minute}:00Z`, ...over,
+  });
+  const spec = (id: number, author: string | undefined, status: Spec["status"], version = 1): Spec => ({
+    id, goal_id: "g1", version, status, author, markdown: "", created_at: "2026-11-09T10:02:00Z",
+    plan: { summary: "", design: "", sub_tasks: [] } as unknown as Spec["plan"],
+  });
+
+  it("counts an agent whose question waits for an answer, once, oldest question first", () => {
+    const agents = [agent("arch", { kind: "architect", state: "idle" }), agent("lead", { kind: "lead", state: "idle" })];
+    const w = waitingOnUser(agents, [], [
+      question(2, "arch", 4), question(1, "arch", 3),
+      question(3, "lead", 1, { answered_at: "2026-11-09T10:05:00Z" }), // answered
+      question(4, "lead", 1, { kind: "info" }), // not a question
+      question(5, undefined, 1), // from agent-office itself
+    ]);
+    expect(w.map((x) => [x.agent.id, x.questions.map((q) => q.id)])).toEqual([["arch", [1, 2]]]);
+  });
+
+  it("counts an architect whose plan waits for approval, with its newest proposal", () => {
+    const agents = [agent("arch", { kind: "architect", state: "idle" })];
+    const w = waitingOnUser(agents, [], [], [spec(1, "arch", "superseded"), spec(2, "arch", "proposed", 2), spec(3, undefined, "proposed", 3)]);
+    expect(w.map((x) => [x.agent.id, x.plans.map((p) => p.id)])).toEqual([["arch", [2]]]);
+    // an approved plan waits for nobody; nor does an exited architect
+    expect(waitingOnUser(agents, [], [], [spec(4, "arch", "approved")])).toEqual([]);
+    expect(waitingOnUser([agent("arch", { kind: "architect", state: "exited" })], [], [question(1, "arch", 1)], [spec(2, "arch", "proposed")])).toEqual([]);
+  });
+
+  it("keeps a plan per goal: versions count per goal", () => {
+    const agents = [agent("arch", { kind: "architect", state: "idle" })];
+    const g1 = { ...spec(1, "arch", "proposed", 3), goal_id: "g1", created_at: "2026-11-09T10:03:00Z" };
+    const g2 = { ...spec(2, "arch", "proposed", 1), goal_id: "g2", created_at: "2026-11-09T10:01:00Z" };
+    const w = waitingOnUser(agents, [], [], [g1, g2]);
+    expect(w[0].plans.map((p) => p.goal_id)).toEqual(["g2", "g1"]); // oldest first
+    expect(w[0].since).toBe(Date.parse("2026-11-09T10:01:00Z"));
+  });
+
+  it("orders by what has waited longest, whatever it is", () => {
+    const agents = [
+      agent("q", { state: "idle", started_at: "2026-11-09T09:00:00Z" }),
+      agent("r", { state: "working", started_at: "2026-11-09T09:00:00Z" }),
+    ];
+    const w = waitingOnUser(agents, [req(1, "r", 5)], [question(1, "q", 2)]);
+    expect(w.map((x) => x.agent.id)).toEqual(["q", "r"]);
   });
 });

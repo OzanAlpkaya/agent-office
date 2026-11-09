@@ -26,7 +26,13 @@ const maps: [string, art.PixelMap, art.Palette][] = [
   ["note", art.noteMap, notePalette],
   ["floor", art.floorTile, art.floorPalette],
   ["wall", art.wallTile, art.wallPalette],
-  ["rug", art.rug(40, 20), art.rugPalette],
+  ["bodyBack", art.bodyBack, person],
+  ["carpet", art.carpetTile, art.carpetPalette],
+  ["tile", art.tileFloor, art.tilePalette],
+  ["kitchenTile", art.tileFloor, art.kitchenPalette],
+  ["table", art.table(88), art.basePalette],
+  ["wallScreen", art.wallScreen, art.wallScreenPalette],
+  ["counter", art.counter, art.basePalette],
   ["screenOff", art.screenOff(), art.screenPalette],
   ["code", art.codeMap, art.screenPalette],
   ...art.screenBoot().map((m, i): [string, art.PixelMap, art.Palette] => [`boot.${i}`, m, art.screenPalette]),
@@ -60,6 +66,18 @@ describe("pixel maps", () => {
     expect(art.bodyBlink.h).toBe(art.body.h);
   });
 
+  it("the back of a character covers the face and keeps the body", () => {
+    expect([art.bodyBack.w, art.bodyBack.h]).toEqual([art.body.w, art.body.h]);
+    const face = art.bodyBack.rows.slice(2, 10).join("");
+    expect(face).not.toMatch(/[sem]/);
+    expect(art.bodyBack.rows.slice(10)).toEqual(art.body.rows.slice(10));
+  });
+
+  it("the meeting table is as tall as declared, at any width", () => {
+    for (const w of [48, 64, 88]) expect([art.table(w).w, art.table(w).h]).toEqual([w, art.tableHeight]);
+    expect(art.counter.h).toBeGreaterThan(art.counterTop);
+  });
+
   it("screens fit the monitor's screen", () => {
     for (const m of [art.screenOff(), ...art.screenBoot(), ...art.screenPrompt(), ...art.screenDialog(), ...art.screenDiff()]) {
       expect([m.w, m.h]).toEqual([art.screenRect.w, art.screenRect.h]);
@@ -82,6 +100,7 @@ describe("pixel maps", () => {
 
   it("built pieces are deterministic", () => {
     expect(art.screenDiff()).toEqual(art.screenDiff());
-    expect(art.rug(30, 10)).toEqual(art.rug(30, 10));
+    expect(art.table(64)).toEqual(art.table(64));
+    expect(art.wallScreen).toEqual(art.wallScreen);
   });
 });
