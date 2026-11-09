@@ -54,6 +54,8 @@ export interface SceneOptions {
   onOpen: (agentId: string) => void;
   onHover: (agentId: string | undefined) => void;
   onPlaces?: (places: Record<string, Whereabouts>) => void;
+  // The office changed size by itself (a held row of desks went once the last leaver left).
+  onTransform?: (t: Transform) => void;
 }
 
 const noteColors: Record<TaskStatus, art.Swatch> = {
@@ -100,6 +102,7 @@ export class OfficeScene {
   private model?: OfficeModel;
   private hovered?: string;
   private size = { w: 1, h: 1 };
+  private shownDesks = 0; // desks the grid was laid out for
   private destroyed = false;
   private dirty = true;
   private notesKey = "";
@@ -164,6 +167,12 @@ export class OfficeScene {
     };
   }
 
+  // leaving says whether a character without a seat is still in the office.
+  private leaving(): boolean {
+    for (const c of this.chars.values()) if (!c.seat) return true;
+    return false;
+  }
+
   private walkingCount(): number {
     let n = 0;
     for (const c of this.chars.values()) if (c.mode === "walking") n++;
@@ -217,7 +226,11 @@ export class OfficeScene {
     // screen change it.
     const dpr = window.devicePixelRatio || 1;
     const { w, h } = this.size;
-    const { grid, k } = fitGrid(w, h, dpr, this.model?.desks ?? 0);
+    // While someone walks out, the office keeps its size: a row of desks
+    // vanishing under their feet would cut the walk short.
+    const want = this.model?.desks ?? 0;
+    this.shownDesks = this.leaving() ? Math.max(want, this.shownDesks) : want;
+    const { grid, k } = fitGrid(w, h, dpr, this.shownDesks);
     if (grid.columns !== this.grid.columns || grid.rows !== this.grid.rows || this.nodes.length === 0) this.setGrid(grid);
     const { w: W, h: H } = worldSize(grid);
     const scale = k / dpr;
@@ -256,7 +269,7 @@ export class OfficeScene {
         this.chars.set(c.id, c);
         if (!first && !this.opts.reducedMotion) {
           c.mode = "standing";
-          c.goal = "out"; // it is at the door; its errand sends it to its desk
+          c.goal = "enter"; // it is at the door; its errand sends it to its desk
           c.pos = this.plan.entrance;
           c.fadeIn = true;
           this.ensureFigure(c);
@@ -335,6 +348,7 @@ export class OfficeScene {
   }
 
   private setGrid(grid: Grid): void {
+    const sameColumns = grid.columns === this.grid.columns && this.nodes.length > 0;
     this.grid = grid;
     this.plan = planOf(grid);
     const want = 1 + grid.rows * grid.columns;
@@ -348,10 +362,20 @@ export class OfficeScene {
     while (this.nodes.length > want) this.nodes.pop()?.root.destroy({ children: true });
     for (const n of this.nodes) n.place(grid);
     this.buildRooms();
-    // Positions belong to the old plan: everyone who is away from their desk
-    // is where they were going, at once.
+    // With the same columns, rooms and desks stay where they were and only
+    // rows come or go: walkers find a new way from where they are. Otherwise
+    // positions belong to the old plan, and everyone away from their desk is
+    // where they were going, at once.
+    const now = performance.now() / 1000;
     for (const c of [...this.chars.values()]) {
-      if (c.mode !== "seated") this.arrive(c);
+      if (c.mode === "seated") continue;
+      if (sameColumns && c.mode === "walking") this.walkFrom(c, c.pos, now);
+      else if (sameColumns) continue;
+      else {
+        if (c.goal === "enter") c.goal = "desk";
+        c.pos = this.target(c, c.goal, c.errand);
+        this.arrive(c);
+      }
     }
   }
 
@@ -515,19 +539,24 @@ export class OfficeScene {
       if (!c.seat) return;
       this.standUp(c, slotOrigin(c.seat.slot, this.grid));
     }
-    const to = this.target(c, goal, e);
-    const walking = this.walkingCount();
-    if (instant || this.opts.reducedMotion || walking >= maxWalkers) {
-      c.pos = to;
+    if (instant || this.opts.reducedMotion || this.walkingCount() >= maxWalkers) {
+      c.pos = this.target(c, goal, e);
       this.arrive(c);
       return;
     }
-    const path = route(this.plan, c.pos, to);
+    if (this.walkFrom(c, c.pos, now)) this.trips++;
+  }
+
+  // walkFrom starts (or restarts) a character's walk from p to its goal; it
+  // returns false when it was already there.
+  private walkFrom(c: Character, p: Point, now: number): boolean {
+    const to = this.target(c, c.goal, c.errand);
+    const path = route(this.plan, p, to);
     const total = length(path);
     if (total < 1) {
       c.pos = to;
       this.arrive(c);
-      return;
+      return false;
     }
     c.route = path;
     c.total = total;
@@ -535,9 +564,9 @@ export class OfficeScene {
     c.start = now;
     c.mode = "walking";
     c.place = undefined;
-    this.trips++;
     this.ensureFigure(c).root.alpha = c.fadeIn ? 0 : 1;
     this.syncDesks();
+    return true;
   }
 
   // arrive ends a trip: the character sits at its desk, stands at its spot,
@@ -554,7 +583,7 @@ export class OfficeScene {
       this.syncDesks();
       return;
     }
-    if (goal === "desk" || c.errand === undefined || c.errand.place === "desk") {
+    if (goal === "desk" || goal === "enter" || c.errand === undefined || c.errand.place === "desk") {
       if (!c.seat) {
         // its desk is gone: leave instead
         c.goal = "out";
@@ -638,6 +667,13 @@ export class OfficeScene {
         e.sprite.destroy();
         this.envelopes.splice(i, 1);
       }
+    }
+    // The last leaver is gone: the office may lose the rows it held for them.
+    if (this.model && this.shownDesks > this.model.desks && !this.leaving()) {
+      const before = this.grid;
+      const t = this.layout();
+      if (t.grid.rows !== before.rows || t.grid.columns !== before.columns) this.opts.onTransform?.(t);
+      changed = true;
     }
     this.publishPlaces();
     return changed;

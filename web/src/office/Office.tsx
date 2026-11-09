@@ -71,6 +71,7 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
       onOpen: (id) => open.current(id),
       onHover: (id) => setHovered(id),
       onPlaces: (p) => setPlaces(p),
+      onTransform: (t) => setXf(t),
     }).then(
       (s) => {
         if (disposed) {
