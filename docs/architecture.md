@@ -265,7 +265,10 @@ characters at desks, from the same `/api/events` stream as the board; the daemon
   (`make ui-test`), including clicks on the canvas and the frame rate with 10 and 20 agents.
 
 **Office v2 (Phase 13, ADR 0045).** The office has a floor plan: the Tech Lead's room (desk and
-whiteboard), a review room (table, wall screen), a kitchen (coffee machine, front door) and the
+whiteboard), a review room (table, wall screen), a kitchen (coffee machine), a planning room
+(the architect's drafting table), a QA lab (test bench), a lobby (front door, the assistant at
+reception), the user's office (agents waiting on the user queue at its door, as many as the
+Approvals count) and the
 workroom with every other desk; side by side for 4 to 6 desk columns, stacked for 3 (phones).
 Characters leave their desk on errands the UI derives from data it already has, still without
 daemon changes:

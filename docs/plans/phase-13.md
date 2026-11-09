@@ -195,3 +195,12 @@ None.
   URLs rejected in `internal/bookmark` with an error that wraps `ErrInvalid`, which the API
   already answers with 422), and the re-recorded GIF shows both workers at once.
 - **Inspiration line removed** from the README (Ozan's review).
+- **Rooms for every role (Ozan's review, a scope change he asked for).** A planning room with the
+  architect's drafting table, a QA lab with a test bench, a lobby with the front door and the
+  assistant at reception, and the user's office: agents waiting on the user queue at its door, as
+  many as the Approvals count, with a sign counting the same list; the architect brings its plan.
+  Roles from role packs get a shirt colour of their own. For the queue to include architect
+  questions and plans and still match the badge, the list behind the badge now includes unanswered
+  questions and plans waiting for approval (ADR 0044 amended, ADR 0045 amended). Two bands of rooms
+  on a desktop (the office draws at 2 CSS pixels per world pixel there instead of 3), three on a
+  phone. The originality rule in `CLAUDE.md` no longer names other projects.

@@ -481,8 +481,10 @@ Design backlog from Ozan (2026-11-08); the last planned phase.
 something, in an office with rooms.
 
 **Scope** (see ADR 0045 and `docs/plans/phase-13.md`)
-- A floor plan with the Tech Lead's room (whiteboard), a review room (table, wall screen), a kitchen
-  (coffee machine, front door) and the workroom; side by side on a desktop, stacked on a phone.
+- A floor plan with the Tech Lead's room (whiteboard), a planning room (the architect's drafting
+  table), a review room (table, wall screen), a QA lab (test bench), a kitchen (coffee machine), a
+  lobby (front door, the assistant at reception), the user's office and the workroom; two bands of
+  rooms on a desktop, three stacked on a phone. Roles from role packs get a shirt of their own.
   Desks stay assigned (ADR 0024).
 - Characters walk routed paths (walkability grid, BFS, string pulling) on errands derived from what
   the UI already sees: a report goes to the whiteboard, a reviewer reviews in the review room, an
@@ -499,8 +501,13 @@ something, in an office with rooms.
       comes back", "the user comes first…", "a new agent walks in through the front door…",
       "a character away from its desk opens its terminal when clicked"; live in the `make demo`
       run (workers walking in, reporting at the whiteboard, leaving).
-- [x] The office has at least three rooms with a clear purpose: four (Tech Lead, Review room,
-      Kitchen, Workroom), each with an HTML label and a tooltip saying what it is for (Playwright
+- [x] The office has at least three rooms with a clear purpose: eight (Planning, Tech Lead, Your
+      office, QA lab, Review room, Kitchen, Lobby, Workroom), each with an HTML label and a tooltip
+      saying what it is for; the architect, QA and the assistant work at stations of their own, and
+      agents waiting on the user queue at its door, as many as the Approvals count (Playwright "agents
+      waiting on you queue at your door…", "the architect, QA and the assistant work at their own
+      stations", "roles from role packs sit in the workroom in a shirt of their own", "a question and
+      a plan waiting for you are in Approvals…"; Playwright
       "the office has rooms with a purpose"; on a phone the stacked plan, "the office stacks its
       rooms and stays readable").
 - [x] An office where nothing moves still renders nothing; with 10 agents walking, a drawn frame

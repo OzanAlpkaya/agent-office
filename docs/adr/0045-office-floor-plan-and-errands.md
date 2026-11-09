@@ -1,6 +1,6 @@
 # 0045. Office v2: a floor plan with rooms, paths on a grid, errands from what the UI sees
 
-- **Status:** Accepted
+- **Status:** Accepted; amended 2026-11-09 (rooms for every role, a queue at the user's door; see the end)
 - **Date:** 2026-11-09
 
 ## Context
@@ -95,3 +95,36 @@ Option 1 in each case.
   before.
 - ADR 0024 still holds for the renderer, the art and the HTML labels; its amendment's straight
   walk-out is replaced by routed walks.
+
+## Amendment (2026-11-09, Ozan's review): rooms for every role, a queue at the user's door
+
+The first floor plan had no place for the architect, the assistant or QA, and nowhere to show what
+waits on the user. Now:
+
+- **Eight rooms in bands.** A desktop gets two bands: the planning room, the Tech Lead's room and
+  the user's office along the back wall; the QA lab, the review room, the kitchen and the lobby
+  below them; the workroom under both. A phone (three desk columns) gets three stacked bands. Each
+  band room opens into the room below it (through that room's back wall), never into the user's
+  office; the bottom band opens into the workroom. The world is at least as wide as the widest
+  band (376 world pixels on a desktop), and the desks are centred in the workroom.
+- **Stations.** The architect has a drafting table in the planning room, QA a test bench in the
+  lab, the assistant the reception counter in the lobby by the front door. A station is that
+  kind's own place, assigned like the lead desk: the running agent of the kind holds it, an exited
+  one moves to a regular desk when a new one starts. Its agent sits behind the furniture (a figure,
+  as at the review table) and animates with its pose; its nameplate sits under the furniture.
+  Reviewers and every worker-behaviour role keep a workroom desk.
+- **Roles from role packs** (docs, security, a user's own) wear a shirt of their own colour, from a
+  hash of the role's name, and their nameplate shows the role in that colour; built-in roles keep
+  their kind's colour.
+- **The queue at the user's door.** An agent on the waiting list (ADR 0044: access requests,
+  permission prompts, unanswered questions, a plan waiting for approval) walks to the user's door
+  and queues in the lobby and out along the workroom's corridor (16 to 30 places, by plan). The
+  queue moves up when someone is answered; a list longer than the queue waits at the desk with a
+  raised hand. A sign at the door counts the same list as the Approvals badge, so they always
+  agree. The architect brings its plan (a blueprint roll), the others a note. Waiting beats a
+  report; a fresh start still stays at its desk.
+
+Consequences: a desktop pane of 1440×900 draws the office at 2 CSS pixels per world pixel instead of
+3 (a taller office with twice the rooms); a phone keeps about the same scale. With ten characters
+walking a drawn frame stayed at p95 0.7 to 2.0 ms. The front door moved from the kitchen to the
+lobby.

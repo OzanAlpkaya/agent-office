@@ -58,7 +58,7 @@ the README's GIF open as a fallback in case the network or the API is slow.
 2. **Give the team a goal (1 min).** On the board, add "Health check and duplicate URLs" (the two
    playground backlog items, one in `internal/httpapi` and one in `internal/bookmark`, so they can
    run in parallel; the full text is in `web/demo/record-team-run.ts`) and click **Start Tech Lead**. Open the **Office** tab. The lead's
-   whiteboard fills with sub-tasks, workers walk in through the kitchen's front door to their
+   whiteboard fills with sub-tasks, workers walk in through the lobby's front door to their
    desks and start typing, and each one walks to the Tech Lead's whiteboard when it reports, then
    leaves. The idle lead takes a coffee meanwhile (ADR 0045).
 3. **Look inside (1 min).** Open a worker's terminal tab: it is a real Claude Code session, live.

@@ -40,10 +40,12 @@ once.</sub>
   project memory reaches the agents it applies to ([docs/usage.md](docs/usage.md)).
 - **From your phone.** An installable PWA over Tailscale, with every device paired by a one-time
   code ([docs/remote.md](docs/remote.md)).
-- **An office you can watch.** A pixel-art floor plan with the Tech Lead's room, a review room, a
-  kitchen and the workroom. Characters walk in through the front door, report at the whiteboard,
-  review at the table, take a coffee when idle and leave when they are done, all derived from the
-  same events as the board and drawn only when something moves
+- **An office you can watch.** A pixel-art floor plan with a room for every role: the Tech Lead's
+  whiteboard, the architect's drafting table, the QA lab, a review room, a kitchen, a lobby with
+  the assistant at reception, and your own office, where agents waiting on you queue at the door
+  (as many as the Approvals count). Characters walk in through the front door, report at the
+  whiteboard, review at the table, take a coffee when idle and leave when they are done, all
+  derived from the same events as the board and drawn only when something moves
   ([ADR 0045](docs/adr/0045-office-floor-plan-and-errands.md)).
 
 <p align="center">
@@ -51,7 +53,7 @@ once.</sub>
   <img src="docs/screenshots/usage-team-run.png" alt="The Usage tab after the run: tokens and estimated cost by task" width="49%">
 </p>
 <p align="center">
-  <img src="docs/screenshots/office.png" alt="The Office: a worker reports at the Tech Lead's whiteboard, a reviewer reads at the review room table, idle agents drink coffee in the kitchen, a new agent walks in through the front door, and the workroom shows agents typing and waiting with raised hands" width="80%">
+  <img src="docs/screenshots/office.png" alt="The Office: a worker reports at the Tech Lead's whiteboard, the architect and two agents queue at your door in the lobby, QA works at its bench, a reviewer at the review table, the assistant at reception, idle agents drink coffee in the kitchen, and the workroom shows workers and role-pack roles in their own shirt colours" width="80%">
 </p>
 <p align="center">
   <img src="docs/screenshots/office-live-team.png" alt="A real run in the Office: one sandboxed worker reports at the Tech Lead's whiteboard while the other keeps typing at its desk" width="62%">
