@@ -143,12 +143,21 @@ async function main() {
         stills++;
         mark("two workers working");
       }
+      // Office v2 (ADR 0045): a worker that reports walks to the Tech Lead's whiteboard.
+      const reported = tasks.some((t) => t.parent_task_id === g?.id && (t.status === "review" || t.status === "done"));
+      if (stills === 1 && reported) {
+        await sleep(2500);
+        await page.screenshot({ path: join(out, "office-worker-reporting.png") });
+        stills++;
+        mark("first report");
+      }
       const lead = agents.find((a) => a.kind === "lead");
       if (g?.status === "review" && lead?.state === "idle") break;
       await sleep(2000);
     }
     mark("goal reported");
-    await sleep(4000);
+    // The Tech Lead reports at its whiteboard; the last workers walk out.
+    await sleep(8000);
     await page.screenshot({ path: join(out, "office-goal-reported.png") });
     await tab(page, "Board");
     await sleep(4000);

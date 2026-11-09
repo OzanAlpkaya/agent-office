@@ -515,3 +515,22 @@ test.describe("on a phone", () => {
     expect(errorsOf(page)).toEqual([]);
   });
 });
+
+test("showcase: a moment in the office, for the README", async ({ page }) => {
+  test.setTimeout(60_000);
+  const daemon = new MockDaemon(team(10));
+  await openOffice(page, daemon);
+  // Idle agents go for their coffee; then a worker reports while they are at the counter.
+  await expect(plate(page, "f6a7b8000005")).toHaveAttribute("data-place", "coffee", { timeout: 15_000 });
+  daemon.updateTask("t00000000001", { status: "review" });
+  await expect(plate(page, "b2c3d4000001")).toHaveAttribute("data-place", "whiteboard", { timeout: 8000 });
+  daemon.addAgent(agent("f0f0f0000095", "worker", "starting", { name: "Bao", started_at: new Date().toISOString() }));
+  daemon.message(201, "c3d4e5000002", "a1ead0000001");
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: `${screens}/office-showcase.png` });
+  const canvas = await page.locator(".office canvas").boundingBox();
+  if (canvas) {
+    await page.screenshot({ path: `${screens}/office-rooms-closeup.png`, clip: { x: canvas.x, y: canvas.y, width: canvas.width, height: canvas.height * 0.42 } });
+  }
+  expect(errorsOf(page)).toEqual([]);
+});
