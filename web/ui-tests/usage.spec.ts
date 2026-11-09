@@ -69,13 +69,15 @@ test("agent and task cards show their usage", async ({ page }) => {
 test("an exited agent's terminal explains the resume line and resumes it", async ({ page }) => {
   const daemon = new MockDaemon(team(10));
   const errors = await open(page, daemon);
-  await page.locator(".card", { hasText: "d0e1f2000009" }).click();
+  // exited agents are listed below the running ones, collapsed (ADR 0044)
+  await page.locator(".exited-agents summary").click();
+  await page.locator('.card[data-agent="d0e1f2000009"]').click();
   await expect(page.getByTestId("resume-note")).toContainText("does not apply here");
   await expect(page.getByTestId("resume-note")).toContainText("Use Resume to continue it in agent-office");
   await page.screenshot({ path: `${screens}/resume-note.png` });
   await page.locator(".terminal-banner").getByRole("button", { name: "Resume" }).click();
   await expect.poll(() => daemon.requests).toContain('POST /api/agents/d0e1f2000009/resume {"prompt":""}');
-  await page.locator(".card", { hasText: "d0e1f2000009" }).getByRole("button", { name: "Resume" }).click();
+  await page.locator('.card[data-agent="d0e1f2000009"]').getByRole("button", { name: "Resume" }).click();
   await expect.poll(() => daemon.requests.filter((r) => r.startsWith("POST /api/agents/d0e1f2000009/resume")).length).toBe(2);
   expect(errors).toEqual([]);
 });
@@ -88,7 +90,8 @@ test("an agent from an earlier daemon run shows its saved sessions", async ({ pa
     : a);
   const daemon = new MockDaemon(world);
   const errors = await open(page, daemon);
-  await page.locator(".card", { hasText: id }).click();
+  await page.locator(".exited-agents summary").click();
+  await page.locator(`.card[data-agent="${id}"]`).click();
   const saved = page.getByTestId("saved-terminal");
   await expect(saved.locator(".xterm-rows")).toContainText(`saved output of ${id}-s2`);
   const picker = page.getByLabel("Session");

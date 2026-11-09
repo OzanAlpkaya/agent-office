@@ -23,7 +23,8 @@ export const taskStatuses: readonly TaskStatus[] = ["todo", "in_progress", "revi
 const agentStates: readonly string[] = ["starting", "idle", "working", "waiting_permission", "exited"];
 
 export interface Agent {
-  id: string;
+  id: string; // the key everywhere: API, logs, branch names
+  name: string; // a first name for people, unique among listed agents (ADR 0043)
   session_id?: string;
   task_id?: string;
   state: AgentState;

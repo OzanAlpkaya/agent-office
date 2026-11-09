@@ -92,8 +92,6 @@ button.danger { border-color: #ff6b6b; color: #ff6b6b; }
 /* Phase 4: roles, approvals, messages */
 .role-lead { color: #c49bff; }
 .role-worker { color: var(--muted); }
-.approvals { padding: 0.5rem 1rem; border-bottom: 1px solid #c49bff; background: #1d1828; }
-.approvals h2 { font-size: 0.85rem; margin: 0 0 0.35rem; color: #c49bff; }
 .approvals ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
 .approvals li { display: flex; flex-direction: column; gap: 0.25rem; }
 .strong { font-weight: 600; }
@@ -244,7 +242,7 @@ article.task:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
   .header-actions { margin-left: 0; flex-wrap: wrap; }
   .conn { margin-left: auto; }
   .banner { padding: 0.4rem 0.6rem; }
-  .approvals, .side-panel { max-height: 40vh; overflow-y: auto; padding: 0.5rem 0.6rem; }
+  .side-panel { max-height: 40vh; overflow-y: auto; padding: 0.5rem 0.6rem; }
   main { min-height: 0; }
   aside.agents-pane { width: 100%; border-right: none; padding: 0.6rem; }
   .board { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: calc(100vw - 2.5rem);
@@ -265,3 +263,87 @@ article.task:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 .term-menu button { text-align: left; border: none; background: none; padding: 0.4rem 0.6rem; border-radius: 4px; }
 .term-menu button:hover:not(:disabled), .term-menu button:focus-visible { background: #1d2230; outline: none; }
 .copy-notice { position: absolute; top: 0.5rem; right: 0.75rem; z-index: 4; pointer-events: none; max-width: calc(100% - 1.5rem); padding: 0.35rem 0.6rem; font-size: 0.8rem; color: #ffb454; background: #2a2116; border: 1px solid #ffb454; border-radius: 6px; }
+
+/* UI/UX polish (ADR 0043, 0044): agent names, open tabs, the switcher, the approvals drawer. */
+.agent-name { display: inline-flex; align-items: baseline; gap: 0.35rem; min-width: 0; max-width: 100%; }
+.agent-first { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-id { font-size: 0.72em; color: var(--muted); font-weight: 400; }
+.agent-role { color: var(--muted); font-weight: 400; }
+.card-head .agent-first { font-size: 1rem; }
+button.agent-link { padding: 0; color: var(--text); }
+.approvals button.agent-link { min-height: 0; } /* inline text, not a touch target row */
+.count { display: inline-block; min-width: 1.2rem; margin-left: 0.35rem; padding: 0 0.3rem; border-radius: 999px; background: #2a2f3a; color: var(--text); font-size: 0.7rem; line-height: 1.2rem; text-align: center; }
+
+/* The tab strip: fixed views, then the agents the user opened, then the switcher. */
+.tabs { align-items: flex-end; overflow: visible; }
+.agent-tabs { display: flex; gap: 0.25rem; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: thin; }
+.agent-tab { display: inline-flex; align-items: stretch; flex: 0 1 auto; min-width: 6rem; max-width: 14rem; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--panel); }
+.agent-tab.active { border-color: var(--accent); background: #1d2230; }
+.agent-tab.dragging { opacity: 0.5; }
+.tabs .agent-tab button { border: none; background: none; border-radius: 0; }
+.agent-tab > button[role="tab"] { display: inline-flex; flex: 1 1 auto; align-items: center; gap: 0.35rem; min-width: 0; overflow: hidden; padding-right: 0.25rem; }
+.agent-tab-name { font-weight: 600; flex: none; }
+.agent-tab-task { color: var(--muted); font-size: 0.8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tabs .agent-tab .agent-tab-close { padding: 0 0.45rem; color: var(--muted); font-size: 1rem; line-height: 1; }
+.tabs .agent-tab .agent-tab-close:hover { color: var(--text); }
+.tabs .switcher-button { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 0.3rem; }
+
+/* The agent switcher: a dialog near the top; a full-screen sheet on a phone. */
+.switcher-layer, .drawer-layer { position: fixed; inset: 0; z-index: 20; }
+.drawer-backdrop { position: absolute; inset: 0; background: rgba(5, 7, 10, 0.55); }
+.switcher { position: absolute; left: 50%; top: 10vh; transform: translateX(-50%); width: min(40rem, calc(100vw - 2rem)); max-height: 75vh; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6); }
+.switcher-head { display: flex; gap: 0.5rem; padding: 0.6rem; border-bottom: 1px solid var(--border); }
+.switcher-head input { flex: 1; min-width: 0; font-size: 1rem; padding: 0.5rem 0.6rem; }
+.switcher-list { list-style: none; margin: 0; padding: 0.25rem 0; overflow-y: auto; flex: 1; }
+.switcher-list ul { list-style: none; margin: 0; padding: 0; }
+.switcher-group { position: sticky; top: -0.25rem; z-index: 1; padding: 0.4rem 0.75rem 0.2rem; font-size: 0.75rem; font-weight: 600; color: var(--muted); background: var(--panel); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.switcher-item { display: grid; grid-template-columns: 0.5rem 6.5rem 3.5rem 5.5rem minmax(0, 1fr) auto; align-items: center; gap: 0.5rem; padding: 0.45rem 0.75rem; cursor: pointer; }
+.switcher-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.switcher-item.active { background: #1d2230; box-shadow: inset 2px 0 0 var(--accent); }
+.switcher-item.current .switcher-name::after { content: " · open"; color: var(--muted); font-weight: 400; font-size: 0.75rem; }
+.switcher-name { font-weight: 600; }
+.switcher-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.switcher-empty { padding: 1rem 0.75rem; }
+.switcher-foot { padding: 0.4rem 0.75rem; border-top: 1px solid var(--border); }
+kbd { font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem; padding: 0 0.3rem; border: 1px solid var(--border); border-radius: 3px; }
+
+/* The approvals drawer lies over the page, so nothing moves when a request arrives. */
+.drawer { position: absolute; top: 0; right: 0; bottom: 0; width: min(30rem, 100vw); display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid #c49bff; box-shadow: -8px 0 32px rgba(0, 0, 0, 0.5); outline: none; }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 1rem; border-bottom: 1px solid var(--border); }
+.drawer-head h2 { font-size: 0.95rem; margin: 0; color: #c49bff; }
+.drawer-body { flex: 1; overflow-y: auto; padding: 0.75rem 1rem; }
+.approvals li { padding: 0.6rem; border: 1px solid var(--border); border-radius: 8px; background: #1d1828; }
+.approvals-empty { margin: 0; }
+.approvals-button.has-pending { color: #c49bff; border-color: #c49bff; font-weight: 600; animation: approvals-pulse 2s ease-in-out 3; }
+.approvals-button.has-pending .count { background: #c49bff; color: #0b1020; }
+@keyframes approvals-pulse { 50% { box-shadow: 0 0 0 4px rgba(196, 155, 255, 0.35); } }
+button.approval-link { align-self: flex-start; padding: 0.1rem 0.5rem; font-size: 0.75rem; color: #c49bff; border-color: #c49bff; border-radius: 999px; background: #1d1828; }
+@media (prefers-reduced-motion: reduce) { .approvals-button.has-pending { animation: none; } }
+
+/* Exited agents: below the running ones in the sidebar, collapsed. */
+.exited-agents { margin-top: 0.75rem; }
+.exited-agents summary { cursor: pointer; padding: 0.25rem 0; }
+.exited-agents .agents { margin-top: 0.4rem; }
+
+/* Office nameplates show the name; a role other than worker follows it. */
+.nameplate-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nameplate-role { color: var(--muted); font-weight: 400; }
+
+@media (max-width: 760px) {
+  .switcher { inset: 0; top: 0; left: 0; transform: none; width: 100%; max-height: none; height: 100%; border-radius: 0; border: none; }
+  .switcher-item { grid-template-columns: 0.5rem auto minmax(0, 1fr) auto; grid-template-areas: "dot name id state" ". task task task"; row-gap: 0.1rem; min-height: 44px; }
+  .switcher-item > .dot { grid-area: dot; }
+  .switcher-item > .switcher-name { grid-area: name; }
+  .switcher-item > .mono { grid-area: id; }
+  .switcher-item > .switcher-role { display: none; }
+  .switcher-item > .switcher-task { grid-area: task; }
+  .switcher-item > span:last-child { grid-area: state; }
+  .switcher-foot { display: none; }
+  .drawer { top: auto; left: 0; width: 100%; max-height: 80vh; border-left: none; border-top: 1px solid #c49bff; border-radius: 12px 12px 0 0; }
+  .switcher-label { display: none; }
+  /* The strip scrolls as a whole; the switcher stays at its right edge. */
+  .tabs { overflow-x: auto; }
+  .agent-tabs { flex: none; overflow: visible; }
+  .agent-tab { flex: none; max-width: 60vw; }
+  .tabs .switcher-button { position: sticky; right: 0; z-index: 1; box-shadow: -8px 0 8px var(--bg); }
+}

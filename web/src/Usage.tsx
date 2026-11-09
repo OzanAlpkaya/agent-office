@@ -1,5 +1,6 @@
 import { type JSX, useEffect, useMemo, useRef, useState } from "react";
 import { type Agent, type ModelUsage, type SessionUsage, type Status, type Task, type UsageReport, api } from "./api";
+import { AgentName } from "./AgentName";
 import { type UsageRow, formatMoney, formatTokens, groupSessions, sessionList, share, totalTokens } from "./usage";
 
 type Grouping = "goal" | "task" | "agent" | "session" | "model";
@@ -107,7 +108,8 @@ const keyOf: Record<Exclude<Grouping, "session" | "model">, (s: SessionUsage) =>
 function labelOf(g: Grouping, key: string, title: (id?: string) => string | undefined, agents: Map<string, Agent>): string {
   if (g === "agent") {
     const a = agents.get(key);
-    return `${a?.role ?? "agent"} ${key.slice(0, 6)}${a ? "" : " (removed)"}`;
+    // The name first (ADR 0043); a removed agent is only known by its id.
+    return a ? `${a.name || key.slice(0, 6)} · ${a.role} ${key.slice(0, 6)}` : `${key.slice(0, 6)} (removed)`;
   }
   if (key === "") return g === "goal" ? "No goal" : "No task";
   return title(key) ?? `${key.slice(0, 6)} (deleted)`;
@@ -204,7 +206,7 @@ function SessionTable({ sessions, title, onOpenAgent, agentKnown }: {
               {new Date(s.started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
             </td>
             <td>{agentKnown(s.agent_id)
-              ? <button className="link" onClick={() => onOpenAgent(s.agent_id)}>{s.role} {s.agent_id.slice(0, 6)}</button>
+              ? <button className="link" onClick={() => onOpenAgent(s.agent_id)}>{s.role} <AgentName id={s.agent_id} /></button>
               : `${s.role} ${s.agent_id.slice(0, 6)}`}</td>
             <td className="name">{s.task_id ? title(s.task_id) ?? s.task_id.slice(0, 6) : <span className="muted">none</span>}</td>
             <td className="muted small">{s.source === "api" ? "API socket" : "transcript"}{s.ended_at ? "" : " · running"}</td>
