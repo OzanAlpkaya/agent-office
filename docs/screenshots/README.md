@@ -1,6 +1,6 @@
 # Screenshots
 
-Refreshed at the end of Phase 13 (2026-11-09) so every picture shows the current UI.
+Refreshed at the end of Phase 13 (2026-11-09) so every picture shows the current UI. The GIF and the stills of the real run were recorded before the rooms for every role were added (see `docs/plans/phase-13.md`).
 
 | File | What it shows |
 |---|---|
@@ -8,11 +8,13 @@ Refreshed at the end of Phase 13 (2026-11-09) so every picture shows the current
 | `board-team-run.png` | The board at the end of that run: the goal and both sub-tasks in review, with tokens and cost per task and for the team. |
 | `usage-team-run.png` | The Usage tab for that run, by task. |
 | `office-live-team.png` | A still from that run (`office-worker-reporting.png` of `make demo`): one worker reports at the Tech Lead's whiteboard while the other keeps typing at its desk, and its own chair stands empty (ADR 0045). |
-| `office.png` | The Office from the mocked daemon of the UI tests (Phase 13 showcase test): a worker reporting at the whiteboard, a reviewer at the review room's table, three idle agents with coffee in the kitchen, a new agent walking in, a message flying to the Tech Lead, and the workroom with agents typing, waiting for the user (raised hands) and starting. |
-| `office-rooms.png` | Close-up of the rooms in that picture: the Tech Lead's room, the review room and the kitchen. |
-| `office-desks.png` | Close-up of the workroom in that picture: poses, monitors, bubbles, nameplates and empty chairs of agents who are away. |
+| `office.png` | The Office from the mocked daemon of the UI tests (showcase test): a worker reports at the Tech Lead's whiteboard; the architect, with its plan, and two agents waiting on you queue in the lobby under your office's door, whose sign says "3 waiting" like the Approvals badge; QA at the lab bench, a reviewer at the review table, the assistant at reception, idle agents with coffee in the kitchen, a message flying to the Tech Lead; in the workroom, workers and role-pack roles (docs, security) in shirts of their own colour. |
+| `office-rooms.png` | Close-up of the rooms in that picture: Planning, Tech Lead, Your office; QA lab, Review room, Kitchen, Lobby. |
+| `office-desks.png` | Close-up of the workroom in that picture: poses, monitors, nameplates with role colours, and empty chairs of agents who are away. |
 | `office-messages.png` | Messages between agents flying as envelopes (mocked daemon). |
-| `office-phone.png` | The Office on a Pixel 7 (mocked daemon): the stacked floor plan, rooms above the workroom. |
+| `office-phone.png` | The Office on a Pixel 7 (mocked daemon): three stacked bands of rooms above the workroom, the queue in the lobby. |
+| `office-queue.png` | A reviewer hits a permission prompt and joins the queue at your door: three waiting, three in the queue, "3 waiting" on the sign (mocked daemon). |
+| `approvals-question-plan.png` | The Approvals drawer with an architect's question and its plan waiting for approval, each leading to where it is answered (mocked daemon, ADR 0044). |
 | `usage.png` | The Usage tab by task with a goal budget and tokens without a price (mocked daemon). |
 
 The mocked ones (Playwright's headless Chromium; `make ui-test` writes fresh ones to
