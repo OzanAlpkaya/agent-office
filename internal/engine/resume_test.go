@@ -64,7 +64,7 @@ func TestResumeKeepsAgentAndWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.ID != a.ID || r.SessionID == a.SessionID || r.WorktreePath != a.WorktreePath || r.Branch != a.Branch ||
+	if r.ID != a.ID || r.Name != a.Name || r.SessionID == a.SessionID || r.WorktreePath != a.WorktreePath || r.Branch != a.Branch ||
 		r.ResumedFrom != a.SessionID || r.Resumable {
 		t.Fatalf("resumed %+v\nfrom %+v", r, a)
 	}

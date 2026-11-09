@@ -519,7 +519,7 @@ func TestRestartMarksAgentsAndKeepsTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != string(hooks.Exited) || got.ExitReason != ExitDaemonRestart || got.HasTerminal {
+	if got.State != string(hooks.Exited) || got.ExitReason != ExitDaemonRestart || got.HasTerminal || got.Name != a.Name {
 		t.Fatalf("after restart: %+v", got)
 	}
 	if _, err := e2.Terminal(a.ID); !errors.Is(err, ErrNoTerminal) {
