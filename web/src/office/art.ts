@@ -102,6 +102,25 @@ export const bodyBlink = pixelMap([
   ...body.rows.slice(8),
 ]);
 
+// Legs, drawn only while a character walks out of the office (an exited
+// agent, ADR 0024): two frames of a stride, joined below the body.
+export const legs: readonly PixelMap[] = [
+  pixelMap([
+    "...knnnnnnnnk...",
+    "...knnnkknnnk...",
+    "...knnk..knnk...",
+    "...knnk..knnk...",
+    "...kkkk..kkkk...",
+  ]),
+  pixelMap([
+    "...knnnnnnnnk...",
+    "..knnnk..knnnk..",
+    "..knnk....knnk..",
+    ".knnk......knnk.",
+    ".kkkk......kkkk.",
+  ]),
+];
+
 export type HairStyle = "short" | "long" | "bun" | "part" | "buzz";
 export const hairStyles: readonly HairStyle[] = ["short", "long", "bun", "part", "buzz"];
 

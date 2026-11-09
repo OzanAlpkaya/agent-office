@@ -17,7 +17,7 @@ export interface OfficeProps {
   onOpenAgent: (id: string) => void;
 }
 
-const poseOrder: Pose[] = ["typing", "reviewing", "waiting", "idle", "booting", "away"];
+const poseOrder: Pose[] = ["typing", "reviewing", "waiting", "idle", "booting"];
 
 const statusLabel: Record<TaskStatus, string> = {
   todo: "to do", in_progress: "in progress", review: "in review", done: "done", blocked: "blocked",
@@ -121,10 +121,18 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
     <div className="office" ref={root} data-renderer={scene?.renderer ?? ""} data-scale={xf?.scale ?? ""}>
       <div className="office-bar">
         {counts.length === 0
-          ? <span className="muted">No agents yet. Start one from the board or the sidebar; it gets a desk here.</span>
+          ? <span className="muted">
+              {model.exited > 0 ? "Nobody is at work. " : "No agents yet. "}
+              Start one from the board or the sidebar; it gets a desk here.
+            </span>
           : counts.map(([p, n]) => (
               <span key={p} className={`office-count pose-${p}`}><span className="dot" /> {n} {poseLabel[p].toLowerCase()}</span>
             ))}
+        {model.exited > 0 && (
+          <span className="muted office-left" title="Exited agents leave the office; the agent list and the switcher still have them">
+            · {model.exited} left the office
+          </span>
+        )}
       </div>
       <div className="office-pane" ref={pane}>
         <div className="office-canvas" ref={canvasHost} />
@@ -139,7 +147,7 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
           const top = xf.y + (o.y + inCell.nameplate.y) * xf.scale;
           const a = s.agent;
           const tip = [
-            `${a.role} ${a.id}`, poseLabel[s.pose], a.activity ? `tool: ${a.activity}` : "", s.taskTitle ?? "",
+            `${a.name} · ${a.role} · ${a.id}`, poseLabel[s.pose], a.activity ? `tool: ${a.activity}` : "", s.taskTitle ?? "",
             "Click to open its terminal",
           ].filter(Boolean).join("\n");
           return (
@@ -153,7 +161,10 @@ export default function Office({ agents, tasks, messages, accessRequests, onOpen
               onClick={() => onOpenAgent(a.id)}>
               <span className="dot" />
               <span className="nameplate-text">
-                <span className="mono">{a.kind === "worker" ? "" : `${a.role} `}{a.id.slice(0, 6)}</span>
+                <span className="nameplate-name">
+                  {a.name || a.id.slice(0, 6)}
+                  {a.kind !== "worker" && <span className="nameplate-role"> {a.role}</span>}
+                </span>
                 {s.taskTitle && <span className="nameplate-task">{s.taskTitle}</span>}
               </span>
             </button>

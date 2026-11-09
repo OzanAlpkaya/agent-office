@@ -28,6 +28,7 @@ export interface FrameStats {
   renders: number;
   p95Ms: number;
   maxMs: number;
+  left: number; // characters that walked out since the scene started (exited agents)
 }
 
 export interface SceneOptions {
@@ -53,9 +54,12 @@ export class OfficeScene {
   private readonly decor = new Container();
   private readonly notes = new Container();
   private readonly desks = new Container();
+  private readonly walking = new Container();
   private readonly flying = new Container();
   private readonly nodes: DeskNode[] = [];
   private readonly envelopes: { sprite: Sprite; from: Point; to: Point; start: number }[] = [];
+  private readonly walkers: Walker[] = [];
+  private left = 0;
   private grid: Grid = gridFor(0, 4);
   private wall: TilingSprite;
   private model?: OfficeModel;
@@ -73,7 +77,7 @@ export class OfficeScene {
     this.floor = new TilingSprite({ texture: t.get("floor", art.floorTile, art.floorPalette), width: 1, height: 1 });
     this.floor.y = art.wallHeight;
     this.wall = new TilingSprite({ texture: t.get("wall", art.wallTile, art.wallPalette), width: 1, height: art.wallHeight });
-    this.world.addChild(this.floor, this.wall, this.decor, this.desks, this.flying);
+    this.world.addChild(this.floor, this.wall, this.decor, this.desks, this.walking, this.flying);
     app.stage.addChild(this.world);
     // Render only frames where something changed: an idle office then costs
     // a few cheap ticks per second instead of 30 full renders.
@@ -110,6 +114,7 @@ export class OfficeScene {
     return {
       ticks: this.ticks,
       renders: this.renders,
+      left: this.left,
       p95Ms: sorted.length > 0 ? sorted[Math.floor(sorted.length * 0.95)] : 0,
       maxMs: sorted.length > 0 ? sorted[sorted.length - 1] : 0,
     };
@@ -167,6 +172,15 @@ export class OfficeScene {
   // changed (the office gained or lost a row of desks).
   update(model: OfficeModel): Transform | undefined {
     const before = this.grid;
+    // Agents that lost their seat (exited or removed) walk out from where
+    // they sat, before the grid may change under them (ADR 0024).
+    const seated = new Set(model.seats.map((s) => s.agent.id));
+    for (const n of this.nodes) {
+      const id = n.agentId;
+      if (id === undefined || seated.has(id)) continue;
+      const look = n.leaver();
+      if (look) this.walkOut(look);
+    }
     this.model = model;
     const t = this.layout();
     const bySlot = new Map(model.seats.map((s) => [slotKey(s.slot), s]));
@@ -193,6 +207,23 @@ export class OfficeScene {
     const sprite = new Sprite(this.textures.get("envelope", art.envelope, art.basePalette));
     this.flying.addChild(sprite);
     this.envelopes.push({ sprite, from, to, start: performance.now() / 1000 });
+  }
+
+  // walkOut sends a character from its desk to the door, where it fades out.
+  // With reduced motion it is simply gone.
+  private walkOut(look: Leaver): void {
+    this.left++;
+    if (this.opts.reducedMotion || this.walkers.length >= maxWalkers) return;
+    const root = new Container();
+    const legs = art.legs.map((m, i) => this.textures.get(`legs-${i}`, m, look.palette));
+    const legSprite = new Sprite(legs[0]);
+    legSprite.y = art.body.h;
+    root.addChild(legSprite, new Sprite(look.body), new Sprite(look.hair));
+    root.position.set(look.x, look.y);
+    this.walking.addChild(root);
+    const door = doorAt(this.grid);
+    const to = { x: door.x + (art.door.w - art.body.w) / 2, y: door.y + art.door.h - art.body.h - art.legs[0].h };
+    this.walkers.push({ root, legs: legSprite, frames: legs, from: { x: look.x, y: look.y }, to, start: performance.now() / 1000 });
   }
 
   private deskPoint(agentId: string): Point | undefined {
@@ -287,8 +318,23 @@ export class OfficeScene {
   // tick advances the animations; it returns whether anything changed.
   private tick(now: number): boolean {
     const t = this.opts.reducedMotion ? 0 : now;
-    let changed = this.envelopes.length > 0;
+    let changed = this.envelopes.length > 0 || this.walkers.length > 0;
     for (const n of this.nodes) changed = n.tick(t) || changed;
+    for (let i = this.walkers.length - 1; i >= 0; i--) {
+      const w = this.walkers[i];
+      const p = Math.min(1, (now - w.start) / walkSeconds);
+      // Out of the desk row first, then along the floor to the door.
+      const x = w.from.x + (w.to.x - w.from.x) * p;
+      const y = w.from.y + (w.to.y - w.from.y) * Math.min(1, p * 1.6);
+      const step = Math.floor(p * walkSeconds * 6) % 2;
+      w.legs.texture = w.frames[step];
+      w.root.position.set(Math.round(x), Math.round(y) - step);
+      w.root.alpha = p > 0.75 ? (1 - p) / 0.25 : 1;
+      if (p >= 1) {
+        w.root.destroy({ children: true });
+        this.walkers.splice(i, 1);
+      }
+    }
     for (let i = this.envelopes.length - 1; i >= 0; i--) {
       const e = this.envelopes[i];
       const p = Math.min(1, (now - e.start) / envelopeSeconds);
@@ -322,6 +368,27 @@ function doorAt(g: Grid): Point {
   return { x: worldSize(g).w - art.door.w - 22, y: art.wallHeight - art.door.h };
 }
 const envelopeSeconds = 1.4;
+// How long an exited agent takes to walk to the door; at most this many walk at once.
+const walkSeconds = 1.6;
+const maxWalkers = 20;
+
+// Leaver is what a walking character looks like and where it starts.
+interface Leaver {
+  body: Texture;
+  hair: Texture;
+  palette: art.Palette;
+  x: number;
+  y: number;
+}
+
+interface Walker {
+  root: Container;
+  legs: Sprite;
+  frames: Texture[];
+  from: Point;
+  to: Point;
+  start: number;
+}
 // Envelopes in flight at most; more are skipped (e.g. many messages while the
 // tab was in the background).
 const maxEnvelopes = 20;
@@ -405,6 +472,15 @@ class DeskNode {
 
   get agentId(): string | undefined {
     return this.seat?.agent.id;
+  }
+
+  // leaver describes the character sitting here, in world pixels, if one is.
+  leaver(): Leaver | undefined {
+    if (!this.seat || !this.body.visible || this.bodyTextures.length === 0) return undefined;
+    return {
+      body: this.bodyTextures[0], hair: this.hair.texture, palette: this.palette,
+      x: this.root.x + inCell.person.x, y: this.root.y + inCell.person.y,
+    };
   }
 
   setHover(on: boolean): void {
