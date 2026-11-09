@@ -1,7 +1,7 @@
 # Progress
 
-**Current phase:** Phase 11 (Portfolio polish) done on `phase-11/portfolio-polish`, tagged `v0.1.0`,
-waiting for Ozan's review (not merged); next: Phase 13
+**Current phase:** UI/UX polish pass on `ui/ux-polish` (before Phase 13), waiting for Ozan's review;
+next: Phase 13
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -21,7 +21,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 8: Observability & cost
 - [x] Phase 9: Memory & persistence
 - [x] Phase 10: Remote access (PWA over Tailscale)
-- [x] Phase 11: Portfolio polish (waiting for review)
+- [x] Phase 11: Portfolio polish
 - [x] Phase 12: Team workflow and roles
 - [ ] Phase 13: Office v2
 
@@ -232,3 +232,5 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   pinned outside `go.mod`; mermaid was only downloaded to check the diagram renders). `make check`,
   `make ui-test` (41), `make sandbox-test` (with `AO_SANDBOX_NET=1` for the egress test) and
   `make e2e` (host, sandbox, team, workflow) pass; the GitHub e2e was not run.
+- 2026-11-09: Phase 11 merged into `main` (`--no-ff`). The v0.1.0 tag was not kept: no tags or releases
+  until Ozan says the project is finished (CLAUDE.md); `make release` and ADR 0042 stay for then.

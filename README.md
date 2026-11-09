@@ -142,9 +142,7 @@ Agents' workspaces, the database and session logs live under `~/.local/share/age
 (`--data-dir` to change it). Removing an agent never deletes uncommitted work. Every flag has an
 `AGENT_OFFICE_*` variable ([.env.example](.env.example), `agent-office serve -h`). `--sandbox host`
 runs agents directly on your machine with Claude Code's permission prompts on, for repositories
-you trust. A release binary is on the
-[releases page](https://github.com/OzanAlpkaya/agent-office/releases) (static linux/amd64; it still
-needs Podman and Claude Code).
+you trust.
 
 ## How this was built
 

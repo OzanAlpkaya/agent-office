@@ -91,6 +91,8 @@ Phase 5. Keep it small and realistic; its backlog is in its `TODO.md`.
 - Merging a phase branch: only after Ozan approves, with `git merge --no-ff` to keep the commit
   history (no squash; this overrides the global default). Ozan pushes himself.
 - Stage explicit paths, never `git add -A`: Claude Code writes temp files under `.claude/`.
+- **No tags and no releases** (no `git tag`, no `make release`, no release notes for a new version)
+  until Ozan says the project is finished.
 
 ## Quality
 
