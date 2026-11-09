@@ -209,3 +209,4 @@ None.
   daemon's resolver then asks `localhost:53`, where nothing listens, and the agents' API calls fail.
   A cgo build would use the system resolver, but the same binary is mounted into the workers'
   Debian image, which must get a static one. Waiting for the resolver fix (sudo).
+  Done once Ozan fixed the resolver: the GIF and the real-run stills show the new rooms.

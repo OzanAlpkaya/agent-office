@@ -1,13 +1,13 @@
 # Screenshots
 
-Refreshed at the end of Phase 13 (2026-11-09) so every picture shows the current UI. The GIF and the stills of the real run were recorded before the rooms for every role were added (see `docs/plans/phase-13.md`).
+Refreshed at the end of Phase 13 (2026-11-09) so every picture shows the current UI.
 
 | File | What it shows |
 |---|---|
-| `team-run.gif` | A real run (`make demo`, [docs/demo.md](../demo.md)): the goal typed into the board, the Tech Lead's live terminal for a moment, then the Office: two sandboxed haiku workers walk in through the kitchen door and work in parallel (their sub-tasks touch different packages, so file ownership lets both run, ADR 0032), each reports at the Tech Lead's whiteboard and walks out, the lead reports the goal; then the board and the Usage tab. 66 seconds of video (the goal was reported after 50), sped up about 2×. |
+| `team-run.gif` | A real run (`make demo`, [docs/demo.md](../demo.md)): the goal typed into the board, the Tech Lead's live terminal for a moment, then the Office with a room for every role: two sandboxed haiku workers walk in through the lobby's front door and work in parallel (their sub-tasks touch different packages, so file ownership lets both run, ADR 0032), each reports at the Tech Lead's whiteboard and walks out, the lead reports the goal; then the board and the Usage tab. 74 seconds of video (the goal was reported after 57), sped up about 2×. |
 | `board-team-run.png` | The board at the end of that run: the goal and both sub-tasks in review, with tokens and cost per task and for the team. |
 | `usage-team-run.png` | The Usage tab for that run, by task. |
-| `office-live-team.png` | A still from that run (`office-worker-reporting.png` of `make demo`): one worker reports at the Tech Lead's whiteboard while the other keeps typing at its desk, and its own chair stands empty (ADR 0045). |
+| `office-live-team.png` | A still from that run: both workers report at the Tech Lead's whiteboard, one on each side of the lead's desk; they have already exited ("2 left the office") and finish their report before walking out (ADR 0045). |
 | `office.png` | The Office from the mocked daemon of the UI tests (showcase test): a worker reports at the Tech Lead's whiteboard; the architect, with its plan, and two agents waiting on you queue in the lobby under your office's door, whose sign says "3 waiting" like the Approvals badge; QA at the lab bench, a reviewer at the review table, the assistant at reception, idle agents with coffee in the kitchen, a message flying to the Tech Lead; in the workroom, workers and role-pack roles (docs, security) in shirts of their own colour. |
 | `office-rooms.png` | Close-up of the rooms in that picture: Planning, Tech Lead, Your office; QA lab, Review room, Kitchen, Lobby. |
 | `office-desks.png` | Close-up of the workroom in that picture: poses, monitors, nameplates with role colours, and empty chairs of agents who are away. |

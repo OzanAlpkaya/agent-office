@@ -12,9 +12,9 @@ binary with the UI embedded, Linux-first.
 ![A real run: the goal goes on the board, a Tech Lead splits it, two sandboxed workers walk in, implement the sub-tasks in parallel, report at the whiteboard and leave](docs/screenshots/team-run.gif)
 
 <sub>A real, unedited run at about 2× speed (`make demo`): a haiku Tech Lead and two sandboxed
-haiku workers add two features to a small Go service in parallel, in 50 seconds, for under two
-cents. The two sub-tasks touch different packages, so file ownership (ADR 0032) lets both run at
-once.</sub>
+haiku workers add two features to a small Go service in parallel, in under a minute, for about
+two cents. The two sub-tasks touch different packages, so file ownership (ADR 0032) lets both run
+at once.</sub>
 
 ## What it does
 
@@ -56,7 +56,7 @@ once.</sub>
   <img src="docs/screenshots/office.png" alt="The Office: a worker reports at the Tech Lead's whiteboard, the architect and two agents queue at your door in the lobby, QA works at its bench, a reviewer at the review table, the assistant at reception, idle agents drink coffee in the kitchen, and the workroom shows workers and role-pack roles in their own shirt colours" width="80%">
 </p>
 <p align="center">
-  <img src="docs/screenshots/office-live-team.png" alt="A real run in the Office: one sandboxed worker reports at the Tech Lead's whiteboard while the other keeps typing at its desk" width="62%">
+  <img src="docs/screenshots/office-live-team.png" alt="A real run in the Office: both sandboxed workers report at the Tech Lead's whiteboard, one on each side of the lead's desk" width="62%">
   <img src="docs/screenshots/office-phone.png" alt="The Office on a phone: the rooms stacked above the workroom" width="17%">
 </p>
 

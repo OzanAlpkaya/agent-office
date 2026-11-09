@@ -281,6 +281,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   bands of rooms on a desktop, three on a phone. An independent review led to 4 fixes (the office
   redrew on every page render, an idle station agent kept it drawing, the queue order, plans of
   several goals). `make check` (274 Vitest tests) and `make ui-test` (66) pass; office screenshots
-  refreshed. Not done: re-recording the GIF. `/etc/resolv.conf` on this machine became empty at
-  09:14, so the static daemon (Go's own resolver) cannot resolve `api.anthropic.com` and the team
-  never starts; two attempts timed out. Needs a fix with sudo, then `make demo`.
+  refreshed. `/etc/resolv.conf` on this machine had become empty at 09:14, so the static daemon (Go's
+  own resolver) could not resolve `api.anthropic.com` and two recordings timed out; after Ozan
+  fixed it (a symlink to systemd-resolved's stub), the GIF and the real-run stills were recorded
+  again in the new office (goal reported after 57 s, $0.0237).
