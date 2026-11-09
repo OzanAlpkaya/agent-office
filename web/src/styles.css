@@ -276,12 +276,15 @@ button.agent-link { padding: 0; color: var(--text); }
 /* The tab strip: fixed views, then the agents the user opened, then the switcher. */
 .tabs { align-items: flex-end; overflow: visible; }
 .agent-tabs { display: flex; gap: 0.25rem; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: thin; }
-.agent-tab { display: inline-flex; align-items: stretch; flex: 0 1 auto; min-width: 6rem; max-width: 14rem; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--panel); }
-.agent-tab.active { border-color: var(--accent); background: #1d2230; }
+/* With more than three agent tabs, inactive ones show only the name (the task is in the tooltip);
+   the open one keeps its task. */
+.agent-tab { display: inline-flex; align-items: stretch; flex: 0 1 auto; max-width: 14rem; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--panel); }
+.agent-tab.active { border-color: var(--accent); background: #1d2230; flex-shrink: 0; max-width: 18rem; }
 .agent-tab.dragging { opacity: 0.5; }
 .tabs .agent-tab button { border: none; background: none; border-radius: 0; }
 .agent-tab > button[role="tab"] { display: inline-flex; flex: 1 1 auto; align-items: center; gap: 0.35rem; min-width: 0; overflow: hidden; padding-right: 0.25rem; }
 .agent-tab-name { font-weight: 600; flex: none; }
+.agent-tabs.crowded .agent-tab:not(.active) .agent-tab-task { display: none; }
 .agent-tab-task { color: var(--muted); font-size: 0.8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tabs .agent-tab .agent-tab-close { padding: 0 0.45rem; color: var(--muted); font-size: 1rem; line-height: 1; }
 .tabs .agent-tab .agent-tab-close:hover { color: var(--text); }

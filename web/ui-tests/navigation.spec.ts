@@ -90,6 +90,11 @@ test("tabs hold the agents you opened: at most six, closable, movable, kept on r
   await pick("Mateo"); // a seventh: Emma, the least recently used, closes
   await expect(tabs(page)).toHaveCount(6);
   await expect(tabs(page).locator(".agent-tab-name")).toHaveText(["Kofi", "Yuki", "Omar", "Priya", "Lena", "Mateo"]);
+  // Crowded: only the open tab shows its task, in full; the others show their names.
+  const task = page.getByRole("tab", { name: /^Mateo/ }).locator(".agent-tab-task");
+  await expect(task).toHaveText("Tag colours");
+  expect(await task.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  await expect(page.getByRole("tab", { name: /^Kofi/ }).locator(".agent-tab-task")).toBeHidden();
   await page.screenshot({ path: `${screens}/tabs-6.png` });
 
   // Close the open tab: its right-hand neighbour opens (none: the left one).

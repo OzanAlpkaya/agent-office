@@ -106,6 +106,9 @@ function saveTabs(t: Tabs): void {
   }
 }
 
+// With more agent tabs than this, only the open tab shows its task title.
+const crowdedTabs = 3;
+
 // typingTarget says whether a key press belongs to a text field or a terminal.
 function typingTarget(t: EventTarget | null): boolean {
   if (!(t instanceof HTMLElement)) return false;
@@ -427,7 +430,7 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
               <button className={view.kind === "usage" ? "active" : ""} onClick={() => setView({ kind: "usage" })}>
                 Usage
               </button>
-              <span className="agent-tabs" role="tablist" aria-label="Open agents">
+              <span className={`agent-tabs ${shownTabs.length > crowdedTabs ? "crowded" : ""}`} role="tablist" aria-label="Open agents">
                 {shownTabs.map((a) => (
                   <span key={a.id} role="presentation"
                     className={`agent-tab ${current?.id === a.id ? "active" : ""} ${dragged === a.id ? "dragging" : ""}`}
