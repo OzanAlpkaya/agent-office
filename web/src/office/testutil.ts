@@ -3,7 +3,8 @@ import type { Agent, Message, Task } from "../api";
 
 export function agent(id: string, over: Partial<Agent> = {}): Agent {
   return {
-    id, state: "working", kind: "worker", role: "worker", inherit_user_settings: false, sandbox: "podman", resumable: false,
+    id, name: `Name ${id}`, state: "working", kind: "worker", role: "worker", inherit_user_settings: false, sandbox: "podman",
+    resumable: false,
     branch: `agent-office/${id}`, worktree_path: `/tmp/${id}`, workspace_kind: "clone",
     worktree_status: "active", has_terminal: true, started_at: "2026-11-08T10:00:00Z", ...over,
   };

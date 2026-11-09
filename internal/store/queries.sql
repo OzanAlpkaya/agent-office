@@ -43,8 +43,12 @@ RETURNING *;
 DELETE FROM tasks WHERE id = ?;
 
 -- name: CreateAgent :exec
-INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, kind, role)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, kind, role, name)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: SetAgentName :exec
+-- Names agents recorded before names existed (ADR 0043).
+UPDATE agents SET name = ? WHERE id = ? AND name = '';
 
 -- name: UpdateAgentState :exec
 UPDATE agents SET state = ?, activity = ? WHERE id = ?;

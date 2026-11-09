@@ -87,3 +87,5 @@ order they were made; grouped here by topic. New ones start from [0000-template.
 | [0024](0024-office-view.md) | The office: a lazy-loaded PixiJS scene, art drawn in code |
 | [0025](0025-ui-test-tooling.md) | Vitest for logic, Playwright against a mocked daemon |
 | [0040](0040-pwa-and-phone-ui.md) | PWA, phone layout, terminal keys and clipboard |
+| [0043](0043-agent-names.md) | A first name per agent, chosen and stored by the daemon |
+| [0044](0044-agent-switcher-and-approvals-drawer.md) | Agent switcher, open tabs, approvals drawer |

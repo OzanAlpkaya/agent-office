@@ -1,6 +1,6 @@
 # 0024. Office view: a lazy-loaded PixiJS scene, art drawn in code, labels in HTML
 
-- **Status:** Accepted
+- **Status:** Accepted; amended 2026-11-09 (exited agents leave the office, see the end)
 - **Date:** 2026-11-08
 
 ## Context
@@ -64,3 +64,18 @@ from the keyboard, and a bar above the scene counts agents per state. Poses and 
 - The scene has no authority: it only calls the same "open agent" action as the agent list.
 - Accessibility rests on the HTML nameplates (buttons with tooltips) and the state bar; the
   canvas is decorative.
+
+## Amendment (2026-11-09): exited agents leave
+
+An exited agent used to stay at its desk as an empty chair with a dimmed nameplate, so a long run
+filled the office with people who had gone home. Now an agent that exits loses its seat:
+
+- its nameplate goes at once;
+- its character walks to the door and fades out, in 1.6 s, drawn only while it walks;
+- with reduced motion it is simply gone;
+- its desk is free for the next agent, and the other agents keep their desks.
+
+A resumed agent comes back to the lowest free desk. When the lead exits, the lead desk and the
+whiteboard empty. The bar above the scene counts who left. Exited agents stay in the agent list
+(in a collapsed group), in the switcher (ADR 0044), in their saved sessions and in Usage. The
+walk is a straight line over the furniture; proper paths between rooms are Phase 13's.

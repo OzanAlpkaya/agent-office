@@ -9,7 +9,7 @@ const pending = (agentId: string, status: AccessRequest["status"] = "pending"): 
 });
 
 describe("buildOffice", () => {
-  it("seats every agent with its pose and task title", () => {
+  it("seats every agent that has not exited, with its pose and task title", () => {
     const m = buildOffice(emptyAssignment, [
       agent("L", { kind: "lead", task_id: "g", state: "idle" }),
       agent("w", { task_id: "t1", started_at: "2026-11-08T10:01:00Z" }),
@@ -20,9 +20,36 @@ describe("buildOffice", () => {
       ["L", "lead", "idle", "Goal"],
       ["w", "desk", "typing", "Fix it"],
       ["r", "desk", "reviewing", undefined],
-      ["x", "desk", "away", undefined],
     ]);
-    expect(m.desks).toBe(3);
+    expect(m.desks).toBe(2);
+    expect(m.exited).toBe(1);
+  });
+
+  it("frees an exited agent's desk for the next agent (ADR 0024)", () => {
+    const at = (min: number): string => `2026-11-08T10:0${min}:00Z`;
+    const a = agent("a", { started_at: at(1) });
+    const b = agent("b", { started_at: at(2) });
+    const c = agent("c", { started_at: at(3) });
+    const first = buildOffice(emptyAssignment, [a, b, c], [], []);
+    expect(first.assignment.desks).toEqual(["a", "b", "c"]);
+    // b exits: its desk is empty, the others keep theirs.
+    const exited = { ...b, state: "exited" as const };
+    const second = buildOffice(first.assignment, [a, exited, c], [], []);
+    expect(second.assignment.desks).toEqual(["a", undefined, "c"]);
+    expect(second.seats.map((s) => s.agent.id)).toEqual(["a", "c"]);
+    // A new agent takes the free desk; b, resumed later, takes the next one.
+    const d = agent("d", { started_at: at(4) });
+    const third = buildOffice(second.assignment, [a, exited, c, d], [], []);
+    expect(third.assignment.desks).toEqual(["a", "d", "c"]);
+    const fourth = buildOffice(third.assignment, [a, b, c, d], [], []);
+    expect(fourth.assignment.desks).toEqual(["a", "d", "c", "b"]);
+    // An exited lead leaves the lead desk and takes the whiteboard with it.
+    const lead = agent("L", { kind: "lead", task_id: "g" });
+    const withLead = buildOffice(emptyAssignment, [lead], [task("g")], []);
+    expect(withLead.assignment.lead).toBe("L");
+    const gone = buildOffice(withLead.assignment, [{ ...lead, state: "exited" }], [task("g")], []);
+    expect(gone.assignment.lead).toBeUndefined();
+    expect(gone.goal).toBeUndefined();
   });
 
   it("shows a pending access request as waiting", () => {

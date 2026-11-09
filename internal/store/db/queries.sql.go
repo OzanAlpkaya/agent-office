@@ -380,8 +380,8 @@ func (q *Queries) CountUnreadInboxFrom(ctx context.Context, agentID sql.NullStri
 }
 
 const createAgent = `-- name: CreateAgent :exec
-INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, kind, role)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, kind, role, name)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateAgentParams struct {
@@ -395,6 +395,7 @@ type CreateAgentParams struct {
 	Sandbox             string
 	Kind                string
 	Role                string
+	Name                string
 }
 
 func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error {
@@ -409,6 +410,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error 
 		arg.Sandbox,
 		arg.Kind,
 		arg.Role,
+		arg.Name,
 	)
 	return err
 }
@@ -2500,7 +2502,7 @@ func (q *Queries) ListTasks(ctx context.Context, projectID string) ([]Task, erro
 }
 
 const listVisibleAgents = `-- name: ListVisibleAgents :many
-SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, agents.sandbox, agents.kind, agents.role, agents.resume_state, worktrees.path AS worktree_path, worktrees.branch AS branch,
+SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, agents.sandbox, agents.kind, agents.role, agents.resume_state, agents.name, worktrees.path AS worktree_path, worktrees.branch AS branch,
        worktrees.status AS worktree_status, worktrees.kind AS worktree_kind
 FROM agents JOIN worktrees ON worktrees.agent_id = agents.id
 WHERE agents.project_id = ? AND agents.removed_at IS NULL
@@ -2524,6 +2526,7 @@ type ListVisibleAgentsRow struct {
 	Kind                string
 	Role                string
 	ResumeState         string
+	Name                string
 	WorktreePath        string
 	Branch              string
 	WorktreeStatus      string
@@ -2556,6 +2559,7 @@ func (q *Queries) ListVisibleAgents(ctx context.Context, projectID string) ([]Li
 			&i.Kind,
 			&i.Role,
 			&i.ResumeState,
+			&i.Name,
 			&i.WorktreePath,
 			&i.Branch,
 			&i.WorktreeStatus,
@@ -2856,6 +2860,21 @@ func (q *Queries) ReviewForHead(ctx context.Context, arg ReviewForHeadParams) (R
 		&i.ReplyUrl,
 	)
 	return i, err
+}
+
+const setAgentName = `-- name: SetAgentName :exec
+UPDATE agents SET name = ? WHERE id = ? AND name = ''
+`
+
+type SetAgentNameParams struct {
+	Name string
+	ID   string
+}
+
+// Names agents recorded before names existed (ADR 0043).
+func (q *Queries) SetAgentName(ctx context.Context, arg SetAgentNameParams) error {
+	_, err := q.db.ExecContext(ctx, setAgentName, arg.Name, arg.ID)
+	return err
 }
 
 const setPullRequestFlagged = `-- name: SetPullRequestFlagged :one

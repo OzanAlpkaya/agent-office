@@ -13,12 +13,12 @@ export const poseLabel: Record<Pose, string> = {
   away: "Exited",
 };
 
-// poseOf maps an agent's state and role to its pose. pendingAccess is true
-// while the agent has an access request waiting for the user (ADR 0019),
-// which is waiting for the user just like a permission prompt.
-export function poseOf(a: Pick<Agent, "state" | "kind">, pendingAccess: boolean): Pose {
+// poseOf maps an agent's state and role to its pose. waiting says whether
+// the agent waits on the user; it comes from waitingOnUser (waiting.ts), the
+// same list the Approvals badge counts (ADR 0044).
+export function poseOf(a: Pick<Agent, "state" | "kind">, waiting: boolean): Pose {
   if (a.state === "exited") return "away";
-  if (a.state === "waiting_permission" || pendingAccess) return "waiting";
+  if (waiting || a.state === "waiting_permission") return "waiting"; // waitingOnUser lists every such agent
   switch (a.state) {
     case "starting":
       return "booting";

@@ -201,7 +201,7 @@ func (e *Engine) startQA(ctx context.Context, caller string) (mcp.StartQAOutput,
 	}
 	e.publishQARun(run)
 	e.log.Info("QA started", "agent_id", a.ID, "task_id", goal.ID, "run", run.ID, "branches", len(branches))
-	return mcp.StartQAOutput{RunID: run.ID, AgentID: a.ID, Branch: a.Branch, Branches: names,
+	return mcp.StartQAOutput{RunID: run.ID, AgentID: a.ID, AgentName: a.Name, Branch: a.Branch, Branches: names,
 		Next: "QA runs now. End your turn: agent-office delivers its result to you; its bugs become sub-tasks to assign."}, nil
 }
 

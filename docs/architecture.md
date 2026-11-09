@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 0 design, updated through Phase 11 (portfolio polish; phases ran 0-8, 12, 9, 10, 11), based on the spikes in `spikes/` and
+Status: Phase 0 design, updated through Phase 11 and the UI/UX polish pass (portfolio polish; phases ran 0-8, 12, 9, 10, 11), based on the spikes in `spikes/` and
 the ADRs in `docs/adr/`. Parts marked *(later)* belong to later phases and will be detailed then.
 
 ## Overview
@@ -250,8 +250,9 @@ characters at desks, from the same `/api/events` stream as the board; the daemon
 
 - Pure modules (`web/src/office/`): `pose` maps state and role to a pose (`starting` booting,
   `idle` leaning back, `working` typing or, for reviewers, reviewing, `waiting_permission` or a
-  pending access request: hand raised, `exited` an empty chair); `layout` keeps every agent at
-  the same desk while it exists (the lead at the front, by the whiteboard) and picks 3 to 6
+  pending access request: hand raised); `layout` keeps every agent at the same desk until it
+  exits, when it walks out and frees the desk (ADR 0024 amendment; the lead at the front, by the
+  whiteboard) and picks 3 to 6
   columns and a whole number of device pixels per world pixel for the pane; `model` adds the
   lead's sub-tasks as whiteboard notes and finds new messages to animate.
 - The PixiJS 8 scene (WebGL, canvas fallback) is lazy-loaded with the tab and destroyed when it
@@ -262,6 +263,13 @@ characters at desks, from the same `/api/events` stream as the board; the daemon
   clicking a character or a nameplate opens that agent's terminal, the scene's only action.
 - Tests: Vitest for the pure modules (`make check`); Playwright against a mocked daemon
   (`make ui-test`), including clicks on the canvas and the frame rate with 10 and 20 agents.
+
+**Names and navigation (UI/UX polish, ADR 0043, 0044).** The daemon names each agent when it
+starts (`agents.name`, unique among listed agents); the id stays the key in the API, logs and
+branch names, and the UI shows the name with the short id. The tab strip holds the agents the
+user opened (at most six, kept per browser); a switcher (`/`) finds any agent, grouped by goal,
+exited ones last. Access requests wait in a drawer behind a header badge, so a new one moves
+nothing on the page.
 
 **Usage, cost and logs (Phase 8, ADR 0026–0028).** One row per API message (`usage_messages`),
 priced when read, so a price change re-prices history; money is integer (nano-USD inside, micro-USD
@@ -441,7 +449,7 @@ events: logged, stored (rate-limited), pushed to the UI live and listed by
 
 | Entity | Key fields | Notes |
 |---|---|---|
-| **Agent** | id, kind (architect / lead / worker / qa / reviewer / assistant), role (the role's name), model, sandbox, state, task_id, current_session_id | One live session at a time; at most one running lead, architect, QA and assistant (ADR 0017, 0029); workers and architects can be relaunched in their workspace with a new session (ADR 0022, 0031); workers, architects, leads and assistants can be resumed with their conversation, and are restored after a restart from `resume_state` (ADR 0035). |
+| **Agent** | id, name (a first name for people, ADR 0043), kind (architect / lead / worker / qa / reviewer / assistant), role (the role's name), model, sandbox, state, task_id, current_session_id | One live session at a time; at most one running lead, architect, QA and assistant (ADR 0017, 0029); workers and architects can be relaunched in their workspace with a new session (ADR 0022, 0031); workers, architects, leads and assistants can be resumed with their conversation, and are restored after a restart from `resume_state` (ADR 0035). |
 | **Session** | id (= CLI session UUID), agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from | One per CLI process; the correlation id of its logs (ADR 0028); a resumed one names the session whose conversation it continues; its terminal output is saved in the data dir (ADR 0035, 0036). |
 | **UsageMessage** | session_id, message_id, agent_id, task_id, source (api / transcript), request_id, model, speed, inference_geo, input / output / cache read / cache write 5m / 1h tokens | One per API message, upserted; priced when read (ADR 0026). |
 | **Task** | id, title, description, status (todo / in_progress / review / done / blocked), parent_task_id, created_by, depends_on, files, acceptance, role, spec_key, conflicts | A goal is a top-level task; its sub-tasks come from an approved spec or the lead's `create_task`. Agents point to their task (`agents.task_id`). |

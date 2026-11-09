@@ -174,6 +174,7 @@ type Project struct {
 // AgentInfo is the public, JSON-serializable view of an agent.
 type AgentInfo struct {
 	ID                  string      `json:"id"`
+	Name                string      `json:"name"` // a first name for people (ADR 0043); the id stays the key
 	SessionID           string      `json:"session_id,omitempty"`
 	TaskID              string      `json:"task_id,omitempty"`
 	State               string      `json:"state"`
@@ -267,6 +268,7 @@ type Engine struct {
 	order        []string
 	starting     int             // slots reserved by Start while git runs outside the lock
 	startingKind map[string]bool // kinds of one-at-a-time agents being started (ADR 0017, 0029)
+	naming       map[string]bool // names reserved by Start while git runs outside the lock (ADR 0043)
 	assigning    map[string]bool // task ids an assign_task is starting a worker for
 	subs         map[chan Update]struct{}
 	wg           sync.WaitGroup
@@ -372,6 +374,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		subs:         map[chan Update]struct{}{},
 		assigning:    map[string]bool{},
 		startingKind: map[string]bool{},
+		naming:       map[string]bool{},
 		noRestore:    map[string]string{},
 	}
 	if opts.Sandbox != nil {
@@ -449,6 +452,17 @@ func (e *Engine) reconcile(ctx context.Context) error {
 		close(a.exited)
 		e.agents[r.ID] = a
 		e.order = append(e.order, r.ID)
+	}
+	// Agents recorded before names existed get one now, in start order (ADR 0043).
+	for _, id := range e.order {
+		a := e.agents[id]
+		if a.info.Name != "" {
+			continue
+		}
+		a.info.Name = e.nameLocked(id)
+		if err := e.q.SetAgentName(ctx, db.SetAgentNameParams{Name: a.info.Name, ID: id}); err != nil {
+			return fmt.Errorf("engine: name agent %s: %w", id, err)
+		}
 	}
 	if n > 0 {
 		e.log.Info("agents from the previous run marked exited", "count", n, "reason", ExitDaemonRestart)
@@ -528,10 +542,14 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		e.startingKind[role] = true
 	}
 	e.starting++
+	id := randomHex(6)
+	name := e.nameLocked(id)
+	e.naming[name] = true
 	e.mu.Unlock()
 	defer func() {
 		e.mu.Lock()
 		e.starting--
+		delete(e.naming, name) // registered with the agent by now, or not needed
 		if single(role) {
 			delete(e.startingKind, role)
 		}
@@ -553,7 +571,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		task = &t
 	}
 
-	id, sid := randomHex(6), newUUID()
+	sid := newUUID()
 	title := ""
 	if task != nil {
 		title = task.Title
@@ -618,7 +636,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		if err := q.CreateAgent(ctx, db.CreateAgentParams{
 			ID: id, ProjectID: e.project.ID, TaskID: nullString(req.TaskID), Model: e.modelOf(def),
 			InheritUserSettings: inherit, State: string(hooks.Starting), StartedAt: started,
-			Sandbox: mode, Kind: role, Role: def.Name,
+			Sandbox: mode, Kind: role, Role: def.Name, Name: name,
 		}); err != nil {
 			return err
 		}
@@ -664,8 +682,9 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		}
 		// ADR 0034, 0037: accepted notes whose scope includes this agent.
 		prompt += e.memorySection(ctx, def.Name, files, slices.Contains(def.TeamTools, mcp.ToolListMemory))
+		prompt += nameSection(name, id) // ADR 0043
 	}
-	l := launchInfo{id: id, sid: sid, role: role, def: def, branch: branch, path: wtPath, base: base, taskID: req.TaskID,
+	l := launchInfo{id: id, sid: sid, name: name, role: role, def: def, branch: branch, path: wtPath, base: base, taskID: req.TaskID,
 		started: started, prompt: prompt, reviewID: req.reviewID}
 	if e.opts.Sandbox != nil {
 		a, err = e.launchSandboxed(l, prep)
@@ -690,6 +709,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 // launchInfo is what Start (and a relaunch) hands to the launch paths.
 type launchInfo struct {
 	id, sid, branch, path, base, taskID string
+	name                                string     // the agent's first name (ADR 0043); a relaunch keeps prev's
 	role                                string     // the kind
 	def                                 *role.Role // the role definition (ADR 0029)
 	started                             time.Time
@@ -717,9 +737,11 @@ func (e *Engine) registerLocked(a *agentProc, l launchInfo) {
 	if !l.since.IsZero() {
 		a.since = l.since
 	}
+	a.info.Name = l.name
 	if l.prev != nil {
 		a.info.StartedAt, a.info.LastImport = l.prev.info.StartedAt, l.prev.info.LastImport
 		a.info.WorktreeStatus = l.prev.info.WorktreeStatus
+		a.info.Name = l.prev.info.Name
 	}
 	if _, ok := e.agents[a.info.ID]; !ok {
 		e.order = append(e.order, a.info.ID)
@@ -1232,6 +1254,32 @@ func (e *Engine) runningKindLocked(kind string) *agentProc {
 // running reports whether the agent's process runs in this daemon.
 func (a *agentProc) running() bool { return a.term != nil && a.info.ExitedAt == nil }
 
+// nameLocked chooses a first name for a new agent (ADR 0043): one no other
+// agent in the list has (running or exited), nor a start in progress. When
+// all are taken, one no running agent has; after that, a numbered name.
+func (e *Engine) nameLocked(id string) string {
+	listed, running := map[string]bool{}, map[string]bool{}
+	for n := range e.naming {
+		listed[n], running[n] = true, true
+	}
+	for _, a := range e.agents {
+		listed[a.info.Name] = true
+		if a.info.ExitedAt == nil {
+			running[a.info.Name] = true
+		}
+	}
+	free := 0
+	for _, n := range firstNames {
+		if !listed[n] {
+			free++
+		}
+	}
+	if free > 0 {
+		return pickName(id, func(n string) bool { return listed[n] })
+	}
+	return pickName(id, func(n string) bool { return running[n] })
+}
+
 func (e *Engine) runningLocked() int {
 	n := 0
 	for _, a := range e.agents {
@@ -1299,7 +1347,7 @@ func (a *agentProc) view() AgentInfo {
 
 func infoFromRow(r db.ListVisibleAgentsRow) AgentInfo {
 	info := AgentInfo{
-		ID: r.ID, TaskID: r.TaskID.String, State: r.State, Model: r.Model,
+		ID: r.ID, Name: r.Name, TaskID: r.TaskID.String, State: r.State, Model: r.Model,
 		InheritUserSettings: r.InheritUserSettings && r.Sandbox == SandboxHost, Sandbox: r.Sandbox, Kind: r.Kind, Role: r.Role, Branch: r.Branch,
 		WorktreePath:  r.WorktreePath,
 		WorkspaceKind: r.WorktreeKind, WorktreeStatus: r.WorktreeStatus, StartedAt: r.StartedAt, ExitReason: r.ExitReason,

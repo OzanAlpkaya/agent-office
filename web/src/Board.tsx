@@ -3,6 +3,7 @@ import {
   type Agent, type InboxItem, type Plan, type PullRequest, type QARun, type Review, type RoleInfo, type Spec, type Task,
   type TaskStatus, taskStatuses,
 } from "./api";
+import { AgentName } from "./AgentName";
 import { InboxEntry, PlanPanel, QAPanel, TaskPlanInfo } from "./Team";
 import { currentSpec, inboxFor, latestQA, waitsFor, workerRoles } from "./workflow";
 import { type UsageRow, formatMoney, formatTokens, totalTokens } from "./usage";
@@ -160,9 +161,9 @@ function TaskCard(p: CardProps): JSX.Element {
       {agents.length > 0 && (
         <div className="task-agents">
           {agents.map((a) => (
-            <button key={a.id} className={`chip state-${a.state}`} title={`${a.role} · ${a.branch}`}
-              onClick={() => onOpenAgent(a.id)}>
-              {a.kind !== "worker" ? `${a.role} ` : ""}{a.id.slice(0, 6)}
+            <button key={a.id} className={`chip state-${a.state}`} title={`${a.role} · ${a.name} · ${a.id} · ${a.branch}`}
+              onClick={() => onOpenAgent(a.id)} data-agent={a.id}>
+              {a.kind !== "worker" ? `${a.role} ` : ""}{a.name || a.id.slice(0, 6)}
             </button>
           ))}
         </div>
@@ -259,7 +260,9 @@ function PRPanel({ pr, onRequestReview, onSendToWorker, onAcceptFlagged, onOpenA
               <li key={r.id}>
                 <div className="muted">
                   {reviewerLabel[r.reviewer]}
-                  {r.agent_id && <> <button className="link" onClick={() => onOpenAgent(r.agent_id ?? "")}>{r.agent_id.slice(0, 6)}</button></>}
+                  {r.agent_id && (
+                    <> <button className="link" onClick={() => onOpenAgent(r.agent_id ?? "")}><AgentName id={r.agent_id} /></button></>
+                  )}
                   {" · "}{r.status === "done" ? verdictLabel[r.verdict ?? ""] ?? r.verdict : r.status.replace("_", " ")}
                   {" · "}<span className="mono">{r.head.slice(0, 8)}</span>
                   {r.url && <> · <a href={r.url} target="_blank" rel="noreferrer noopener">on GitHub</a></>}

@@ -1,13 +1,18 @@
-import { type JSX, Suspense, lazy, useEffect, useState } from "react";
+import { type JSX, Suspense, lazy, useEffect, useLayoutEffect, useState } from "react";
 import {
   type AccessRequest, type Agent, type AgentState, ApiError, type ApproveResult, type AuthSession, type ImportInfo, type Kind, type Message,
   type Project, type Role, type RoleInfo, type SandboxEvent, type Spec, type Status, type Task, type TaskStatus, api,
 } from "./api";
+import { AgentName, AgentsContext } from "./AgentName";
+import { AgentSwitcher } from "./AgentSwitcher";
+import { type Tabs, closeTab, keepTabs, labelOf, moveTab, neighbourTab, openTab, parseTabs } from "./agents";
 import { Board } from "./Board";
+import { Drawer } from "./Drawer";
 import { DevicesPanel } from "./Devices";
 import { narrowQuery, useMedia } from "./useMedia";
 import { InboxPanel, MemoryPanel } from "./Team";
 import { unread } from "./workflow";
+import { type Waiting, waitingOnUser } from "./waiting";
 import { TerminalView } from "./TerminalView";
 import { useWorld } from "./useAgents";
 import { type UsageRow, formatMoney, formatTokens, sessionList, totalTokens, usageBy } from "./usage";
@@ -83,6 +88,33 @@ const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
 // How long an agent may stay in "starting" before the UI flags it.
 const stuckAfterMs = 20_000;
 
+// The open terminal tabs are remembered per browser (ADR 0044): a convenience, so
+// storage that is missing or blocked only means starting with none.
+const tabsKey = "agent-office.tabs";
+function loadTabs(): Tabs {
+  try {
+    return parseTabs(window.localStorage.getItem(tabsKey));
+  } catch {
+    return parseTabs(null); // storage blocked (private window, policy)
+  }
+}
+function saveTabs(t: Tabs): void {
+  try {
+    window.localStorage.setItem(tabsKey, JSON.stringify(t));
+  } catch {
+    // storage blocked or full: the tabs are only lost on reload
+  }
+}
+
+// With more agent tabs than this, only the open tab shows its task title.
+const crowdedTabs = 3;
+
+// typingTarget says whether a key press belongs to a text field or a terminal.
+function typingTarget(t: EventTarget | null): boolean {
+  if (!(t instanceof HTMLElement)) return false;
+  return t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.closest(".xterm") !== null;
+}
+
 // "agents" is the phone layout's tab for the agent list (the sidebar on wider screens, ADR 0040).
 type View = { kind: "board" } | { kind: "office" } | { kind: "usage" } | { kind: "agents" } | { kind: "agent"; id: string };
 
@@ -93,6 +125,10 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
   const [panel, setPanel] = useState<"inbox" | "memory" | "devices">();
   const narrow = useMedia(narrowQuery);
   const [view, setView] = useState<View>({ kind: "board" });
+  const [tabs, setTabs] = useState<Tabs>(loadTabs);
+  const [switcher, setSwitcher] = useState(false);
+  const [approvalsOpen, setApprovalsOpen] = useState(false);
+  const [dragged, setDragged] = useState<string>();
   const [project, setProject] = useState<Project>();
   const [version, setVersion] = useState("");
   const [status, setStatus] = useState<Status>();
@@ -122,6 +158,40 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
     if (view.kind === "agents" && !narrow) setView({ kind: "board" });
   }, [agents, view, narrow]);
 
+  // Tabs of removed agents close, once the daemon has sent its agents.
+  useEffect(() => {
+    if (connection === "open" && agents.length > 0) setTabs((t) => keepTabs(t, new Set(agents.map((a) => a.id))));
+  }, [agents, connection]);
+  useEffect(() => saveTabs(tabs), [tabs]);
+
+  // The open agent's tab is scrolled into view when the strip overflows.
+  const openId = view.kind === "agent" ? view.id : undefined;
+  useEffect(() => {
+    if (!openId) return;
+    document.querySelector(`.agent-tab button[data-agent="${openId}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [openId, tabs]);
+
+  // "/" opens the agent switcher, except while typing or in a terminal. A
+  // layout effect, so the shortcut works from the first painted frame.
+  useLayoutEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || typingTarget(e.target)) return;
+      e.preventDefault();
+      setSwitcher(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Everything waiting on the user, from one list: the badge, the drawer, the
+  // tab title, the cards, the switcher and the Office all count it (ADR 0044).
+  const waiting = waitingOnUser(agents, accessRequests);
+  const waitingCount = waiting.length;
+  // The tab title shows the count, so it is seen from other browser tabs too.
+  useEffect(() => {
+    document.title = waitingCount > 0 ? `(${waitingCount}) agent-office` : "agent-office";
+  }, [waitingCount]);
+
   // run executes an API call from a click handler and shows its error. It
   // never rejects, so callers can discard the promise with `void`.
   const run = async <T,>(fn: () => Promise<T>): Promise<T | undefined> => {
@@ -134,9 +204,24 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
     }
   };
 
+  // openAgent shows an agent's terminal and gives it a tab (ADR 0044).
+  const openAgent = (id: string): void => {
+    setView({ kind: "agent", id });
+    setTabs((t) => openTab(t, id));
+  };
+
+  const closeAgentTab = (id: string): void => {
+    if (view.kind === "agent" && view.id === id) {
+      const next = neighbourTab(tabs, id);
+      if (next) openAgent(next);
+      else setView({ kind: "board" });
+    }
+    setTabs((t) => closeTab(t, id));
+  };
+
   const startAgent = async (taskId?: string, role: Role = "worker"): Promise<void> => {
     const a = await run(() => api.startAgent(taskId, role));
-    if (a) setView({ kind: "agent", id: a.id });
+    if (a) openAgent(a.id);
   };
 
   const removeAgent = (id: string): Promise<unknown> =>
@@ -173,8 +258,16 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
       card?.focus({ preventScroll: true });
     }, 0);
   };
-  const pending = accessRequests.filter((r) => r.status === "pending");
   const current = view.kind === "agent" ? agents.find((a) => a.id === view.id) : undefined;
+  const waitingAgents = new Set(waiting.map((w) => w.agent.id));
+  const label = (id: string): string => labelOf(agents, id);
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  const tabAgents = tabs.order.map((id) => byId.get(id)).filter((a): a is Agent => a !== undefined);
+  // A phone has room for the open agent only; the switcher reaches the others.
+  const shownTabs = narrow ? tabAgents.filter((a) => a.id === current?.id) : tabAgents;
+  const activeAgents = agents.filter((a) => a.state !== "exited");
+  const exitedAgents = agents.filter((a) => a.state === "exited");
+  const moveTabBy = (id: string, delta: number): void => setTabs((t) => moveTab(t, id, t.order.indexOf(id) + delta));
   const taskTitle = (id?: string): string | undefined => tasks.find((t) => t.id === id)?.title;
   const sessions = sessionList(usage);
   const usageByAgent = usageBy(sessions, (s) => s.agent_id);
@@ -182,172 +275,249 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
   const usageByGoal = usageBy(sessions, (s) => s.goal_id);
 
   return (
-    <div className="app">
-      <header>
-        <h1>agent-office</h1>
-        {project && <span className="mono small" title={project.repo_path}>{project.name}</span>}
-        <span className="muted small">{version && `v${version}`}</span>
-        {status?.sandbox === "podman" && (
-          <span className="badge sandboxed" title={status.image ? `worker image ${status.image}` : undefined}>
-            sandboxed · podman
-          </span>
-        )}
-        {status?.sandbox === "podman" && (
-          <button className="badge pack" onClick={() => setShowPack((v) => !v)} aria-expanded={showPack}
-            title="What sandboxed agents get: image, network, secrets, skills, MCP servers">
-            {status.pack ? `pack · ${status.pack.name}` : "no stack pack"}
-          </button>
-        )}
-        {status?.sandbox === "host" && <span className="badge unsandboxed">unsandboxed · host mode</span>}
-        {status?.github && (
-          <span className="badge github" title={`Pushes to ${status.github.remote}; PRs into ${status.github.base}; ` +
-            `${status.github.rounds} automatic follow-up round(s). agent-office never merges.`}>
-            GitHub · {status.github.repo} · review: {status.github.reviewer}
-          </span>
-        )}
-        <span className="header-actions">
-          <button className={`badge inbox-button ${unreadCount ? "has-unread" : ""}`} aria-expanded={panel === "inbox"}
-            onClick={() => togglePanel("inbox")} title="Messages to you from the team (ADR 0030)">
-            Inbox{unreadCount > 0 && ` · ${unreadCount}`}
-          </button>
-          <button className="badge" aria-expanded={panel === "memory"} onClick={() => togglePanel("memory")}
-            title="Notes every agent starts with (ADR 0034)">
-            Memory{proposed > 0 && ` · ${proposed} proposed`}
-          </button>
-          <button className="badge" aria-expanded={panel === "devices"} onClick={() => togglePanel("devices")}
-            title={`Paired browsers and phones${session.device ? `; this one: ${session.device.name}` : ""} (ADR 0039)`}>
-            Devices
-          </button>
-          <button className="badge" title="Ask the assistant for a briefing (starts it if needed)"
-            onClick={() => void run(async () => { await api.askBriefing(); setPanel("inbox"); return true; })}>
-            Briefing
-          </button>
-        </span>
-        <span className={`conn conn-${connection}`}>{connection === "open" ? "connected" : connection}</span>
-      </header>
-      {status?.sandbox === "host" && (
-        <div className="banner warn">
-          Host mode: agents run directly on this machine, with your files, SSH keys and network, and ask before
-          using tools. Restart the daemon with <span className="mono">--sandbox podman</span> to isolate them.
-        </div>
-      )}
-      {showPack && status?.sandbox === "podman" && <PackPanel status={status} />}
-      {panel === "inbox" && (
-        <InboxPanel items={inbox} tasks={tasks} specs={specs} onOpenAgent={(id) => setView({ kind: "agent", id })}
-          onRead={(i) => void run(() => api.readInbox(i.id))}
-          onReply={(i, body) => ok(() => api.replyInbox(i.id, body))}
-          onReviewPlan={reviewPlan}
-          onApprovePlan={(s, i) => void run(async () => {
-            const res = await approveSpec(s);
-            if (!i.read_at) await api.readInbox(i.id);
-            return res;
-          })} />
-      )}
-      {panel === "memory" && (
-        <MemoryPanel entries={memory}
-          onAdd={(d) => ok(() => api.addMemory(d))}
-          onEdit={(m, patch) => ok(() => api.editMemory(m.id, patch))}
-          onAccept={(m) => void run(() => api.acceptMemory(m.id))}
-          onDelete={(m) => void run(async () => { await api.deleteMemory(m.id); return true; })} />
-      )}
-      {panel === "devices" && (
-        <DevicesPanel remoteHosts={status?.remote_hosts ?? []} run={run} onSignedOut={onSignedOut} />
-      )}
-      {status?.warnings.map((w) => <div key={w} className="banner warn">{w}</div>)}
-      {pending.length > 0 && (
-        <Approvals requests={pending} agents={agents} taskTitle={taskTitle}
-          onApprove={(r) => void run(() => api.approveAccess(r.id))}
-          onDeny={(r) => void run(() => api.denyAccess(r.id))}
-        />
-      )}
-      <main>
-        {(!narrow || view.kind === "agents") && <aside className={narrow ? "agents-pane" : undefined}>
-          <button className="primary" onClick={() => void startAgent()}>Start agent (no task)</button>
-          <p className="muted small">{running} running</p>
-          {error && <p className="error">{error}</p>}
-          <ul className="agents">
-            {agents.map((a) => (
-              <AgentCard key={a.id} agent={a} taskTitle={taskTitle(a.task_id)} nowMs={nowMs}
-                selected={current?.id === a.id}
-                onSelect={() => setView({ kind: "agent", id: a.id })}
-                onStop={() => void run(() => api.stopAgent(a.id))}
-                onRemove={() => void removeAgent(a.id)}
-                onDiscard={() => void run(() => api.discardAgent(a.id))}
-                onImport={() => void run(() => api.importAgent(a.id))}
-                onSaveWork={() => void run(() => api.saveWork(a.id))}
-                onResume={() => void run(() => api.resumeAgent(a.id))}
-                events={events[a.id] ?? []}
-                messages={messages[a.id] ?? []}
-                usage={usageByAgent.get(a.id)}
-              />
-            ))}
-          </ul>
-          {agents.length === 0 && <p className="muted">No agents yet.</p>}
-          {narrow && <AgentsTabNav onBoard={() => setView({ kind: "board" })} />}
-        </aside>}
-        {(!narrow || view.kind !== "agents") && <section className="main-pane">
-          <nav className="tabs">
-            {narrow && (
-              <button onClick={() => setView({ kind: "agents" })} title="Agents and their actions">
-                Agents · {running}
-              </button>
-            )}
-            <button className={view.kind === "board" ? "active" : ""} onClick={() => setView({ kind: "board" })}>
-              Board
-            </button>
-            <button className={view.kind === "office" ? "active" : ""} onClick={() => setView({ kind: "office" })}>
-              Office
-            </button>
-            <button className={view.kind === "usage" ? "active" : ""} onClick={() => setView({ kind: "usage" })}>
-              Usage
-            </button>
-            {agents.filter((a) => a.has_terminal).map((a) => (
-              <button key={a.id} className={current?.id === a.id ? "active" : ""}
-                onClick={() => setView({ kind: "agent", id: a.id })}>
-                <span className={`dot state-${a.state}`} /> {taskTitle(a.task_id) ?? a.id.slice(0, 6)}
-              </button>
-            ))}
-          </nav>
-          {view.kind === "office" ? (
-            <Suspense fallback={<div className="empty">Loading the office…</div>}>
-              <Office agents={agents} tasks={tasks} messages={messages} accessRequests={accessRequests}
-                onOpenAgent={(id) => setView({ kind: "agent", id })} />
-            </Suspense>
-          ) : view.kind === "usage" ? (
-            <Suspense fallback={<div className="empty">Loading usage…</div>}>
-              <Usage usage={usage} agents={agents} tasks={tasks} status={status}
-                onOpenAgent={(id) => setView({ kind: "agent", id })} />
-            </Suspense>
-          ) : view.kind === "board" || !current ? (
-            <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask}
-              usageByGoal={usageByGoal}
-              onStartLead={(t) => void startAgent(t.id, "lead")}
-              onCreate={async (title, description) => (await run(() => api.createTask(title, description))) !== undefined}
-              onStatus={(t: Task, status: TaskStatus) => void run(() => api.updateTask(t.id, { status }))}
-              onStart={(t) => void startAgent(t.id)}
-              onDelete={(t) => void run(() => api.deleteTask(t.id))}
-              onOpenAgent={(id) => setView({ kind: "agent", id })}
-              pullRequests={pullRequests} github={status?.github !== undefined}
-              onOpenPR={(t) => void run(() => api.openPullRequest(t.id))}
-              onRequestReview={(pr) => void run(() => api.requestReview(pr.id))}
-              onSendToWorker={(pr, r) => void run(() => api.sendToWorker(pr.id, r.id))}
-              onAcceptFlagged={(pr) => void run(() => api.acceptFlagged(pr.id, pr.flagged.map((f) => f.commit)))}
-              roles={roles} specs={specs} qaRuns={qaRuns} inbox={inbox} architectRunning={architectRunning}
-              onStartRole={(t, role) => void startAgent(t.id, role)}
-              onSaveSpec={(s, plan) => ok(() => api.editSpec(s.id, plan))}
-              onApproveSpec={(s) => void run(() => approveSpec(s))}
-              onResolve={(t) => void run(async () => { await api.resolveConflict(t.id); return true; })}
-              onReadInbox={(i) => void run(() => api.readInbox(i.id))}
-              onReplyInbox={(i, body) => ok(() => api.replyInbox(i.id, body))}
-            />
-          ) : (
-            // Live while it runs, else its saved sessions (ADR 0036).
-            <TerminalView key={`${current.id}-${current.session_id ?? ""}`} agent={current}
-              onResume={() => void run(() => api.resumeAgent(current.id))} />
+    <AgentsContext.Provider value={agents}>
+      <div className="app">
+        <header>
+          <h1>agent-office</h1>
+          {project && <span className="mono small" title={project.repo_path}>{project.name}</span>}
+          <span className="muted small">{version && `v${version}`}</span>
+          {status?.sandbox === "podman" && (
+            <span className="badge sandboxed" title={status.image ? `worker image ${status.image}` : undefined}>
+              sandboxed · podman
+            </span>
           )}
-        </section>}
-      </main>
-    </div>
+          {status?.sandbox === "podman" && (
+            <button className="badge pack" onClick={() => setShowPack((v) => !v)} aria-expanded={showPack}
+              title="What sandboxed agents get: image, network, secrets, skills, MCP servers">
+              {status.pack ? `pack · ${status.pack.name}` : "no stack pack"}
+            </button>
+          )}
+          {status?.sandbox === "host" && <span className="badge unsandboxed">unsandboxed · host mode</span>}
+          {status?.github && (
+            <span className="badge github" title={`Pushes to ${status.github.remote}; PRs into ${status.github.base}; ` +
+              `${status.github.rounds} automatic follow-up round(s). agent-office never merges.`}>
+              GitHub · {status.github.repo} · review: {status.github.reviewer}
+            </span>
+          )}
+          <span className="header-actions">
+            <button className={`badge approvals-button ${waitingCount ? "has-pending" : ""}`} aria-expanded={approvalsOpen}
+              aria-label={waitingCount ? `Approvals: ${waitingCount} waiting` : "Approvals: none waiting"}
+              onClick={() => setApprovalsOpen((v) => !v)}
+              title="Agents waiting on you: access requests and permission prompts (ADR 0019, 0044)">
+              Approvals{waitingCount > 0 && <span className="count">{waitingCount}</span>}
+            </button>
+            <button className={`badge inbox-button ${unreadCount ? "has-unread" : ""}`} aria-expanded={panel === "inbox"}
+              onClick={() => togglePanel("inbox")} title="Messages to you from the team (ADR 0030)">
+              Inbox{unreadCount > 0 && ` · ${unreadCount}`}
+            </button>
+            <button className="badge" aria-expanded={panel === "memory"} onClick={() => togglePanel("memory")}
+              title="Notes every agent starts with (ADR 0034)">
+              Memory{proposed > 0 && ` · ${proposed} proposed`}
+            </button>
+            <button className="badge" aria-expanded={panel === "devices"} onClick={() => togglePanel("devices")}
+              title={`Paired browsers and phones${session.device ? `; this one: ${session.device.name}` : ""} (ADR 0039)`}>
+              Devices
+            </button>
+            <button className="badge" title="Ask the assistant for a briefing (starts it if needed)"
+              onClick={() => void run(async () => { await api.askBriefing(); setPanel("inbox"); return true; })}>
+              Briefing
+            </button>
+          </span>
+          <span className={`conn conn-${connection}`}>{connection === "open" ? "connected" : connection}</span>
+        </header>
+        {status?.sandbox === "host" && (
+          <div className="banner warn">
+            Host mode: agents run directly on this machine, with your files, SSH keys and network, and ask before
+            using tools. Restart the daemon with <span className="mono">--sandbox podman</span> to isolate them.
+          </div>
+        )}
+        {showPack && status?.sandbox === "podman" && <PackPanel status={status} />}
+        {panel === "inbox" && (
+          <InboxPanel items={inbox} tasks={tasks} specs={specs} onOpenAgent={openAgent}
+            onRead={(i) => void run(() => api.readInbox(i.id))}
+            onReply={(i, body) => ok(() => api.replyInbox(i.id, body))}
+            onReviewPlan={reviewPlan}
+            onApprovePlan={(s, i) => void run(async () => {
+              const res = await approveSpec(s);
+              if (!i.read_at) await api.readInbox(i.id);
+              return res;
+            })} />
+        )}
+        {panel === "memory" && (
+          <MemoryPanel entries={memory}
+            onAdd={(d) => ok(() => api.addMemory(d))}
+            onEdit={(m, patch) => ok(() => api.editMemory(m.id, patch))}
+            onAccept={(m) => void run(() => api.acceptMemory(m.id))}
+            onDelete={(m) => void run(async () => { await api.deleteMemory(m.id); return true; })} />
+        )}
+        {panel === "devices" && (
+          <DevicesPanel remoteHosts={status?.remote_hosts ?? []} run={run} onSignedOut={onSignedOut} />
+        )}
+        {status?.warnings.map((w) => <div key={w} className="banner warn">{w}</div>)}
+        {approvalsOpen && (
+          <Drawer label="Approvals" onClose={() => setApprovalsOpen(false)}
+            title={<>Waiting for you{waitingCount > 0 && <span className="muted"> · {waitingCount}</span>}</>}>
+            <Approvals waiting={waiting} taskTitle={taskTitle} onOpenAgent={(id) => {
+              setApprovalsOpen(false);
+              openAgent(id);
+            }}
+              onApprove={(r) => void run(() => api.approveAccess(r.id))}
+              onDeny={(r) => void run(() => api.denyAccess(r.id))}
+            />
+          </Drawer>
+        )}
+        {switcher && (
+          <AgentSwitcher agents={agents} tasks={tasks} current={current?.id} waiting={waitingAgents}
+            onClose={() => setSwitcher(false)}
+            onPick={(id) => {
+              setSwitcher(false);
+              openAgent(id);
+            }} />
+        )}
+        <main>
+          {(!narrow || view.kind === "agents") && <aside className={narrow ? "agents-pane" : undefined}>
+            <button className="primary" onClick={() => void startAgent()}>Start agent (no task)</button>
+            <p className="muted small">{running} running</p>
+            {error && <p className="error">{error}</p>}
+            {[activeAgents, exitedAgents].map((list, i) => {
+              const cards = (
+                <ul className="agents">
+                  {list.map((a) => (
+                    <AgentCard key={a.id} agent={a} taskTitle={taskTitle(a.task_id)} nowMs={nowMs}
+                      selected={current?.id === a.id} label={label}
+                      waiting={waiting.find((w) => w.agent.id === a.id)}
+                      onApprovals={() => setApprovalsOpen(true)}
+                      onSelect={() => openAgent(a.id)}
+                      onStop={() => void run(() => api.stopAgent(a.id))}
+                      onRemove={() => void removeAgent(a.id)}
+                      onDiscard={() => void run(() => api.discardAgent(a.id))}
+                      onImport={() => void run(() => api.importAgent(a.id))}
+                      onSaveWork={() => void run(() => api.saveWork(a.id))}
+                      onResume={() => void run(() => api.resumeAgent(a.id))}
+                      events={events[a.id] ?? []}
+                      messages={messages[a.id] ?? []}
+                      usage={usageByAgent.get(a.id)}
+                    />
+                  ))}
+                </ul>
+              );
+              if (i === 0) return <div key="active">{cards}</div>;
+              if (list.length === 0) return null;
+              // Exited agents stay reachable here, in the switcher and in Usage (ADR 0044).
+              return (
+                <details key="exited" className="exited-agents" open={list.some((a) => a.id === current?.id) || undefined}>
+                  <summary className="muted small">Exited · {list.length}</summary>
+                  {cards}
+                </details>
+              );
+            })}
+            {agents.length === 0 && <p className="muted">No agents yet.</p>}
+            {narrow && <AgentsTabNav onBoard={() => setView({ kind: "board" })} />}
+          </aside>}
+          {(!narrow || view.kind !== "agents") && <section className="main-pane">
+            <nav className="tabs">
+              {narrow && (
+                <button onClick={() => setView({ kind: "agents" })} title="Agents and their actions">
+                  Agents · {running}
+                </button>
+              )}
+              <button className={view.kind === "board" ? "active" : ""} onClick={() => setView({ kind: "board" })}>
+                Board
+              </button>
+              <button className={view.kind === "office" ? "active" : ""} onClick={() => setView({ kind: "office" })}>
+                Office
+              </button>
+              <button className={view.kind === "usage" ? "active" : ""} onClick={() => setView({ kind: "usage" })}>
+                Usage
+              </button>
+              <span className={`agent-tabs ${shownTabs.length > crowdedTabs ? "crowded" : ""}`} role="tablist" aria-label="Open agents">
+                {shownTabs.map((a) => (
+                  <span key={a.id} role="presentation"
+                    className={`agent-tab ${current?.id === a.id ? "active" : ""} ${dragged === a.id ? "dragging" : ""}`}
+                    draggable={!narrow}
+                    onDragStart={(e) => {
+                      setDragged(a.id);
+                      e.dataTransfer.effectAllowed = "move";
+                      e.dataTransfer.setData("text/plain", a.id);
+                    }}
+                    onDragEnd={() => setDragged(undefined)}
+                    onDragOver={(e) => {
+                      if (dragged && dragged !== a.id) e.preventDefault();
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (dragged) setTabs((t) => moveTab(t, dragged, t.order.indexOf(a.id)));
+                      setDragged(undefined);
+                    }}>
+                    <button role="tab" aria-selected={current?.id === a.id} data-agent={a.id}
+                      title={`${a.name} · ${a.role} · ${a.id}${taskTitle(a.task_id) ? `\n${taskTitle(a.task_id)}` : ""}` +
+                        "\nDrag or Alt+←/→ to move; middle-click to close"}
+                      onClick={() => openAgent(a.id)}
+                      onAuxClick={(e) => {
+                        if (e.button === 1) closeAgentTab(a.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+                        e.preventDefault();
+                        moveTabBy(a.id, e.key === "ArrowLeft" ? -1 : 1);
+                      }}>
+                      <span className={`dot state-${a.state}`} />
+                      <span className="agent-tab-name">{a.name || a.id.slice(0, 6)}</span>
+                      {taskTitle(a.task_id) && <span className="agent-tab-task">{taskTitle(a.task_id)}</span>}
+                    </button>
+                    <button className="agent-tab-close" aria-label={`Close ${a.name || a.id.slice(0, 6)}`}
+                      onClick={() => closeAgentTab(a.id)}>×</button>
+                  </span>
+                ))}
+              </span>
+              <button className="switcher-button" onClick={() => setSwitcher(true)} aria-haspopup="dialog"
+              aria-label={`Find an agent (${running} running)`}
+                title="Find an agent by name, id, role, task or branch ( / )">
+                <span aria-hidden="true">⌕</span><span className="switcher-label"> Agents</span>
+                <span className="count">{running}</span>
+              </button>
+            </nav>
+            {view.kind === "office" ? (
+              <Suspense fallback={<div className="empty">Loading the office…</div>}>
+                <Office agents={agents} tasks={tasks} messages={messages} accessRequests={accessRequests}
+                  onOpenAgent={openAgent} />
+              </Suspense>
+            ) : view.kind === "usage" ? (
+              <Suspense fallback={<div className="empty">Loading usage…</div>}>
+                <Usage usage={usage} agents={agents} tasks={tasks} status={status}
+                  onOpenAgent={openAgent} />
+              </Suspense>
+            ) : view.kind === "board" || !current ? (
+              <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask}
+                usageByGoal={usageByGoal}
+                onStartLead={(t) => void startAgent(t.id, "lead")}
+                onCreate={async (title, description) => (await run(() => api.createTask(title, description))) !== undefined}
+                onStatus={(t: Task, status: TaskStatus) => void run(() => api.updateTask(t.id, { status }))}
+                onStart={(t) => void startAgent(t.id)}
+                onDelete={(t) => void run(() => api.deleteTask(t.id))}
+                onOpenAgent={openAgent}
+                pullRequests={pullRequests} github={status?.github !== undefined}
+                onOpenPR={(t) => void run(() => api.openPullRequest(t.id))}
+                onRequestReview={(pr) => void run(() => api.requestReview(pr.id))}
+                onSendToWorker={(pr, r) => void run(() => api.sendToWorker(pr.id, r.id))}
+                onAcceptFlagged={(pr) => void run(() => api.acceptFlagged(pr.id, pr.flagged.map((f) => f.commit)))}
+                roles={roles} specs={specs} qaRuns={qaRuns} inbox={inbox} architectRunning={architectRunning}
+                onStartRole={(t, role) => void startAgent(t.id, role)}
+                onSaveSpec={(s, plan) => ok(() => api.editSpec(s.id, plan))}
+                onApproveSpec={(s) => void run(() => approveSpec(s))}
+                onResolve={(t) => void run(async () => { await api.resolveConflict(t.id); return true; })}
+                onReadInbox={(i) => void run(() => api.readInbox(i.id))}
+                onReplyInbox={(i, body) => ok(() => api.replyInbox(i.id, body))}
+              />
+            ) : (
+              // Live while it runs, else its saved sessions (ADR 0036).
+              <TerminalView key={`${current.id}-${current.session_id ?? ""}`} agent={current}
+                onResume={() => void run(() => api.resumeAgent(current.id))} />
+            )}
+          </section>}
+        </main>
+      </div>
+    </AgentsContext.Provider>
   );
 }
 
@@ -361,6 +531,9 @@ interface CardProps {
   taskTitle?: string;
   nowMs: number;
   selected: boolean;
+  label: (id: string) => string; // another agent's name
+  waiting?: Waiting; // what of this agent waits on the user
+  onApprovals: () => void;
   onSelect: () => void;
   onStop: () => void;
   onRemove: () => void;
@@ -374,19 +547,28 @@ interface CardProps {
 }
 
 function AgentCard({
-  agent: a, taskTitle, nowMs, selected, onSelect, onStop, onRemove, onDiscard, onImport, onSaveWork, onResume, events, messages,
-  usage,
+  agent: a, taskTitle, nowMs, selected, label, waiting, onApprovals, onSelect, onStop, onRemove, onDiscard, onImport, onSaveWork,
+  onResume, events, messages, usage,
 }: CardProps): JSX.Element {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const stuck = a.state === "starting" && nowMs - Date.parse(a.started_at) > stuckAfterMs;
   const sandboxed = a.sandbox === "podman";
   const repoLabel = sandboxed ? "Agent repository" : "Worktree";
   return (
-    <li className={`card ${selected ? "selected" : ""}`} onClick={onSelect}>
+    <li className={`card ${selected ? "selected" : ""}`} onClick={onSelect} data-agent={a.id}>
       <div className="card-head">
-        <span className="mono">{a.id}</span>
+        <AgentName agent={a} />
         <span className={`badge state-${a.state}`}>{stateLabel[a.state]}</span>
       </div>
+      {waiting && waiting.requests.length > 0 && (
+        <button className="approval-link" onClick={(e) => {
+          e.stopPropagation();
+          onApprovals();
+        }}>
+          {waiting.requests.length === 1 ? "1 request waits for your approval"
+            : `${waiting.requests.length} requests wait for your approval`}
+        </button>
+      )}
       <div className="row">
         <span className={`chip role-${a.kind}`} title={kindHelp[a.kind]}>{a.role}</span>
         {sandboxed
@@ -429,7 +611,7 @@ function AgentCard({
         </div>
       )}
       {events.length > 0 && <EventList events={events} />}
-      {messages.length > 0 && <MessageList agentId={a.id} messages={messages} />}
+      {messages.length > 0 && <MessageList agentId={a.id} messages={messages} label={label} />}
       <div className="card-actions row" onClick={(e) => e.stopPropagation()}>
         {a.state !== "exited" && <button onClick={onStop}>Stop</button>}
         {a.resumable && !confirmDiscard && (
@@ -508,40 +690,63 @@ function EventList({ events }: { events: SandboxEvent[] }): JSX.Element {
   );
 }
 
-// Approvals is the human approval queue for access requests (ADR 0019).
-// Nothing is granted until a button here is pressed; the reason is the
-// agent's own text.
-function Approvals({ requests, agents, taskTitle, onApprove, onDeny }: {
-  requests: AccessRequest[];
-  agents: Agent[];
+// Approvals lists every agent waiting on the user (ADR 0019, 0044). Access
+// requests are decided here: nothing is granted until a button is pressed,
+// and the reason is the agent's own text. A permission prompt can only be
+// answered in the agent's terminal, so its entry leads there.
+function Approvals({ waiting, taskTitle, onOpenAgent, onApprove, onDeny }: {
+  waiting: Waiting[];
   taskTitle: (id?: string) => string | undefined;
+  onOpenAgent: (id: string) => void;
   onApprove: (r: AccessRequest) => void;
   onDeny: (r: AccessRequest) => void;
 }): JSX.Element {
+  if (waiting.length === 0) {
+    return (
+      <p className="muted approvals-empty">
+        Nothing is waiting. Agents ask here before using a host outside their allowlist, and agents on the host show their
+        permission prompts here.
+      </p>
+    );
+  }
   return (
     <section className="approvals">
-      <h2>Waiting for your approval</h2>
       <ul>
-        {requests.map((r) => {
-          const a = agents.find((x) => x.id === r.agent_id);
-          return (
-            <li key={r.id}>
-              <div>
-                Agent <span className="mono">{r.agent_id.slice(0, 6)}</span>
-                {a && <> ({a.role}{taskTitle(a.task_id) ? `, “${taskTitle(a.task_id)}”` : ""})</>} asks for{" "}
-                {r.kind === "domain" ? <>network access to <span className="mono strong">{r.value}</span></> : `${r.kind} ${r.value}`}
+        {waiting.map(({ agent: a, requests, permission }) => (
+          <li key={a.id} className="waiting-entry" data-agent={a.id}>
+            <div>
+              <button className="link agent-link" onClick={() => onOpenAgent(a.id)}><AgentName agent={a} /></button>
+              {" "}({a.role}{taskTitle(a.task_id) ? `, “${taskTitle(a.task_id)}”` : ""})
+            </div>
+            {permission && (
+              <div className="waiting-item permission">
+                <div>Waits for you to answer a permission prompt in its terminal.</div>
+                <div className="row">
+                  <button onClick={() => onOpenAgent(a.id)} title="Open its terminal; the prompt is answered there">
+                    Go to terminal
+                  </button>
+                  <span className="small muted">Runs on the host with permission prompts on</span>
+                </div>
               </div>
-              <div className="small muted">Agent&apos;s reason: <span className="quote">{r.reason}</span></div>
-              <div className="row">
-                <button onClick={() => onApprove(r)} title="Adds the host to this agent's allowlist until it exits">
-                  Allow for this agent
-                </button>
-                <button className="danger" onClick={() => onDeny(r)}>Deny</button>
-                <span className="small muted">Requested {timeOf(r.created_at)} · applies to this agent only</span>
+            )}
+            {requests.map((r) => (
+              <div key={r.id} className="waiting-item request">
+                <div>
+                  Asks for{" "}
+                  {r.kind === "domain" ? <>network access to <span className="mono strong">{r.value}</span></> : `${r.kind} ${r.value}`}
+                </div>
+                <div className="small muted">Agent&apos;s reason: <span className="quote">{r.reason}</span></div>
+                <div className="row">
+                  <button onClick={() => onApprove(r)} title="Adds the host to this agent's allowlist until it exits">
+                    Allow for this agent
+                  </button>
+                  <button className="danger" onClick={() => onDeny(r)}>Deny</button>
+                  <span className="small muted">Requested {timeOf(r.created_at)} · applies to this agent only</span>
+                </div>
               </div>
-            </li>
-          );
-        })}
+            ))}
+          </li>
+        ))}
       </ul>
     </section>
   );
@@ -551,7 +756,11 @@ const deliveryLabel: Record<string, string> = { stop_hook: "at end of turn", pty
 
 // MessageList shows messages an agent sent or received, newest first. Bodies
 // are agent-written text.
-function MessageList({ agentId, messages }: { agentId: string; messages: Message[] }): JSX.Element {
+function MessageList({ agentId, messages, label }: {
+  agentId: string;
+  messages: Message[];
+  label: (id: string) => string;
+}): JSX.Element {
   const waiting = messages.filter((m) => m.to === agentId && !m.delivered_at).length;
   return (
     <details className="events small" onClick={(e) => e.stopPropagation()}>
@@ -564,8 +773,8 @@ function MessageList({ agentId, messages }: { agentId: string; messages: Message
           <li key={m.id}>
             <span className="muted">
               {timeOf(m.created_at)} {m.to === agentId
-                ? `from ${m.from_user ? "you" : m.from ? m.from.slice(0, 6) : "agent-office"}`
-                : `to ${m.to.slice(0, 6)}`}
+                ? `from ${m.from_user ? "you" : m.from ? label(m.from) : "agent-office"}`
+                : `to ${label(m.to)}`}
               {" · "}
               {m.delivered_at ? `delivered ${deliveryLabel[m.delivery ?? ""] ?? ""}` : "not delivered yet"}
             </span>

@@ -3,6 +3,7 @@
 // that agents wrote is rendered as text, never as HTML.
 import { type FormEvent, type JSX, useState } from "react";
 import type { Agent, InboxItem, MemoryDraft, MemoryEntry, Plan, QARun, RoleInfo, Spec, Task } from "./api";
+import { AgentName } from "./AgentName";
 import { parseScope, scopeLabel } from "./memory";
 import {
   type PlanForm, type SubTaskForm, fromForm, needsAnswer, newSubTask, proposedSpec, toForm, waitsFor,
@@ -14,9 +15,10 @@ const kindLabel: Record<InboxItem["kind"], string> = {
   question: "asks", blocked: "is blocked", info: "says", briefing: "briefing", plan: "plan",
 };
 
-// who names an inbox item's sender.
-function who(i: InboxItem): string {
-  return i.agent_id ? `${i.role ?? "agent"} ${i.agent_id.slice(0, 6)}` : "agent-office";
+// Who names an inbox item's sender: its role and name (ADR 0043).
+function Who({ item: i }: { item: InboxItem }): JSX.Element {
+  if (!i.agent_id) return <>agent-office</>;
+  return <>{i.role ?? "agent"} <AgentName id={i.agent_id} /></>;
 }
 
 // ReplyBox is a one-message form.
@@ -50,8 +52,8 @@ export function InboxEntry({ item: i, taskTitle, onRead, onReply, onOpenAgent, p
       <div className="small muted row">
         <span>{timeOf(i.created_at)}</span>
         {i.agent_id
-          ? <button className="link" onClick={() => onOpenAgent(i.agent_id ?? "")}>{who(i)}</button>
-          : <span>{who(i)}</span>}
+          ? <button className="link" onClick={() => onOpenAgent(i.agent_id ?? "")}><Who item={i} /></button>
+          : <span><Who item={i} /></span>}
         <span>{kindLabel[i.kind]}</span>
         {taskTitle && <span>· “{taskTitle}”</span>}
         {!i.read_at && <button className="link" onClick={() => onRead(i)}>mark read</button>}
@@ -154,7 +156,7 @@ export function MemoryPanel(p: {
                 <div className="row">
                   <span className="chip">{m.kind}</span>
                   <span className="strong">{m.title}</span>
-                  {m.status === "proposed" && <span className="chip hint">proposed by {m.source ? m.source.slice(0, 6) : "?"}</span>}
+                  {m.status === "proposed" && <span className="chip hint">proposed by {m.source ? <AgentName id={m.source} /> : "?"}</span>}
                 </div>
                 <div className="quote small">{m.body}</div>
                 <div className="small muted" data-testid="memory-scope">For {scopeLabel(m)}</div>
@@ -223,7 +225,7 @@ export function PlanPanel({ spec, roles, onSave, onApprove }: {
     <details className={`plan small spec-${spec.status}`} open={spec.status === "proposed"} onClick={(e) => e.stopPropagation()}>
       <summary>
         Plan v{spec.version} · {specLabel[spec.status]} · {p.sub_tasks.length} sub-task{p.sub_tasks.length === 1 ? "" : "s"}
-        {spec.author ? ` · by architect ${spec.author.slice(0, 6)}` : " · edited by you"}
+        {spec.author ? <> · by architect <AgentName id={spec.author} /></> : " · edited by you"}
       </summary>
       {editing ? (
         <PlanEditor plan={p} roles={roles} onCancel={() => setEditing(false)}
@@ -325,7 +327,9 @@ export function QAPanel({ run, onOpenAgent }: { run: QARun; onOpenAgent: (id: st
         {run.merged.length === 1 ? "" : "es"} merged{run.bugs.length > 0 && ` · ${run.bugs.length} bug${run.bugs.length === 1 ? "" : "s"}`}
       </summary>
       <div className="mono muted">integration branch {run.branch}{run.head && ` @ ${run.head.slice(0, 8)}`}</div>
-      {run.agent_id && <button className="link" onClick={() => onOpenAgent(run.agent_id ?? "")}>QA agent {run.agent_id.slice(0, 6)}</button>}
+      {run.agent_id && (
+        <button className="link" onClick={() => onOpenAgent(run.agent_id ?? "")}>QA agent <AgentName id={run.agent_id} /></button>
+      )}
       {run.summary && <div className="quote">{run.summary}</div>}
       {run.error && <div className="hint">{run.error}</div>}
       {run.bugs.length > 0 && (

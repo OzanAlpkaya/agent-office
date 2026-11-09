@@ -149,7 +149,7 @@ func (e *Engine) reportNoChange(ctx context.Context, caller, reason string) (mcp
 	e.mu.Unlock()
 	if lead != nil {
 		body := fmt.Sprintf("Report from worker %s on sub-task %q (%s): the review of pull request #%d needs no change; "+
-			"moved to review.\n\nReason: %s", agentName(info.ID), task.Title, task.ID, fu.number, reason)
+			"moved to review.\n\nReason: %s", teamLabel(info.Name, info.ID), task.Title, task.ID, fu.number, reason)
 		if _, err := e.sendMessage(ctx, info.ID, lead.info.ID, truncateRunes(body, MaxMessageLen), false); err != nil {
 			e.log.Warn("notify lead", "agent_id", info.ID, "lead", lead.info.ID, "err", err)
 		}

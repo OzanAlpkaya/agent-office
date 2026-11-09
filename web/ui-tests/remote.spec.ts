@@ -25,7 +25,7 @@ test("an unpaired browser pairs with a code", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "agent-office" })).toBeVisible();
   await expect(page.getByText("agent-office pair")).toBeVisible();
   // Nothing of the board leaks before pairing.
-  await expect(page.getByText("Waiting for your approval")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Approvals/ })).toHaveCount(0);
 
   const code = page.getByLabel("Pairing code");
   await code.fill("zzzz-zzzz");
@@ -36,7 +36,7 @@ test("an unpaired browser pairs with a code", async ({ page }) => {
   await expect(code).toHaveValue("ABCD-EFGH");
   await page.getByLabel("Device name").fill("Test phone");
   await page.getByRole("button", { name: "Pair" }).click();
-  await expect(page.getByText("Waiting for your approval")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approvals: 1 waiting" })).toBeVisible();
   expect(daemon.requests).toContain("POST /api/auth/pair Test phone");
   expect(errors).toEqual([]);
 });
@@ -48,7 +48,7 @@ test("the link agent-office pair prints fills in the code and leaves no trace in
   await expect(page.getByLabel("Pairing code")).toHaveValue(mockCode);
   expect(new URL(page.url()).hash).toBe("");
   await page.getByRole("button", { name: "Pair" }).click();
-  await expect(page.getByText("Waiting for your approval")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approvals: 1 waiting" })).toBeVisible();
 });
 
 test("sign out all other devices", async ({ page }) => {
@@ -65,14 +65,14 @@ test("sign out all other devices", async ({ page }) => {
 test("a pairing link opened in a paired browser leaves no code in the URL", async ({ page }) => {
   const daemon = new MockDaemon(team(4));
   await open(page, daemon, `/#pair=${mockCode}`);
-  await expect(page.getByText("Waiting for your approval")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approvals: 1 waiting" })).toBeVisible();
   expect(new URL(page.url()).hash).toBe("");
 });
 
 test("a browser signed out from another device returns to the pairing screen", async ({ page }) => {
   const daemon = new MockDaemon(team(4));
   await open(page, daemon);
-  await expect(page.getByText("Waiting for your approval")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approvals: 1 waiting" })).toBeVisible();
   daemon.signOut();
   await expect(page.getByLabel("Pairing code")).toBeVisible();
 });
@@ -124,17 +124,22 @@ for (const [name, device] of phones) {
     test.use(device);
 
     test("board, approvals, agents and a terminal with its key bar", async ({ page }) => {
-      const daemon = new MockDaemon(team(6));
+      const daemon = new MockDaemon(team(8)); // a host agent at a permission prompt, and a network request
       const errors = await open(page, daemon);
       const slug = name.replace(/\s+/g, "-").toLowerCase();
 
-      // Approvals first, with thumb-sized buttons.
-      const allow = page.getByRole("button", { name: "Allow for this agent" });
-      await expect(allow).toBeVisible();
-      expect((await allow.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+      // Approvals wait behind the header badge, in a sheet with thumb-sized buttons (ADR 0044).
       await expect(page.locator(".board")).toBeVisible();
       await noHorizontalScroll(page);
       await page.screenshot({ path: `${screens}/phone-${slug}-board.png` });
+      await page.getByRole("button", { name: "Approvals: 2 waiting" }).click();
+      const allow = page.getByRole("dialog", { name: "Approvals" }).getByRole("button", { name: "Allow for this agent" });
+      await expect(allow).toBeVisible();
+      expect((await allow.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+      await noHorizontalScroll(page);
+      await page.screenshot({ path: `${screens}/phone-${slug}-approvals.png` });
+      await page.getByRole("dialog", { name: "Approvals" }).getByRole("button", { name: "Close" }).click();
+      await expect(page.getByRole("dialog", { name: "Approvals" })).toHaveCount(0);
 
       // The board's columns snap sideways inside the board, not the page.
       const board = page.locator(".board");
@@ -328,7 +333,7 @@ test.describe("as an installed app", () => {
     const page = await context.newPage();
     const daemon = new MockDaemon(team(4));
     await open(page, daemon);
-    await expect(page.getByText("Waiting for your approval")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approvals: 1 waiting" })).toBeVisible();
     await page.evaluate(() => navigator.serviceWorker.ready.then(() => undefined));
 
     const manifest = await page.evaluate(async () => {

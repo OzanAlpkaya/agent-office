@@ -7,6 +7,7 @@ const notePalette = { ...art.basePalette, U: 0, u: 0 };
 const maps: [string, art.PixelMap, art.Palette][] = [
   ["body", art.body, person],
   ["bodyBlink", art.bodyBlink, person],
+  ...art.legs.map((m, i): [string, art.PixelMap, art.Palette] => [`legs.${i}`, m, person]),
   ...art.hairStyles.map((s): [string, art.PixelMap, art.Palette] => [`hair.${s}`, art.hair[s], person]),
   ["chair", art.chair, art.basePalette],
   ["monitor", art.monitor, art.basePalette],

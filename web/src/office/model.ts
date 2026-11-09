@@ -1,6 +1,7 @@
 // The office as data: who sits where, in which pose, and what the lead's
 // whiteboard shows. The scene draws this; the HTML nameplates label it. Pure.
 import type { AccessRequest, Agent, Message, Task, TaskStatus } from "../api";
+import { waitingOnUser } from "../waiting";
 import { noteGrid } from "./art";
 import { type Assignment, type Slot, assignDesks } from "./layout";
 import { type Look, type Pose, lookOf, poseOf } from "./pose";
@@ -22,7 +23,8 @@ export interface Note {
 export interface OfficeModel {
   assignment: Assignment;
   desks: number; // regular desks in use, including free ones between seated agents
-  seats: Seat[]; // one per agent
+  seats: Seat[]; // one per agent that has not exited
+  exited: number; // agents that left the office; they stay in the agent list
   goal?: { title: string; notes: Note[] }; // the lead's goal and its sub-tasks
 }
 
@@ -36,10 +38,13 @@ export function buildOffice(
   tasks: readonly Task[],
   accessRequests: readonly AccessRequest[],
 ): OfficeModel {
-  const assignment = assignDesks(prev, agents);
-  const waiting = new Set(accessRequests.filter((r) => r.status === "pending").map((r) => r.agent_id));
+  // An exited agent leaves: its desk is free for the next agent (ADR 0024).
+  const present = agents.filter((a) => a.state !== "exited");
+  const assignment = assignDesks(prev, present);
+  // The same list as the Approvals badge, so "waiting for you" matches it (ADR 0044).
+  const waiting = new Set(waitingOnUser(present, accessRequests).map((w) => w.agent.id));
   const title = (id?: string): string | undefined => tasks.find((t) => t.id === id)?.title;
-  const byId = new Map(agents.map((a) => [a.id, a]));
+  const byId = new Map(present.map((a) => [a.id, a]));
 
   const seat = (slot: Slot, a: Agent): Seat => ({
     slot, agent: a, pose: poseOf(a, waiting.has(a.id)), look: lookOf(a.id), taskTitle: title(a.task_id),
@@ -62,7 +67,7 @@ export function buildOffice(
       .map((t) => ({ id: t.id, title: t.title, status: t.status }));
     goal = { title: goalTask.title, notes };
   }
-  return { assignment, desks: assignment.desks.length, seats, goal };
+  return { assignment, desks: assignment.desks.length, seats, goal, exited: agents.length - present.length };
 }
 
 // freshMessages returns the messages not seen before that were created at or

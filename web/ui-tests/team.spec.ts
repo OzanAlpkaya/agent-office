@@ -36,7 +36,7 @@ function workflow(): World {
   return {
     tasks,
     agents: [
-      agent("a7c4e1000001", "architect", "idle", { task_id: goal.id }),
+      agent("a7c4e1000001", "architect", "idle", { name: "Ines", task_id: goal.id }),
       agent("a1ead0000001", "lead", "idle", { task_id: goal.id }),
       agent("b2c3d4000001", "worker", "working", { task_id: "t00000000003" }),
       agent("c3d4e5000002", "worker", "exited", { task_id: "t00000000004", exit_reason: "reported_done" }),
@@ -80,7 +80,8 @@ test("the inbox shows the team's questions and sends the answer", async ({ page 
   await button.click();
   const inbox = page.getByRole("region", { name: "Inbox" });
   await expect(inbox).toContainText("Should tags be case-insensitive?");
-  await expect(inbox).toContainText("architect a7c4e1");
+  // the sender's name, with its short id as secondary text (ADR 0043)
+  await expect(inbox).toContainText(/architect Ines\s*a7c4e1/);
   await inbox.getByLabel("Answer").fill("Yes, lower-case them.");
   await inbox.getByRole("button", { name: "Send" }).click();
   await expect.poll(() => daemon.requests).toContain('POST /api/inbox/1/reply {"body":"Yes, lower-case them."}');
@@ -115,7 +116,7 @@ test("a proposed plan is shown on the goal and approved by the user", async ({ p
   const errors = await open(page, daemon);
   const goal = card(page, "Add tags to saved links");
   const plan = goal.locator("details.plan");
-  await expect(plan).toContainText("Plan v2 · waiting for your approval · 2 sub-tasks · by architect a7c4e1");
+  await expect(plan).toContainText(/Plan v2 · waiting for your approval · 2 sub-tasks · by architect Ines\s*a7c4e1/);
   await expect(plan).toContainText("Users can tag links and filter by tag.");
   await expect(plan).toContainText("after schema");
   await expect(plan).toContainText("?tag=x filters");

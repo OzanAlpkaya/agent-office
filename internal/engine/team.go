@@ -82,7 +82,7 @@ func (e *Engine) leadOfGoalLocked(taskID string) *agentProc {
 }
 
 func (e *Engine) agentRefLocked(a *agentProc) mcp.AgentRef {
-	return mcp.AgentRef{ID: a.info.ID, Kind: a.info.Kind, Role: a.info.Role, State: string(a.status.State),
+	return mcp.AgentRef{ID: a.info.ID, Name: a.info.Name, Kind: a.info.Kind, Role: a.info.Role, State: string(a.status.State),
 		Branch: a.info.Branch}
 }
 
@@ -223,7 +223,7 @@ func (t team) AssignTask(ctx context.Context, caller string, in mcp.AssignTaskIn
 		return mcp.AssignTaskOutput{}, userErr(err)
 	}
 	e.log.Info("sub-task assigned", "agent_id", caller, "task_id", task.ID, "worker", a.ID)
-	return mcp.AssignTaskOutput{TaskID: task.ID, AgentID: a.ID, Branch: a.Branch}, nil
+	return mcp.AssignTaskOutput{TaskID: task.ID, AgentID: a.ID, AgentName: a.Name, Branch: a.Branch}, nil
 }
 
 func (t team) ListTasks(ctx context.Context, caller string) (mcp.ListTasksOutput, error) {
@@ -533,7 +533,7 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 	e.mu.Unlock()
 	if lead != nil {
 		body := fmt.Sprintf("Report from worker %s on sub-task %q (%s): moved to review; branch %s, %d commit(s).\n\nSummary: %s",
-			agentName(info.ID), task.Title, task.ID, out.Branch, out.Commits, summary)
+			teamLabel(info.Name, info.ID), task.Title, task.ID, out.Branch, out.Commits, summary)
 		if len(conflicts) > 0 {
 			body += "\n\nagent-office found conflicts: " + describeConflicts(conflicts) + ". Decide the order: let one " +
 				"sub-task wait for the other, or assign a sub-task that resolves it."

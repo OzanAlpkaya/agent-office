@@ -12,9 +12,20 @@ import { defaultRole } from "../src/api";
 const t0 = Date.parse("2026-11-08T10:00:00Z");
 const iso = (minutes: number): string => new Date(t0 + minutes * 60_000).toISOString();
 
+// Names like the daemon's (ADR 0043): a fixed one per id, so a test sees the
+// same name whichever tests ran before it. team() names its agents itself.
+const names = [
+  "Zeynep", "Finn", "Nia", "Hugo", "Mei", "Tunde", "Sofia", "Erik", "Aroha", "Karim", "Ines", "Wei", "Chidi", "Astrid",
+];
+export function nameFor(id: string): string {
+  let h = 0;
+  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return names[h % names.length];
+}
+
 export function agent(id: string, kind: Kind, state: AgentState, over: Partial<Agent> = {}): Agent {
   return {
-    id, kind, role: defaultRole[kind], state, model: "haiku", inherit_user_settings: false, sandbox: "podman", resumable: state === "exited",
+    id, name: nameFor(id), kind, role: defaultRole[kind], state, model: "haiku", inherit_user_settings: false, sandbox: "podman", resumable: state === "exited",
     branch: `agent-office/${id}`, worktree_path: `/data/agents/${id}`, workspace_kind: "clone",
     worktree_status: "active", has_terminal: true, started_at: iso(0), ...over,
   };
@@ -110,25 +121,28 @@ export function team(n = 10): World {
   ];
   const tasks = [goal, ...subs.map(([id, title, s], i) => task(id, title, s, { parent_task_id: goal.id, created_by: "a1ead0000001", created_at: iso(1 + i) }))];
   const agents: Agent[] = [
-    agent("a1ead0000001", "lead", "idle", { task_id: goal.id, started_at: iso(0) }),
-    agent("b2c3d4000001", "worker", "working", { task_id: "t00000000001", activity: "Bash", started_at: iso(2) }),
-    agent("c3d4e5000002", "worker", "working", { task_id: "t00000000002", activity: "Edit", started_at: iso(3) }),
-    agent("d4e5f6000003", "worker", "waiting_permission", { task_id: "t00000000005", sandbox: "host", started_at: iso(4) }),
-    agent("e5f6a7000004", "reviewer", "working", { task_id: "t00000000003", activity: "Read", started_at: iso(5) }),
-    agent("f6a7b8000005", "worker", "idle", { task_id: "t00000000006", started_at: iso(6) }),
-    agent("a7b8c9000006", "worker", "starting", { task_id: "t00000000007", started_at: iso(7) }),
-    agent("b8c9d0000007", "worker", "working", { task_id: "t00000000004", activity: "Grep", started_at: iso(8) }),
-    agent("c9d0e1000008", "reviewer", "idle", { started_at: iso(9) }),
-    agent("d0e1f2000009", "worker", "exited", { task_id: "t00000000004", exit_reason: "reported_done", exit_code: 0, started_at: iso(1) }),
+    agent("a1ead0000001", "lead", "idle", { name: "Kofi", task_id: goal.id, started_at: iso(0) }),
+    agent("b2c3d4000001", "worker", "working", { name: "Emma", task_id: "t00000000001", activity: "Bash", started_at: iso(2) }),
+    agent("c3d4e5000002", "worker", "working", { name: "Yuki", task_id: "t00000000002", activity: "Edit", started_at: iso(3) }),
+    agent("d4e5f6000003", "worker", "waiting_permission", { name: "Omar", task_id: "t00000000005", sandbox: "host", started_at: iso(4) }),
+    agent("e5f6a7000004", "reviewer", "working", { name: "Priya", task_id: "t00000000003", activity: "Read", started_at: iso(5) }),
+    agent("f6a7b8000005", "worker", "idle", { name: "Lena", task_id: "t00000000006", started_at: iso(6) }),
+    agent("a7b8c9000006", "worker", "starting", { name: "Mateo", task_id: "t00000000007", started_at: iso(7) }),
+    agent("b8c9d0000007", "worker", "working", { name: "Amara", task_id: "t00000000004", activity: "Grep", started_at: iso(8) }),
+    agent("c9d0e1000008", "reviewer", "idle", { name: "Jisoo", started_at: iso(9) }),
+    agent("d0e1f2000009", "worker", "exited", { name: "Ravi", task_id: "t00000000004", exit_reason: "reported_done", exit_code: 0, started_at: iso(1) }),
   ];
   for (let i = agents.length; i < n; i++) {
-    agents.push(agent(`e${String(i).padStart(11, "0")}`, "worker", i % 2 ? "working" : "idle", { started_at: iso(10 + i) }));
+    agents.push(agent(`e${String(i).padStart(11, "0")}`, "worker", i % 2 ? "working" : "idle",
+      { name: names[(i - 10) % names.length], started_at: iso(10 + i) }));
   }
   const accessRequests: AccessRequest[] = [{
     id: 1, agent_id: "b8c9d0000007", kind: "domain", value: "pkg.go.dev", reason: "read the docs of a module",
     status: "pending", created_at: iso(9),
   }];
-  return { agents: agents.slice(0, n), tasks, accessRequests, messages: [] };
+  // The daemon expires an agent's requests when it exits, so a request always has its agent.
+  const listed = new Set(agents.slice(0, n).map((a) => a.id));
+  return { agents: agents.slice(0, n), tasks, accessRequests: accessRequests.filter((r) => listed.has(r.agent_id)), messages: [] };
 }
 
 export const status: Status = {
@@ -222,6 +236,11 @@ export class MockDaemon {
         }
         if (p.endsWith("/resolve-conflict") || (method === "DELETE" && p.startsWith("/api/memory/"))) {
           return route.fulfill({ status: 204 });
+        }
+        const decide = /^\/api\/access-requests\/(\d+)\/(approve|deny)$/.exec(p);
+        if (decide) {
+          const r = this.world.accessRequests.find((x) => x.id === Number(decide[1]));
+          return route.fulfill(json({ ...r, status: decide[2] === "approve" ? "approved" : "denied", decided_at: iso(30) }));
         }
         const resume = /^\/api\/agents\/([^/]+)\/resume$/.exec(p);
         if (resume) {
@@ -326,6 +345,12 @@ export class MockDaemon {
   inboxItem(it: InboxItem): void {
     this.world.inbox = [it, ...(this.world.inbox ?? []).filter((x) => x.id !== it.id)];
     this.send({ type: "inbox", inbox: it });
+  }
+
+  // accessRequest sends a new or decided access request (ADR 0019).
+  accessRequest(r: AccessRequest): void {
+    this.world.accessRequests = [...this.world.accessRequests.filter((x) => x.id !== r.id), r];
+    this.send({ type: "access_request", access_request: r });
   }
 
   memoryEntry(m: MemoryEntry): void {

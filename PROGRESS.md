@@ -1,7 +1,7 @@
 # Progress
 
-**Current phase:** Phase 11 (Portfolio polish) done on `phase-11/portfolio-polish`, tagged `v0.1.0`,
-waiting for Ozan's review (not merged); next: Phase 13
+**Current phase:** UI/UX polish pass on `ui/ux-polish` (before Phase 13), waiting for Ozan's review;
+next: Phase 13
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -21,7 +21,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 8: Observability & cost
 - [x] Phase 9: Memory & persistence
 - [x] Phase 10: Remote access (PWA over Tailscale)
-- [x] Phase 11: Portfolio polish (waiting for review)
+- [x] Phase 11: Portfolio polish
 - [x] Phase 12: Team workflow and roles
 - [ ] Phase 13: Office v2
 
@@ -232,3 +232,21 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   pinned outside `go.mod`; mermaid was only downloaded to check the diagram renders). `make check`,
   `make ui-test` (41), `make sandbox-test` (with `AO_SANDBOX_NET=1` for the egress test) and
   `make e2e` (host, sandbox, team, workflow) pass; the GitHub e2e was not run.
+- 2026-11-09: Phase 11 merged into `main` (`--no-ff`). The v0.1.0 tag was not kept: no tags or releases
+  until Ozan says the project is finished (CLAUDE.md); `make release` and ADR 0042 stay for then.
+- 2026-11-09: UI/UX polish pass on `ui/ux-polish` (plan `docs/plans/ui-ux-polish.md`), from Ozan's
+  own use. Agents get a first name from the daemon (130 names; unique among listed agents; stored,
+  migration 0012; ADR 0043); the id stays the key in the API, logs and branches. The tab strip
+  holds the agents you opened (at most six, closable, movable, kept per browser) and a switcher
+  (`/`) finds any of 20 agents, grouped by goal, exited ones last; a full-screen sheet on a phone
+  (ADR 0044). Approvals moved into a drawer behind a header badge, so nothing moves when one
+  arrives (tested by position). Exited agents walk out of the Office and free their desk (ADR 0024
+  amended). No new dependencies.
+- 2026-11-09: UI/UX polish follow-up (Ozan's review). One list of what waits on the user
+  (access requests and terminal permission prompts, counted per agent) feeds the badge, drawer,
+  title and Office, which had disagreed (ADR 0044 amended). The flaky tabs test read the tabs
+  once before the daemon's snapshot arrived (1/30, 10/30 under CPU throttling), fixed with
+  retrying assertions; throttling also found the `/` shortcut attached after the first paint.
+  Agents see teammates' names in prompts, messages and tool outputs (ADR 0043 extended). The open
+  tab keeps a readable task.
+

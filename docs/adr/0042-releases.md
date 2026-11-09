@@ -1,6 +1,7 @@
 # 0042. Releases: a tagged, clean tree, one static linux/amd64 binary, uploaded by hand
 
-- **Status:** Accepted
+- **Status:** Accepted; on hold (2026-11-09): no tags or releases until Ozan says the project is
+  finished (CLAUDE.md). The v0.1.0 tag was not kept.
 - **Date:** 2026-11-08
 
 ## Context

@@ -64,7 +64,7 @@ func TestResumeKeepsAgentAndWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.ID != a.ID || r.SessionID == a.SessionID || r.WorktreePath != a.WorktreePath || r.Branch != a.Branch ||
+	if r.ID != a.ID || r.Name != a.Name || r.SessionID == a.SessionID || r.WorktreePath != a.WorktreePath || r.Branch != a.Branch ||
 		r.ResumedFrom != a.SessionID || r.Resumable {
 		t.Fatalf("resumed %+v\nfrom %+v", r, a)
 	}
@@ -324,7 +324,7 @@ func TestRestoreAfterShutdown(t *testing.T) {
 	items, _ := e2.Inbox(ctx)
 	notice := items[0].Body
 	if items[0].AgentID != "" || items[0].Kind != InboxInfo || !strings.Contains(notice, "Resumed with their conversations") ||
-		!strings.Contains(notice, agentName(idle.ID)+" (worker): no free agent slot") {
+		!strings.Contains(notice, idle.Name+" (worker, agent id "+idle.ID+"): no free agent slot") {
 		t.Fatalf("notice %+v", items[0])
 	}
 	for _, id := range []string{lead.ID, busy.ID} {
@@ -381,7 +381,7 @@ func TestRestoreAfterCrash(t *testing.T) {
 	eventually(t, "the restore notice", func() bool { items, _ := e2.Inbox(ctx); return len(items) == 1 })
 	screen(t, e2, w.ID, "PROMPT:[agent-office] agent-office was restarted")
 	items, _ := e2.Inbox(ctx)
-	if !strings.Contains(items[0].Body, agentName(s.ID)+" (worker): it had not started its conversation yet") {
+	if !strings.Contains(items[0].Body, s.Name+" (worker, agent id "+s.ID+"): it had not started its conversation yet") {
 		t.Fatalf("notice %q", items[0].Body)
 	}
 	if got, _ := e2.Get(s.ID); got.HasTerminal || got.ExitReason != ExitDaemonRestart {

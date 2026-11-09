@@ -16,7 +16,8 @@ async function openOffice(page: Page, daemon: MockDaemon): Promise<void> {
   await page.goto("/");
   await page.getByRole("button", { name: "Office", exact: true }).click();
   await expect(page.locator(".office")).toHaveAttribute("data-renderer", /webgl|canvas/);
-  await expect(page.locator(".nameplate")).toHaveCount(daemon.world.agents.length);
+  // Exited agents have left the office (ADR 0024).
+  await expect(page.locator(".nameplate")).toHaveCount(daemon.world.agents.filter((a) => a.state !== "exited").length);
 }
 
 const errorsOf = (page: Page): string[] => (page as Page & { errors?: string[] }).errors ?? [];
@@ -32,7 +33,7 @@ async function characterPoint(page: Page, id: string): Promise<{ x: number; y: n
   return { x: plate.x + plate.width / 2 + 6 * scale, y: plate.y + plate.height / 2 - 20 * scale };
 }
 
-interface FrameStats { ticks: number; renders: number; p95Ms: number; maxMs: number }
+interface FrameStats { ticks: number; renders: number; p95Ms: number; maxMs: number; left: number }
 
 // frameStats waits for the scene's statistics to cover at least ms more.
 async function frameStats(page: Page, ms: number): Promise<FrameStats> {
@@ -57,9 +58,15 @@ test("shows every agent at a desk with its pose", async ({ page }) => {
   await expect(pose("a7b8c9000006")).toHaveAttribute("data-pose", "booting");
   // a pending access request is waiting for the user too
   await expect(pose("b8c9d0000007")).toHaveAttribute("data-pose", "waiting");
-  await expect(pose("d0e1f2000009")).toHaveAttribute("data-pose", "away");
+  // an agent that exited before the page opened is not in the office
+  await expect(pose("d0e1f2000009")).toHaveCount(0);
   await expect(page.locator(".whiteboard-label")).toHaveAttribute("data-notes", "7");
   await expect(page.locator(".office-bar")).toContainText("2 waiting for you");
+  await expect(page.locator(".office-bar")).toContainText("1 left the office");
+  // nameplates show names (ADR 0043), with the role for agents other than workers
+  await expect(pose("a1ead0000001")).toContainText("Kofi tech-lead");
+  await expect(pose("b2c3d4000001")).toContainText("Emma");
+  await expect(pose("b2c3d4000001")).toHaveAttribute("title", /Emma · worker · b2c3d4000001/);
   // nameplates do not overlap each other
   const boxes = await page.locator(".nameplate").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON() as DOMRect));
   for (let i = 0; i < boxes.length; i++) {
@@ -83,8 +90,6 @@ test("follows live state changes, new and removed agents", async ({ page }) => {
   await expect(plate("c3d4e5000002")).toHaveAttribute("data-pose", "waiting");
   daemon.updateAgent("c3d4e5000002", { state: "idle" });
   await expect(plate("c3d4e5000002")).toHaveAttribute("data-pose", "idle");
-  daemon.updateAgent("c3d4e5000002", { state: "exited", exit_reason: "reported_done" });
-  await expect(plate("c3d4e5000002")).toHaveAttribute("data-pose", "away");
   // state changes never move an agent to another desk
   expect(await plate("c3d4e5000002").boundingBox()).toEqual(before);
 
@@ -94,7 +99,41 @@ test("follows live state changes, new and removed agents", async ({ page }) => {
   await expect(plate("f0f0f0000099")).toHaveAttribute("data-pose", "booting");
   // the newcomer takes the free desk
   daemon.addAgent(agent("f0f0f0000098", "worker", "working", { started_at: new Date().toISOString() }));
-  await expect(page.locator(".nameplate")).toHaveCount(11);
+  await expect(page.locator(".nameplate")).toHaveCount(10);
+  expect(errorsOf(page)).toEqual([]);
+});
+
+test("an exited agent walks out, and its desk is free for the next agent", async ({ page }) => {
+  const daemon = new MockDaemon(team(10));
+  await openOffice(page, daemon);
+  const plate = (id: string) => page.locator(`.nameplate[data-agent="${id}"]`);
+  const desk = await plate("c3d4e5000002").boundingBox();
+  const neighbour = await plate("d4e5f6000003").boundingBox();
+  const leftBefore = (await frameStats(page, 0)).left;
+
+  daemon.updateAgent("c3d4e5000002", { state: "exited", exit_reason: "reported_done", exited_at: new Date().toISOString() });
+  // the nameplate goes at once; the character walks to the door
+  await expect(plate("c3d4e5000002")).toHaveCount(0);
+  await page.waitForTimeout(700);
+  await page.screenshot({ path: `${screens}/office-walk-out.png` });
+  await expect.poll(async () => (await frameStats(page, 0)).left).toBe(leftBefore + 1);
+  await expect(page.locator(".office-bar")).toContainText("2 left the office");
+  // nobody else moved
+  expect(await plate("d4e5f6000003").boundingBox()).toEqual(neighbour);
+
+  // the next agent sits at the free desk
+  daemon.addAgent(agent("f0f0f0000097", "worker", "working", { name: "Bao", started_at: new Date().toISOString() }));
+  await expect(plate("f0f0f0000097")).toBeVisible();
+  // nameplates are centred on their desk; their width follows the text
+  const centre = (b: { x: number; y: number; width: number; height: number } | null) =>
+    b && { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) };
+  expect(centre(await plate("f0f0f0000097").boundingBox())).toEqual(centre(desk));
+  await page.waitForTimeout(1200); // the walk is over
+  await page.screenshot({ path: `${screens}/office-after-walk-out.png` });
+
+  // the exited agent is still reachable from the agent list
+  await page.locator(".exited-agents summary").click();
+  await expect(page.locator('.exited-agents .card[data-agent="c3d4e5000002"]')).toContainText("Yuki");
   expect(errorsOf(page)).toEqual([]);
 });
 
@@ -185,7 +224,7 @@ test("switching tabs does not leak canvases or log errors", async ({ page }) => 
     await page.getByRole("button", { name: "Board", exact: true }).click();
     await expect(page.locator(".board")).toBeVisible();
     await page.getByRole("button", { name: "Office", exact: true }).click();
-    await expect(page.locator(".nameplate")).toHaveCount(10);
+    await expect(page.locator(".nameplate")).toHaveCount(9); // the exited agent has left
   }
   await expect(page.locator("canvas")).toHaveCount(1);
   await expect(page.locator(".office")).toHaveAttribute("data-renderer", "webgl");
@@ -205,7 +244,7 @@ test("desks stay put when the tab is left and reopened", async ({ page }) => {
   await expect(plate("c3d4e5000002")).toHaveCount(0);
   await page.getByRole("button", { name: "Board", exact: true }).click();
   await page.getByRole("button", { name: "Office", exact: true }).click();
-  await expect(page.locator(".nameplate")).toHaveCount(9);
+  await expect(page.locator(".nameplate")).toHaveCount(8);
   expect(await plate("e5f6a7000004").boundingBox()).toEqual(before);
 });
 
@@ -218,10 +257,10 @@ test("clicks hit the right agent after a resize and a new row of desks", async (
   for (let i = 0; i < 9; i++) {
     daemon.addAgent(agent(`f1${String(i).padStart(10, "0")}`, "worker", "working", { started_at: new Date(Date.now() + i).toISOString() }));
   }
-  await expect(page.locator(".nameplate")).toHaveCount(19);
+  await expect(page.locator(".nameplate")).toHaveCount(18);
   for (const id of ["f10000000008", "a1ead0000001", "d4e5f6000003"]) {
     await page.getByRole("button", { name: "Office", exact: true }).click();
-    await expect(page.locator(".nameplate")).toHaveCount(19);
+    await expect(page.locator(".nameplate")).toHaveCount(18);
     const { x, y } = await characterPoint(page, id);
     expect(await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.tagName, [x, y])).toBe("CANVAS");
     await page.mouse.click(x, y);

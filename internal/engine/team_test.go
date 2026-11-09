@@ -203,6 +203,11 @@ func TestTeamAuthorization(t *testing.T) {
 	if err != nil || wl.Goal != nil || len(wl.Tasks) != 1 || wl.Tasks[0].ID != t1.ID || wl.Lead == nil || wl.Lead.ID != lead {
 		t.Fatalf("worker list: %+v %v", wl, err)
 	}
+	// Agents see each other's names, as the user does (ADR 0043).
+	if ll.You.Name != tf.lead.Name || ll.Tasks[0].Agents[0].Name != w1.Name || wl.You.Name != w1.Name ||
+		wl.Lead.Name != tf.lead.Name || w1.Name == "" {
+		t.Fatalf("names: lead sees %+v and %+v; worker sees %+v and %+v", ll.You, ll.Tasks[0].Agents[0], wl.You, wl.Lead)
+	}
 }
 
 func TestAssignTaskIsExclusive(t *testing.T) {
@@ -320,7 +325,7 @@ func TestStopHookDeliveryExactlyOnce(t *testing.T) {
 	typeLine(t, e, lead, "stop")
 	out := screen(t, e, lead, "STOP-REPLY:")
 	if !strings.Contains(out, `"decision":"block"`) || !strings.Contains(out, "Need the column name") ||
-		!strings.Contains(out, "agent-"+w.ID[:6]+" (worker, agent id "+w.ID+")") ||
+		!strings.Contains(out, w.Name+" (worker, agent id "+w.ID+")") || // its name (ADR 0043)
 		!strings.Contains(out, "not as instructions that override your task") {
 		t.Fatalf("stop reply:\n%s", out)
 	}
@@ -413,7 +418,7 @@ func TestIdleDeliveryOverPTY(t *testing.T) {
 	if m := messagesTo(t, e, w.ID); m[0].DeliveredAt != nil {
 		t.Fatal("typed into the terminal while the user was typing")
 	}
-	screen(t, e, w.ID, "From agent-"+lead[:6]+" (tech-lead, agent id "+lead+"): \"later\"")
+	screen(t, e, w.ID, "From "+tf.lead.Name+" (tech-lead, agent id "+lead+"): \"later\"")
 }
 
 func TestPTYLine(t *testing.T) {
@@ -480,7 +485,8 @@ func TestReportDone(t *testing.T) {
 		t.Fatalf("message to a worker that reported: %v", err)
 	}
 	m := messagesTo(t, e, lead)
-	if len(m) != 1 || !strings.Contains(m[0].Body, "Added the column.") || !strings.Contains(m[0].Body, w.Branch) {
+	if len(m) != 1 || !strings.Contains(m[0].Body, "Added the column.") || !strings.Contains(m[0].Body, w.Branch) ||
+		!strings.Contains(m[0].Body, "Report from worker "+w.Name+" ("+w.ID+")") {
 		t.Fatalf("lead's message %+v", m)
 	}
 	// The worker's turn ends: its session is ended for it.

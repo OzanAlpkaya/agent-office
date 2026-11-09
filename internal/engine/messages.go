@@ -280,7 +280,11 @@ type agentLabel struct{ name, role string }
 func (e *Engine) namesLocked() map[string]agentLabel {
 	out := make(map[string]agentLabel, len(e.agents))
 	for id, a := range e.agents {
-		out[id] = agentLabel{name: agentName(id), role: a.info.Role}
+		name := a.info.Name // ADR 0043; an agent recorded before names keeps its old label
+		if name == "" {
+			name = agentName(id)
+		}
+		out[id] = agentLabel{name: name, role: a.info.Role}
 	}
 	return out
 }

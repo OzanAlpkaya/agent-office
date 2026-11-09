@@ -38,6 +38,7 @@ type Agent struct {
 	Kind                string
 	Role                string
 	ResumeState         string
+	Name                string
 }
 
 type Device struct {
