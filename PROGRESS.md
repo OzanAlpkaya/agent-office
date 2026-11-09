@@ -1,7 +1,7 @@
 # Progress
 
-**Current phase:** UI/UX polish pass on `ui/ux-polish` (before Phase 13), waiting for Ozan's review;
-next: Phase 13
+**Current phase:** Phase 13 (Office v2) done on `phase-13/office-v2`, waiting for Ozan's review;
+it is the last planned phase
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -23,7 +23,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 10: Remote access (PWA over Tailscale)
 - [x] Phase 11: Portfolio polish
 - [x] Phase 12: Team workflow and roles
-- [ ] Phase 13: Office v2
+- [x] Phase 13: Office v2 (waiting for review)
 
 ## Log
 
@@ -249,4 +249,19 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   retrying assertions; throttling also found the `/` shortcut attached after the first paint.
   Agents see teammates' names in prompts, messages and tool outputs (ADR 0043 extended). The open
   tab keeps a readable task.
-
+- 2026-11-09: Phase 13 done on `phase-13/office-v2`; plan written with the recommended options and
+  executed without a separate approval, as Ozan asked (`docs/plans/phase-13.md`). ADR 0045 (floor
+  plan, routes on a walkability grid, errands derived from what the UI sees); no daemon changes,
+  no new dependencies. The office has four rooms (Tech Lead with the whiteboard, review room,
+  kitchen with the coffee machine and the front door, workroom), side by side on a desktop and
+  stacked on a phone. Characters walk routed paths: in through the front door, to the whiteboard
+  when their task moves to review or done, to the review table while reviewing, one coffee per
+  idle spell, straight back when they need the user, and out when they exit; nameplates stay on
+  desks and say where their character is. Render on demand stays: ten characters walking drew at
+  p95 0.4 to 0.6 ms (2.3 to 3.1 ms with an Android emulator busy on nine cores), an emptied office
+  draws nothing. The UI tests found a click race after a tab remount and two grid-change bugs
+  during walks (fixed); an independent review led to 5 fixes (a return to the desk never drawn
+  with reduced motion, a stuck hover, a fade-in restarting, resumed leavers, the no-route
+  fallback). Showcase refreshed: a new GIF from a real sandboxed haiku team (`make demo`, 107 s,
+  about two cents) and current screenshots. `make check` and `make ui-test` (61) pass; `make e2e`
+  was not run (daemon, hooks, engine and worktrees unchanged).
