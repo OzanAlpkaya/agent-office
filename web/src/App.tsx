@@ -1,4 +1,4 @@
-import { type JSX, Suspense, lazy, useEffect, useLayoutEffect, useState } from "react";
+import { type JSX, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   type AccessRequest, type Agent, type AgentState, ApiError, type ApproveResult, type AuthSession, type ImportInfo, type Kind, type Message,
   type Project, type Role, type RoleInfo, type SandboxEvent, type Spec, type Status, type Task, type TaskStatus, api,
@@ -185,7 +185,8 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
 
   // Everything waiting on the user, from one list: the badge, the drawer, the
   // tab title, the cards, the switcher and the Office all count it (ADR 0044).
-  const waiting = waitingOnUser(agents, accessRequests, inbox, specs);
+  // Memoised: the Office redraws when this list changes, so it must not be new on every render.
+  const waiting = useMemo(() => waitingOnUser(agents, accessRequests, inbox, specs), [agents, accessRequests, inbox, specs]);
   const waitingCount = waiting.length;
   // The tab title shows the count, so it is seen from other browser tabs too.
   useEffect(() => {
@@ -723,7 +724,7 @@ function Approvals({ waiting, taskTitle, onOpenAgent, onOpenInbox, onReviewPlan,
   return (
     <section className="approvals">
       <ul>
-        {waiting.map(({ agent: a, requests, permission, questions, plan }) => (
+        {waiting.map(({ agent: a, requests, permission, questions, plans }) => (
           <li key={a.id} className="waiting-entry" data-agent={a.id}>
             <div>
               <button className="link agent-link" onClick={() => onOpenAgent(a.id)}><AgentName agent={a} /></button>
@@ -749,15 +750,15 @@ function Approvals({ waiting, taskTitle, onOpenAgent, onOpenInbox, onReviewPlan,
                 </div>
               </div>
             ))}
-            {plan && (
-              <div className="waiting-item plan">
+            {plans.map((plan) => (
+              <div key={`p${plan.id}`} className="waiting-item plan">
                 <div>Its plan for “{taskTitle(plan.goal_id) ?? plan.goal_id}” waits for your approval (version {plan.version}).</div>
                 <div className="row">
                   <button onClick={() => onReviewPlan(plan.goal_id)} title="The plan is open on the goal's card">Review plan</button>
                   <span className="small muted">Proposed {timeOf(plan.created_at)}</span>
                 </div>
               </div>
-            )}
+            ))}
             {requests.map((r) => (
               <div key={r.id} className="waiting-item request">
                 <div>

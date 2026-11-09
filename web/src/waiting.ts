@@ -14,7 +14,8 @@ export interface Waiting {
   requests: AccessRequest[]; // pending, oldest first
   permission: boolean; // a prompt in its terminal; answered there, not in the UI
   questions: InboxItem[]; // asked by this agent, unanswered, oldest first
-  plan?: Spec; // its proposed plan, waiting for approval
+  plans: Spec[]; // its proposed plans waiting for approval, one per goal, oldest first
+  since: number; // ms since the epoch: when its oldest wait began (the queue's order too)
 }
 
 const at = (iso: string): number => Date.parse(iso);
@@ -40,26 +41,29 @@ export function waitingOnUser(
     if (!needsAnswer(i) || i.agent_id === undefined) continue;
     asked.set(i.agent_id, [...(asked.get(i.agent_id) ?? []), i]);
   }
-  const plans = new Map<string, Spec>();
+  // The newest proposal of each goal, per author: versions count per goal.
+  const newest = new Map<string, Spec>();
   for (const s of specs) {
     if (s.status !== "proposed" || s.author === undefined) continue; // no author: the user wrote it
-    const prev = plans.get(s.author);
-    if (!prev || s.version > prev.version) plans.set(s.author, s);
+    const key = `${s.author}\u0000${s.goal_id}`;
+    const prev = newest.get(key);
+    if (!prev || s.version > prev.version) newest.set(key, s);
   }
+  const plans = new Map<string, Spec[]>();
+  for (const s of newest.values()) plans.set(s.author as string, [...(plans.get(s.author as string) ?? []), s]);
   const out: Waiting[] = [];
   for (const a of agents) {
     if (a.state === "exited") continue;
     const requests = (pending.get(a.id) ?? []).slice().sort((x, y) => at(x.created_at) - at(y.created_at) || x.id - y.id);
     const questions = (asked.get(a.id) ?? []).slice().sort((x, y) => at(x.created_at) - at(y.created_at) || x.id - y.id);
-    const plan = plans.get(a.id);
+    const own = (plans.get(a.id) ?? []).slice().sort((x, y) => at(x.created_at) - at(y.created_at) || x.id - y.id);
     const permission = a.state === "waiting_permission";
-    if (requests.length > 0 || permission || questions.length > 0 || plan) out.push({ agent: a, requests, permission, questions, plan });
-  }
-  // Requests, questions and plans carry their time; a permission prompt only the agent's start.
-  const since = (w: Waiting): number => {
-    const times = [w.requests[0]?.created_at, w.questions[0]?.created_at, w.plan?.created_at]
+    if (requests.length === 0 && !permission && questions.length === 0 && own.length === 0) continue;
+    // Requests, questions and plans carry their time; a permission prompt only the agent's start.
+    const times = [requests[0]?.created_at, questions[0]?.created_at, own[0]?.created_at]
       .filter((t): t is string => t !== undefined).map(at);
-    return times.length > 0 ? Math.min(...times) : at(w.agent.started_at);
-  };
-  return out.sort((x, y) => since(x) - since(y) || (x.agent.id < y.agent.id ? -1 : 1));
+    const since = times.length > 0 ? Math.min(...times) : at(a.started_at);
+    out.push({ agent: a, requests, permission, questions, plans: own, since });
+  }
+  return out.sort((x, y) => x.since - y.since || (x.agent.id < y.agent.id ? -1 : 1));
 }

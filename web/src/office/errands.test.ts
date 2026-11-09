@@ -157,4 +157,15 @@ describe("Director", () => {
     expect([...e.values()].filter((x) => x.place === "queue")).toHaveLength(3);
     expect(e.get("d")).toEqual(atDesk);
   });
+
+  it("orders the queue by how long each has waited, as the Approvals drawer does", () => {
+    const d = new Director();
+    // seen waiting at the same moment (opening the office), but z has waited far longer
+    d.observe([
+      { id: "a", present: true, pose: "waiting", phase: 0, waitingSince: Date.parse("2026-11-09T10:20:00Z") },
+      { id: "z", present: true, pose: "waiting", phase: 0, waitingSince: Date.parse("2026-11-09T10:00:00Z") },
+    ], 0);
+    const e = d.errands(0, cap);
+    expect([e.get("z"), e.get("a")]).toEqual([{ place: "queue", spot: 0 }, { place: "queue", spot: 1 }]);
+  });
 });

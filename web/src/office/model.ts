@@ -29,6 +29,7 @@ export interface OfficeModel {
   goal?: { title: string; notes: Note[] }; // the lead's goal and its sub-tasks
   gone: string[]; // agents that exited, still listed by the daemon
   waiting: number; // agents waiting on the user: the Approvals count, and the queue at the user's door
+  waitingSince: Record<string, number>; // ms: how long each has waited, the queue's order (as in the drawer)
   taskStatus: Record<string, TaskStatus | undefined>; // every agent's task status, for errands (ADR 0045)
 }
 
@@ -47,7 +48,10 @@ export function buildOffice(
   // An exited agent leaves: its desk is free for the next agent (ADR 0024).
   const present = agents.filter((a) => a.state !== "exited");
   const assignment = assignDesks(prev, present);
-  const waiting = new Set(waitingList.filter((w) => w.agent.state !== "exited").map((w) => w.agent.id));
+  const listed = waitingList.filter((w) => w.agent.state !== "exited");
+  const waiting = new Set(listed.map((w) => w.agent.id));
+  const waitingSince: Record<string, number> = {};
+  for (const w of listed) waitingSince[w.agent.id] = w.since;
   const title = (id?: string): string | undefined => tasks.find((t) => t.id === id)?.title;
   const byId = new Map(present.map((a) => [a.id, a]));
 
@@ -79,7 +83,7 @@ export function buildOffice(
   const taskStatus: Record<string, TaskStatus | undefined> = {};
   for (const a of agents) taskStatus[a.id] = tasks.find((t) => t.id === a.task_id)?.status;
   const gone = agents.filter((a) => a.state === "exited").map((a) => a.id);
-  return { assignment, desks: assignment.desks.length, seats, goal, exited: gone.length, gone, taskStatus, waiting: waiting.size };
+  return { assignment, desks: assignment.desks.length, seats, goal, exited: gone.length, gone, taskStatus, waiting: waiting.size, waitingSince };
 }
 
 // freshMessages returns the messages not seen before that were created at or

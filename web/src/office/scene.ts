@@ -308,7 +308,10 @@ export class OfficeScene {
     const bySlot = new Map(model.seats.map((s) => [slotKey(s.slot), s]));
     for (const n of this.nodes) n.setSeat(bySlot.get(slotKey(n.slot)));
     this.director.observe([
-      ...model.seats.map((s) => ({ id: s.agent.id, present: true, pose: s.pose, taskStatus: model.taskStatus[s.agent.id], phase: s.look.phase })),
+      ...model.seats.map((s) => ({
+        id: s.agent.id, present: true, pose: s.pose, taskStatus: model.taskStatus[s.agent.id], phase: s.look.phase,
+        waitingSince: model.waitingSince[s.agent.id],
+      })),
       ...model.gone.map((id) => ({ id, present: false, taskStatus: model.taskStatus[id], phase: 0 })),
     ], now);
     if (first) this.errands(now, true);
@@ -872,7 +875,7 @@ class Figure {
       moved = this.placeAt(p.x - art.body.w / 2, station.sitY, station.furniture.y + 1);
       frame = pose === "typing" ? `type${Math.floor(t * 6) % 2}`
         : pose === "reviewing" ? `review${Math.floor(t * 1.5) % 2}`
-        : pose === "idle" ? `rest${Math.floor(t * 1.5) % 3}` : "rest0";
+        : "rest0"; // idle, booting: still, so a quiet station draws nothing
     } else if (place === "review") {
       // seated behind the table, which hides the legs
       moved = this.placeAt(p.x - art.body.w / 2, plan.table.y - 15, plan.table.y + 1);

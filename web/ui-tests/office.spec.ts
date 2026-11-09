@@ -1,6 +1,6 @@
 // The Office tab against a mocked daemon (ADR 0024, 0025).
 import { type BrowserContextOptions, type Page, devices, expect, test } from "@playwright/test";
-import { MockDaemon, agent, team } from "./daemon";
+import { MockDaemon, agent, session, team } from "./daemon";
 
 const screens = "test-results/screens";
 
@@ -216,6 +216,37 @@ test("an office where nothing moves does not redraw", async ({ page }) => {
   const stats = await frameStats(page, 2000);
   expect(stats.ticks).toBeGreaterThan(20);
   expect(stats.renders).toBeLessThanOrEqual(1);
+});
+
+test("a page that re-renders for something else does not redraw the office", async ({ page }) => {
+  const world = team(10);
+  world.agents = world.agents.map((a) => ({ ...a, state: "exited" as const }));
+  world.accessRequests = [];
+  const daemon = new MockDaemon(world);
+  await openOffice(page, daemon);
+  await frameStats(page, 500);
+  const before = (await readStats(page)).renders;
+  // live usage updates re-render the whole page; the office has nothing new to draw
+  for (let i = 0; i < 5; i++) {
+    daemon.usage(session(`s-${i}`, world.agents[1], undefined));
+    await page.waitForTimeout(150);
+  }
+  await page.waitForTimeout(1500);
+  expect((await readStats(page)).renders - before).toBeLessThanOrEqual(1);
+});
+
+test("an idle agent at a station lets the office settle", async ({ page }) => {
+  test.setTimeout(60_000);
+  const daemon = new MockDaemon({ agents: [agent("c9a551000012", "assistant", "idle", { name: "Rosa" })], tasks: [], accessRequests: [], messages: [] });
+  await openOffice(page, daemon);
+  const rosa = plate(page, "c9a551000012");
+  // its one coffee, and back to reception
+  await expect(rosa).toHaveAttribute("data-place", "coffee", { timeout: 15_000 });
+  await expect(rosa).toHaveAttribute("data-place", "desk", { timeout: 20_000 });
+  await page.waitForTimeout(1000);
+  const quiet = await frameStats(page, 2000);
+  expect(quiet.renders).toBeLessThanOrEqual(1);
+  expect(errorsOf(page)).toEqual([]);
 });
 
 test("switching tabs does not leak canvases or log errors", async ({ page }) => {

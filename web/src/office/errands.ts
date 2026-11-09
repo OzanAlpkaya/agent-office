@@ -22,6 +22,7 @@ export interface Observed {
   readonly pose?: Pose; // when present
   readonly taskStatus?: TaskStatus;
   readonly phase: number; // 0..1 per agent (lookOf), spreads breaks out
+  readonly waitingSince?: number; // when its wait on the user began (ms), the queue's order
 }
 
 export type Capacity = Readonly<Record<Spot, number>>;
@@ -43,6 +44,7 @@ interface Memo {
   phase: number;
   idleSince?: number;
   waitingSince?: number; // when it joined the queue at the user's door
+  waitedSince?: number; // when its wait began, as the Approvals drawer sorts it (ms)
   reportUntil?: number;
   reportAt?: number; // when the report came in, to queue reporters fairly
   place: Place;
@@ -81,6 +83,7 @@ export class Director {
       else m.idleSince = undefined;
       if (m.pose === "waiting") m.waitingSince ??= now;
       else m.waitingSince = undefined;
+      m.waitedSince = a.waitingSince;
     }
     for (const id of this.memo.keys()) if (!seen.has(id)) this.memo.delete(id);
   }
@@ -115,7 +118,7 @@ export class Director {
     const order = (m: Memo, place: Spot): number =>
       place === "whiteboard" ? (m.reportAt ?? 0)
         : place === "coffee" ? (m.idleSince ?? 0) + this.coffeeDelay(m)
-        : place === "queue" ? (m.waitingSince ?? 0) : 0;
+        : place === "queue" ? (m.waitedSince !== undefined ? m.waitedSince / 1000 : (m.waitingSince ?? 0)) : 0;
     waiting.sort(([ia, ma, pa], [ib, mb, pb]) => order(ma, pa) - order(mb, pb) || (ia < ib ? -1 : ia > ib ? 1 : 0));
     for (const [id, m, place] of waiting) {
       let spot = -1;
