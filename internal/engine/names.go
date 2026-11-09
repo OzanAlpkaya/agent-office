@@ -58,3 +58,34 @@ func pickName(id string, taken func(string) bool) string {
 		}
 	}
 }
+
+// teamLabel is how agents see a teammate (ADR 0043): its first name with the
+// id the team tools take, e.g. "Yuki (c3d4e5f6a7b8)". The UI shows the same
+// name with the id's first six characters, so the two match.
+func teamLabel(name, id string) string {
+	if name == "" {
+		return agentName(id)
+	}
+	return name + " (" + id + ")"
+}
+
+// labelLocked is teamLabel for an agent the engine knows.
+func (e *Engine) labelLocked(id string) string {
+	if a, ok := e.agents[id]; ok {
+		return teamLabel(a.info.Name, id)
+	}
+	return agentName(id)
+}
+
+func (e *Engine) labelOf(id string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.labelLocked(id)
+}
+
+// nameSection tells a new agent its own name, and how to name teammates so
+// the user can tell who is meant.
+func nameSection(name, id string) string {
+	return "\n\nIn this team you are " + teamLabel(name, id) + ". The user sees agents by their first names; when you " +
+		"mention a teammate, write its name and agent id as the team tools show them, e.g. " + teamLabel(name, id) + ".\n"
+}

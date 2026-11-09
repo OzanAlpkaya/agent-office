@@ -83,6 +83,7 @@ type GoalBrief struct {
 // AgentBrief is a running agent in a briefing.
 type AgentBrief struct {
 	ID    string `json:"id"`
+	Name  string `json:"name"` // as the user sees it (ADR 0043)
 	Role  string `json:"role"`
 	State string `json:"state"`
 	Task  string `json:"task,omitempty"`
@@ -137,11 +138,12 @@ type ProposeMemoryOutput struct {
 
 // StartQAOutput is start_qa's result (ADR 0033).
 type StartQAOutput struct {
-	RunID    int64    `json:"run_id"`
-	AgentID  string   `json:"agent_id"`
-	Branch   string   `json:"branch"`   // QA's integration branch
-	Branches []string `json:"branches"` // the sub-task branches it merges
-	Next     string   `json:"next"`
+	RunID     int64    `json:"run_id"`
+	AgentID   string   `json:"agent_id"`
+	AgentName string   `json:"agent_name"` // QA's first name (ADR 0043)
+	Branch    string   `json:"branch"`     // QA's integration branch
+	Branches  []string `json:"branches"`   // the sub-task branches it merges
+	Next      string   `json:"next"`
 }
 
 // QABug is one problem QA found.
@@ -219,6 +221,7 @@ type CreateTaskInput struct {
 // AgentRef is an agent as the tools show it.
 type AgentRef struct {
 	ID     string `json:"id"`
+	Name   string `json:"name"` // its first name, as the user sees it (ADR 0043)
 	Kind   string `json:"kind"` // the behaviour: lead, worker, qa, ...
 	Role   string `json:"role"` // the role's name, e.g. tech-lead, docs
 	State  string `json:"state"`
@@ -255,9 +258,10 @@ type AssignTaskInput struct {
 
 // AssignTaskOutput is assign_task's result.
 type AssignTaskOutput struct {
-	TaskID  string `json:"task_id"`
-	AgentID string `json:"agent_id"`
-	Branch  string `json:"branch"`
+	TaskID    string `json:"task_id"`
+	AgentID   string `json:"agent_id"`
+	AgentName string `json:"agent_name"` // the worker's first name (ADR 0043)
+	Branch    string `json:"branch"`
 }
 
 // ListTasksOutput is list_tasks's result: for a lead or an architect its goal

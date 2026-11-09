@@ -112,7 +112,10 @@ func (e *Engine) restore(ctx context.Context) {
 			e.log.Info("restore stopped by the shutdown; the rest is restored at the next start")
 			return // no notice: the next start sends one
 		}
-		name := fmt.Sprintf("%s (%s)", agentName(r.ID), r.Role)
+		name := fmt.Sprintf("%s (%s, agent id %s)", r.Name, r.Role, r.ID) // ADR 0043
+		if r.Name == "" {
+			name = fmt.Sprintf("%s (%s)", agentName(r.ID), r.Role)
+		}
 		if why := e.whyNotRestored(r); why != "" {
 			left = append(left, name+": "+why)
 			e.log.Info("agent not restored", "agent_id", r.ID, "reason", why)

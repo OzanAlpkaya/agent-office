@@ -4,6 +4,8 @@ import (
 	"context"
 	"regexp"
 	"testing"
+
+	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 )
 
 func TestFirstNames(t *testing.T) {
@@ -139,4 +141,35 @@ func TestNameFallsBackWhenAllAreListed(t *testing.T) {
 			t.Fatalf("got %q", n)
 		}
 	}
+}
+
+// TestAgentKnowsItsName: the first prompt names the agent, and assign_task
+// names the worker it started (ADR 0043).
+func TestAgentKnowsItsName(t *testing.T) {
+	f := newFixture(t, "AO_FAKE_PROMPT=1")
+	f.opts.MaxAgents = 4
+	e := f.engine(t)
+	ctx := context.Background()
+	goal, err := e.CreateTask(ctx, TaskInput{Title: "Ship tags"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead, err := e.Start(ctx, StartRequest{TaskID: goal.ID, Role: RoleTechLead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen(t, e, lead.ID, "In this team you are "+lead.Name+" ("+lead.ID+").")
+	sub, err := e.Team().CreateTask(ctx, lead.ID, mcp.CreateTaskInput{Title: "Tag column"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := e.Team().AssignTask(ctx, lead.ID, mcp.AssignTaskInput{TaskID: sub.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := e.Get(out.AgentID)
+	if err != nil || out.AgentName == "" || out.AgentName != w.Name || w.Name == lead.Name {
+		t.Fatalf("assign_task: %+v; worker %+v %v", out, w, err)
+	}
+	screen(t, e, w.ID, "In this team you are "+w.Name+" ("+w.ID+").")
 }

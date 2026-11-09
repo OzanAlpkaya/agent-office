@@ -443,7 +443,7 @@ func (e *Engine) Briefing(ctx context.Context) (mcp.Briefing, error) {
 			continue
 		}
 		v := a.view()
-		b.Running = append(b.Running, mcp.AgentBrief{ID: v.ID, Role: v.Role, State: v.State, Task: title[v.TaskID]})
+		b.Running = append(b.Running, mcp.AgentBrief{ID: v.ID, Name: v.Name, Role: v.Role, State: v.State, Task: title[v.TaskID]})
 		if v.Kind == KindLead {
 			leadState[v.TaskID] = v.State
 		}
@@ -513,7 +513,7 @@ func (e *Engine) Briefing(ctx context.Context) (mcp.Briefing, error) {
 		for _, it := range items {
 			if it.AgentID != "" && it.AnsweredAt == nil && (it.Kind == InboxQuestion || it.Kind == InboxBlocked) {
 				b.WaitingOnYou = append(b.WaitingOnYou, fmt.Sprintf("Answer the %s %s (its words, quoted): %q", it.Role,
-					agentName(it.AgentID), truncateRunes(it.Body, 200)))
+					e.labelOf(it.AgentID), truncateRunes(it.Body, 200)))
 			}
 		}
 	}
@@ -521,7 +521,7 @@ func (e *Engine) Briefing(ctx context.Context) (mcp.Briefing, error) {
 		for _, r := range reqs {
 			if r.Status == "pending" {
 				b.WaitingOnYou = append(b.WaitingOnYou, fmt.Sprintf("Decide the access request of %s for %s %s.",
-					agentName(r.AgentID), r.Kind, r.Value))
+					e.labelOf(r.AgentID), r.Kind, r.Value))
 			}
 		}
 	}
