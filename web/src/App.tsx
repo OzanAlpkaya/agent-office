@@ -463,10 +463,10 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
                 ))}
               </span>
               <button className="switcher-button" onClick={() => setSwitcher(true)} aria-haspopup="dialog"
-              aria-label={`Find an agent (${agents.length})`}
+              aria-label={`Find an agent (${running} running)`}
                 title="Find an agent by name, id, role, task or branch ( / )">
                 <span aria-hidden="true">⌕</span><span className="switcher-label"> Agents</span>
-                <span className="count">{agents.length}</span>
+                <span className="count">{running}</span>
               </button>
             </nav>
             {view.kind === "office" ? (

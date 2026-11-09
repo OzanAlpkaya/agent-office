@@ -234,3 +234,11 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   `make e2e` (host, sandbox, team, workflow) pass; the GitHub e2e was not run.
 - 2026-11-09: Phase 11 merged into `main` (`--no-ff`). The v0.1.0 tag was not kept: no tags or releases
   until Ozan says the project is finished (CLAUDE.md); `make release` and ADR 0042 stay for then.
+- 2026-11-09: UI/UX polish pass on `ui/ux-polish` (plan `docs/plans/ui-ux-polish.md`), from Ozan's
+  own use. Agents get a first name from the daemon (130 names; unique among listed agents; stored,
+  migration 0012; ADR 0043); the id stays the key in the API, logs and branches. The tab strip
+  holds the agents you opened (at most six, closable, movable, kept per browser) and a switcher
+  (`/`) finds any of 20 agents, grouped by goal, exited ones last; a full-screen sheet on a phone
+  (ADR 0044). Approvals moved into a drawer behind a header badge, so nothing moves when one
+  arrives (tested by position). Exited agents walk out of the Office and free their desk (ADR 0024
+  amended). No new dependencies.

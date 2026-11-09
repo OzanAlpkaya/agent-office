@@ -133,7 +133,6 @@ button.badge.pack { background: none; color: #ffd580; cursor: pointer; font: inh
 .nameplate:hover, .nameplate.hovered, .nameplate:focus-visible { border-color: var(--accent); background: rgba(29, 34, 48, 0.95); outline: none; }
 .nameplate-text { display: flex; flex-direction: column; min-width: 0; }
 .nameplate-task { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nameplate.pose-away { opacity: 0.6; }
 .whiteboard-label { position: absolute; }
 .pose-typing { color: #6aa3ff; }
 .pose-reviewing { color: #5fd3c7; }
@@ -340,7 +339,7 @@ button.approval-link { align-self: flex-start; padding: 0.1rem 0.5rem; font-size
   .switcher-item > span:last-child { grid-area: state; }
   .switcher-foot { display: none; }
   .drawer { top: auto; left: 0; width: 100%; max-height: 80vh; border-left: none; border-top: 1px solid #c49bff; border-radius: 12px 12px 0 0; }
-  .switcher-label { display: none; }
+  .switcher-label, .switcher-button .count { display: none; }
   /* The strip scrolls as a whole; the switcher stays at its right edge. */
   .tabs { overflow-x: auto; }
   .agent-tabs { flex: none; overflow: visible; }

@@ -6,9 +6,9 @@ import (
 )
 
 // firstNames are the names agents get (ADR 0043): common first names from
-// many languages and regions, about half usually given to women and half to
-// men, short enough for an office nameplate, written in ASCII so they read
-// the same in every font and terminal. The order is fixed: a name's position
+// many languages and regions, a mix of names usually given to women, to men
+// and to either, short enough for an office nameplate, written in ASCII so
+// they read the same in every font and terminal. The order is fixed: a name's position
 // decides which agent ids land on it.
 var firstNames = [...]string{
 	// Europe

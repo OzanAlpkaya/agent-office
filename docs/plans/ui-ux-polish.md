@@ -34,10 +34,10 @@ the Office shows only the people who are still at work.
    - Alternatives: a toast (disappears, and is easy to miss); a fixed section on the board (only
      visible on one tab).
 3. **Agents are hex ids.**
-   - Chosen: the daemon gives each agent a first name when it starts, from a built-in list of 120
+   - Chosen: the daemon gives each agent a first name when it starts, from a built-in list of 130
      common names from many languages and regions. The name is stored with the agent (migration
      0012), kept through resumes, follow-ups and restarts, and unique among the agents that are not
-     removed. If all 120 are taken, it is unique among running agents, and then it gets a number.
+     removed. If all 130 are taken, it is unique among running agents, and then it gets a number.
      The id stays the key in the API, logs and branch names; the UI shows the name first and the
      short id as secondary text.
    - Alternatives: names chosen in the browser from a hash of the id (cannot be unique, and would
@@ -72,3 +72,26 @@ the Office shows only the people who are still at work.
   inbox message may mention an id. The UI shows both, so it can be matched.
 
 ## Changes during the pass
+
+- The name list has 130 names, not 120, written as a mix of names usually given to women, to men
+  and to either (not counted as an exact split).
+- The tab strip's open tabs shrink their task text before the strip scrolls, and the open tab is
+  scrolled into view; on a phone the whole strip scrolls and the switcher button stays at its
+  right edge. Both came from looking at the screenshots: with six tabs at 1440 px the open tab was
+  off screen, and on a phone the open tab was squeezed to two letters.
+- The switcher's count is of running agents, like the "Agents · n" tab on a phone (it first
+  counted all agents, so the phone showed 19 and 20 side by side).
+- An agent's name link in an approval had the 44 px touch height of the approval buttons, which
+  broke the sentence over three lines on a phone; it is inline text now.
+- The leaving character gets two leg frames (new pixel maps in `art.ts`, original like the rest)
+  and walks in a straight line over the furniture; paths between rooms are Phase 13's.
+- The mocked daemon in the UI tests names its agents (fixed names per id) and answers approve and
+  deny; `MockDaemon.accessRequest` sends a live request.
+- Existing tests changed where behaviour changed on purpose: exited agents are not counted in the
+  Office; approvals are opened from the badge; cards are found by `data-agent`, not by id text;
+  an exited agent's card is in the collapsed group.
+- The new tab test failed once in a full-file run and has passed every run since (5 alone, 8 with
+  `--repeat-each 8`, and the full suites); the failure output was not kept, so the cause is
+  unknown. Recorded in case it comes back.
+- Not done: the README's GIF and screenshots still show hex ids from the Phase 11 recording;
+  re-recording needs a real team run (`make demo`, a few cents of tokens).
