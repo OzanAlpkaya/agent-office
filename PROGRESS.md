@@ -270,5 +270,5 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   Tech Lead declares disjoint files and both workers run in parallel; the earlier goal had both
   edit the handler, and file ownership (ADR 0032) ran them one after the other. GIF re-recorded
   (goal reported after 50 s instead of 107, under two cents), README, screenshots and the review
-  page updated. The README's inspiration line (jsm-hq, AgentSpace) is removed; the project rules in
-  `CLAUDE.md` still name both as a don't-copy rule.
+  page updated. The README's inspiration line is removed, and the originality rule in `CLAUDE.md` no
+  longer names other projects (only: do not copy code, names or assets from other projects).
