@@ -32,10 +32,10 @@ What it does (`web/demo/record-team-run.ts`, run by Node with Playwright's Chrom
 
 The stills are `office-goal-reported.png`, `board-goal-reported.png` and `usage-team-run.png`,
 plus `office-team-working.png` when two workers work at the same time and
-`office-worker-reporting.png` when the first worker reports. A haiku lead often runs the two
-sub-tasks one after the other (both touch the same handler file, so ADR 0032 makes the second
-depend on the first); then those two are missing, and a frame from the video serves instead
-(`ffmpeg -ss <s> -i team-run.webm -frames:v 1 still.png`).
+`office-worker-reporting.png` when the first worker reports. The goal names the files of each
+sub-task (`internal/httpapi` for the health check, `internal/bookmark` for duplicate URLs), so the
+Tech Lead declares disjoint files and both workers run at once; sub-tasks that share a file are
+run one after the other (ADR 0032), and then the first of those two stills is missing.
 
 Before committing a new GIF or still, look at the stills and at frames across the GIF
 (`ffmpeg -ss <s> -i team-run.gif -frames:v 1 f.png`). Check for local paths, names and anything
@@ -56,7 +56,8 @@ the README's GIF open as a fallback in case the network or the API is slow.
    every time, and that is the risky part. agent-office lets several of them do that, inside a
    sandbox, while you keep the decisions.
 2. **Give the team a goal (1 min).** On the board, add "Health check and duplicate URLs" (the two
-   playground backlog items) and click **Start Tech Lead**. Open the **Office** tab. The lead's
+   playground backlog items, one in `internal/httpapi` and one in `internal/bookmark`, so they can
+   run in parallel; the full text is in `web/demo/record-team-run.ts`) and click **Start Tech Lead**. Open the **Office** tab. The lead's
    whiteboard fills with sub-tasks, workers walk in through the kitchen's front door to their
    desks and start typing, and each one walks to the Tech Lead's whiteboard when it reports, then
    leaves. The idle lead takes a coffee meanwhile (ADR 0045).

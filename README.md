@@ -9,11 +9,12 @@ waiting for you, reporting at the Tech Lead's whiteboard or taking a coffee. Wor
 requests and anything risky stays behind deterministic checks and your approval. It is a single Go
 binary with the UI embedded, Linux-first.
 
-![A real run: the goal goes on the board, a Tech Lead splits it, sandboxed workers walk in, implement the sub-tasks, report at the whiteboard and leave](docs/screenshots/team-run.gif)
+![A real run: the goal goes on the board, a Tech Lead splits it, two sandboxed workers walk in, implement the sub-tasks in parallel, report at the whiteboard and leave](docs/screenshots/team-run.gif)
 
-<sub>A real, unedited run at about 3× speed (`make demo`): a haiku Tech Lead and two sandboxed
-haiku workers add two features to a small Go service in 107 seconds, for about two cents. The
-lead ran the sub-tasks one after the other because both touch the same handler file (ADR 0032).</sub>
+<sub>A real, unedited run at about 2× speed (`make demo`): a haiku Tech Lead and two sandboxed
+haiku workers add two features to a small Go service in parallel, in 50 seconds, for under two
+cents. The two sub-tasks touch different packages, so file ownership (ADR 0032) lets both run at
+once.</sub>
 
 ## What it does
 
@@ -46,14 +47,14 @@ lead ran the sub-tasks one after the other because both touch the same handler f
   ([ADR 0045](docs/adr/0045-office-floor-plan-and-errands.md)).
 
 <p align="center">
-  <img src="docs/screenshots/board-team-run.png" alt="The board after the run: goal and sub-tasks in review, with cost per task and a conflict between the two branches" width="49%">
+  <img src="docs/screenshots/board-team-run.png" alt="The board after the run: goal and sub-tasks in review, with tokens and cost per task and for the team" width="49%">
   <img src="docs/screenshots/usage-team-run.png" alt="The Usage tab after the run: tokens and estimated cost by task" width="49%">
 </p>
 <p align="center">
   <img src="docs/screenshots/office.png" alt="The Office: a worker reports at the Tech Lead's whiteboard, a reviewer reads at the review room table, idle agents drink coffee in the kitchen, a new agent walks in through the front door, and the workroom shows agents typing and waiting with raised hands" width="80%">
 </p>
 <p align="center">
-  <img src="docs/screenshots/office-live-team.png" alt="A real run in the Office: a sandboxed worker reports at the Tech Lead's whiteboard while the next worker walks in through the kitchen door" width="62%">
+  <img src="docs/screenshots/office-live-team.png" alt="A real run in the Office: one sandboxed worker reports at the Tech Lead's whiteboard while the other keeps typing at its desk" width="62%">
   <img src="docs/screenshots/office-phone.png" alt="The Office on a phone: the rooms stacked above the workroom" width="17%">
 </p>
 

@@ -262,6 +262,13 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   draws nothing. The UI tests found a click race after a tab remount and two grid-change bugs
   during walks (fixed); an independent review led to 5 fixes (a return to the desk never drawn
   with reduced motion, a stuck hover, a fade-in restarting, resumed leavers, the no-route
-  fallback). Showcase refreshed: a new GIF from a real sandboxed haiku team (`make demo`, 107 s,
-  about two cents) and current screenshots. `make check` and `make ui-test` (61) pass; `make e2e`
+  fallback). Showcase refreshed: a new GIF from a real sandboxed haiku team (`make demo`) and current
+  screenshots. `make check` and `make ui-test` (61) pass; `make e2e`
   was not run (daemon, hooks, engine and worktrees unchanged).
+- 2026-11-09: Phase 13, before the merge (Ozan's review): the demo goal now names each sub-task's
+  files (`internal/httpapi` for the health check, `internal/bookmark` for duplicate URLs), so the
+  Tech Lead declares disjoint files and both workers run in parallel; the earlier goal had both
+  edit the handler, and file ownership (ADR 0032) ran them one after the other. GIF re-recorded
+  (goal reported after 50 s instead of 107, under two cents), README, screenshots and the review
+  page updated. The README's inspiration line (jsm-hq, AgentSpace) is removed; the project rules in
+  `CLAUDE.md` still name both as a don't-copy rule.

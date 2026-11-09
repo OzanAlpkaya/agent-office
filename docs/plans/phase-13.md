@@ -189,3 +189,9 @@ None.
   is held while they walk).
 - **Demo recorder.** A still when the first worker reports, and eight seconds in the Office after
   the goal is reported, so the GIF shows the whiteboard and the walk-outs.
+- **Parallel demo (Ozan's review).** Both earlier recordings ran the sub-tasks one after the
+  other: both edited the HTTP handler, so file ownership (ADR 0032) made the second wait. The demo
+  goal now gives each sub-task its own files (the health check in `internal/httpapi`, duplicate
+  URLs rejected in `internal/bookmark` with an error that wraps `ErrInvalid`, which the API
+  already answers with 422), and the re-recorded GIF shows both workers at once.
+- **Inspiration line removed** from the README (Ozan's review).
