@@ -415,6 +415,20 @@ test("a new agent walks in through the front door to its desk", async ({ page })
   expect(errorsOf(page)).toEqual([]);
 });
 
+test("an agent resumed while it walks out turns back to its desk", async ({ page }) => {
+  const daemon = new MockDaemon(team(10));
+  await openOffice(page, daemon);
+  const left = (await frameStats(page, 0)).left;
+  daemon.updateAgent("c3d4e5000002", { state: "exited", exited_at: new Date().toISOString() });
+  await expect(plate(page, "c3d4e5000002")).toHaveCount(0);
+  await page.waitForTimeout(400);
+  daemon.updateAgent("c3d4e5000002", { state: "working", exited_at: undefined });
+  await expect(plate(page, "c3d4e5000002")).toHaveAttribute("data-place", "desk", { timeout: 8000 });
+  await page.waitForTimeout(1200);
+  expect((await readStats(page)).left).toBe(left);
+  expect(errorsOf(page)).toEqual([]);
+});
+
 test("a character away from its desk opens its terminal when clicked", async ({ page }) => {
   const daemon = new MockDaemon(team(10));
   await openOffice(page, daemon);
@@ -449,6 +463,24 @@ test("with reduced motion characters change places without walking", async ({ br
   const places = await page.evaluate(() => [...(window as unknown as { places: Set<string> }).places]);
   expect(places).not.toContain("walking");
   expect((await readStats(page)).trips).toBe(0);
+  expect(errorsOf(page)).toEqual([]);
+  await context.close();
+});
+
+test("with reduced motion a return to the desk is drawn", async ({ browser }) => {
+  test.setTimeout(60_000);
+  const context = await browser.newContext({ reducedMotion: "reduce", viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  // One idle agent: with reduced motion nothing animates, so a frame is drawn only for a change.
+  const daemon = new MockDaemon({ agents: [agent("f6a7b8000005", "worker", "idle", { name: "Lena" })], tasks: [], accessRequests: [], messages: [] });
+  await openOffice(page, daemon);
+  const lena = plate(page, "f6a7b8000005");
+  await expect(lena).toHaveAttribute("data-place", "coffee", { timeout: 15_000 });
+  await page.waitForTimeout(1500);
+  const atCoffee = (await readStats(page)).renders;
+  await expect(lena).toHaveAttribute("data-place", "desk", { timeout: 15_000 });
+  await page.waitForTimeout(1500);
+  expect((await readStats(page)).renders, "a frame drawn for the return to the desk").toBeGreaterThan(atCoffee);
   expect(errorsOf(page)).toEqual([]);
   await context.close();
 });

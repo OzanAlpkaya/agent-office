@@ -55,7 +55,7 @@ function nearestFree(g: WalkGrid, p: Point): number | undefined {
   const [ci, cj] = cellOf(p);
   let best: number | undefined;
   let bestD = Infinity;
-  for (let r = 0; r <= 6 && best === undefined; r++) {
+  for (let r = 0; r <= 40 && best === undefined; r++) {
     for (let j = cj - r; j <= cj + r; j++) {
       for (let i = ci - r; i <= ci + r; i++) {
         if (Math.max(Math.abs(i - ci), Math.abs(j - cj)) !== r) continue;
@@ -85,13 +85,14 @@ const neighbours = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], 
 
 // route finds a walk from a to b: a, a few turning points, b. If a or b is
 // not on a free cell (a seat), the walk starts or ends at the nearest free
-// one. Without any route it returns the straight line, which the tests rule
-// out for every place in every floor plan.
+// one. Without any route it returns just [b]: the character is there at
+// once rather than walking through a wall (the tests rule this out for every
+// place in every floor plan).
 export function route(plan: FloorPlan, a: Point, b: Point): Point[] {
   const g = walkGrid(plan);
   const start = nearestFree(g, a);
   const goal = nearestFree(g, b);
-  if (start === undefined || goal === undefined) return [a, b];
+  if (start === undefined || goal === undefined) return [b];
   const prev = new Int32Array(g.nx * g.ny).fill(-1);
   prev[start] = start;
   const queue = new Int32Array(g.nx * g.ny);
@@ -114,7 +115,7 @@ export function route(plan: FloorPlan, a: Point, b: Point): Point[] {
       queue[tail++] = n;
     }
   }
-  if (prev[goal] === -1) return [a, b];
+  if (prev[goal] === -1) return [b];
   const cells: Point[] = [];
   for (let c = goal; ; c = prev[c]) {
     cells.push(centre(c % g.nx, Math.floor(c / g.nx)));

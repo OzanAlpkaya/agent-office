@@ -259,6 +259,12 @@ export class OfficeScene {
       if (c.mode === "seated") this.standUp(c, slotOrigin(c.seat.slot, this.grid));
       c.seat = undefined;
     }
+    // Characters that are still (or again) seated get their seat before the
+    // layout, so a grid change knows who is coming back (a resumed agent).
+    for (const s of model.seats) {
+      const c = this.chars.get(s.agent.id);
+      if (c && c.seat === undefined) c.seat = s;
+    }
     this.model = model;
     const t = this.layout();
     // New characters: at their desk on the first view, else in through the door.
@@ -372,7 +378,8 @@ export class OfficeScene {
       if (sameColumns && c.mode === "walking") this.walkFrom(c, c.pos, now);
       else if (sameColumns) continue;
       else {
-        if (c.goal === "enter") c.goal = "desk";
+        // a walk-in, or a leaver whose agent came back (resumed), sits down
+        if (c.goal === "enter" || (c.goal === "out" && c.seat)) c.goal = "desk";
         c.pos = this.target(c, c.goal, c.errand);
         this.arrive(c);
       }
@@ -500,8 +507,18 @@ export class OfficeScene {
     return c.figure;
   }
 
+  // dropFigure removes a character's figure. A destroyed figure never sends
+  // pointerout, so a hover the pointer gave it ends here.
+  private dropFigure(c: Character): void {
+    if (!c.figure) return;
+    if (c.figure.pointerInside && this.hovered === c.id) this.hover(undefined);
+    c.figure.root.destroy({ children: true });
+    c.figure = undefined;
+  }
+
   // standUp takes a character out of its chair into the aisle next to its desk.
   private standUp(c: Character, origin: Point): void {
+    this.dirty = true;
     c.mode = "standing";
     c.place = undefined;
     c.pos = { x: origin.x + deskExit.x, y: origin.y + deskExit.y };
@@ -574,10 +591,10 @@ export class OfficeScene {
   private arrive(c: Character): void {
     c.route = undefined;
     c.fadeIn = false;
+    this.dirty = true; // a figure appears, moves or goes; the desk may change too
     const goal = c.goal;
     if (goal === "out") {
-      c.figure?.root.destroy({ children: true });
-      c.figure = undefined;
+      this.dropFigure(c);
       this.chars.delete(c.id);
       this.left++;
       this.syncDesks();
@@ -592,8 +609,7 @@ export class OfficeScene {
       }
       c.mode = "seated";
       c.place = "desk";
-      c.figure?.root.destroy({ children: true });
-      c.figure = undefined;
+      this.dropFigure(c);
       this.syncDesks();
       return;
     }
@@ -645,7 +661,10 @@ export class OfficeScene {
         const fig = this.ensureFigure(c);
         fig.walk(at, step, away);
         if (c.goal === "out") fig.root.alpha = Math.max(0, Math.min(1, (c.total - d) / fadeDistance));
-        else if (c.fadeIn) fig.root.alpha = Math.max(0, Math.min(1, d / fadeDistance));
+        else if (c.fadeIn) {
+          fig.root.alpha = Math.max(0, Math.min(1, d / fadeDistance));
+          if (d >= fadeDistance) c.fadeIn = false; // a re-route must not fade it in again
+        }
         if (p >= 1) {
           c.pos = c.route[c.route.length - 1];
           this.arrive(c);
@@ -728,6 +747,7 @@ class Figure {
   private readonly prop = new Sprite();
   private readonly hoverBox = new Graphics();
   private frameKey = "";
+  pointerInside = false;
 
   constructor(private readonly scene: OfficeScene, private readonly agentId: string, private look: FigureLook) {
     this.legs.y = art.body.h;
@@ -739,8 +759,14 @@ class Figure {
     this.root.cursor = "pointer";
     this.root.hitArea = new Rectangle(-2, -3, art.body.w + 4, art.body.h + art.legs[0].h + 5);
     this.root.on("pointertap", () => this.scene.open(this.agentId));
-    this.root.on("pointerover", () => this.scene.hover(this.agentId));
-    this.root.on("pointerout", () => this.scene.hover(undefined));
+    this.root.on("pointerover", () => {
+      this.pointerInside = true;
+      this.scene.hover(this.agentId);
+    });
+    this.root.on("pointerout", () => {
+      this.pointerInside = false;
+      this.scene.hover(undefined);
+    });
     this.setLook(look);
   }
 

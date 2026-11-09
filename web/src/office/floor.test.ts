@@ -120,6 +120,11 @@ describe("paths", () => {
     expect(along(pts, 99).at).toEqual({ x: 10, y: 10 });
   });
 
+  it("without a route the character is simply there, never walking through a wall", () => {
+    const p = floorPlan(4, 2);
+    expect(route(p, exitOf(p.desks[0]), { x: -400, y: -400 })).toEqual([{ x: -400, y: -400 }]);
+  });
+
   it("the plan is cached per grid", () => {
     expect(floorPlan(5, 2)).toBe(floorPlan(5, 2));
   });
