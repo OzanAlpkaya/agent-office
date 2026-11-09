@@ -90,8 +90,49 @@ the Office shows only the people who are still at work.
 - Existing tests changed where behaviour changed on purpose: exited agents are not counted in the
   Office; approvals are opened from the badge; cards are found by `data-agent`, not by id text;
   an exited agent's card is in the collapsed group.
-- The new tab test failed once in a full-file run and has passed every run since (5 alone, 8 with
-  `--repeat-each 8`, and the full suites); the failure output was not kept, so the cause is
-  unknown. Recorded in case it comes back.
+- The new tab test failed once in a full-file run; see the follow-up below for the cause.
 - Not done: the README's GIF and screenshots still show hex ids from the Phase 11 recording;
   re-recording needs a real team run (`make demo`, a few cents of tokens).
+
+## Follow-up (2026-11-09, after Ozan's review)
+
+Ozan's review asked for four things, recommended options again, without questions.
+
+1. **Approvals count mismatch.** The cause, checked in the code before changing it:
+   - The Office's pose is "waiting" for `state === "waiting_permission"` or a pending access
+     request (`office/model.ts`, `office/pose.ts`).
+   - The badge, title and drawer counted pending requests only (`App.tsx`). Omar in the tests is
+     unsandboxed and at a terminal permission prompt, so the Office said 2 and the badge 1.
+   - A second mismatch of units: the badge counted requests and the Office counted agents.
+
+   Fixed with one list (`waiting.ts`, ADR 0044 amended), counted in agents. The drawer has one
+   entry per agent, and a permission prompt gets "Go to terminal". A UI test with both kinds
+   compares the badge, title, drawer, Office count and raised hands, also after live changes.
+   The test fixture no longer has a pending request for an agent that is not in the world (the
+   daemon expires those), so the phone test uses `team(8)`, which has a request.
+2. **Flaky tabs test.**
+   - Reproduced: `--repeat-each=30` failed 1 of 30. Under 4x CPU throttling (`AO_CPU_THROTTLE=4`,
+     a Chrome DevTools Protocol setting in the spec's `beforeEach`, off by default) it failed 10 of
+     30, always at the check after the reload.
+   - Cause, from logging the first read, the stored tabs and the cards: after `page.reload()` the
+     test waited for the board, then read the tabs once (`allTextContents`). The board renders
+     before the daemon's snapshot arrives, and tabs render only for agents the snapshot names. The
+     stored tabs were intact every time, and the tabs appeared moments later. This was a test bug,
+     not lost tabs.
+   - Fix: retrying assertions (`toHaveText`) wherever the test read the tabs once, with no retries
+     or longer timeouts.
+   - Running the whole spec throttled showed a real race too: the `/` listener was attached after
+     the first paint, so a `/` pressed right away was lost (3 of 10). It is a layout effect now, as
+     is the switcher's focus.
+   - After the fix: 30 of 30 throttled, 30 of 30 normal, and the whole spec 60 of 60 throttled.
+3. **Agents see names** (ADR 0043 extended):
+   - each agent's first prompt states its own name;
+   - messages, reports to the lead, `list_tasks`, `get_briefing`, `assign_task` and `start_qa` name
+     agents as "Yuki (c3d4e5f6a7b8)", with the full id because the tools take it;
+   - commit trailers and GitHub comments keep `agent-<id>`.
+
+   Not run: the real-Claude e2e tests, whose prompts changed by one paragraph; the engine tests
+   with the fake CLI check the prompt, the messages and the tool outputs.
+4. **Readable open tab:** with more than three agent tabs, inactive tabs show only their name,
+   and the open tab keeps its task (it does not shrink, up to 18rem). A test checks that the open
+   tab's task fits.

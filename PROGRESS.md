@@ -242,3 +242,11 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   (ADR 0044). Approvals moved into a drawer behind a header badge, so nothing moves when one
   arrives (tested by position). Exited agents walk out of the Office and free their desk (ADR 0024
   amended). No new dependencies.
+- 2026-11-09: UI/UX polish follow-up (Ozan's review). One list of what waits on the user
+  (access requests and terminal permission prompts, counted per agent) feeds the badge, drawer,
+  title and Office, which had disagreed (ADR 0044 amended). The flaky tabs test read the tabs
+  once before the daemon's snapshot arrived (1/30, 10/30 under CPU throttling), fixed with
+  retrying assertions; throttling also found the `/` shortcut attached after the first paint.
+  Agents see teammates' names in prompts, messages and tool outputs (ADR 0043 extended). The open
+  tab keeps a readable task.
+

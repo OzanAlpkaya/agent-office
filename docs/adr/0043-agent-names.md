@@ -1,6 +1,6 @@
 # 0043. Agent names
 
-- **Status:** Accepted
+- **Status:** Accepted; extended 2026-11-09 (agents see the names, see the end)
 - **Date:** 2026-11-09
 
 ## Context
@@ -42,11 +42,29 @@ box.
 
 ## Consequences
 
-- People and the UI talk about "Yuki"; agents and logs still say `c3d4e5`. An agent's message
-  that mentions an id is matched to its name in the UI by the short id next to the name.
+- People, the UI and the agents talk about "Yuki"; logs still say `c3d4e5`. An id in an agent's
+  message matches the short id the UI shows next to the name.
 - A name is unique among the agents in the list, not forever: a removed agent's name can come
   back for a new agent. Usage history of a removed agent shows its id.
 - The list is fixed in code; changing its order changes which names new agents get, never the
   names of existing agents (they are stored).
-- Possible later: give agents their teammates' names in the team tools, so a lead's messages to
-  the user use names too.
+
+## Extension (2026-11-09): agents see the names
+
+Agents saw their teammates as `agent-c3d4e5` or a bare id, so a Tech Lead's messages to the user
+named nobody the user could find. Now an agent sees the same names as the user, always next to
+the full id, which is what the team tools take (`send_message` addresses an agent by id):
+
+- its first prompt says "In this team you are Yuki (c3d4e5f6a7b8)", and asks it to name a
+  teammate the same way, with name and agent id;
+- delivered messages begin `From Yuki (worker, agent id c3d4e5f6a7b8):`;
+- reports to the lead begin `Report from worker Yuki (c3d4e5f6a7b8)`;
+- `list_tasks` (the caller, its lead, a task's agents), `get_briefing`, `assign_task` and
+  `start_qa` carry a `name` or `agent_name` field;
+- the briefing's "waiting on you" lines and the restart notice name agents the same way.
+
+The full id, not the UI's six characters, because a short id passed to a tool would not resolve.
+The UI's short id is its prefix, so the two still match. Commit trailers, GitHub comments and
+the git identity keep `agent-<id>`: they leave agent-office, and names are not unique over
+time. Tools still take ids, not names. Accepting a name in `send_message` would be possible
+(names are unique in the list), but an id cannot become ambiguous later.

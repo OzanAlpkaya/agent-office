@@ -1,6 +1,6 @@
 # 0044. Agent switcher, open tabs and the approvals drawer
 
-- **Status:** Accepted
+- **Status:** Accepted; amended 2026-11-09 (what counts as waiting; crowded tabs; see the end)
 - **Date:** 2026-11-09
 
 ## Context
@@ -72,3 +72,33 @@ because covering the page uninvited is the problem being fixed. Instead:
   the card link make up for it.
 - The Inbox, Memory and Devices panels still open inline under the header, which is fine
   because the user opens them; they could move into the same drawer later.
+
+## Amendment (2026-11-09): one list of what waits on the user
+
+The first version counted pending access requests in the badge, the drawer and the tab title,
+while the Office's "waiting for you" counted agents whose pose was waiting: at a terminal
+permission prompt (host mode), or with a pending request. An unsandboxed agent at a permission
+prompt therefore showed in the Office but not in the badge. And an agent with two requests counted
+twice in the badge, once in the Office. With the queue out of the page, the badge is the main
+signal, so it must include everything.
+
+- `waitingOnUser` (`web/src/waiting.ts`) is the one definition: the agents, not requests, that
+  are not exited and have pending access requests, a permission prompt, or both. Exited agents
+  are left out: the daemon expires their requests when they exit.
+- These all read that list: the badge, the tab title, the drawer, the card link, the switcher's
+  "approval waiting", and the Office pose. The pose decides the "waiting for you" count, so the
+  numbers cannot drift apart. A Playwright test with both kinds of waiting agents checks every
+  count, also after live changes.
+- The drawer has one entry per agent. Requests keep Allow and Deny. A permission prompt can only
+  be answered in the agent's terminal, so its entry says so and offers "Go to terminal", which
+  opens the agent's tab.
+
+Also amended:
+
+- **Crowded tabs:** with more than three agent tabs, inactive tabs show only their name, with
+  the task in the tooltip. The open tab does not shrink (up to 18rem), so its task stays
+  readable. Shrinking every tab alike had cut the open tab's task to one letter.
+- **First paint:** the `/` shortcut and the switcher's focus are set up in layout effects,
+  before the first paint. Under CPU throttling, a `/` pressed right after the page appeared was
+  lost, and so could the first keys typed into the switcher.
+
