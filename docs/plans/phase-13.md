@@ -166,3 +166,26 @@ None.
 5. **Coffee breaks forever?** Once per idle spell, so the office goes quiet again.
 6. **New ADR or amend ADR 0024?** A new ADR 0045 for the floor plan, paths and errands; ADR 0024
    still holds for rendering, art and labels, and its status line points to 0045.
+
+## Changes during the phase
+
+- **Errand order.** The plan put "typing" with "waiting" and "booting" (straight to the desk). A
+  worker usually reports in the middle of a turn, so a fresh report now beats typing; only waiting
+  for the user and booting beat a report (ADR 0045, `errands.test.ts`).
+- **Spots.** Whiteboard spots are 3, not 4: the Tech Lead's room is narrow at four desk columns,
+  and its desk's exit lane must stay free.
+- **No rug.** The lead's purple rug clashed with the new carpet and was removed (with its art).
+- **Draw at once after a change.** The first full UI run found a click right after the Office tab
+  reopened opening nothing, about one run in three: Pixi hit-tests against the transforms of the
+  last render, and the first render after a remount came one tick later. The scene now draws at
+  once after a model or size change (rare events, so the idle budget is unchanged).
+- **Grid changes during walks.** The busy-office test found two bugs: a burst of new agents could
+  grow the grid before a walk-in had its first errand, which sent it out again (a placeholder
+  goal), and many agents exiting at once shrank the grid and teleported everyone walking out. A
+  walk-in now has its own goal, the office keeps its rows while someone is still leaving, and a
+  change of rows (same columns) only re-routes walkers.
+- **Busy office measured on leavers.** Ten agents arriving one message at a time can change the
+  column count part way, so the budget test measures ten agents leaving at once instead (the grid
+  is held while they walk).
+- **Demo recorder.** A still when the first worker reports, and eight seconds in the Office after
+  the goal is reported, so the GIF shows the whiteboard and the walk-outs.
