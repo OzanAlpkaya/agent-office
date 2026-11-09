@@ -325,6 +325,12 @@ export class MockDaemon {
     this.send({ type: "agent", agent: this.world.agents[i] });
   }
 
+  updateTask(id: string, patch: Partial<Task>): void {
+    const i = this.world.tasks.findIndex((t) => t.id === id);
+    this.world.tasks[i] = { ...this.world.tasks[i], ...patch };
+    this.send({ type: "task", task: this.world.tasks[i] });
+  }
+
   addAgent(a: Agent): void {
     this.world.agents.push(a);
     this.send({ type: "agent", agent: a });
