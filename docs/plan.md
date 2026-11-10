@@ -4,8 +4,8 @@ Each phase has a goal, a scope and a Definition of Done (DoD). Every phase start
 approved plan and ends with an updated `PROGRESS.md` and a plain-language summary. Later phases are
 intentionally coarser; their DoD is refined at the start of the phase.
 
-**Order** (decided 2026-11-08): phases run 0–8, then 12, 9, 10, 11, 13. Numbers are kept, so
-references in ADRs and plans stay valid.
+**Order** (decided 2026-11-08): phases run 0–8, then 12, 9, 10, 11, 13, then 14 (added
+2026-11-11). Numbers are kept, so references in ADRs and plans stay valid.
 
 ---
 
@@ -475,7 +475,7 @@ and every agent reaches the user or the agent above it.
 
 ## Phase 13: Office v2
 
-Design backlog from Ozan (2026-11-08); the last planned phase.
+Design backlog from Ozan (2026-11-08).
 
 **Goal:** The office tells more of the story: characters move between places that mean
 something, in an office with rooms.
@@ -518,3 +518,32 @@ something, in an office with rooms.
       redraw"); reduced motion changes places without a single walking frame.
 - [x] All new art is original or properly licensed: pixel maps drawn in code
       (`web/src/office/ART.md`), checked by `art.test.ts`.
+
+---
+
+## Phase 14: Multi-project office
+
+Added by Ozan after Phase 13 was merged (2026-11-11).
+
+**Goal:** One daemon runs several repositories at the same time.
+
+**Scope** (see `docs/plans/phase-14.md`)
+- Projects are first-class: add, list and remove them from the CLI and the UI. Each project has its
+  own repository, stack pack (image, egress, secrets, skills), default models, GitHub settings and
+  budgets.
+- `serve` works without `--repo`; `--repo` keeps working and registers and selects that project.
+- The engine holds per-project state; "one goal at a time" becomes per project. `--max-agents` is a
+  daemon-wide cap across projects, with an optional per-project cap.
+- API and WebSocket events are project-scoped. The UI gets a project switcher; board, usage, inbox
+  and memory are per project; the Approvals badge counts across all projects.
+- The office shows one floor per project and can switch between them.
+- Restart and restore work per project. Usage shows totals per project and overall.
+
+**Definition of Done**
+- [ ] Two projects with different packs (go and node) run sandboxed teams at the same time, end to
+      end.
+- [ ] Isolation tests: an agent in project A cannot reach project B's tasks, messages, worktrees or
+      memory through any socket or MCP tool.
+- [ ] The daemon-wide agent cap holds across projects.
+- [ ] After a daemon SIGKILL, both projects come back with their agents restored.
+- [ ] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass.

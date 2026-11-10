@@ -1,9 +1,9 @@
 # Progress
 
-**Current phase:** Phase 13 (Office v2) done on `phase-13/office-v2`, waiting for Ozan's review;
-it is the last planned phase
+**Current phase:** Phase 14 (Multi-project office) in progress on `phase-14/multi-project`. Phase 13
+(Office v2) was merged into `main` on 2026-11-09.
 
-**Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
+**Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
@@ -23,7 +23,8 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 10: Remote access (PWA over Tailscale)
 - [x] Phase 11: Portfolio polish
 - [x] Phase 12: Team workflow and roles
-- [x] Phase 13: Office v2 (waiting for review)
+- [x] Phase 13: Office v2
+- [ ] Phase 14: Multi-project office
 
 ## Log
 
