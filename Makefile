@@ -50,7 +50,7 @@ check: lint test web-test build
 #   AO_E2E_REPO=... AO_E2E_GITHUB_REPO=OzanAlpkaya/agent-office-playground make e2e
 e2e:
 	@test -n "$(AO_E2E_REPO)" || (echo "set AO_E2E_REPO to a trusted git repository"; exit 1)
-	AO_E2E_REPO="$(AO_E2E_REPO)" AO_E2E_GITHUB_REPO="$(AO_E2E_GITHUB_REPO)" AO_E2E_PACK="$(AO_E2E_PACK)" go test -tags e2e -count=1 -v -timeout 40m ./test/e2e/
+	AO_E2E_REPO="$(AO_E2E_REPO)" AO_E2E_GITHUB_REPO="$(AO_E2E_GITHUB_REPO)" AO_E2E_PACK="$(AO_E2E_PACK)" AO_E2E_REVIEWER_CLI="$(AO_E2E_REVIEWER_CLI)" go test -tags e2e -count=1 -v -timeout 40m ./test/e2e/
 
 # Build the base worker image, and a stack pack's image with PACK=<name> (podman; needs network).
 # Tags come from internal/sandbox/Containerfile and the pack's files (ADR 0023).

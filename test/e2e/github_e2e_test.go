@@ -133,6 +133,13 @@ func TestGitHubEndToEnd(t *testing.T) {
 		args: []string{"serve", "--repo", repo, "--addr", "127.0.0.1:" + port, "--data-dir", data, "--model", model,
 			"--max-agents", "3", "--log-level", "debug", "--sandbox", "podman", "--pack", e2ePack(), "--github", "--reviewer", "internal",
 			"--review-rounds", "1"}}
+	// AO_E2E_REVIEWER_CLI=codex: the reviewer runs on Codex and reviews the Claude
+	// Code worker's pull request (Phase 15 DoD).
+	reviewerCLI := os.Getenv("AO_E2E_REVIEWER_CLI")
+	if reviewerCLI == "codex" {
+		codexReady(t)
+		d.args = append(d.args, "--role-cli", "reviewer=codex")
+	}
 	var pr pullRequest
 	t.Cleanup(func() {
 		var agents []teamAgent
@@ -220,6 +227,27 @@ func TestGitHubEndToEnd(t *testing.T) {
 	t.Logf("review %d: %s, verdict %s, follow-up %q: %s", rv.ID, rv.Status, rv.Verdict, rv.Followup, rv.Summary)
 	if rv.Status != "done" || rv.Reviewer != "internal" || rv.Head != pr.Head || rv.URL == "" {
 		t.Fatalf("review %+v", rv)
+	}
+	if reviewerCLI != "" {
+		var agents []struct {
+			ID, Kind, CLI string
+		}
+		d.json("GET", "/api/agents", nil, 200, &agents)
+		n := 0
+		for _, a := range agents {
+			switch {
+			case a.Kind == "reviewer" && a.CLI != reviewerCLI:
+				t.Errorf("reviewer %s ran on %q, want %s", a.ID, a.CLI, reviewerCLI)
+			case a.Kind == "reviewer":
+				n++
+			case a.Kind == "worker" && a.CLI != "claude":
+				t.Errorf("worker %s ran on %q, want claude", a.ID, a.CLI)
+			}
+		}
+		if n == 0 {
+			t.Errorf("no %s reviewer ran", reviewerCLI)
+		}
+		t.Logf("the review came from a %s reviewer", reviewerCLI)
 	}
 	reviews, _, err := client.PullRequests.ListReviews(ctx, ghRepo.Owner, ghRepo.Name, pr.Number, nil)
 	if err != nil || len(reviews) == 0 || reviews[0].GetState() != "COMMENTED" || reviews[0].GetCommitID() != pr.Head {
