@@ -357,7 +357,7 @@ func TestPresence(t *testing.T) {
 	if got := next(b); len(got) != 1 || got[0] != device {
 		t.Fatalf("a new page sees the presence: %q", got)
 	}
-	send(b, `{"type":"presence","visible":true}`) // the same device: no change, no message
+	send(b, `{"type":"presence","visible":true}`)  // the same device: no change, no message
 	send(a, `{"type":"presence","visible":false}`) // b still shows it: no change either
 	send(b, `not json`)                            // ignored
 	send(b, `{"type":"presence","visible":false}`) // now nobody
@@ -373,4 +373,3 @@ func TestPresence(t *testing.T) {
 		t.Fatalf("the visible page closed: %q", got)
 	}
 }
-
