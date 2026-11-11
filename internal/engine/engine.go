@@ -21,6 +21,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/pack"
 	"github.com/OzanAlpkaya/agent-office/internal/role"
+	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -129,6 +130,9 @@ type Options struct {
 	EventRetention      time.Duration   // reduced events older than this are deleted (ADR 0028); 0: kept
 	RestoreAgents       bool            // resume the agents the previous run's stop interrupted (ADR 0035)
 	HistoryDir          string          // saved terminals of every session (ADR 0036); "": not saved
+	AccessDecider       string          // who decides access requests (ADR 0053): DeciderUser (default), DeciderLead, DeciderLeadPolicy
+	LeadAccessHosts     []string        // DeciderLeadPolicy: the hosts the lead may approve (allowlist entries)
+	StallAfter          time.Duration   // the stall watchdog's wait (ADR 0052); 0: the default, negative: off
 
 	// Message delivery timing (ADR 0018); zero values get the defaults. Tests
 	// shorten them.
@@ -292,6 +296,7 @@ type Engine struct {
 	ids      *sessionIDs        // running agents' sessions, for log lines (ADR 0028)
 	closing  bool               // Shutdown began: no agent starts any more; guarded by mu
 
+	leadHosts      sandbox.Allowlist // Options.LeadAccessHosts, parsed (ADR 0053)
 	restartImports sync.WaitGroup    // sandbox imports after a restart; a restore waits for them
 	noRestore      map[string]string // agent id -> why a restore leaves it exited (set before the restore runs)
 }
@@ -352,6 +357,15 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 			return nil, err
 		}
 	}
+	switch opts.AccessDecider {
+	case "", DeciderUser, DeciderLead, DeciderLeadPolicy:
+	default:
+		return nil, fmt.Errorf("engine: AccessDecider %q", opts.AccessDecider)
+	}
+	leadHosts, err := sandbox.ParseAllowlist(opts.LeadAccessHosts)
+	if err != nil {
+		return nil, fmt.Errorf("engine: LeadAccessHosts: %w", err)
+	}
 	for _, d := range []string{opts.RuntimeDir, opts.WorktreeRoot} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, fmt.Errorf("engine: %w", err)
@@ -389,6 +403,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		startingKind: map[string]bool{},
 		naming:       map[string]bool{},
 		noRestore:    map[string]string{},
+		leadHosts:    leadHosts,
 	}
 	if opts.Sandbox != nil {
 		if err := e.prepareSandbox(); err != nil {
@@ -431,13 +446,6 @@ func (e *Engine) reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("engine: reconcile agents: %w", err)
 	}
-	// Every agent of the previous run is gone, so none of its requests can be
-	// granted any more (ADR 0019).
-	if x, err := e.q.ExpireAllAccessRequests(ctx, db.ExpireAllAccessRequestsParams{DecidedAt: nullTime(now()), ProjectID: e.project.ID}); err != nil {
-		return fmt.Errorf("engine: expire access requests: %w", err)
-	} else if x > 0 {
-		e.log.Info("access requests from the previous run expired", "count", x)
-	}
 	if err := e.git.Prune(ctx, e.project.RepoPath); err != nil {
 		e.log.Warn("git worktree prune failed", "err", err)
 	}
@@ -465,6 +473,13 @@ func (e *Engine) reconcile(ctx context.Context) error {
 		close(a.exited)
 		e.agents[r.ID] = a
 		e.order = append(e.order, r.ID)
+	}
+	// ADR 0053: requests of agents that can be resumed stay open (an approval
+	// applies to their next session); the others' expire.
+	for _, id := range e.order {
+		if a := e.agents[id]; !holdsMessages(a) {
+			e.expireAccessLocked(ctx, id)
+		}
 	}
 	// Agents recorded before names existed get one now, in start order (ADR 0043).
 	for _, id := range e.order {
@@ -603,8 +618,11 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	}
 	if req.base == "" && role == KindWorker && task != nil && task.ParentTaskID.Valid {
 		// A sub-task starts from its goal's work: its dependencies, or the
-		// approved spec (ADR 0031, 0032).
-		if req.base, err = e.subTaskBase(ctx, *task); err != nil {
+		// approved spec (ADR 0031, 0032); a sub-task taken back from an exited
+		// worker, from that worker's branch (ADR 0051).
+		if _, head, ok := e.previousWork(ctx, task.ID); ok {
+			req.base = head
+		} else if req.base, err = e.subTaskBase(ctx, *task); err != nil {
 			return AgentInfo{}, err
 		}
 	}
@@ -917,7 +935,11 @@ func (e *Engine) watch(a *agentProc) {
 		}
 	}
 	e.publishAgentLocked(a)
-	e.expireAccessLocked(ctx, a.info.ID)
+	if !holdsMessages(a) {
+		// ADR 0053: an agent that can be resumed keeps its requests open; an
+		// approval applies to its next session.
+		e.expireAccessLocked(ctx, a.info.ID)
+	}
 	e.mu.Unlock()
 	if su := a.usage; su != nil {
 		e.mu.Lock()
@@ -1182,6 +1204,7 @@ func (e *Engine) removeAgent(ctx context.Context, id string, force bool) (Remove
 	delete(e.agents, id)
 	e.order = slices.DeleteFunc(e.order, func(s string) bool { return s == id })
 	e.publishLocked(Update{Type: "agent_removed", ID: id})
+	e.expireAccessLocked(ctx, id)
 	e.mu.Unlock()
 	if a.historyDone != nil {
 		<-a.historyDone // the exit's last save, which would create the directory again

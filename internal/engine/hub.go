@@ -248,11 +248,17 @@ func (h *Hub) options(ctx context.Context, row db.Project, s ProjectSettings) (O
 		}
 		o.Roles = roles
 	}
+	o.AccessDecider, o.LeadAccessHosts = *eff.AccessDecider, slices.Clone(eff.LeadAccessHosts)
 	if h.opts.Configure != nil {
 		p := Project{ID: row.ID, Name: row.Name, RepoPath: row.RepoPath, Slug: row.Slug}
 		if err := h.opts.Configure(ctx, p, eff, &o); err != nil {
 			return o, err
 		}
+	}
+	if m := eff.WorkerMemory; m != nil && *m != "" && o.Sandbox != nil {
+		sb := *o.Sandbox // the project's own copy: the pack's or the daemon's limit stays for the others
+		sb.Memory = *m
+		o.Sandbox = &sb
 	}
 	return o, nil
 }

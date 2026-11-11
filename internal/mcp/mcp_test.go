@@ -103,6 +103,22 @@ func (f *fakeTeam) ListMemory(_ context.Context, caller string) (ListMemoryOutpu
 	return ListMemoryOutput{}, f.err
 }
 
+func (f *fakeTeam) ResumeAgent(_ context.Context, caller string, in ResumeAgentInput) (AgentActionOutput, error) {
+	return AgentActionOutput{AgentID: in.AgentID}, nil
+}
+
+func (f *fakeTeam) StopAgent(_ context.Context, caller string, in StopAgentInput) (AgentActionOutput, error) {
+	return AgentActionOutput{AgentID: in.AgentID}, nil
+}
+
+func (f *fakeTeam) ReclaimTask(_ context.Context, caller string, in ReclaimTaskInput) (ReclaimTaskOutput, error) {
+	return ReclaimTaskOutput{TaskID: in.TaskID}, nil
+}
+
+func (f *fakeTeam) DecideAccess(_ context.Context, caller string, in DecideAccessInput) (DecideAccessOutput, error) {
+	return DecideAccessOutput{RequestID: in.RequestID}, nil
+}
+
 func (f *fakeTeam) ProposeMemory(_ context.Context, caller string, in ProposeMemoryInput) (ProposeMemoryOutput, error) {
 	f.record(caller, ToolProposeMemory, in)
 	return ProposeMemoryOutput{ID: 1, Status: "proposed"}, f.err

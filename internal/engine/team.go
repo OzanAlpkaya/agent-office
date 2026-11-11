@@ -620,15 +620,6 @@ func (e *Engine) setTaskStatus(ctx context.Context, t db.Task, status string) (T
 	return v, nil
 }
 
-func (t team) RequestAccess(ctx context.Context, caller string, in mcp.RequestAccessInput) (mcp.RequestAccessOutput, error) {
-	r, err := t.e.requestAccess(ctx, caller, in.Kind, in.Value, in.Reason)
-	if err != nil {
-		return mcp.RequestAccessOutput{}, userErr(err)
-	}
-	return mcp.RequestAccessOutput{RequestID: r.ID, Status: r.Status,
-		Next: "A human decides in the agent-office UI; you get a message with the decision. Continue with other work or end your turn."}, nil
-}
-
 // normalizeText trims s, removes control characters other than newline and
 // tab, and checks its length (1 to max characters).
 func normalizeText(s string, max int, field string) (string, error) {

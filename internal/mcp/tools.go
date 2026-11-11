@@ -34,6 +34,10 @@ const (
 	ToolGetBriefing    = "get_briefing"     // the assistant's facts (ADR 0034)
 	ToolListMemory     = "list_memory"      // project memory (ADR 0034)
 	ToolProposeMemory  = "propose_memory"   // a memory entry for the user to accept (ADR 0034)
+	ToolResumeAgent    = "resume_agent"     // the Tech Lead resumes an exited worker (ADR 0051)
+	ToolStopAgent      = "stop_agent"       // the Tech Lead stops a running worker (ADR 0051)
+	ToolReclaimTask    = "reclaim_task"     // the Tech Lead takes a sub-task back from an exited worker (ADR 0051)
+	ToolDecideAccess   = "decide_access"    // the Tech Lead decides an access request, if the project lets it (ADR 0053)
 )
 
 // Team is what the tools call. The engine implements it; caller is the agent
@@ -55,6 +59,59 @@ type Team interface {
 	GetBriefing(ctx context.Context, caller string) (Briefing, error)
 	ListMemory(ctx context.Context, caller string) (ListMemoryOutput, error)
 	ProposeMemory(ctx context.Context, caller string, in ProposeMemoryInput) (ProposeMemoryOutput, error)
+	ResumeAgent(ctx context.Context, caller string, in ResumeAgentInput) (AgentActionOutput, error)
+	StopAgent(ctx context.Context, caller string, in StopAgentInput) (AgentActionOutput, error)
+	ReclaimTask(ctx context.Context, caller string, in ReclaimTaskInput) (ReclaimTaskOutput, error)
+	DecideAccess(ctx context.Context, caller string, in DecideAccessInput) (DecideAccessOutput, error)
+}
+
+// ResumeAgentInput is resume_agent's input (ADR 0051).
+type ResumeAgentInput struct {
+	AgentID string `json:"agent_id" jsonschema:"The exited worker of your goal to resume (its agent id)."`
+	Message string `json:"message,omitempty" jsonschema:"Optional: what it should know or do differently; it reads this first (at most 4000 characters)."`
+}
+
+// StopAgentInput is stop_agent's input (ADR 0051).
+type StopAgentInput struct {
+	AgentID string `json:"agent_id" jsonschema:"The running worker of your goal to stop (its agent id)."`
+	Reason  string `json:"reason" jsonschema:"Why you stop it (1-1000 characters); shown to the user."`
+}
+
+// AgentActionOutput is the result of resume_agent and stop_agent.
+type AgentActionOutput struct {
+	AgentID   string `json:"agent_id"`
+	AgentName string `json:"agent_name"`
+	State     string `json:"state"`
+	Next      string `json:"next"`
+}
+
+// ReclaimTaskInput is reclaim_task's input (ADR 0051).
+type ReclaimTaskInput struct {
+	TaskID string `json:"task_id" jsonschema:"The sub-task of your goal to take back; it must be in_progress or blocked with no running agent."`
+}
+
+// ReclaimTaskOutput is reclaim_task's result.
+type ReclaimTaskOutput struct {
+	TaskID     string `json:"task_id"`
+	Status     string `json:"status"`
+	FromBranch string `json:"from_branch,omitempty"` // the next worker starts from this branch
+	Next       string `json:"next"`
+}
+
+// DecideAccessInput is decide_access's input (ADR 0053).
+type DecideAccessInput struct {
+	RequestID int64  `json:"request_id" jsonschema:"The access request's id, from the message that told you about it."`
+	Approve   bool   `json:"approve" jsonschema:"true to approve, false to deny."`
+	Reason    string `json:"reason" jsonschema:"Why (1-1000 characters); recorded and shown to the user."`
+	Scope     string `json:"scope,omitempty" jsonschema:"For an approval: agent (this worker, in every later session; the default) or project (every agent of the project)."`
+}
+
+// DecideAccessOutput is decide_access's result.
+type DecideAccessOutput struct {
+	RequestID int64  `json:"request_id"`
+	Status    string `json:"status"`
+	Scope     string `json:"scope,omitempty"`
+	Next      string `json:"next"`
 }
 
 // Briefing is get_briefing's result: facts computed by agent-office (ADR
@@ -466,6 +523,32 @@ func NewServer(team Team, caller string, tools []string, version string, log *sl
 		"question, end your turn after sending: the user's answer is delivered to you as new input."},
 		func(ctx context.Context, in MessageUserInput) (MessageUserOutput, error) {
 			return team.MessageUser(ctx, caller, in)
+		})
+	add(s, t, &sdk.Tool{Name: ToolResumeAgent, Description: "Resume an exited worker of your goal (Tech Lead only): it " +
+		"continues its conversation in its own workspace and branch, and reads your message first. Use it when a worker " +
+		"died, was stopped or ended without reporting and its sub-task still needs it; messages that waited for it are " +
+		"delivered."},
+		func(ctx context.Context, in ResumeAgentInput) (AgentActionOutput, error) {
+			return team.ResumeAgent(ctx, caller, in)
+		})
+	add(s, t, &sdk.Tool{Name: ToolStopAgent, Description: "Stop a running worker of your goal (Tech Lead only), with " +
+		"the reason. Its uncommitted work is committed on its branch; its sub-task stays in progress until you resume " +
+		"it (resume_agent) or take the sub-task back (reclaim_task)."},
+		func(ctx context.Context, in StopAgentInput) (AgentActionOutput, error) {
+			return team.StopAgent(ctx, caller, in)
+		})
+	add(s, t, &sdk.Tool{Name: ToolReclaimTask, Description: "Take back a sub-task of your goal from a worker that " +
+		"exited (Tech Lead only): the sub-task goes back to todo, so assign_task can start a new worker on it. The new " +
+		"worker starts from the previous worker's branch, so its work is not lost."},
+		func(ctx context.Context, in ReclaimTaskInput) (ReclaimTaskOutput, error) {
+			return team.ReclaimTask(ctx, caller, in)
+		})
+	add(s, t, &sdk.Tool{Name: ToolDecideAccess, Description: "Approve or deny a worker's network access request " +
+		"(Tech Lead only, when the project lets the Tech Lead decide). Give the reason; it is recorded and the user sees " +
+		"it. Approve only hosts the task really needs; deny anything else. An approval for scope agent lasts for that " +
+		"worker's later sessions too; scope project covers every agent of the project."},
+		func(ctx context.Context, in DecideAccessInput) (DecideAccessOutput, error) {
+			return team.DecideAccess(ctx, caller, in)
 		})
 	add(s, t, &sdk.Tool{Name: ToolRequestAccess, Description: "Ask a human for network access to one more host " +
 		"name (kind \"domain\"). Nothing is granted until a human approves it in the agent-office UI; you get a " +

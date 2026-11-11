@@ -272,6 +272,9 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	if err := os.MkdirAll(res.dir, 0o700); err != nil {
 		return fail(err)
 	}
+	if err := e.loadGrants(ctx, id, res.grants); err != nil { // approvals of earlier sessions (ADR 0053)
+		return fail(err)
+	}
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		return fail(err)
 	}

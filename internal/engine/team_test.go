@@ -35,11 +35,20 @@ type teamFixture struct {
 
 func newTeam(t *testing.T) *teamFixture {
 	t.Helper()
+	return newTeamWith(t, nil)
+}
+
+// newTeamWith is newTeam with options changed by configure first.
+func newTeamWith(t *testing.T, configure func(*Options)) *teamFixture {
+	t.Helper()
 	f := newFixture(t)
 	f.opts.MaxAgents = 4
 	f.opts.deliverySettle = 50 * time.Millisecond
 	f.opts.typingQuiet = 300 * time.Millisecond
 	f.opts.enterDelay = 20 * time.Millisecond
+	if configure != nil {
+		configure(&f.opts)
+	}
 	e := f.engine(t)
 	tf := &teamFixture{f: f, e: e, log: record(t, e), team: e.Team()}
 	ctx := context.Background()
@@ -664,16 +673,22 @@ func TestAccessRequests(t *testing.T) {
 	if err := e.Stop(w2.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.DecideAccess(ctx, ids[0], true); !errors.Is(err, ErrDecided) {
-		t.Fatalf("approve after the agent exited: %v", err)
+	// ADR 0053: a worker that can be resumed keeps its requests open, and an
+	// approval is a grant for its next session.
+	if ar, err := e.DecideAccess(ctx, ids[0], true); err != nil || ar.Status != AccessApproved || ar.Scope != ScopeAgent {
+		t.Fatalf("approve after the agent exited: %+v %v", ar, err)
+	}
+	g3 := &sandbox.Grants{}
+	if err := e.loadGrants(ctx, w2.ID, g3); err != nil || !g3.Allows("h0.example.org") {
+		t.Fatalf("grant for the next session: %v", err)
 	}
 	list, err := e.AccessRequests(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, x := range list {
-		if x.AgentID == w2.ID && slices.Contains(ids, x.ID) && x.Status != AccessExpired {
-			t.Errorf("request %d of an exited agent is %s", x.ID, x.Status)
+		if x.AgentID == w2.ID && slices.Contains(ids[1:], x.ID) && x.Status != AccessPending {
+			t.Errorf("request %d of a resumable agent is %s", x.ID, x.Status)
 		}
 	}
 	if _, err := e.DecideAccess(ctx, 99999, true); !errors.Is(err, ErrNotFound) {
@@ -681,8 +696,9 @@ func TestAccessRequests(t *testing.T) {
 	}
 }
 
-// Pending requests from a previous daemon run expire at startup.
-func TestRestartExpiresAccessRequests(t *testing.T) {
+// Pending requests from a previous daemon run stay open for agents that can
+// be resumed (ADR 0053): an approval applies to the restored session.
+func TestRestartKeepsAccessRequests(t *testing.T) {
 	f := newFixture(t)
 	e := f.engine(t)
 	log := record(t, e)
@@ -708,8 +724,17 @@ func TestRestartExpiresAccessRequests(t *testing.T) {
 	}
 	defer e2.Shutdown()
 	list, _ := e2.AccessRequests(ctx)
-	if len(list) != 1 || list[0].Status != AccessExpired || list[0].DecidedBy != "agent-office" {
+	if len(list) != 1 || list[0].Status != AccessPending || list[0].Decider != DecidedByUser {
 		t.Fatalf("after restart %+v", list)
+	}
+	// Removing the agent expires them: nothing can be granted to it any more.
+	if _, err := e2.Discard(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	var st, by string
+	if err := f.store.DB.QueryRow(`SELECT status, decided_by FROM access_requests WHERE id = ?`, r.RequestID).Scan(&st, &by); err != nil ||
+		st != AccessExpired || by != "agent-office" {
+		t.Fatalf("after removal %s %s %v", st, by, err)
 	}
 }
 
