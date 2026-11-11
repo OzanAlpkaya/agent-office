@@ -1,7 +1,7 @@
 # Progress
 
-**Current phase:** Phase 16 (Autonomous team) done on `phase-16/autonomous-team`, waiting for Ozan's review;
-not merged.
+**Current phase:** Phase 17 (Daily use) in progress on `phase-17/daily-use`. Phase 16 (Autonomous team) is
+merged into `main`.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -26,7 +26,8 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 13: Office v2
 - [x] Phase 14: Multi-project office
 - [x] Phase 15: Codex adapter
-- [x] Phase 16: Autonomous team (on its branch, review pending)
+- [x] Phase 16: Autonomous team
+- [ ] Phase 17: Daily use
 
 ## Log
 
@@ -361,4 +362,4 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   when a resumed worker reported in its first turn, an approval not reaching the reassigned worker), and
   the full `make e2e` found a restore regression of the phase (a leftover exit report); all fixed with
   tests.
-
+- 2026-11-11: Phase 16 merged into `main` (`--no-ff`).
