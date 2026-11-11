@@ -136,7 +136,10 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
   3. After the lead took a sub-task back and assigned it again, the new worker was refused the host the
      lead had approved for the old one; an agent-scoped approval now covers later workers on the same
      sub-task.
-  4. Test design, not product: a user's stop is a decision the lead may ask the user about (haiku did,
+  4. The full `make e2e` run found a regression of this phase: after a daemon SIGKILL, the restored
+     launch could not write the exit report the killed daemon left (owned by the sandbox user), so the
+     sandbox, multi-project and Codex runs restored no agent. The launch replaces a leftover report.
+  5. Test design, not product: a user's stop is a decision the lead may ask the user about (haiku did,
      which correctly quieted the watchdog), so the e2e's stall is an interrupted worker with the lead
      waiting, the incident's own shape; and once, the haiku lead called `request_access` itself, so the
      goal text says who does what.
