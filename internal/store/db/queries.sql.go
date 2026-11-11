@@ -256,6 +256,57 @@ func (q *Queries) ClearResumeStates(ctx context.Context, projectID string) error
 	return err
 }
 
+const closeChildTasks = `-- name: CloseChildTasks :many
+UPDATE tasks SET status = 'done', updated_at = ? WHERE parent_task_id = ? AND status != 'done'
+RETURNING id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by, depends_on, files, acceptance, role, spec_key, conflicts, conflicts_checked_at
+`
+
+type CloseChildTasksParams struct {
+	UpdatedAt    time.Time
+	ParentTaskID sql.NullString
+}
+
+// A goal marked done closes its sub-tasks (ADR 0054).
+func (q *Queries) CloseChildTasks(ctx context.Context, arg CloseChildTasksParams) ([]Task, error) {
+	rows, err := q.db.QueryContext(ctx, closeChildTasks, arg.UpdatedAt, arg.ParentTaskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Task{}
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Title,
+			&i.Description,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentTaskID,
+			&i.CreatedBy,
+			&i.DependsOn,
+			&i.Files,
+			&i.Acceptance,
+			&i.Role,
+			&i.SpecKey,
+			&i.Conflicts,
+			&i.ConflictsCheckedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countAgentSessions = `-- name: CountAgentSessions :one
 SELECT count(*) FROM sessions WHERE agent_id = ?
 `
@@ -659,6 +710,30 @@ func (q *Queries) DecideAccessRequest(ctx context.Context, arg DecideAccessReque
 		&i.DeciderAgentID,
 		&i.DecisionReason,
 		&i.Scope,
+	)
+	return i, err
+}
+
+const deleteAccessGrant = `-- name: DeleteAccessGrant :one
+DELETE FROM access_grants WHERE id = ? AND project_id = ?
+RETURNING id, project_id, agent_id, host, request_id, created_at
+`
+
+type DeleteAccessGrantParams struct {
+	ID        int64
+	ProjectID string
+}
+
+func (q *Queries) DeleteAccessGrant(ctx context.Context, arg DeleteAccessGrantParams) (AccessGrant, error) {
+	row := q.db.QueryRowContext(ctx, deleteAccessGrant, arg.ID, arg.ProjectID)
+	var i AccessGrant
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.AgentID,
+		&i.Host,
+		&i.RequestID,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -1080,7 +1155,7 @@ func (q *Queries) GetReview(ctx context.Context, id int64) (Review, error) {
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from, cli_session_id FROM sessions WHERE id = ?
+SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from, cli_session_id, prompted FROM sessions WHERE id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
@@ -1096,6 +1171,7 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 		&i.CliCostMicroUsd,
 		&i.ResumedFrom,
 		&i.CliSessionID,
+		&i.Prompted,
 	)
 	return i, err
 }
@@ -1264,6 +1340,84 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error 
 		arg.At,
 	)
 	return err
+}
+
+const insertGoalMerge = `-- name: InsertGoalMerge :one
+INSERT INTO goal_merges (goal_id, qa_run_id, target, source_head, target_before, commit_sha, message, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, goal_id, qa_run_id, target, source_head, target_before, commit_sha, message, created_at, pushed_at, push_remote
+`
+
+type InsertGoalMergeParams struct {
+	GoalID       string
+	QaRunID      sql.NullInt64
+	Target       string
+	SourceHead   string
+	TargetBefore string
+	CommitSha    string
+	Message      string
+	CreatedAt    time.Time
+}
+
+func (q *Queries) InsertGoalMerge(ctx context.Context, arg InsertGoalMergeParams) (GoalMerge, error) {
+	row := q.db.QueryRowContext(ctx, insertGoalMerge,
+		arg.GoalID,
+		arg.QaRunID,
+		arg.Target,
+		arg.SourceHead,
+		arg.TargetBefore,
+		arg.CommitSha,
+		arg.Message,
+		arg.CreatedAt,
+	)
+	var i GoalMerge
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.QaRunID,
+		&i.Target,
+		&i.SourceHead,
+		&i.TargetBefore,
+		&i.CommitSha,
+		&i.Message,
+		&i.CreatedAt,
+		&i.PushedAt,
+		&i.PushRemote,
+	)
+	return i, err
+}
+
+const insertGoalReport = `-- name: InsertGoalReport :one
+INSERT INTO goal_reports (goal_id, agent_id, summary, commit_message, created_at) VALUES (?, ?, ?, ?, ?)
+RETURNING id, goal_id, agent_id, summary, commit_message, created_at
+`
+
+type InsertGoalReportParams struct {
+	GoalID        string
+	AgentID       sql.NullString
+	Summary       string
+	CommitMessage string
+	CreatedAt     time.Time
+}
+
+func (q *Queries) InsertGoalReport(ctx context.Context, arg InsertGoalReportParams) (GoalReport, error) {
+	row := q.db.QueryRowContext(ctx, insertGoalReport,
+		arg.GoalID,
+		arg.AgentID,
+		arg.Summary,
+		arg.CommitMessage,
+		arg.CreatedAt,
+	)
+	var i GoalReport
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.AgentID,
+		&i.Summary,
+		&i.CommitMessage,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const insertImport = `-- name: InsertImport :one
@@ -1619,6 +1773,47 @@ func (q *Queries) LatestApprovedSpec(ctx context.Context, goalID string) (Spec, 
 	return i, err
 }
 
+const latestGoalMerge = `-- name: LatestGoalMerge :one
+SELECT id, goal_id, qa_run_id, target, source_head, target_before, commit_sha, message, created_at, pushed_at, push_remote FROM goal_merges WHERE goal_id = ? ORDER BY id DESC LIMIT 1
+`
+
+func (q *Queries) LatestGoalMerge(ctx context.Context, goalID string) (GoalMerge, error) {
+	row := q.db.QueryRowContext(ctx, latestGoalMerge, goalID)
+	var i GoalMerge
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.QaRunID,
+		&i.Target,
+		&i.SourceHead,
+		&i.TargetBefore,
+		&i.CommitSha,
+		&i.Message,
+		&i.CreatedAt,
+		&i.PushedAt,
+		&i.PushRemote,
+	)
+	return i, err
+}
+
+const latestGoalReport = `-- name: LatestGoalReport :one
+SELECT id, goal_id, agent_id, summary, commit_message, created_at FROM goal_reports WHERE goal_id = ? ORDER BY id DESC LIMIT 1
+`
+
+func (q *Queries) LatestGoalReport(ctx context.Context, goalID string) (GoalReport, error) {
+	row := q.db.QueryRowContext(ctx, latestGoalReport, goalID)
+	var i GoalReport
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.AgentID,
+		&i.Summary,
+		&i.CommitMessage,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const latestImport = `-- name: LatestImport :one
 SELECT id, agent_id, "trigger", outcome, branch, head, previous, commits, flagged, at FROM imports WHERE agent_id = ? ORDER BY id DESC LIMIT 1
 `
@@ -1666,7 +1861,7 @@ func (q *Queries) LatestQARun(ctx context.Context, goalID string) (QaRun, error)
 }
 
 const latestSession = `-- name: LatestSession :one
-SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from, cli_session_id FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1
+SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from, cli_session_id, prompted FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1
 `
 
 func (q *Queries) LatestSession(ctx context.Context, agentID string) (Session, error) {
@@ -1682,6 +1877,7 @@ func (q *Queries) LatestSession(ctx context.Context, agentID string) (Session, e
 		&i.CliCostMicroUsd,
 		&i.ResumedFrom,
 		&i.CliSessionID,
+		&i.Prompted,
 	)
 	return i, err
 }
@@ -1862,7 +2058,7 @@ func (q *Queries) ListAgentMessages(ctx context.Context, arg ListAgentMessagesPa
 }
 
 const listAgentSessions = `-- name: ListAgentSessions :many
-SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from, cli_session_id FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC
+SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from, cli_session_id, prompted FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC
 `
 
 func (q *Queries) ListAgentSessions(ctx context.Context, agentID string) ([]Session, error) {
@@ -1884,6 +2080,7 @@ func (q *Queries) ListAgentSessions(ctx context.Context, agentID string) ([]Sess
 			&i.CliCostMicroUsd,
 			&i.ResumedFrom,
 			&i.CliSessionID,
+			&i.Prompted,
 		); err != nil {
 			return nil, err
 		}
@@ -2006,6 +2203,135 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event
 			&i.Detail,
 			&i.State,
 			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGoalAgents = `-- name: ListGoalAgents :many
+SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, agents.sandbox, agents.kind, agents.role, agents.resume_state, agents.name, agents.cli, agents.exit_signal, agents.oom_killed, agents.exit_detail, agents.auto_resumes, worktrees.branch AS branch, worktrees.status AS worktree_status
+FROM agents JOIN worktrees ON worktrees.agent_id = agents.id
+WHERE agents.project_id = ?1 AND (agents.task_id = ?2
+    OR agents.task_id IN (SELECT t.id FROM tasks t WHERE t.parent_task_id = ?2))
+ORDER BY agents.started_at, agents.id
+`
+
+type ListGoalAgentsParams struct {
+	ProjectID string
+	GoalID    sql.NullString
+}
+
+type ListGoalAgentsRow struct {
+	ID                  string
+	ProjectID           string
+	TaskID              sql.NullString
+	Model               string
+	InheritUserSettings bool
+	State               string
+	Activity            string
+	StartedAt           time.Time
+	ExitedAt            sql.NullTime
+	ExitCode            sql.NullInt64
+	ExitReason          string
+	RemovedAt           sql.NullTime
+	Sandbox             string
+	Kind                string
+	Role                string
+	ResumeState         string
+	Name                string
+	Cli                 string
+	ExitSignal          string
+	OomKilled           bool
+	ExitDetail          string
+	AutoResumes         int64
+	Branch              string
+	WorktreeStatus      string
+}
+
+// Every agent that worked on a goal or one of its sub-tasks, removed ones included (ADR 0054).
+func (q *Queries) ListGoalAgents(ctx context.Context, arg ListGoalAgentsParams) ([]ListGoalAgentsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listGoalAgents, arg.ProjectID, arg.GoalID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGoalAgentsRow{}
+	for rows.Next() {
+		var i ListGoalAgentsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.TaskID,
+			&i.Model,
+			&i.InheritUserSettings,
+			&i.State,
+			&i.Activity,
+			&i.StartedAt,
+			&i.ExitedAt,
+			&i.ExitCode,
+			&i.ExitReason,
+			&i.RemovedAt,
+			&i.Sandbox,
+			&i.Kind,
+			&i.Role,
+			&i.ResumeState,
+			&i.Name,
+			&i.Cli,
+			&i.ExitSignal,
+			&i.OomKilled,
+			&i.ExitDetail,
+			&i.AutoResumes,
+			&i.Branch,
+			&i.WorktreeStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGoalQARuns = `-- name: ListGoalQARuns :many
+SELECT id, goal_id, agent_id, status, branch, head, merged, summary, bugs, error, created_at, updated_at FROM qa_runs WHERE goal_id = ? ORDER BY id DESC
+`
+
+func (q *Queries) ListGoalQARuns(ctx context.Context, goalID string) ([]QaRun, error) {
+	rows, err := q.db.QueryContext(ctx, listGoalQARuns, goalID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []QaRun{}
+	for rows.Next() {
+		var i QaRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.GoalID,
+			&i.AgentID,
+			&i.Status,
+			&i.Branch,
+			&i.Head,
+			&i.Merged,
+			&i.Summary,
+			&i.Bugs,
+			&i.Error,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2272,6 +2598,105 @@ func (q *Queries) ListPendingAccessForAgents(ctx context.Context, agentIds []str
 			&i.DeciderAgentID,
 			&i.DecisionReason,
 			&i.Scope,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectAccessGrants = `-- name: ListProjectAccessGrants :many
+SELECT g.id, g.project_id, g.agent_id, g.host, g.request_id, g.created_at,
+       COALESCE(r.decided_by, '') AS decided_by, COALESCE(r.decider_agent_id, '') AS decider_agent_id,
+       COALESCE(r.decision_reason, '') AS decision_reason
+FROM access_grants g LEFT JOIN access_requests r ON r.id = g.request_id
+WHERE g.project_id = ?
+ORDER BY g.id
+`
+
+type ListProjectAccessGrantsRow struct {
+	ID             int64
+	ProjectID      string
+	AgentID        sql.NullString
+	Host           string
+	RequestID      int64
+	CreatedAt      time.Time
+	DecidedBy      string
+	DeciderAgentID string
+	DecisionReason string
+}
+
+// The project's stored grants with the decision that made them (ADR 0053, 0054).
+func (q *Queries) ListProjectAccessGrants(ctx context.Context, projectID string) ([]ListProjectAccessGrantsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listProjectAccessGrants, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectAccessGrantsRow{}
+	for rows.Next() {
+		var i ListProjectAccessGrantsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.AgentID,
+			&i.Host,
+			&i.RequestID,
+			&i.CreatedAt,
+			&i.DecidedBy,
+			&i.DeciderAgentID,
+			&i.DecisionReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectGoalMerges = `-- name: ListProjectGoalMerges :many
+SELECT m.id, m.goal_id, m.qa_run_id, m.target, m.source_head, m.target_before, m.commit_sha, m.message, m.created_at, m.pushed_at, m.push_remote FROM goal_merges m JOIN tasks t ON t.id = m.goal_id WHERE t.project_id = ? ORDER BY m.id DESC LIMIT ?
+`
+
+type ListProjectGoalMergesParams struct {
+	ProjectID string
+	Limit     int64
+}
+
+func (q *Queries) ListProjectGoalMerges(ctx context.Context, arg ListProjectGoalMergesParams) ([]GoalMerge, error) {
+	rows, err := q.db.QueryContext(ctx, listProjectGoalMerges, arg.ProjectID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GoalMerge{}
+	for rows.Next() {
+		var i GoalMerge
+		if err := rows.Scan(
+			&i.ID,
+			&i.GoalID,
+			&i.QaRunID,
+			&i.Target,
+			&i.SourceHead,
+			&i.TargetBefore,
+			&i.CommitSha,
+			&i.Message,
+			&i.CreatedAt,
+			&i.PushedAt,
+			&i.PushRemote,
 		); err != nil {
 			return nil, err
 		}
@@ -3012,6 +3437,37 @@ func (q *Queries) MarkAgentRemoved(ctx context.Context, arg MarkAgentRemovedPara
 	return err
 }
 
+const markGoalMergePushed = `-- name: MarkGoalMergePushed :one
+UPDATE goal_merges SET pushed_at = ?, push_remote = ? WHERE id = ? AND pushed_at IS NULL
+RETURNING id, goal_id, qa_run_id, target, source_head, target_before, commit_sha, message, created_at, pushed_at, push_remote
+`
+
+type MarkGoalMergePushedParams struct {
+	PushedAt   sql.NullTime
+	PushRemote string
+	ID         int64
+}
+
+// Compare-and-swap: a merge is recorded as pushed once.
+func (q *Queries) MarkGoalMergePushed(ctx context.Context, arg MarkGoalMergePushedParams) (GoalMerge, error) {
+	row := q.db.QueryRowContext(ctx, markGoalMergePushed, arg.PushedAt, arg.PushRemote, arg.ID)
+	var i GoalMerge
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.QaRunID,
+		&i.Target,
+		&i.SourceHead,
+		&i.TargetBefore,
+		&i.CommitSha,
+		&i.Message,
+		&i.CreatedAt,
+		&i.PushedAt,
+		&i.PushRemote,
+	)
+	return i, err
+}
+
 const markInboxRead = `-- name: MarkInboxRead :one
 UPDATE inbox SET read_at = COALESCE(read_at, ?) WHERE id = ?
 RETURNING id, project_id, agent_id, task_id, goal_id, role, kind, body, created_at, read_at, answered_at, reply
@@ -3040,6 +3496,18 @@ func (q *Queries) MarkInboxRead(ctx context.Context, arg MarkInboxReadParams) (I
 		&i.Reply,
 	)
 	return i, err
+}
+
+const markSessionPrompted = `-- name: MarkSessionPrompted :exec
+
+UPDATE sessions SET prompted = 1 WHERE id = ? AND prompted = 0
+`
+
+// Phase 17 (migration 0016).
+// The session got a prompt, so its transcript exists even if no turn finished (ADR 0035).
+func (q *Queries) MarkSessionPrompted(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, markSessionPrompted, id)
+	return err
 }
 
 const markUnfinishedAgentsExited = `-- name: MarkUnfinishedAgentsExited :execrows
