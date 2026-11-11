@@ -21,8 +21,11 @@ func TestParseServe(t *testing.T) {
 		t.Fatalf("defaults: %+v", c)
 	}
 
+	// Without --repo: the registered projects (ADR 0046).
+	if c, err := parseServe(nil); err != nil || c.repo != "" {
+		t.Fatalf("serve without --repo: %+v %v", c, err)
+	}
 	for _, args := range [][]string{
-		{}, // no repo
 		{"--repo", "/tmp", "--addr", "0.0.0.0:7680"}, // not loopback
 		{"--repo", "/tmp", "--addr", "192.168.1.5:7680"},
 		{"--repo", "/tmp", "--addr", "nonsense"},

@@ -54,7 +54,7 @@ const (
 )
 
 type server struct {
-	eng  *engine.Engine
+	hub  *engine.Hub
 	opts Options
 	log  *slog.Logger
 	ui   fs.FS
@@ -62,17 +62,20 @@ type server struct {
 
 // New returns the HTTP handler: JSON API under /api, the embedded UI elsewhere.
 // ui may be nil (API only).
-func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
+func New(hub *engine.Hub, ui fs.FS, opts Options) http.Handler {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
 	if opts.Auth == nil {
 		panic("api: Options.Auth is required")
 	}
-	s := &server{eng: eng, opts: opts, log: opts.Logger, ui: ui}
+	s := &server{hub: hub, opts: opts, log: opts.Logger, ui: ui}
 	mux := http.NewServeMux()
 	for _, rt := range s.routes() {
 		h := rt.handler
+		if rt.project {
+			h = s.inProject(h)
+		}
 		if !rt.public {
 			h = s.requireDevice(h)
 		}
@@ -89,52 +92,60 @@ func New(eng *engine.Engine, ui fs.FS, opts Options) http.Handler {
 func (s *server) routes() []route {
 	return []route{
 		{pattern: "GET /api/health", handler: s.health, public: true},
-		{pattern: "GET /api/project", handler: s.getProject},
-		{pattern: "GET /api/status", handler: s.getStatus},
-		{pattern: "GET /api/roles", handler: s.listRoles},
-		{pattern: "GET /api/usage", handler: s.getUsage},
-		{pattern: "GET /api/agents", handler: s.listAgents},
-		{pattern: "POST /api/agents", handler: s.startAgent},
-		{pattern: "POST /api/agents/{id}/stop", handler: s.stopAgent},
-		{pattern: "POST /api/agents/{id}/discard", handler: s.discardAgent},
-		{pattern: "POST /api/agents/{id}/import", handler: s.importAgent},
-		{pattern: "POST /api/agents/{id}/save-work", handler: s.saveWork},
-		{pattern: "GET /api/agents/{id}/events", handler: s.agentEvents},
-		{pattern: "GET /api/agents/{id}/messages", handler: s.agentMessages},
-		{pattern: "DELETE /api/agents/{id}", handler: s.removeAgent},
-		{pattern: "GET /api/agents/{id}/terminal", handler: s.terminalWS},
-		{pattern: "GET /api/tasks", handler: s.listTasks},
-		{pattern: "POST /api/tasks", handler: s.createTask},
-		{pattern: "PATCH /api/tasks/{id}", handler: s.updateTask},
-		{pattern: "DELETE /api/tasks/{id}", handler: s.deleteTask},
-		{pattern: "GET /api/access-requests", handler: s.listAccess},
-		{pattern: "POST /api/access-requests/{id}/approve", handler: s.decideAccess(true)},
-		{pattern: "POST /api/access-requests/{id}/deny", handler: s.decideAccess(false)},
-		{pattern: "GET /api/pull-requests", handler: s.listPullRequests},
-		{pattern: "POST /api/tasks/{id}/pull-request", handler: s.openPullRequest},
-		{pattern: "POST /api/tasks/{id}/resolve-conflict", handler: s.resolveConflict},
-		{pattern: "POST /api/pull-requests/{id}/review", handler: s.prAction(s.requestReview)},
-		{pattern: "POST /api/pull-requests/{id}/follow-up", handler: s.prAction(s.followUp)},
-		{pattern: "POST /api/pull-requests/{id}/accept", handler: s.prAction(s.acceptFlagged)},
-		{pattern: "POST /api/agents/{id}/message", handler: s.messageAgent},
-		{pattern: "POST /api/agents/{id}/resume", handler: s.resumeAgent},
-		{pattern: "GET /api/agents/{id}/sessions", handler: s.agentSessions},
-		{pattern: "GET /api/agents/{id}/sessions/{sid}/terminal", handler: s.sessionTerminal},
-		{pattern: "GET /api/inbox", handler: s.listInbox},
-		{pattern: "GET /api/specs", handler: s.listSpecs},
-		{pattern: "GET /api/qa-runs", handler: s.listQARuns},
-		{pattern: "GET /api/memory", handler: s.listMemory},
-		{pattern: "GET /api/memory/export", handler: s.exportMemory},
-		{pattern: "POST /api/memory", handler: s.addMemory},
-		{pattern: "PATCH /api/memory/{id}", handler: s.memoryAction("patch")},
-		{pattern: "POST /api/memory/{id}/accept", handler: s.memoryAction("accept")},
-		{pattern: "DELETE /api/memory/{id}", handler: s.memoryAction("delete")},
-		{pattern: "POST /api/assistant/briefing", handler: s.askBriefing},
-		{pattern: "PUT /api/specs/{id}", handler: s.specAction(false)},
-		{pattern: "POST /api/specs/{id}/approve", handler: s.specAction(true)},
-		{pattern: "POST /api/inbox/{id}/read", handler: s.inboxAction(false)},
-		{pattern: "POST /api/inbox/{id}/reply", handler: s.inboxAction(true)},
-		{pattern: "GET /api/events", handler: s.eventsWS},
+		{pattern: "GET /api/status", handler: s.daemonStatus},
+		{pattern: "GET /api/usage", handler: s.daemonUsage},
+		{pattern: "GET /api/events", handler: s.hubEventsWS},
+		{pattern: "GET /api/projects", handler: s.listProjects},
+		{pattern: "POST /api/projects", handler: s.addProject},
+		{pattern: "GET /api/projects/{project}", handler: s.getProject},
+		{pattern: "PATCH /api/projects/{project}", handler: s.updateProject},
+		{pattern: "DELETE /api/projects/{project}", handler: s.removeProject},
+		{pattern: "POST /api/projects/{project}/retry", handler: s.retryProject},
+		{pattern: "GET /api/projects/{project}/status", handler: s.getStatus, project: true},
+		{pattern: "GET /api/projects/{project}/usage", handler: s.getUsage, project: true},
+		{pattern: "GET /api/projects/{project}/roles", handler: s.listRoles, project: true},
+		{pattern: "GET /api/projects/{project}/agents", handler: s.listAgents, project: true},
+		{pattern: "POST /api/projects/{project}/agents", handler: s.startAgent, project: true},
+		{pattern: "POST /api/projects/{project}/agents/{id}/stop", handler: s.stopAgent, project: true},
+		{pattern: "POST /api/projects/{project}/agents/{id}/discard", handler: s.discardAgent, project: true},
+		{pattern: "POST /api/projects/{project}/agents/{id}/import", handler: s.importAgent, project: true},
+		{pattern: "POST /api/projects/{project}/agents/{id}/save-work", handler: s.saveWork, project: true},
+		{pattern: "GET /api/projects/{project}/agents/{id}/events", handler: s.agentEvents, project: true},
+		{pattern: "GET /api/projects/{project}/agents/{id}/messages", handler: s.agentMessages, project: true},
+		{pattern: "DELETE /api/projects/{project}/agents/{id}", handler: s.removeAgent, project: true},
+		{pattern: "GET /api/projects/{project}/agents/{id}/terminal", handler: s.terminalWS, project: true},
+		{pattern: "GET /api/projects/{project}/tasks", handler: s.listTasks, project: true},
+		{pattern: "POST /api/projects/{project}/tasks", handler: s.createTask, project: true},
+		{pattern: "PATCH /api/projects/{project}/tasks/{id}", handler: s.updateTask, project: true},
+		{pattern: "DELETE /api/projects/{project}/tasks/{id}", handler: s.deleteTask, project: true},
+		{pattern: "GET /api/projects/{project}/access-requests", handler: s.listAccess, project: true},
+		{pattern: "POST /api/projects/{project}/access-requests/{id}/approve", handler: s.decideAccess(true), project: true},
+		{pattern: "POST /api/projects/{project}/access-requests/{id}/deny", handler: s.decideAccess(false), project: true},
+		{pattern: "GET /api/projects/{project}/pull-requests", handler: s.listPullRequests, project: true},
+		{pattern: "POST /api/projects/{project}/tasks/{id}/pull-request", handler: s.openPullRequest, project: true},
+		{pattern: "POST /api/projects/{project}/tasks/{id}/resolve-conflict", handler: s.resolveConflict, project: true},
+		{pattern: "POST /api/projects/{project}/pull-requests/{id}/review", handler: s.prAction(s.requestReview), project: true},
+		{pattern: "POST /api/projects/{project}/pull-requests/{id}/follow-up", handler: s.prAction(s.followUp), project: true},
+		{pattern: "POST /api/projects/{project}/pull-requests/{id}/accept", handler: s.prAction(s.acceptFlagged), project: true},
+		{pattern: "POST /api/projects/{project}/agents/{id}/message", handler: s.messageAgent, project: true},
+		{pattern: "POST /api/projects/{project}/agents/{id}/resume", handler: s.resumeAgent, project: true},
+		{pattern: "GET /api/projects/{project}/agents/{id}/sessions", handler: s.agentSessions, project: true},
+		{pattern: "GET /api/projects/{project}/agents/{id}/sessions/{sid}/terminal", handler: s.sessionTerminal, project: true},
+		{pattern: "GET /api/projects/{project}/inbox", handler: s.listInbox, project: true},
+		{pattern: "GET /api/projects/{project}/specs", handler: s.listSpecs, project: true},
+		{pattern: "GET /api/projects/{project}/qa-runs", handler: s.listQARuns, project: true},
+		{pattern: "GET /api/projects/{project}/memory", handler: s.listMemory, project: true},
+		{pattern: "GET /api/projects/{project}/memory/export", handler: s.exportMemory, project: true},
+		{pattern: "POST /api/projects/{project}/memory", handler: s.addMemory, project: true},
+		{pattern: "PATCH /api/projects/{project}/memory/{id}", handler: s.memoryAction("patch"), project: true},
+		{pattern: "POST /api/projects/{project}/memory/{id}/accept", handler: s.memoryAction("accept"), project: true},
+		{pattern: "DELETE /api/projects/{project}/memory/{id}", handler: s.memoryAction("delete"), project: true},
+		{pattern: "POST /api/projects/{project}/assistant/briefing", handler: s.askBriefing, project: true},
+		{pattern: "PUT /api/projects/{project}/specs/{id}", handler: s.specAction(false), project: true},
+		{pattern: "POST /api/projects/{project}/specs/{id}/approve", handler: s.specAction(true), project: true},
+		{pattern: "POST /api/projects/{project}/inbox/{id}/read", handler: s.inboxAction(false), project: true},
+		{pattern: "POST /api/projects/{project}/inbox/{id}/reply", handler: s.inboxAction(true), project: true},
+		{pattern: "GET /api/projects/{project}/events", handler: s.eventsWS, project: true},
 		{pattern: "GET /api/auth/session", handler: s.authSession, public: true},
 		{pattern: "POST /api/auth/pair", handler: s.authPair, public: true},
 		{pattern: "POST /api/auth/logout", handler: s.authLogout},
@@ -150,6 +161,7 @@ type route struct {
 	pattern string
 	handler http.HandlerFunc
 	public  bool
+	project bool // under /api/projects/{project}: the handler runs on that project's engine (ADR 0046)
 }
 
 // logRequests gives every request an id, returned as X-Request-Id and logged
@@ -265,8 +277,8 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.opts.Version})
 }
 
-func (s *server) listAgents(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.eng.List())
+func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, eng(r).List())
 }
 
 // startRequest is the optional JSON body of POST /api/agents.
@@ -280,7 +292,7 @@ func (s *server) startAgent(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
 		return
 	}
-	a, err := s.eng.Start(r.Context(), engine.StartRequest{TaskID: req.TaskID, Role: req.Role})
+	a, err := eng(r).Start(r.Context(), engine.StartRequest{TaskID: req.TaskID, Role: req.Role})
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -290,18 +302,18 @@ func (s *server) startAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) stopAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := s.eng.Stop(id); err != nil {
+	if err := eng(r).Stop(id); err != nil {
 		s.engineError(w, err)
 		return
 	}
-	a, _ := s.eng.Get(id)
+	a, _ := eng(r).Get(id)
 	writeJSON(w, http.StatusOK, a)
 }
 
 // importAgent brings a sandboxed agent's branch into the repository now
 // ("Import now"; also while it runs, ADR 0014).
 func (s *server) importAgent(w http.ResponseWriter, r *http.Request) {
-	imp, err := s.eng.Import(r.Context(), r.PathValue("id"))
+	imp, err := eng(r).Import(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -311,7 +323,7 @@ func (s *server) importAgent(w http.ResponseWriter, r *http.Request) {
 
 // saveWork commits an exited sandboxed agent's uncommitted work and imports it.
 func (s *server) saveWork(w http.ResponseWriter, r *http.Request) {
-	imp, err := s.eng.SaveWork(r.Context(), r.PathValue("id"))
+	imp, err := eng(r).SaveWork(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -321,7 +333,7 @@ func (s *server) saveWork(w http.ResponseWriter, r *http.Request) {
 
 // agentEvents lists an agent's recent sandbox events, newest first (ADR 0016).
 func (s *server) agentEvents(w http.ResponseWriter, r *http.Request) {
-	evs, err := s.eng.SandboxEvents(r.Context(), r.PathValue("id"), 50)
+	evs, err := eng(r).SandboxEvents(r.Context(), r.PathValue("id"), 50)
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -332,7 +344,7 @@ func (s *server) agentEvents(w http.ResponseWriter, r *http.Request) {
 // agentMessages lists an agent's recent messages, sent and received, newest
 // first (ADR 0018). Bodies come from agents: the UI renders them as text.
 func (s *server) agentMessages(w http.ResponseWriter, r *http.Request) {
-	msgs, err := s.eng.Messages(r.Context(), r.PathValue("id"))
+	msgs, err := eng(r).Messages(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -342,7 +354,7 @@ func (s *server) agentMessages(w http.ResponseWriter, r *http.Request) {
 
 // listAccess lists access requests, pending first (ADR 0019).
 func (s *server) listAccess(w http.ResponseWriter, r *http.Request) {
-	list, err := s.eng.AccessRequests(r.Context())
+	list, err := eng(r).AccessRequests(r.Context())
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -355,7 +367,7 @@ func (s *server) listAccess(w http.ResponseWriter, r *http.Request) {
 // resolveConflict relaunches a task's worker to merge the base branch and
 // resolve the conflict (ADR 0032).
 func (s *server) resolveConflict(w http.ResponseWriter, r *http.Request) {
-	if err := s.eng.ResolveConflict(r.Context(), r.PathValue("id")); err != nil {
+	if err := eng(r).ResolveConflict(r.Context(), r.PathValue("id")); err != nil {
 		s.engineError(w, err)
 		return
 	}
@@ -373,7 +385,7 @@ func (s *server) messageAgent(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	m, err := s.eng.MessageAgent(r.Context(), r.PathValue("id"), req.Body)
+	m, err := eng(r).MessageAgent(r.Context(), r.PathValue("id"), req.Body)
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -390,7 +402,7 @@ func (s *server) resumeAgent(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	a, err := s.eng.Resume(r.Context(), r.PathValue("id"), req.Prompt)
+	a, err := eng(r).Resume(r.Context(), r.PathValue("id"), req.Prompt)
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -400,7 +412,7 @@ func (s *server) resumeAgent(w http.ResponseWriter, r *http.Request) {
 
 // agentSessions lists an agent's sessions, newest first (ADR 0036).
 func (s *server) agentSessions(w http.ResponseWriter, r *http.Request) {
-	out, err := s.eng.Sessions(r.Context(), r.PathValue("id"))
+	out, err := eng(r).Sessions(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -411,7 +423,7 @@ func (s *server) agentSessions(w http.ResponseWriter, r *http.Request) {
 // sessionTerminal returns one session's terminal output, as the bytes the
 // terminal received; the UI writes them into a read-only terminal.
 func (s *server) sessionTerminal(w http.ResponseWriter, r *http.Request) {
-	data, err := s.eng.SessionTerminal(r.Context(), r.PathValue("id"), r.PathValue("sid"))
+	data, err := eng(r).SessionTerminal(r.Context(), r.PathValue("id"), r.PathValue("sid"))
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -425,7 +437,7 @@ func (s *server) sessionTerminal(w http.ResponseWriter, r *http.Request) {
 
 // exportMemory downloads the accepted project memory as Markdown (ADR 0037).
 func (s *server) exportMemory(w http.ResponseWriter, r *http.Request) {
-	md, err := s.eng.MemoryMarkdown(r.Context())
+	md, err := eng(r).MemoryMarkdown(r.Context())
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -438,7 +450,7 @@ func (s *server) exportMemory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listMemory(w http.ResponseWriter, r *http.Request) {
-	m, err := s.eng.Memory(r.Context())
+	m, err := eng(r).Memory(r.Context())
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -451,7 +463,7 @@ func (s *server) addMemory(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	m, err := s.eng.AddMemory(r.Context(), in)
+	m, err := eng(r).AddMemory(r.Context(), in)
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -470,20 +482,20 @@ func (s *server) memoryAction(op string) http.HandlerFunc {
 		var m engine.MemoryEntry
 		switch op {
 		case "delete":
-			if err := s.eng.DeleteMemory(r.Context(), id); err != nil {
+			if err := eng(r).DeleteMemory(r.Context(), id); err != nil {
 				s.engineError(w, err)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		case "accept":
-			m, err = s.eng.UpdateMemory(r.Context(), id, engine.MemoryInput{Status: engine.MemoryAccepted})
+			m, err = eng(r).UpdateMemory(r.Context(), id, engine.MemoryInput{Status: engine.MemoryAccepted})
 		default:
 			var in engine.MemoryInput
 			if !decodeJSON(w, r, &in) {
 				return
 			}
-			m, err = s.eng.UpdateMemory(r.Context(), id, in)
+			m, err = eng(r).UpdateMemory(r.Context(), id, in)
 		}
 		if err != nil {
 			s.engineError(w, err)
@@ -495,7 +507,7 @@ func (s *server) memoryAction(op string) http.HandlerFunc {
 
 // askBriefing asks the assistant for a briefing, starting it if needed.
 func (s *server) askBriefing(w http.ResponseWriter, r *http.Request) {
-	a, err := s.eng.AskBriefing(r.Context())
+	a, err := eng(r).AskBriefing(r.Context())
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -504,7 +516,7 @@ func (s *server) askBriefing(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listQARuns(w http.ResponseWriter, r *http.Request) {
-	runs, err := s.eng.QARuns(r.Context())
+	runs, err := eng(r).QARuns(r.Context())
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -513,7 +525,7 @@ func (s *server) listQARuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listSpecs(w http.ResponseWriter, r *http.Request) {
-	specs, err := s.eng.Specs(r.Context())
+	specs, err := eng(r).Specs(r.Context())
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -531,7 +543,7 @@ func (s *server) specAction(approve bool) http.HandlerFunc {
 			return
 		}
 		if approve {
-			res, err := s.eng.ApproveSpec(r.Context(), id)
+			res, err := eng(r).ApproveSpec(r.Context(), id)
 			if err != nil {
 				s.engineError(w, err)
 				return
@@ -543,7 +555,7 @@ func (s *server) specAction(approve bool) http.HandlerFunc {
 		if !decodeJSON(w, r, &p) {
 			return
 		}
-		spec, err := s.eng.EditSpec(r.Context(), id, p)
+		spec, err := eng(r).EditSpec(r.Context(), id, p)
 		if err != nil {
 			s.engineError(w, err)
 			return
@@ -553,7 +565,7 @@ func (s *server) specAction(approve bool) http.HandlerFunc {
 }
 
 func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
-	items, err := s.eng.Inbox(r.Context())
+	items, err := eng(r).Inbox(r.Context())
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -575,9 +587,9 @@ func (s *server) inboxAction(reply bool) http.HandlerFunc {
 			if !decodeJSON(w, r, &req) {
 				return
 			}
-			it, err = s.eng.ReplyInbox(r.Context(), id, req.Body)
+			it, err = eng(r).ReplyInbox(r.Context(), id, req.Body)
 		} else {
-			it, err = s.eng.MarkInboxRead(r.Context(), id)
+			it, err = eng(r).MarkInboxRead(r.Context(), id)
 		}
 		if err != nil {
 			s.engineError(w, err)
@@ -594,7 +606,7 @@ func (s *server) decideAccess(approve bool) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid access request id")
 			return
 		}
-		ar, err := s.eng.DecideAccess(r.Context(), id, approve)
+		ar, err := eng(r).DecideAccess(r.Context(), id, approve)
 		if err != nil {
 			s.engineError(w, err)
 			return
@@ -607,7 +619,7 @@ func (s *server) decideAccess(approve bool) http.HandlerFunc {
 // (ADR 0020, 0021). Review text comes from agents, bots or people: the UI
 // renders it as text.
 func (s *server) listPullRequests(w http.ResponseWriter, r *http.Request) {
-	list, err := s.eng.PullRequests(r.Context())
+	list, err := eng(r).PullRequests(r.Context())
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -618,7 +630,7 @@ func (s *server) listPullRequests(w http.ResponseWriter, r *http.Request) {
 // openPullRequest pushes the task's branch and opens or updates its pull
 // request ("Open PR"). POST, so the origin guard applies.
 func (s *server) openPullRequest(w http.ResponseWriter, r *http.Request) {
-	pr, err := s.eng.OpenPullRequest(r.Context(), r.PathValue("id"))
+	pr, err := eng(r).OpenPullRequest(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.prError(w, pr, err)
 		return
@@ -654,7 +666,7 @@ func (s *server) prAction(fn func(w http.ResponseWriter, r *http.Request, id int
 
 // requestReview asks the reviewer for another review of the current head.
 func (s *server) requestReview(w http.ResponseWriter, r *http.Request, id int64) {
-	pr, err := s.eng.RequestReview(r.Context(), id)
+	pr, err := eng(r).RequestReview(r.Context(), id)
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -675,7 +687,7 @@ func (s *server) followUp(w http.ResponseWriter, r *http.Request, id int64) {
 		writeError(w, http.StatusBadRequest, "review_id is required")
 		return
 	}
-	pr, err := s.eng.SendToWorker(r.Context(), id, req.ReviewID)
+	pr, err := eng(r).SendToWorker(r.Context(), id, req.ReviewID)
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -691,7 +703,7 @@ func (s *server) acceptFlagged(w http.ResponseWriter, r *http.Request, id int64)
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	pr, err := s.eng.AcceptFlagged(r.Context(), id, req.Commits)
+	pr, err := eng(r).AcceptFlagged(r.Context(), id, req.Commits)
 	if err != nil {
 		s.prError(w, pr, err)
 		return
@@ -701,7 +713,7 @@ func (s *server) acceptFlagged(w http.ResponseWriter, r *http.Request, id int64)
 
 // removeAgent cleans up the worktree (keeping uncommitted work, ADR 0010).
 func (s *server) removeAgent(w http.ResponseWriter, r *http.Request) {
-	res, err := s.eng.Remove(r.Context(), r.PathValue("id"))
+	res, err := eng(r).Remove(r.Context(), r.PathValue("id"))
 	if errors.Is(err, engine.ErrWorktreeDirty) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "result": res})
 		return
@@ -716,7 +728,7 @@ func (s *server) removeAgent(w http.ResponseWriter, r *http.Request) {
 // discardAgent force-removes the worktree, dropping uncommitted changes. The
 // UI asks for confirmation before calling it.
 func (s *server) discardAgent(w http.ResponseWriter, r *http.Request) {
-	res, err := s.eng.Discard(r.Context(), r.PathValue("id"))
+	res, err := eng(r).Discard(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -724,13 +736,9 @@ func (s *server) discardAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-func (s *server) getProject(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.eng.Project())
-}
-
 // listRoles lists the team roles of this daemon run (ADR 0029).
-func (s *server) listRoles(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.eng.Roles())
+func (s *server) listRoles(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, eng(r).Roles())
 }
 
 // getStatus reports the sandbox mode, the worker image and warnings (e.g. an
@@ -741,17 +749,17 @@ type statusView struct {
 	RemoteHosts []string `json:"remote_hosts"`
 }
 
-func (s *server) getStatus(w http.ResponseWriter, _ *http.Request) {
+func (s *server) getStatus(w http.ResponseWriter, r *http.Request) {
 	hosts := s.opts.RemoteHosts
 	if hosts == nil {
 		hosts = []string{}
 	}
-	writeJSON(w, http.StatusOK, statusView{Status: s.eng.Status(), RemoteHosts: hosts})
+	writeJSON(w, http.StatusOK, statusView{Status: eng(r).Status(), RemoteHosts: hosts})
 }
 
 // getUsage is every session's token usage and estimated cost (ADR 0026).
 func (s *server) getUsage(w http.ResponseWriter, r *http.Request) {
-	rep, err := s.eng.Usage(r.Context())
+	rep, err := eng(r).Usage(r.Context())
 	if err != nil {
 		s.log.Error("usage report", "err", err)
 		writeError(w, http.StatusInternalServerError, "usage report failed")
@@ -761,7 +769,7 @@ func (s *server) getUsage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listTasks(w http.ResponseWriter, r *http.Request) {
-	tasks, err := s.eng.ListTasks(r.Context())
+	tasks, err := eng(r).ListTasks(r.Context())
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -774,7 +782,7 @@ func (s *server) createTask(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	t, err := s.eng.CreateTask(r.Context(), in)
+	t, err := eng(r).CreateTask(r.Context(), in)
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -787,7 +795,7 @@ func (s *server) updateTask(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &p) {
 		return
 	}
-	t, err := s.eng.UpdateTask(r.Context(), r.PathValue("id"), p)
+	t, err := eng(r).UpdateTask(r.Context(), r.PathValue("id"), p)
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -796,7 +804,7 @@ func (s *server) updateTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) deleteTask(w http.ResponseWriter, r *http.Request) {
-	if err := s.eng.DeleteTask(r.Context(), r.PathValue("id")); err != nil {
+	if err := eng(r).DeleteTask(r.Context(), r.PathValue("id")); err != nil {
 		s.engineError(w, err)
 		return
 	}
@@ -824,6 +832,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 func (s *server) engineError(w http.ResponseWriter, err error) {
+	if code, ok := projectErrorStatus(err); ok {
+		writeError(w, code, err.Error())
+		return
+	}
 	switch {
 	case errors.Is(err, engine.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
@@ -869,7 +881,7 @@ type clientMsg struct {
 
 func (s *server) terminalWS(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	term, err := s.eng.Terminal(id)
+	term, err := eng(r).Terminal(id)
 	if err != nil {
 		s.engineError(w, err)
 		return
@@ -898,7 +910,7 @@ func (s *server) terminalWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer sub.Close()
 
-	go s.readTerminalInput(ctx, cancel, c, id, term, log)
+	go s.readTerminalInput(ctx, cancel, c, eng(r), id, term, log)
 	for {
 		select {
 		case <-r.Context().Done():
@@ -926,7 +938,7 @@ func (s *server) terminalWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) readTerminalInput(ctx context.Context, cancel context.CancelFunc, c *websocket.Conn,
-	id string, term *terminal.Session, log *slog.Logger) {
+	e *engine.Engine, id string, term *terminal.Session, log *slog.Logger) {
 	defer cancel()
 	firstResize := true
 	for {
@@ -945,7 +957,7 @@ func (s *server) readTerminalInput(ctx context.Context, cancel context.CancelFun
 		switch m.Type {
 		case "input":
 			// Through the engine, so it can notice interrupts (Esc / Ctrl-C).
-			_ = s.eng.Input(id, []byte(m.Data))
+			_ = e.Input(id, []byte(m.Data))
 		case "resize":
 			if m.Cols < 1 || m.Rows < 1 || m.Cols > maxTermDimension || m.Rows > maxTermDimension {
 				continue
@@ -970,39 +982,39 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
-	updates, unsubscribe := s.eng.Subscribe() // before the snapshot, so no update is missed
+	updates, unsubscribe := eng(r).Subscribe() // before the snapshot, so no update is missed
 	defer unsubscribe()
-	tasks, err := s.eng.ListTasks(r.Context())
+	tasks, err := eng(r).ListTasks(r.Context())
 	if err != nil {
 		closeFailed(c, r, "could not load tasks")
 		return
 	}
-	access, err := s.eng.AccessRequests(r.Context())
+	access, err := eng(r).AccessRequests(r.Context())
 	if err != nil {
 		closeFailed(c, r, "could not load access requests")
 		return
 	}
-	prs, err := s.eng.PullRequests(r.Context())
+	prs, err := eng(r).PullRequests(r.Context())
 	if err != nil {
 		closeFailed(c, r, "could not load pull requests")
 		return
 	}
-	inbox, err := s.eng.Inbox(r.Context())
+	inbox, err := eng(r).Inbox(r.Context())
 	if err != nil {
 		closeFailed(c, r, "could not load the inbox")
 		return
 	}
-	specs, err := s.eng.Specs(r.Context())
+	specs, err := eng(r).Specs(r.Context())
 	if err != nil {
 		closeFailed(c, r, "could not load the plans")
 		return
 	}
-	qaRuns, err := s.eng.QARuns(r.Context())
+	qaRuns, err := eng(r).QARuns(r.Context())
 	if err != nil {
 		closeFailed(c, r, "could not load the QA runs")
 		return
 	}
-	memory, err := s.eng.Memory(r.Context())
+	memory, err := eng(r).Memory(r.Context())
 	if err != nil {
 		closeFailed(c, r, "could not load the project memory")
 		return
@@ -1016,7 +1028,7 @@ func (s *server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		return c.Write(wctx, websocket.MessageText, b)
 	}
-	if err := write(map[string]any{"type": "snapshot", "agents": s.eng.List(), "tasks": tasks,
+	if err := write(map[string]any{"type": "snapshot", "project_id": eng(r).Project().ID, "agents": eng(r).List(), "tasks": tasks,
 		"access_requests": access, "pull_requests": prs, "inbox": inbox,
 		"specs": specs, "qa_runs": qaRuns, "memory": memory}); err != nil {
 		return

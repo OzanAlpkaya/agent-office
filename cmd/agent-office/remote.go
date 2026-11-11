@@ -170,6 +170,12 @@ func pairCommand(args []string, stdout, stderr io.Writer) int {
 }
 
 func controlPost(c *http.Client, path string, body, out any) error {
+	return controlDo(c, http.MethodPost, path, body, out, http.StatusCreated)
+}
+
+// controlDo sends one request to the control socket; a status other than
+// want is an error carrying the daemon's message.
+func controlDo(c *http.Client, method, path string, body, out any, want int) error {
 	var rd io.Reader = http.NoBody
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -178,18 +184,20 @@ func controlPost(c *http.Client, path string, body, out any) error {
 		}
 		rd = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(http.MethodPost, "http://agent-office"+path, rd)
+	req, err := http.NewRequest(method, "http://agent-office"+path, rd)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := c.Do(req)
 	if err != nil {
 		return errControlDown{err}
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	if resp.StatusCode != http.StatusCreated {
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != want {
 		var e struct {
 			Error string `json:"error"`
 		}
@@ -197,6 +205,9 @@ func controlPost(c *http.Client, path string, body, out any) error {
 			return errors.New(e.Error)
 		}
 		return fmt.Errorf("daemon answered %d", resp.StatusCode)
+	}
+	if out == nil {
+		return nil
 	}
 	return json.Unmarshal(data, out)
 }
