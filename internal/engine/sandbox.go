@@ -377,6 +377,11 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	go func() { _ = res.api.Serve(apiLn) }()
 
 	exitReport := filepath.Join(res.dir, exitReportName) // sandbox-init's report (ADR 0051)
+	// A daemon that was killed leaves the previous launch's report behind,
+	// owned by the sandbox user: replace it rather than write into it.
+	if err := os.Remove(exitReport); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fail(err)
+	}
 	if err := os.WriteFile(exitReport, nil, 0o644); err != nil {
 		return fail(err)
 	}

@@ -4,6 +4,8 @@ package engine
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -108,4 +110,32 @@ func TestSandboxedGrantSurvivesResume(t *testing.T) {
 	if _, err := e.Team().RequestAccess(ctx, a.ID, mcp.RequestAccessInput{Kind: "domain", Value: "storage.googleapis.com", Reason: "again"}); !isUser(err, ErrInvalid) {
 		t.Fatalf("an approved host requested again: %v", err)
 	}
+}
+
+// TestSandboxedRelaunchReplacesALeftoverExitReport: a daemon that was killed
+// leaves the runtime dir with an exit report owned by the sandbox user; the
+// restored launch must not fail on it (found by the e2e restore runs).
+func TestSandboxedRelaunchReplacesALeftoverExitReport(t *testing.T) {
+	f := sandboxFixture(t, false)
+	e := f.engine(t)
+	log := record(t, e)
+	ctx := context.Background()
+	a := startIdle(t, e, log)
+	exitAgent(t, e, log, a.ID)
+	dir := filepath.Join(f.opts.RuntimeDir, "agents", a.ID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	left := filepath.Join(dir, exitReportName)
+	if err := os.WriteFile(left, []byte(`{"code":0,"oom_kills":0}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.opts.Sandbox.Podman.Chown(ctx, f.opts.RuntimeDir, left); err != nil {
+		t.Fatal(err)
+	}
+	mark := log.mark()
+	if _, err := e.Resume(ctx, a.ID, ""); err != nil {
+		t.Fatalf("resume over a leftover exit report: %v", err)
+	}
+	log.waitFrom(t, 30*time.Second, mark, agentState(a.ID, hooks.Idle))
 }

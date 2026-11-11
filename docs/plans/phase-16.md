@@ -1,6 +1,6 @@
 # Phase 16 plan: Autonomous team
 
-- **Status:** In progress on `phase-16/autonomous-team`. Written 2026-11-11 with the recommended
+- **Status:** Done on `phase-16/autonomous-team`, waiting for Ozan's review (not merged). Written 2026-11-11 with the recommended
   option for every choice, as Ozan asked ("implement it without waiting for my plan approval; take
   the recommended option on every choice, record decisions in ADRs and give me one end-of-phase
   summary").
@@ -118,3 +118,30 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
   as before; inventing an identity was not an option.
 - **Verified the request #4 test fails without the fix**: with the launch's grant loading taken out,
   `TestSandboxedGrantSurvivesResume` fails ("the approval did not reach the resumed session").
+- **Independent reviews.** A code review led to 10 fixes (Remove and Save work raced the exit's saved
+  work; a relaunch lost messages; stale counts in the stall summary; an automatic resume counted when
+  it did not happen; shutdown bounds; nudges reset by agent churn; a grant/launch race; a partial
+  failure in `resume_agent`; an OOM message to a dying agent; an old child OOM marking the agent's
+  death). A security review led to 2 (no unprompted git in a host worktree whose config sets
+  `core.fsmonitor` or a filter driver; the Tech Lead's project-wide approvals only for hosts in
+  `lead_access_hosts`); its other points are recorded (the GCS egress as a residual risk; a forgeable
+  exit report labels only).
+- **Found by the e2e runs** (9 runs of `TestAutonomousTeamEndToEnd` until it passed):
+  1. The running memory watch could read the agent's own OOM kill before its exit, so the exit looked
+     like a plain SIGKILL; the exit now compares with the kills the watch actually told the agent about.
+  2. A worker resumed with a prompt that finished and reported in that first turn never got the
+     user's waiting message (no Stop-hook delivery after a report). Messages that waited for an agent
+     now go into the first prompt of the session that resumes or relaunches it (delivery `prompt`;
+     migration 0015 widens the column's check, as the migration is new in this phase).
+  3. After the lead took a sub-task back and assigned it again, the new worker was refused the host the
+     lead had approved for the old one; an agent-scoped approval now covers later workers on the same
+     sub-task.
+  4. Test design, not product: a user's stop is a decision the lead may ask the user about (haiku did,
+     which correctly quieted the watchdog), so the e2e's stall is an interrupted worker with the lead
+     waiting, the incident's own shape; and once, the haiku lead called `request_access` itself, so the
+     goal text says who does what.
+- **Backlog** (not done): a resume continues the latest session that finished a turn (ADR 0035), so a
+  session killed mid-turn after it was given a prompt is skipped and its partial conversation is not
+  continued (its git work is kept); project-wide grants cannot be revoked from the UI; per-agent
+  memory limits for a single heavy sub-task.
+
