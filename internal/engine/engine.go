@@ -133,6 +133,8 @@ type Options struct {
 	AccessDecider       string          // who decides access requests (ADR 0053): DeciderUser (default), DeciderLead, DeciderLeadPolicy
 	LeadAccessHosts     []string        // DeciderLeadPolicy: the hosts the lead may approve (allowlist entries)
 	StallAfter          time.Duration   // the stall watchdog's wait (ADR 0052); 0: the default, negative: off
+	MergeTarget         string          // the branch a goal's Merge squash-merges into (ADR 0055); "": main
+	PushRemote          string          // the remote its Push pushes to (the project's github_remote); "": origin
 
 	// Message delivery timing (ADR 0018); zero values get the defaults. Tests
 	// shorten them.
@@ -226,11 +228,12 @@ type Update struct {
 	Message       *Message       `json:"message,omitempty"`
 	AccessRequest *AccessRequest `json:"access_request,omitempty"`
 	PullRequest   *PullRequest   `json:"pull_request,omitempty"`
-	Usage         *SessionUsage  `json:"usage,omitempty"`  // a running session's usage (ADR 0026)
-	Inbox         *InboxItem     `json:"inbox,omitempty"`  // a message to the user (ADR 0030)
-	Spec          *Spec          `json:"spec,omitempty"`   // a version of a goal's plan (ADR 0031)
-	QARun         *QARun         `json:"qa_run,omitempty"` // a QA run (ADR 0033)
-	Memory        *MemoryEntry   `json:"memory,omitempty"` // a project memory entry (ADR 0034)
+	Usage         *SessionUsage  `json:"usage,omitempty"`      // a running session's usage (ADR 0026)
+	Inbox         *InboxItem     `json:"inbox,omitempty"`      // a message to the user (ADR 0030)
+	Spec          *Spec          `json:"spec,omitempty"`       // a version of a goal's plan (ADR 0031)
+	QARun         *QARun         `json:"qa_run,omitempty"`     // a QA run (ADR 0033)
+	GoalMerge     *GoalMerge     `json:"goal_merge,omitempty"` // a goal's merge or push (ADR 0055)
+	Memory        *MemoryEntry   `json:"memory,omitempty"`     // a project memory entry (ADR 0034)
 }
 
 type agentProc struct {
@@ -285,6 +288,7 @@ type Engine struct {
 	hubbed  bool      // opened by a hub, which does the daemon-wide restart work (ADR 0046)
 
 	grantsMu sync.Mutex // orders stored access grants with the running sessions' copies (ADR 0053, Phase 17)
+	mergeMu  sync.Mutex // one goal merge or push at a time (ADR 0055)
 
 	mu           sync.Mutex
 	agents       map[string]*agentProc
