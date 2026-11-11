@@ -78,6 +78,7 @@ func (d *daemon) start() {
 		if resp, err := http.Get(d.base + "/api/health"); err == nil {
 			resp.Body.Close()
 			d.pair()
+			d.findDefault()
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -107,6 +108,41 @@ func (d *daemon) pair() {
 		d.t.Fatalf("agent-office pair --token: %v", err)
 	}
 	tokens.Store(d.base, strings.TrimSpace(string(out)))
+}
+
+// defaults holds each daemon's default project (`serve --repo`, ADR 0046)
+// by base URL: the project routes of the single-project tests go there.
+var defaults sync.Map
+
+// findDefault records the daemon's default project, if it has one.
+func (d *daemon) findDefault() {
+	d.t.Helper()
+	var ps []struct {
+		ID      string `json:"id"`
+		Default bool   `json:"default"`
+	}
+	d.json("GET", "/api/projects", nil, http.StatusOK, &ps)
+	for _, p := range ps {
+		if p.Default {
+			defaults.Store(d.base, p.ID)
+		}
+	}
+}
+
+// projectPath puts a project route of the single-project tests (/api/tasks,
+// /api/agents/...) under the daemon's default project; daemon routes and
+// paths that name their project stay as they are.
+func projectPath(base, path string) string {
+	for _, daemonRoute := range []string{"/api/health", "/api/projects", "/api/auth", "/api/devices"} {
+		if path == daemonRoute || strings.HasPrefix(path, daemonRoute+"/") {
+			return path
+		}
+	}
+	pid, ok := defaults.Load(base)
+	if !ok || !strings.HasPrefix(path, "/api/") {
+		return path
+	}
+	return "/api/projects/" + pid.(string) + strings.TrimPrefix(path, "/api")
 }
 
 // authHeader authenticates a request to the daemon at base.
@@ -141,7 +177,7 @@ func (d *daemon) do(method, path string, body any) (int, []byte) {
 		b, _ := json.Marshal(body)
 		rd = bytes.NewReader(b)
 	}
-	req, _ := http.NewRequest(method, d.base+path, rd)
+	req, _ := http.NewRequest(method, d.base+projectPath(d.base, path), rd)
 	req.Header = authHeader(d.base)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -176,8 +212,15 @@ type watcher struct {
 }
 
 func watch(t *testing.T, ctx context.Context, base string) *watcher {
+	pid, _ := defaults.Load(base)
+	return watchProject(t, ctx, base, pid.(string))
+}
+
+// watchProject follows one project's events stream (ADR 0046).
+func watchProject(t *testing.T, ctx context.Context, base, project string) *watcher {
 	w := &watcher{history: map[string][]string{}, changed: make(chan struct{}, 1)}
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/events", &websocket.DialOptions{HTTPHeader: authHeader(base)})
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/projects/"+project+"/events",
+		&websocket.DialOptions{HTTPHeader: authHeader(base)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +317,15 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\
 
 func attach(t *testing.T, ctx context.Context, base, id string) *term {
 	t.Helper()
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/agents/"+id+"/terminal", &websocket.DialOptions{HTTPHeader: authHeader(base)})
+	pid, _ := defaults.Load(base)
+	return attachIn(t, ctx, base, pid.(string), id)
+}
+
+// attachIn attaches to an agent's terminal in one project.
+func attachIn(t *testing.T, ctx context.Context, base, project, id string) *term {
+	t.Helper()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/api/projects/"+project+"/agents/"+id+"/terminal",
+		&websocket.DialOptions{HTTPHeader: authHeader(base)})
 	if err != nil {
 		t.Fatal(err)
 	}
