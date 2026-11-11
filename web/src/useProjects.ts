@@ -72,8 +72,13 @@ export function useWatchers(projects: readonly Project[], shown: string | undefi
           const m = parseEventMessage(String(e.data));
           if (m) setWorlds((prev) => ({ ...prev, [id]: reduceLight(prev[id] ?? emptyLight, m) }));
         };
-        ws.onclose = () => {
-          if (!disposed) timer = window.setTimeout(connect, backoff(retry++));
+        ws.onclose = (e) => {
+          if (disposed) return;
+          if (e.code === statusSignedOut) {
+            signalUnauthorized(); // signed out: the Gate takes over; no retries
+            return;
+          }
+          timer = window.setTimeout(connect, backoff(retry++));
         };
       };
       connect();

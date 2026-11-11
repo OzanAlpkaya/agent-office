@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -77,9 +78,28 @@ type projectRequest struct {
 	Settings engine.ProjectSettings `json:"settings"`
 }
 
+// remote reports whether a request came through tailscale serve rather
+// than from this machine; the control socket (the CLI) is local.
+func (s *server) remote(r *http.Request) bool {
+	if s.opts.Port == "" && len(s.opts.RemoteHosts) == 0 {
+		return false // the control socket
+	}
+	_, remote := s.hostKind(r.Host)
+	return remote
+}
+
+// localOnly is the refusal of a change that widens what agents can reach,
+// asked from a remote device (found in the Phase 14 security review).
+const localOnly = "adding a repository and changing a project's pack, secrets_dir, egress_allow or GitHub settings " +
+	"need this machine: use the UI on localhost or `agent-office project`"
+
 func (s *server) addProject(w http.ResponseWriter, r *http.Request) {
 	var req projectRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if s.remote(r) {
+		writeError(w, http.StatusForbidden, localOnly)
 		return
 	}
 	p, err := s.hub.Add(r.Context(), engine.AddProject{Repo: req.Repo, Name: req.Name, Settings: req.Settings})
@@ -101,6 +121,17 @@ func (s *server) updateProject(w http.ResponseWriter, r *http.Request) {
 	var req projectPatch
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+	if req.Settings != nil && s.remote(r) {
+		cur, err := s.hub.Project(r.PathValue("project"))
+		if err != nil {
+			s.engineError(w, err)
+			return
+		}
+		if changed := cur.Settings.SandboxChanges(*req.Settings); len(changed) > 0 {
+			writeError(w, http.StatusForbidden, localOnly+" (changed: "+strings.Join(changed, ", ")+")")
+			return
+		}
 	}
 	p, err := s.hub.Update(r.Context(), r.PathValue("project"), engine.UpdateProject{Name: req.Name, Settings: req.Settings})
 	if err != nil {

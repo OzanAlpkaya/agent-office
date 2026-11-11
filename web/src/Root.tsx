@@ -38,7 +38,8 @@ export function Root({ session, onSignedOut }: { session: AuthSession; onSignedO
     if (connection === "open") void api.status().then(setStatus, () => setStatus(undefined));
   }, [connection, projects.length]);
 
-  const current = pickProject(projects, chosen, status?.default_project);
+  // The daemon's default (serve --repo's) comes with the project list, so no project opens before it is known.
+  const current = pickProject(projects, chosen, projects.find((p) => p.default)?.id);
   const worlds = useWatchers(projects, current?.id);
   const others = useMemo(() => elsewhere(projects, current?.id, worlds), [projects, current?.id, worlds]);
 

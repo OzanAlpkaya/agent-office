@@ -92,19 +92,20 @@ const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
 // How long an agent may stay in "starting" before the UI flags it.
 const stuckAfterMs = 20_000;
 
-// The open terminal tabs are remembered per browser (ADR 0044): a convenience, so
-// storage that is missing or blocked only means starting with none.
-const tabsKey = "agent-office.tabs";
-function loadTabs(): Tabs {
+// The open terminal tabs are remembered per browser and project (ADR 0044,
+// 0048): a convenience, so storage that is missing or blocked only means
+// starting with none.
+const tabsKey = (projectId: string): string => `agent-office.tabs.${projectId}`;
+function loadTabs(projectId: string): Tabs {
   try {
-    return parseTabs(window.localStorage.getItem(tabsKey));
+    return parseTabs(window.localStorage.getItem(tabsKey(projectId)));
   } catch {
     return parseTabs(null); // storage blocked (private window, policy)
   }
 }
-function saveTabs(t: Tabs): void {
+function saveTabs(projectId: string, t: Tabs): void {
   try {
-    window.localStorage.setItem(tabsKey, JSON.stringify(t));
+    window.localStorage.setItem(tabsKey(projectId), JSON.stringify(t));
   } catch {
     // storage blocked or full: the tabs are only lost on reload
   }
@@ -145,7 +146,7 @@ export function App({ session, onSignedOut, project, projects, daemon, elsewhere
   const [panel, setPanel] = useState<Panel>();
   const narrow = useMedia(narrowQuery);
   const [view, setView] = useState<View>({ kind: "board" });
-  const [tabs, setTabs] = useState<Tabs>(loadTabs);
+  const [tabs, setTabs] = useState<Tabs>(() => loadTabs(project.id));
   const [switcher, setSwitcher] = useState(false);
   const [approvalsOpen, setApprovalsOpen] = useState(false);
   const [dragged, setDragged] = useState<string>();
@@ -180,7 +181,7 @@ export function App({ session, onSignedOut, project, projects, daemon, elsewhere
   useEffect(() => {
     if (connection === "open" && agents.length > 0) setTabs((t) => keepTabs(t, new Set(agents.map((a) => a.id))));
   }, [agents, connection]);
-  useEffect(() => saveTabs(tabs), [tabs]);
+  useEffect(() => saveTabs(project.id, tabs), [project.id, tabs]);
 
   // The open agent's tab is scrolled into view when the strip overflows.
   const openId = view.kind === "agent" ? view.id : undefined;

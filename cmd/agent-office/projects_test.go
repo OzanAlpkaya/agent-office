@@ -106,6 +106,9 @@ func TestProjectCommand(t *testing.T) {
 	if code, out, e := run("set", "webapp", "--model", "opus", "--inherit", "max_agents"); code != 0 || !strings.Contains(out, "webapp") {
 		t.Fatalf("set: %d %q %q", code, out, e)
 	}
+	if code, _, e := run("set", "webapp", "--model", "haiku", "--inherit", "model"); code != 1 || !strings.Contains(e, "give one of them") {
+		t.Fatalf("--inherit with the same flag: %d %q", code, e)
+	}
 	s = hub.Projects()[0].Settings
 	if *s.Model != "opus" || s.MaxAgents != nil || *s.BudgetGoalMicroUSD != 500_000 {
 		t.Fatalf("settings after set %+v", s)

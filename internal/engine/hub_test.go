@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 )
@@ -15,7 +17,7 @@ import (
 // testDefaults are daemon flags as project settings, every field set.
 func testDefaults() ProjectSettings {
 	d := NeutralDefaults()
-	d.Model = Ptr("haiku")
+	d.Model, d.SecretsDir = Ptr("haiku"), Ptr("/nonexistent/secrets")
 	return d
 }
 
@@ -442,5 +444,70 @@ func TestHubCrashMarksOnlyItsProjects(t *testing.T) {
 	}
 	if got, _ := hf.ea.Get(a.ID); got.ExitedAt != nil || !got.HasTerminal || state == string(hooks.Exited) {
 		t.Fatalf("adding a project ended another project's agent: %+v, stored state %s", got, state)
+	}
+}
+
+// A settings change ends the old engine's subscriptions, so the UI's events
+// streams resync with the new engine instead of staying open on a dead one
+// (found in the Phase 14 review).
+func TestHubUpdateEndsOldSubscriptions(t *testing.T) {
+	hf := newHubFixture(t, 4, ProjectSettings{})
+	updates, cancel := hf.eb.Subscribe()
+	defer cancel()
+	if _, err := hf.h.Update(context.Background(), hf.b.ID, UpdateProject{Settings: &ProjectSettings{Model: Ptr("opus")}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case _, ok := <-updates:
+		for ok {
+			_, ok = <-updates
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the old engine's subscription stayed open")
+	}
+}
+
+// New settings that cannot work are refused before the project stops.
+func TestHubUpdateRefusesSettingsThatCannotOpen(t *testing.T) {
+	hf := newHubFixture(t, 4, ProjectSettings{Model: Ptr("sonnet")})
+	ctx := context.Background()
+	_, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{RoleModels: map[string]string{"no-such-role": "opus"}}})
+	if !errors.Is(err, ErrProjectUnavailable) || !strings.Contains(err.Error(), "no-such-role") {
+		t.Fatalf("unknown role in role_models: %v", err)
+	}
+	p, _ := hf.h.Project(hf.b.ID)
+	eb, _ := hf.h.Engine(hf.b.ID)
+	if p.State != ProjectOpen || *p.Effective.Model != "sonnet" || eb != hf.eb {
+		t.Fatalf("the project changed: %+v", p)
+	}
+	if _, err := eb.Start(ctx, StartRequest{}); err != nil {
+		t.Fatalf("the project still runs agents: %v", err)
+	}
+}
+
+// Paths that are not a project of their own are refused: agents' worktrees,
+// linked worktrees, and secrets outside the daemon's secrets dir (found in
+// the Phase 14 security review).
+func TestHubRefusesPathsThatAreNotProjects(t *testing.T) {
+	hf := newHubFixture(t, 4, ProjectSettings{})
+	ctx := context.Background()
+	a, err := hf.ea.Start(ctx, StartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hf.h.Add(ctx, AddProject{Repo: a.WorktreePath}); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "data dir") {
+		t.Fatalf("an agent's worktree as a project: %v", err)
+	}
+	linked := filepath.Join(t.TempDir(), "linked")
+	gitIn(t, hf.f.repo, "worktree", "add", "-q", "-b", "side", linked)
+	if _, err := hf.h.Add(ctx, AddProject{Repo: linked}); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "linked worktree") {
+		t.Fatalf("a linked worktree as a project: %v", err)
+	}
+	for dir, ok := range map[string]bool{"/nonexistent/secrets/webapp": true, "/nonexistent/secrets": true, "/home": false,
+		"/nonexistent/secrets-other": false} {
+		_, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{SecretsDir: Ptr(dir)}})
+		if ok != (err == nil) {
+			t.Errorf("secrets_dir %s: %v", dir, err)
+		}
 	}
 }

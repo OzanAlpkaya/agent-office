@@ -229,3 +229,31 @@ func TestProjectEventsCarryOnlyTheirProject(t *testing.T) {
 		t.Fatalf("A's stream got %v", m)
 	}
 }
+
+// A remote device may manage projects, but not add a repository or widen
+// what agents reach (found in the Phase 14 security review).
+func TestRemoteDevicesCannotWidenProjects(t *testing.T) {
+	f := remoteFixture(t)
+	viaServe := map[string]string{"Host": tailnetHost, "Tailscale-User-Login": "ozan@github", "Content-Type": "application/json",
+		"Origin": "https://" + tailnetHost}
+	repo := newGitRepo(t)
+	if r := f.doBody(t, "POST", "/api/projects", viaServe, fmt.Sprintf(`{"repo": %q}`, repo)); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("remote add: %d", r.StatusCode)
+	}
+	for _, body := range []string{`{"settings": {"egress_allow": ["evil.example.com"]}}`, `{"settings": {"github": true}}`,
+		`{"settings": {"pack": "node"}}`, `{"settings": {"secrets_dir": "/"}}`} {
+		r := f.doBody(t, "PATCH", "/api/projects/"+f.pid, viaServe, body)
+		b, _ := io.ReadAll(r.Body)
+		if r.StatusCode != http.StatusForbidden || !strings.Contains(string(b), "need this machine") {
+			t.Errorf("remote %s: %d %s", body, r.StatusCode, b)
+		}
+	}
+	var p engine.ProjectInfo
+	jsonBody(t, f.doBody(t, "PATCH", "/api/projects/"+f.pid, viaServe, `{"name": "renamed", "settings": {"model": "sonnet"}}`), http.StatusOK, &p)
+	if p.Name != "renamed" || *p.Effective.Model != "sonnet" {
+		t.Fatalf("remote rename and model: %+v", p)
+	}
+	// From this machine all of it works.
+	local := map[string]string{"Content-Type": "application/json"}
+	jsonBody(t, f.doBody(t, "POST", "/api/projects", local, fmt.Sprintf(`{"repo": %q}`, repo)), http.StatusCreated, nil)
+}

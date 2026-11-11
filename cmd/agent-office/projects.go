@@ -69,6 +69,9 @@ func configureProject(cfg serveConfig, g git.Git, prices *pricing.Prices, log *s
 				o.Warnings = append(o.Warnings, "budgets apply to sandboxed agents only: host-mode agents reach Anthropic "+
 					"directly and are not limited (ADR 0027)")
 			}
+			o.Warnings = append(o.Warnings, "Host mode: agents run as you, with permission prompts on. A command you allow can "+
+				"read any project's files and reach other projects' agent sockets; isolation between projects holds for "+
+				"sandboxed agents (--sandbox podman, ADR 0046).")
 		} else {
 			w, err := applyPack(ctx, o.Sandbox, packSpec{name: eff.PackName(), label: "pack", packsDir: cfg.packsDir,
 				secretsDir: *eff.SecretsDir, egress: eff.EgressAllow, repo: p.RepoPath})
@@ -257,7 +260,7 @@ func addSettingsFlags(fs *flag.FlagSet, set bool) *settingsFlags {
 	if set {
 		f.inherit = fs.String("inherit", "", "settings to take from the daemon again, comma-separated, e.g. pack,model "+
 			"(names as in the API: pack, secrets_dir, egress_allow, model, role_models, max_agents, github, github_remote, "+
-			"reviewer, review_rounds, budget_session_usd, budget_goal_usd)")
+			"reviewer, review_rounds, budget_session_micro_usd, budget_goal_micro_usd)")
 	}
 	return f
 }
@@ -309,8 +312,15 @@ func (f *settingsFlags) settings(cur engine.ProjectSettings) (engine.ProjectSett
 		return s, err
 	}
 	if f.inherit != nil {
+		given := map[string]bool{}
+		f.fs.Visit(func(fl *flag.Flag) { given[strings.ReplaceAll(fl.Name, "-", "_")] = true })
 		for _, n := range strings.Split(*f.inherit, ",") {
-			switch strings.TrimSpace(n) {
+			n = strings.TrimSpace(n)
+			flagName := strings.TrimSuffix(strings.TrimSuffix(n, "_micro_usd"), "_usd")
+			if given[flagName] || given[flagName+"_usd"] || (n == "role_models" && given["role_model"]) {
+				return s, fmt.Errorf("--inherit %s and a flag that sets it: give one of them", n)
+			}
+			switch n {
 			case "":
 			case "pack":
 				s.Pack = nil
@@ -332,9 +342,9 @@ func (f *settingsFlags) settings(cur engine.ProjectSettings) (engine.ProjectSett
 				s.Reviewer = nil
 			case "review_rounds":
 				s.ReviewRounds = nil
-			case "budget_session_usd":
+			case "budget_session_micro_usd", "budget_session_usd":
 				s.BudgetSessionMicroUSD = nil
-			case "budget_goal_usd":
+			case "budget_goal_micro_usd", "budget_goal_usd":
 				s.BudgetGoalMicroUSD = nil
 			default:
 				return s, fmt.Errorf("--inherit: unknown setting %q", n)

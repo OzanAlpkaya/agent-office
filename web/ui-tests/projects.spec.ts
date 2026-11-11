@@ -168,3 +168,19 @@ test("with no project yet, the UI asks for the first one", async ({ page }) => {
   await expect(page.locator(".board")).toBeVisible();
   await expect(switcher(page)).toHaveValue("p1");
 });
+
+test("each project keeps its own open agent tabs across switches", async ({ page }) => {
+  const errors = await open(page, twoProjects());
+  const tabs = page.getByRole("tablist", { name: "Open agents" }).getByRole("tab");
+  await page.locator('.card[data-agent="b2c3d4000001"] .agent-name').first().click();
+  await expect(tabs).toHaveCount(1);
+  await expect(tabs.first()).toContainText("Emma");
+  await switcher(page).selectOption("p2");
+  await expect(tabs).toHaveCount(0);
+  await page.locator('.card[data-agent="bbbb00000002"] .agent-name').first().click();
+  await expect(tabs.first()).toContainText("Theo");
+  await switcher(page).selectOption("p1");
+  await expect(tabs).toHaveCount(1);
+  await expect(tabs.first()).toContainText("Emma");
+  expect(errors).toEqual([]);
+});

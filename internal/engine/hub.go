@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -149,6 +150,10 @@ func NewHub(ctx context.Context, opts HubOptions) (*Hub, error) {
 	if opts.Base.Logger == nil {
 		opts.Base.Logger = slog.Default()
 	}
+	// Agents' repositories are never registered or run git on (ADR 0014).
+	if sb := opts.Base.Sandbox; sb != nil {
+		opts.Base.Git.UntrustedRoots = append(slices.Clone(opts.Base.Git.UntrustedRoots), sb.WorkspaceRoot)
+	}
 	h := &Hub{opts: opts, log: opts.Base.Logger, q: opts.Base.Store.Q, slots: newSlotPool(opts.Base.MaxAgents),
 		projects: map[string]*projectEntry{}, subs: map[chan HubUpdate]struct{}{}}
 	if c := opts.Containers; c != nil {
@@ -212,6 +217,13 @@ func (h *Hub) options(ctx context.Context, row db.Project, s ProjectSettings) (O
 	if o.Sandbox != nil {
 		sb := *o.Sandbox
 		o.Sandbox = &sb
+	}
+	if d := *h.opts.Defaults.SecretsDir; *eff.SecretsDir != d && !within(*eff.SecretsDir, d) {
+		// A project's secrets live in the daemon's secrets dir or one of its
+		// subdirectories, so no setting points a pack at other files (found in the
+		// Phase 14 security review).
+		return o, invalid("secrets_dir %s: must be %s or a directory inside it, e.g. %s", *eff.SecretsDir, d,
+			filepath.Join(d, row.Slug))
 	}
 	o.Model = *eff.Model
 	o.MaxAgents = min(*eff.MaxAgents, h.opts.Base.MaxAgents)
@@ -338,6 +350,9 @@ func (h *Hub) Register(ctx context.Context, repo string) (ProjectInfo, error) {
 	if err := h.closedErr(); err != nil {
 		return ProjectInfo{}, err
 	}
+	if err := h.ownPath(repo); err != nil {
+		return ProjectInfo{}, err
+	}
 	row, _, err := registerProject(ctx, h.q, h.opts.Base.Git, repo, "", "")
 	if err != nil {
 		return ProjectInfo{}, err
@@ -384,6 +399,9 @@ func (h *Hub) Add(ctx context.Context, in AddProject) (ProjectInfo, error) {
 	if err != nil {
 		return ProjectInfo{}, err
 	}
+	if err := h.ownPath(in.Repo); err != nil {
+		return ProjectInfo{}, err
+	}
 	row, how, err := registerProject(ctx, h.q, h.opts.Base.Git, in.Repo, name, enc)
 	if err != nil {
 		return ProjectInfo{}, err
@@ -400,7 +418,7 @@ func (h *Hub) Add(ctx context.Context, in AddProject) (ProjectInfo, error) {
 			return ProjectInfo{}, fmt.Errorf("engine: %w", err)
 		}
 	}
-	pe := h.open(ctx, row)
+	pe := h.open(context.WithoutCancel(ctx), row)
 	if pe.eng == nil {
 		if _, rerr := h.q.RemoveProject(context.Background(), db.RemoveProjectParams{RemovedAt: nullTime(now()), ID: row.ID}); rerr != nil {
 			h.log.Error("unregister the project that did not open", "project", row.Slug, "err", rerr)
@@ -408,7 +426,8 @@ func (h *Hub) Add(ctx context.Context, in AddProject) (ProjectInfo, error) {
 		return ProjectInfo{}, fmt.Errorf("%w: %v", ErrProjectUnavailable, pe.err)
 	}
 	info := h.put(pe)
-	h.log.Info("project added", "project", row.Slug, "repo", row.RepoPath, "restored", how == registeredRestored)
+	h.log.Info("project added", "project", row.Slug, "repo", row.RepoPath, "restored", how == registeredRestored,
+		"settings", row.Settings)
 	return info, nil
 }
 
@@ -456,16 +475,27 @@ func (h *Hub) Update(ctx context.Context, id string, in UpdateProject) (ProjectI
 	if err != nil {
 		return ProjectInfo{}, err
 	}
+	// Once the old engine stops, the open must not depend on the caller staying.
+	octx := context.WithoutCancel(ctx)
+	if reopen {
+		// Everything the new settings need (pack image, secrets, GitHub, role
+		// models) is checked before anything stops.
+		cand := pe.row
+		cand.Name, cand.Settings = name, enc
+		if _, err := h.options(ctx, cand, settings); err != nil {
+			return ProjectInfo{}, fmt.Errorf("%w: %v", ErrProjectUnavailable, err)
+		}
+	}
 	if reopen && pe.eng != nil {
 		if !pe.eng.closeIdle() {
 			return ProjectInfo{}, ErrProjectBusy
 		}
 		pe.eng.Shutdown()
 	}
-	row, err := h.q.UpdateProject(ctx, db.UpdateProjectParams{Name: name, Settings: enc, ID: id})
+	row, err := h.q.UpdateProject(octx, db.UpdateProjectParams{Name: name, Settings: enc, ID: id})
 	if err != nil {
 		if reopen && pe.eng != nil { // closed above: open it again as it was
-			h.put(h.open(context.Background(), pe.row))
+			h.put(h.open(octx, pe.row))
 		}
 		return ProjectInfo{}, fmt.Errorf("engine: %w", err)
 	}
@@ -477,8 +507,17 @@ func (h *Hub) Update(ctx context.Context, id string, in UpdateProject) (ProjectI
 		h.publish(HubUpdate{Type: "project", Project: &info})
 		return info, nil
 	}
-	info := h.put(h.open(ctx, row))
-	h.log.Info("project settings changed", "project", row.Slug, "state", info.State)
+	ne := h.open(octx, row)
+	if ne.eng == nil && pe.eng != nil {
+		// It ran before and does not with the new settings: back to the old ones.
+		if _, rerr := h.q.UpdateProject(octx, db.UpdateProjectParams{Name: pe.row.Name, Settings: pe.row.Settings, ID: id}); rerr != nil {
+			h.log.Error("restore the project's previous settings", "project", row.Slug, "err", rerr)
+		}
+		h.put(h.open(octx, pe.row))
+		return ProjectInfo{}, fmt.Errorf("%w: %v", ErrProjectUnavailable, ne.err)
+	}
+	info := h.put(ne)
+	h.log.Info("project settings changed", "project", row.Slug, "state", info.State, "from", pe.row.Settings, "to", row.Settings)
 	return info, nil
 }
 
@@ -503,7 +542,7 @@ func (h *Hub) Retry(ctx context.Context, id string) (ProjectInfo, error) {
 	if err != nil {
 		return ProjectInfo{}, fmt.Errorf("engine: %w", err)
 	}
-	return h.put(h.open(ctx, row)), nil
+	return h.put(h.open(context.WithoutCancel(ctx), row)), nil
 }
 
 // Remove unregisters a project whose agents are all stopped. Its tasks,
@@ -521,14 +560,18 @@ func (h *Hub) Remove(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("project %s: %w", id, ErrNotFound)
 	}
-	if pe.eng != nil {
-		if !pe.eng.closeIdle() {
-			return ErrProjectBusy
-		}
-		pe.eng.Shutdown()
+	if pe.eng != nil && !pe.eng.closeIdle() {
+		return ErrProjectBusy
 	}
-	if _, err := h.q.RemoveProject(ctx, db.RemoveProjectParams{RemovedAt: nullTime(now()), ID: id}); err != nil {
+	if _, err := h.q.RemoveProject(context.WithoutCancel(ctx), db.RemoveProjectParams{RemovedAt: nullTime(now()), ID: id}); err != nil {
+		if pe.eng != nil { // closing but not stopped: open it again so it is not left half-closed
+			pe.eng.Shutdown()
+			h.put(h.open(context.WithoutCancel(ctx), pe.row))
+		}
 		return fmt.Errorf("engine: %w", err)
+	}
+	if pe.eng != nil {
+		pe.eng.Shutdown()
 	}
 	h.mu.Lock()
 	delete(h.projects, id)
@@ -619,6 +662,28 @@ func (h *Hub) Shutdown() {
 	wg.Wait()
 }
 
+// ownPath refuses a repository under the data dir: an agent's worktree or
+// sandbox clone is the agent's, never a project of its own.
+func (h *Hub) ownPath(repo string) error {
+	roots := []string{h.opts.Base.WorktreeRoot}
+	if sb := h.opts.Base.Sandbox; sb != nil {
+		roots = append(roots, sb.WorkspaceRoot, sb.AgentsRoot)
+	}
+	clean := filepath.Clean(repo)
+	for _, r := range roots {
+		if r != "" && (clean == r || within(clean, r)) {
+			return invalid("%s is inside agent-office's data dir (%s): agents' workspaces cannot be projects", repo, r)
+		}
+	}
+	return nil
+}
+
+// within reports whether path is strictly inside dir.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
 // How registerProject found the repository.
 const (
 	registeredCreated  = "created"
@@ -636,6 +701,10 @@ func registerProject(ctx context.Context, q *db.Queries, g git.Git, repo, name, 
 	}
 	if _, err := g.HeadCommit(ctx, top); err != nil {
 		return db.Project{}, "", invalid("the repository %s has no commits yet: %v", top, err)
+	}
+	if fi, err := os.Lstat(filepath.Join(top, ".git")); err == nil && !fi.IsDir() {
+		// A linked worktree (or submodule) shares another repository's objects and branches.
+		return db.Project{}, "", invalid("%s is a linked worktree or submodule, not a repository of its own; add its main repository", top)
 	}
 	row, err := q.GetProjectByRepo(ctx, top)
 	switch {

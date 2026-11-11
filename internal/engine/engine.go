@@ -1340,6 +1340,14 @@ func (e *Engine) Shutdown() {
 	}
 	wg.Wait()
 	e.wg.Wait()
+	// Subscribers (the UI's events streams) end, so they resync: after a
+	// project's settings change they find its new engine (ADR 0046).
+	e.mu.Lock()
+	for ch := range e.subs {
+		delete(e.subs, ch)
+		close(ch)
+	}
+	e.mu.Unlock()
 }
 
 // sessionLogger is the logger of one agent session: every line about it

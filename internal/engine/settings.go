@@ -210,3 +210,25 @@ func NeutralDefaults() ProjectSettings {
 		MaxAgents: Ptr(MaxProjectAgents), GitHub: Ptr(false), GitHubRemote: Ptr("origin"), Reviewer: Ptr(review.NameInternal),
 		ReviewRounds: Ptr(2), BudgetSessionMicroUSD: Ptr(int64(0)), BudgetGoalMicroUSD: Ptr(int64(0))}
 }
+
+// SandboxChanges names the settings that change what a project's agents can
+// reach (pack, secrets, network, pushes) between s and t. The API accepts
+// them from this machine only (ADR 0046).
+func (s ProjectSettings) SandboxChanges(t ProjectSettings) []string {
+	var out []string
+	same := func(a, b any) bool {
+		x, _ := json.Marshal(a)
+		y, _ := json.Marshal(b)
+		return bytes.Equal(x, y)
+	}
+	for _, f := range []struct {
+		name string
+		a, b any
+	}{{"pack", s.Pack, t.Pack}, {"secrets_dir", s.SecretsDir, t.SecretsDir}, {"egress_allow", s.EgressAllow, t.EgressAllow},
+		{"github", s.GitHub, t.GitHub}, {"github_remote", s.GitHubRemote, t.GitHubRemote}} {
+		if !same(f.a, f.b) {
+			out = append(out, f.name)
+		}
+	}
+	return out
+}
