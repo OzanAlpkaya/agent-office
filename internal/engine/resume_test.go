@@ -471,3 +471,56 @@ func TestRestoreTwice(t *testing.T) {
 	}
 	screen(t, e, w.ID, "RESUMED:"+w.SessionID)
 }
+
+// A resumed session that got a prompt and was stopped before its turn
+// finished is continued by the next resume, not skipped for its parent
+// (Phase 17; ADR 0035 amended): Claude Code keeps a fork's transcript from
+// its first prompt on. A fork that was only shown is still skipped.
+func TestResumeContinuesInterruptedSession(t *testing.T) {
+	f := newFixture(t)
+	e, err := New(context.Background(), f.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Shutdown)
+	ctx := context.Background()
+	log := record(t, e)
+	w, _ := startAndExit(t, e, log, "Interrupted")
+	original := w.SessionID
+
+	// Resumed without a prompt, then given one and stopped mid-turn.
+	r1, err := e.Resume(ctx, w.ID, "")
+	if err != nil || r1.ResumedFrom != original {
+		t.Fatalf("first resume: %+v %v", r1, err)
+	}
+	log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
+	typeLine(t, e, w.ID, "work") // UserPromptSubmit, then a tool waits for permission
+	log.wait(t, 5*time.Second, agentState(w.ID, hooks.WaitingPermission))
+	if err := e.Stop(w.ID); err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 5*time.Second, agentGone(w.ID))
+
+	r2, err := e.Resume(ctx, w.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.ResumedFrom != r1.SessionID {
+		t.Fatalf("resume continued %s, want the interrupted session %s (original %s)", r2.ResumedFrom, r1.SessionID, original)
+	}
+	screen(t, e, w.ID, "RESUMED:"+r1.SessionID)
+
+	// r2 was only shown: stopped without a prompt, the next resume skips it.
+	log.wait(t, 5*time.Second, agentState(w.ID, hooks.Idle))
+	if err := e.Stop(w.ID); err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 5*time.Second, agentGone(w.ID))
+	r3, err := e.Resume(ctx, w.ID, "")
+	if err != nil || r3.ResumedFrom != r1.SessionID {
+		t.Fatalf("a fork without a prompt was not skipped: %+v %v", r3, err)
+	}
+	if a, _ := e.Get(w.ID); a.ExitReason == ExitResumeFailed {
+		t.Fatal("resume failed")
+	}
+}

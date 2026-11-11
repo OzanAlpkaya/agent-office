@@ -258,6 +258,7 @@ type agentProc struct {
 	cliSession string         // Codex: its own session id, learned from the first hook (ADR 0049); guarded by Engine.mu
 
 	sessionStarted bool          // the main agent's SessionStart arrived; guarded by Engine.mu
+	prompted       bool          // the session got a prompt (sessions.prompted, ADR 0035); guarded by Engine.mu
 	historyDone    chan struct{} // closed after the session's terminal was saved for the last time (ADR 0036); nil for agents of a previous run
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
@@ -1058,6 +1059,14 @@ func (e *Engine) hookHandler(id string, log *slog.Logger) hooks.Handler {
 		}
 		if ev.Kind == agent.SessionStarted && !ev.Subagent {
 			a.sessionStarted = true
+		}
+		if ev.Kind == agent.TurnStarted && !ev.Subagent && !a.prompted {
+			// The CLI keeps a conversation once it gets a prompt, finished turn or
+			// not: a resume continues this session (ADR 0035).
+			a.prompted = true
+			if err := e.q.MarkSessionPrompted(ctx, a.info.SessionID); err != nil {
+				log.Warn("record the session's prompt", "err", err)
+			}
 		}
 		e.countLocked(ctx, a, ev, log)
 		e.transcriptHookLocked(a, ev, log)

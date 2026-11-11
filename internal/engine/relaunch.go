@@ -260,17 +260,19 @@ func (e *Engine) Resume(ctx context.Context, id, prompt string) (AgentInfo, erro
 }
 
 // resumeSource is the session a resume continues: the agent's latest session,
-// except that a resumed session in which no turn finished is skipped for the
+// except that a resumed session that never got a prompt is skipped for the
 // session it resumed. Claude Code writes a fork's transcript only once the
 // fork gets a message, so a fork that was only shown (an idle restore, a
 // Resume without a prompt) has none, and `--resume` of it fails with "No
 // conversation found" (found in Ozan's test: a sandboxed worker restored
 // twice; checked against Claude Code 2.1.319). Its parent holds the same
-// conversation. Original sessions are never skipped: a first turn cut off
-// by a crash still has its prompt there.
+// conversation. A fork that got a prompt is continued even if it was killed
+// before its turn finished: its transcript has the prompt and the partial
+// turn (checked against Claude Code 2.1.322, Phase 17). Original sessions are
+// never skipped: a first turn cut off by a crash still has its prompt there.
 func (e *Engine) resumeSource(ctx context.Context, id string) (db.Session, error) {
 	s, err := e.q.LatestSession(ctx, id)
-	for hops := 0; err == nil && s.Turns == 0 && s.ResumedFrom != "" && hops < 100; hops++ {
+	for hops := 0; err == nil && s.Turns == 0 && !s.Prompted && s.ResumedFrom != "" && hops < 100; hops++ {
 		parent, perr := e.q.GetSession(ctx, s.ResumedFrom)
 		if perr != nil || parent.AgentID != id {
 			break // the chain ends here; resume what we have
