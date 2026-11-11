@@ -34,7 +34,9 @@ Option 3, plus stored grants.
   the scope (migration 0015 rebuilds `access_requests` for the new values), and becomes an inbox
   item for the user.
 - **Scopes and grants.** An approval is a row in `access_grants`: `agent` (the asking agent, every
-  later session) or `project` (every agent of the project). It reaches the running sessions it
+  later session, and the later workers on its sub-task: one taken back and assigned again continues
+  the same work; found by the e2e run, where the new worker was refused the host) or `project` (every
+  agent of the project). It reaches the running sessions it
   covers at once and every later launch loads it. Pending requests stay open while their agent can
   be resumed (an approval then applies to its next session) and expire when it is removed or cannot
   be resumed. That replaces 0019's expiry on exit and at daemon start.

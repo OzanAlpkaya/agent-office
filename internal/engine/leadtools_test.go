@@ -2,12 +2,14 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
+	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
 
 // TestLeadResumesAndStopsItsWorkers is incident 3 (ADR 0051): the lead stops
@@ -90,6 +92,12 @@ func TestReclaimTaskContinuesFromTheBranch(t *testing.T) {
 	if err != nil || out.Status != StatusTodo || out.FromBranch != w.Branch {
 		t.Fatalf("reclaim: %+v %v", out, err)
 	}
+	// An approval for the old worker covers the sub-task's next worker (ADR
+	// 0053, found by the e2e run).
+	if err := e.q.InsertAccessGrant(ctx, db.InsertAccessGrantParams{ProjectID: e.project.ID,
+		AgentID: sql.NullString{String: w.ID, Valid: true}, Host: "docs.example.org", RequestID: 1, CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tm.ReclaimTask(ctx, w.ID, mcp.ReclaimTaskInput{TaskID: task.ID}); !isUser(err, ErrForbidden) {
 		t.Fatalf("a worker reclaiming: %v", err)
 	}
@@ -101,6 +109,14 @@ func TestReclaimTaskContinuesFromTheBranch(t *testing.T) {
 	nw, _ := e.Get(as.AgentID)
 	if nw.ID == w.ID || gitIn(t, nw.WorktreePath, "rev-parse", "HEAD") != head {
 		t.Fatalf("the new worker does not start from the old branch (%s)", head)
+	}
+	g := &sandbox.Grants{}
+	if err := e.loadGrants(ctx, nw.ID, g); err != nil || !g.Allows("docs.example.org") {
+		t.Fatalf("the old worker's approval does not reach the next one: %v", err)
+	}
+	other := &sandbox.Grants{}
+	if err := e.loadGrants(ctx, tf.lead.ID, other); err != nil || other.Allows("docs.example.org") {
+		t.Fatalf("an agent approval reached an agent of another task: %v", err)
 	}
 }
 

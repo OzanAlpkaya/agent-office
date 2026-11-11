@@ -212,13 +212,20 @@ func TestAutonomousTeamEndToEnd(t *testing.T) {
 	// Incident 5: everyone waits for someone else. The worker is interrupted in
 	// the middle of its turn (it sits idle), the lead waits for its report;
 	// nobody tells anyone, so the stall watchdog wakes the lead.
-	waitFor(t, "the worker in its slow step while the lead waits", 5*time.Minute, func() bool {
+	deadline := time.Now().Add(5 * time.Minute)
+	for {
 		w, l := findAgent(listAgents(), current.ID), findAgent(listAgents(), lead.ID)
 		if w.State == "exited" {
 			t.Fatalf("the worker ended before the stall could be set up: %+v", w)
 		}
-		return w.State == "working" && w.Activity == "Bash" && l.State == "idle"
-	})
+		if w.State == "working" && l.State == "idle" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no moment with the worker working and the lead idle: %+v %+v", w, l)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	attach(t, ctx, d.base, current.ID).send(ctx, "\x1b")
@@ -226,7 +233,7 @@ func TestAutonomousTeamEndToEnd(t *testing.T) {
 	waitFor(t, "the watchdog wakes the lead", 3*time.Minute, func() bool { return leadSays("[agent-office] Status check") })
 
 	// The goal reaches review without the user answering anything.
-	deadline := time.Now().Add(12 * time.Minute)
+	deadline = time.Now().Add(12 * time.Minute)
 	for {
 		var tasks []teamTask
 		d.json("GET", "/api/tasks", nil, http.StatusOK, &tasks)

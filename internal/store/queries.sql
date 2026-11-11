@@ -208,10 +208,13 @@ RETURNING *;
 INSERT INTO access_grants (project_id, agent_id, host, request_id, created_at) VALUES (?, ?, ?, ?, ?);
 
 -- name: ListAccessGrants :many
--- The hosts an agent's launch is granted (ADR 0053): its project's and its own.
-SELECT * FROM access_grants
-WHERE project_id = sqlc.arg(project_id) AND (agent_id IS NULL OR agent_id = sqlc.arg(agent_id))
-ORDER BY id;
+-- The hosts an agent's launch is granted (ADR 0053): its project's, its own, and those of earlier
+-- workers on its task (a sub-task taken back and assigned again continues their work).
+SELECT g.* FROM access_grants g
+WHERE g.project_id = sqlc.arg(project_id) AND (g.agent_id IS NULL OR g.agent_id = sqlc.arg(agent_id)
+    OR g.agent_id IN (SELECT a.id FROM agents a WHERE a.project_id = sqlc.arg(project_id) AND a.task_id IS NOT NULL
+        AND a.task_id = (SELECT b.task_id FROM agents b WHERE b.id = sqlc.arg(agent_id))))
+ORDER BY g.id;
 
 -- name: ListPendingAccessForAgents :many
 SELECT * FROM access_requests WHERE status = 'pending' AND agent_id IN (sqlc.slice(agent_ids)) ORDER BY id;

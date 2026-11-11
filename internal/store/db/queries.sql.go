@@ -1726,9 +1726,11 @@ func (q *Queries) ListAcceptedMemory(ctx context.Context, projectID string) ([]M
 }
 
 const listAccessGrants = `-- name: ListAccessGrants :many
-SELECT id, project_id, agent_id, host, request_id, created_at FROM access_grants
-WHERE project_id = ?1 AND (agent_id IS NULL OR agent_id = ?2)
-ORDER BY id
+SELECT g.id, g.project_id, g.agent_id, g.host, g.request_id, g.created_at FROM access_grants g
+WHERE g.project_id = ?1 AND (g.agent_id IS NULL OR g.agent_id = ?2
+    OR g.agent_id IN (SELECT a.id FROM agents a WHERE a.project_id = ?1 AND a.task_id IS NOT NULL
+        AND a.task_id = (SELECT b.task_id FROM agents b WHERE b.id = ?2)))
+ORDER BY g.id
 `
 
 type ListAccessGrantsParams struct {
@@ -1736,7 +1738,8 @@ type ListAccessGrantsParams struct {
 	AgentID   sql.NullString
 }
 
-// The hosts an agent's launch is granted (ADR 0053): its project's and its own.
+// The hosts an agent's launch is granted (ADR 0053): its project's, its own, and those of earlier
+// workers on its task (a sub-task taken back and assigned again continues their work).
 func (q *Queries) ListAccessGrants(ctx context.Context, arg ListAccessGrantsParams) ([]AccessGrant, error) {
 	rows, err := q.db.QueryContext(ctx, listAccessGrants, arg.ProjectID, arg.AgentID)
 	if err != nil {
