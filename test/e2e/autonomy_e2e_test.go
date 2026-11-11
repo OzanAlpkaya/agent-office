@@ -101,7 +101,8 @@ func TestAutonomousTeamEndToEnd(t *testing.T) {
 			"\"record whether example.com answers\", then end your turn and wait for the decision message.\n" +
 			"2. Once it is approved, run: curl -sS -o /dev/null -w '%{http_code}' https://example.com/ and write the " +
 			"printed status code into a file named reach.txt.\n" +
-			"3. Write a file named notes.txt containing the single word ready.\n" +
+			"3. Run the shell command sleep 60 (it stands in for a slow build), then write a file named notes.txt " +
+			"containing the single word ready.\n" +
 			"4. Commit both files, then call report_done.\n\n" +
 			"When the worker has reported, call report_done for the goal."}, http.StatusCreated, &goal)
 	var lead teamAgent
@@ -211,8 +212,13 @@ func TestAutonomousTeamEndToEnd(t *testing.T) {
 	// Incident 5: everyone waits for someone else. The worker is interrupted in
 	// the middle of its turn (it sits idle), the lead waits for its report;
 	// nobody tells anyone, so the stall watchdog wakes the lead.
-	working(current.ID)
-	waitAgent(t, listAgents, lead.ID, 3*time.Minute, func(a teamAgent) bool { return a.State == "idle" })
+	waitFor(t, "the worker in its slow step while the lead waits", 5*time.Minute, func() bool {
+		w, l := findAgent(listAgents(), current.ID), findAgent(listAgents(), lead.ID)
+		if w.State == "exited" {
+			t.Fatalf("the worker ended before the stall could be set up: %+v", w)
+		}
+		return w.State == "working" && w.Activity == "Bash" && l.State == "idle"
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	attach(t, ctx, d.base, current.ID).send(ctx, "\x1b")
