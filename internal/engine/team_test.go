@@ -533,18 +533,31 @@ func TestReportDone(t *testing.T) {
 	if _, err := e.Team().SendMessage(ctx, w2.ID, mcp.SendMessageInput{To: "lead", Body: "on it"}); err != nil {
 		t.Fatalf("message to a lead that reported: %v", err)
 	}
-	_ = t2
-	// Marking the goal done (a human decision) ends the lead, not the worker.
+	// Marking the goal done (a human decision, ADR 0054) closes its sub-tasks
+	// and ends every agent of the goal, the working worker too; the worker's
+	// uncommitted work is saved on its exit (ADR 0051).
 	done := StatusDone
 	if _, err := e.UpdateTask(ctx, tf.goal.ID, TaskPatch{Status: &done}); err != nil {
 		t.Fatal(err)
 	}
 	tf.log.wait(t, 5*time.Second, agentState(lead, hooks.Exited))
-	if got, _ := e.Get(lead); got.ExitReason != ExitGoalDone {
-		t.Fatalf("exit reason %q", got.ExitReason)
+	tf.log.wait(t, 5*time.Second, agentState(w2.ID, hooks.Exited))
+	for _, id := range []string{lead, w2.ID} {
+		if got, _ := e.Get(id); got.ExitReason != ExitGoalDone {
+			t.Fatalf("%s: exit reason %q", id, got.ExitReason)
+		}
 	}
-	if got, _ := e.Get(w2.ID); got.State == string(hooks.Exited) {
-		t.Fatal("a working worker was ended with the goal")
+	kids, _ := e.q.ListChildTasks(ctx, nullString(tf.goal.ID))
+	if len(kids) < 2 {
+		t.Fatalf("sub-tasks: %d", len(kids))
+	}
+	for _, k := range kids {
+		if k.Status != StatusDone {
+			t.Fatalf("sub-task %s %q left %s", k.ID, k.Title, k.Status)
+		}
+	}
+	if tk, _ := e.getTask(ctx, t2.ID); tk.Status != StatusDone {
+		t.Fatalf("follow-up sub-task %s", tk.Status)
 	}
 }
 
