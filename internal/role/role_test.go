@@ -293,3 +293,26 @@ func TestCLIs(t *testing.T) {
 		t.Fatal("unknown role accepted")
 	}
 }
+
+// TestBuiltinPromptRules: the Tech Lead decides what can be undone and asks
+// the user only for what is the user's (Phase 16); the assistant's memory
+// proposals claim no effects they do not have.
+func TestBuiltinPromptRules(t *testing.T) {
+	set := MustBuiltins()
+	lead, _ := set.Get(NameTechLead)
+	for _, want := range []string{"Decide yourself, do not ask the user", "merges and pushes, secrets, stack pack or project setting changes",
+		"WAIVERS.md", "resume_agent", "reclaim_task", "decide_access", "status check"} {
+		if !strings.Contains(lead.Prompt, want) {
+			t.Errorf("tech-lead prompt lacks %q", want)
+		}
+	}
+	for _, tool := range []string{mcp.ToolResumeAgent, mcp.ToolStopAgent, mcp.ToolReclaimTask, mcp.ToolDecideAccess} {
+		if !slices.Contains(lead.TeamTools, tool) {
+			t.Errorf("tech-lead lacks %s", tool)
+		}
+	}
+	as, _ := set.Get(NameAssistant)
+	if !strings.Contains(as.Prompt, "it changes no setting, permission, network access") {
+		t.Error("assistant prompt lacks the memory rule")
+	}
+}

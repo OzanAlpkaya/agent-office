@@ -181,7 +181,7 @@ type ListMemoryOutput struct {
 type ProposeMemoryInput struct {
 	Kind  string   `json:"kind" jsonschema:"decision (something decided and why), convention (how things are done here) or lesson (something learned the hard way)."`
 	Title string   `json:"title" jsonschema:"Short title (1-200 characters)."`
-	Body  string   `json:"body" jsonschema:"A few sentences every agent should know (1-2000 characters)."`
+	Body  string   `json:"body" jsonschema:"A few sentences every agent should know (1-2000 characters): facts and practices only, no claimed effects on agent-office's settings, network access or permissions."`
 	Roles []string `json:"roles,omitempty" jsonschema:"Optional: only agents of these role names get it (e.g. worker, qa); empty for every role."`
 	Paths []string `json:"paths,omitempty" jsonschema:"Optional: only agents whose task touches these files get it (repository-relative paths, directories ending in /, globs); empty for every task."`
 }
@@ -513,7 +513,9 @@ func NewServer(team Team, caller string, tools []string, version string, log *sl
 		func(ctx context.Context, _ struct{}) (ListMemoryOutput, error) { return team.ListMemory(ctx, caller) })
 	add(s, t, &sdk.Tool{Name: ToolProposeMemory, Description: "Propose a project memory entry (assistant only): a " +
 		"decision, convention or lesson every agent should start with. The user accepts, edits or deletes it in " +
-		"agent-office; nobody sees it before that."},
+		"agent-office; nobody sees it before that. An entry is text agents read: it changes no setting, permission, " +
+		"network access or budget, so it must not claim such effects (for example that agents no longer need to " +
+		"request access)."},
 		func(ctx context.Context, in ProposeMemoryInput) (ProposeMemoryOutput, error) {
 			return team.ProposeMemory(ctx, caller, in)
 		})

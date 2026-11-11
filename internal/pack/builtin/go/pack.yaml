@@ -1,11 +1,13 @@
 schema: 1
 name: go
-description: Go 1.27.3 with a C toolchain (cgo), so go test -race works; modules from the Go proxy.
+description: Go 1.27.3 with a C toolchain (cgo) and make, so go test -race works; modules from the Go proxy.
 toolchain:
   containerfile: Containerfile
 egress:
   allow:
     - proxy.golang.org
     - sum.golang.org
+    # proxy.golang.org redirects some module zips to Google Cloud Storage (found in a real run).
+    - storage.googleapis.com
 skills:
   - go-sandbox

@@ -661,7 +661,8 @@ func (e *Engine) workerRules(task *db.Task) string {
 	}
 	if e.opts.Sandbox != nil {
 		p += " Network access is limited to an allowlist; if the task needs another host, use request_access" +
-			" (a human decides)."
+			" (your Tech Lead or a human decides). If a command is killed (\"Killed\", signal 9), it ran out of memory:" +
+			" use less memory instead of retrying it as it is."
 	}
 	return p
 }
