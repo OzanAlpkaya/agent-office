@@ -63,10 +63,14 @@ Option 2 in each case.
   conflict, no git identity, heads that moved. The commit is the user's (the repository's
   `user.name`/`user.email`) with an `Agent-Office-Goal: <id>` trailer. Each merge is recorded in
   `goal_merges` and published.
-- `POST /tasks/{id}/push` pushes the branch of the goal's latest merge to the project's
-  `github_remote` (default `origin`): `git push --no-follow-tags <remote> refs/heads/<t>:refs/heads/<t>`,
-  never forced, without a terminal (ADR 0020); a rejected push is shown with git's reason. The push is
-  recorded once.
+- `POST /tasks/{id}/push` pushes the goal's latest merge commit to its target branch on the project's
+  `github_remote` (default `origin`): `git push --no-follow-tags <remote> <merge sha>:refs/heads/<t>`,
+  exactly the merge the user confirmed (later local commits on the target stay local), never forced,
+  without a terminal (ADR 0020); a rejected push is shown with git's reason. The push is recorded once.
+- The preview lists the changed paths (up to 200) and flags those that run code outside the review:
+  CI pipelines, git and package hooks, agent configuration (`.github/`, `.husky/`, `.githooks/`,
+  `.claude/`, `CLAUDE.md`, ...). A remote URL's http(s) credentials are not shown. `merge_target` is
+  accepted from this machine only, like `github_remote` (ADR 0046). (Security review, Phase 17.)
 - Only the user starts them: no team tool exists for either, and the Tech Lead's prompt says it
   never merges or pushes. Any paired device may (it is the user acting, as with Accept and push on a
   pull request); both are logged with the commits.
@@ -82,7 +86,12 @@ Option 2 in each case.
 - The daemon now writes the user's target branch and, if checked out, its files; only through
   `git merge --ff-only`, which refuses rather than overwrites, and only after the checks above.
   The user's own repository hooks (`post-merge`) run as they would for the user's own merge.
-- Pushing publishes; it is a separate click with its own confirmation naming the remote and URL.
+- Pushing publishes; it is a separate click with its own confirmation naming the remote, its URL and
+  the commit.
+- Residual: in host mode an agent can write the main repository's git config and hooks, which the
+  user's Merge (`post-merge`) or Push (`pre-push`, `pushurl`) then runs; host agents already run as
+  the user, and refusing `core.hooksPath` would block repositories that use it. Sandboxed agents
+  cannot reach the main repository's config (ADR 0014).
 - Tests: `TestSquashMergeIntoCheckedOutBranch`, `TestSquashMergeRefusals`,
   `TestPushBranchToBareRemote` (git); `TestMergeGoalIntoCheckedOutMain` (every refusal, the merge,
   a rejected and a successful push to a local bare remote), `TestMergeGoalIntoBranchNotCheckedOut`,
