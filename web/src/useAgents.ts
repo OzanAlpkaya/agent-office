@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   type AccessRequest, type Agent, type InboxItem, type MemoryEntry, type Message, type PullRequest, type QARun,
-  type ProjectApi, type SandboxEvent, type SessionUsage, type Spec, type Task, api as daemonApi, parseEventMessage,
+  type GoalMerge, type ProjectApi, type SandboxEvent, type SessionUsage, type Spec, type Task, api as daemonApi, parseEventMessage,
   signalUnauthorized, statusSignedOut, wsURL,
 } from "./api";
 import { totalTokens } from "./usage";
@@ -12,6 +12,7 @@ export interface World {
   agents: Agent[];
   tasks: Task[];
   events: Record<string, SandboxEvent[]>; // sandbox events per agent id, newest first
+  merges: GoalMerge[]; // goal merges and pushes (ADR 0055), newest first
   messages: Record<string, Message[]>; // messages sent or received per agent id, newest first
   accessRequests: AccessRequest[]; // pending first, then the most recent
   pullRequests: PullRequest[]; // in creation order (ADR 0020)
@@ -63,6 +64,13 @@ const maxEvents = 50;
 
 const eventKey = (e: SandboxEvent): string => `${e.at}|${e.kind}|${e.detail}`;
 
+// mergeById combines merge records, the later list winning per id, newest first.
+export function mergeById(a: readonly GoalMerge[], b: readonly GoalMerge[]): GoalMerge[] {
+  const byId = new Map<number, GoalMerge>();
+  for (const m of [...a, ...b]) byId.set(m.id, m);
+  return [...byId.values()].sort((x, y) => y.id - x.id);
+}
+
 // mergeEvents combines fetched and live events without duplicates, newest first.
 function mergeEvents(a: SandboxEvent[], b: SandboxEvent[]): SandboxEvent[] {
   const seen = new Set<string>();
@@ -96,6 +104,7 @@ export function useWorld(api: ProjectApi): World {
   const [specs, setSpecs] = useState<Spec[]>([]);
   const [qaRuns, setQARuns] = useState<QARun[]>([]);
   const [memory, setMemory] = useState<MemoryEntry[]>([]);
+  const [merges, setMerges] = useState<GoalMerge[]>([]);
   const [connection, setConnection] = useState<Connection>("connecting");
 
   useEffect(() => {
@@ -129,6 +138,11 @@ export function useWorld(api: ProjectApi): World {
             setSpecs(msg.specs);
             setQARuns(msg.qaRuns.slice().sort((a, b) => b.id - a.id));
             setMemory(msg.memory.slice().sort((a, b) => b.id - a.id));
+            // Goal merges (ADR 0055); live ones arriving meanwhile are kept.
+            void api.goalMerges().then(
+              (ms) => setMerges((prev) => mergeById(ms, prev)),
+              () => console.warn("agent-office: could not load goal merges"),
+            );
             // Usage history; live updates arriving meanwhile are merged, not overwritten.
             void api.usage().then(
               (rep) => setUsage((prev) => {
@@ -158,6 +172,9 @@ export function useWorld(api: ProjectApi): World {
             break;
           case "agent":
             setAgents((prev) => upsert(prev, msg.agent));
+            break;
+          case "goal_merge":
+            setMerges((prev) => mergeById(prev, [msg.merge]));
             break;
           case "agent_removed":
             setAgents((prev) => prev.filter((a) => a.id !== msg.id));
@@ -247,5 +264,5 @@ export function useWorld(api: ProjectApi): World {
     };
   }, [api]);
 
-  return { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, connection };
+  return { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, merges, connection };
 }

@@ -408,3 +408,29 @@ button.approval-link { align-self: flex-start; padding: 0.1rem 0.5rem; font-size
 .inbox-earlier > summary { cursor: pointer; font-size: 0.8rem; }
 .inbox-briefings { border-top: 1px solid #333; margin-top: 0.8rem; padding-top: 0.4rem; }
 .inbox-group > h3 .badge { margin-left: 0.4rem; }
+
+/* Phase 17: goal picker, archive, merge and push confirmations, grants. */
+.goal-toolbar { padding: 0.5rem 0.75rem 0; gap: 0.5rem; flex-wrap: wrap; }
+.goal-toolbar select { max-width: min(28rem, 100%); }
+.merge-panel { display: flex; flex-direction: column; gap: 0.35rem; }
+.merge-confirm, .close-confirm { border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem; background: var(--bg); display: flex; flex-direction: column; gap: 0.4rem; }
+.merge-panel > button, .merge-confirm .row button, .goal-cleanup button { align-self: flex-start; width: auto; }
+.merge-confirm dl { display: flex; flex-direction: column; gap: 0.1rem; margin: 0; }
+.merge-confirm dt { color: var(--muted); font-size: 0.8rem; }
+.merge-confirm dd { margin: 0 0 0.25rem; overflow-wrap: anywhere; white-space: normal; }
+.merge-confirm dd .mono, .merge-confirm dd.mono { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; overflow: visible; }
+.merge-confirm textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; }
+.archive { list-style: none; margin: 0; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; overflow: auto; }
+.archive-goal { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 0.2rem; }
+.goal-record { padding: 0.75rem; overflow: auto; display: flex; flex-direction: column; gap: 0.5rem; max-width: 60rem; }
+.goal-record h2 { margin: 0.25rem 0; }
+.goal-record h3 { font-size: 0.95rem; margin: 0.5rem 0 0.25rem; }
+.goal-record pre.quote { margin: 0.25rem 0; }
+.record-agents { border-collapse: collapse; width: 100%; }
+.record-agents th, .record-agents td { text-align: left; padding: 0.2rem 0.4rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+.background-events summary { cursor: pointer; }
+.grant-list { list-style: none; margin: 0.25rem 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.grant-list li { flex-wrap: wrap; gap: 0.4rem; }
+@media (max-width: 700px) {
+  .record-agents th:nth-child(3), .record-agents td:nth-child(3) { display: none; }
+}

@@ -153,7 +153,7 @@ export function App({
   // The project's routes, plus the daemon's (health, devices, projects) under one name.
   const papi = useMemo(() => projectApi(project.id), [project.id]);
   const api = useMemo(() => ({ ...daemonApi, ...papi }), [papi]);
-  const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, connection } =
+  const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, merges, connection } =
     useWorld(papi);
   const [roles, setRoles] = useState<RoleInfo[]>([]);
   const [panel, setPanel] = useState<Panel>();
@@ -577,6 +577,7 @@ export function App({
                 onSendToWorker={(pr, r) => void run(() => api.sendToWorker(pr.id, r.id))}
                 onAcceptFlagged={(pr) => void run(() => api.acceptFlagged(pr.id, pr.flagged.map((f) => f.commit)))}
                 roles={roles} specs={specs} qaRuns={qaRuns} inbox={inbox} architectRunning={architectRunning}
+                merges={merges} projectId={project.id} key={project.id}
                 onStartRole={(t, role) => void startAgent(t.id, role)}
                 onSaveSpec={(s, plan) => ok(() => api.editSpec(s.id, plan))}
                 onApproveSpec={(s) => void run(() => approveSpec(s))}

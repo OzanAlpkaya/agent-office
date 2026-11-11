@@ -385,6 +385,80 @@ export interface QARun {
   updated_at: string;
 }
 
+// GoalMerge is the user's squash merge of a goal into the target branch, and
+// its push (ADR 0055). message is the confirmed commit message.
+export interface GoalMerge {
+  id: number;
+  goal_id: string;
+  qa_run_id?: number;
+  target: string;
+  source_head: string;
+  target_before: string;
+  commit: string;
+  message: string;
+  created_at: string;
+  pushed_at?: string;
+  push_remote?: string;
+}
+
+export function isGoalMerge(v: unknown): v is GoalMerge {
+  return isObj(v) && typeof v.id === "number" && typeof v.goal_id === "string" && typeof v.target === "string" &&
+    typeof v.commit === "string" && typeof v.message === "string" && typeof v.created_at === "string";
+}
+
+// MergePreview is what the Merge confirmation shows; ready false comes with
+// the reason the merge would be refused.
+export interface MergePreview {
+  goal_id: string;
+  qa_run_id?: number;
+  branch: string;
+  source_head: string;
+  target: string;
+  target_head: string;
+  message: string; // the Tech Lead's (agent-written): render as text
+  files: number;
+  untested: number; // target commits QA did not test with
+  checked_out: boolean;
+  ready: boolean;
+  reason?: string;
+  merged?: GoalMerge;
+  remote: string;
+  remote_url?: string;
+}
+
+// GoalAgent is an agent that worked on a goal, removed ones included (ADR 0054).
+export interface GoalAgent {
+  id: string;
+  name?: string;
+  role: string;
+  kind: string;
+  cli: string;
+  model?: string;
+  task_id?: string;
+  branch: string;
+  state: string;
+  exit_reason?: string;
+  exit_detail?: string;
+  started_at: string;
+  exited_at?: string;
+  removed: boolean;
+}
+
+// GoalRecord is what the archive shows of a goal. Report text is the Tech Lead's.
+export interface GoalRecord {
+  goal: Task;
+  sub_tasks: Task[];
+  agents: GoalAgent[];
+  qa_runs: QARun[];
+  report?: { agent_id?: string; summary: string; commit_message?: string; created_at: string };
+  merges: GoalMerge[];
+}
+
+export interface GoalCleanup {
+  removed: { agent_id: string; name?: string; branch?: string }[];
+  kept: { agent_id: string; name?: string; reason?: string }[];
+}
+
 // MemoryEntry is a project memory entry (ADR 0034); a proposal's text is the assistant's.
 export interface MemoryEntry {
   id: number;
@@ -591,7 +665,8 @@ export type EventMessage =
   | { type: "message"; message: Message }
   | { type: "access_request"; request: AccessRequest }
   | { type: "pull_request"; pullRequest: PullRequest }
-  | { type: "usage"; usage: SessionUsage };
+  | { type: "usage"; usage: SessionUsage }
+  | { type: "goal_merge"; merge: GoalMerge };
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null;
@@ -776,6 +851,8 @@ export function parseEventMessage(raw: string): EventMessage | undefined {
       return isMessage(m.message) ? { type: "message", message: m.message } : undefined;
     case "access_request":
       return isAccessRequest(m.access_request) ? { type: "access_request", request: m.access_request } : undefined;
+    case "goal_merge":
+      return isGoalMerge(m.goal_merge) ? { type: "goal_merge", merge: m.goal_merge } : undefined;
     case "pull_request":
       return isPullRequest(m.pull_request) ? { type: "pull_request", pullRequest: m.pull_request } : undefined;
     case "usage":
@@ -884,6 +961,16 @@ export function projectApi(projectId: string) {
       return Array.isArray(gs) ? gs.filter(isAccessGrant) : [];
     },
     revokeGrant: (id: number): Promise<AccessGrant> => request("DELETE", `${base}/access-grants/${id}`),
+    goalRecord: (goalId: string): Promise<GoalRecord> => request("GET", `${base}/tasks/${goalId}/record`),
+    removeGoalAgents: (goalId: string): Promise<GoalCleanup> => request("POST", `${base}/tasks/${goalId}/remove-agents`),
+    mergePreview: (goalId: string): Promise<MergePreview> => request("GET", `${base}/tasks/${goalId}/merge`),
+    mergeGoal: (goalId: string, confirm: { target_head: string; source_head: string; message: string }): Promise<GoalMerge> =>
+      request("POST", `${base}/tasks/${goalId}/merge`, confirm),
+    pushGoal: (goalId: string): Promise<GoalMerge> => request("POST", `${base}/tasks/${goalId}/push`),
+    goalMerges: async (): Promise<GoalMerge[]> => {
+      const ms: unknown = await request("GET", `${base}/goal-merges`);
+      return Array.isArray(ms) ? ms.filter(isGoalMerge) : [];
+    },
     createTask: (title: string, description: string): Promise<Task> =>
       request("POST", `${base}/tasks`, { title, description }),
     updateTask: (id: string, patch: Partial<Pick<Task, "title" | "description" | "status">>): Promise<Task> =>

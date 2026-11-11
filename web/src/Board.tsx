@@ -1,9 +1,13 @@
 import { type FormEvent, type JSX, useState } from "react";
 import {
-  type Agent, type InboxItem, type Plan, type PullRequest, type QARun, type Review, type RoleInfo, type Spec, type Task,
+  type Agent, type GoalMerge, type InboxItem, type Plan, type PullRequest, type QARun, type Review, type RoleInfo, type Spec, type Task,
   type TaskStatus, taskStatuses,
 } from "./api";
 import { AgentName } from "./AgentName";
+import { Archive, GoalToolbar, MergePanel, PushPanel } from "./Goals";
+import {
+  type GoalPick, boardTasks, busyOf, closeWarning, latestMerge, mergeOffered, pushOffered, validPick,
+} from "./goals";
 import { InboxEntry, PlanPanel, QAPanel, TaskPlanInfo } from "./Team";
 import { type GoalBusy, currentSpec, goalBusy, inboxFor, latestQA, waitsFor, workerRoles } from "./workflow";
 import { type UsageRow, formatMoney, formatTokens, totalTokens } from "./usage";
@@ -47,21 +51,58 @@ interface Props {
   onResolve?: (task: Task) => void;
   onReadInbox?: (i: InboxItem) => void;
   onReplyInbox?: (i: InboxItem, body: string) => Promise<boolean>;
+  // Phase 17 (ADR 0054, 0055).
+  merges?: GoalMerge[];
+  projectId?: string; // the goal picker is remembered per project in this browser
+}
+
+// The goal picker's choice, per browser and project: a convenience, so
+// storage that is missing or blocked only means "all active goals".
+const pickKey = (projectId: string): string => `agent-office.goal.${projectId}`;
+function loadPick(projectId?: string): GoalPick {
+  if (!projectId) return "all";
+  try {
+    return window.localStorage.getItem(pickKey(projectId)) ?? "all";
+  } catch {
+    return "all";
+  }
+}
+function savePick(projectId: string | undefined, pick: GoalPick): void {
+  if (!projectId) return;
+  try {
+    window.localStorage.setItem(pickKey(projectId), pick);
+  } catch {
+    // not remembered; the board still works
+  }
 }
 
 export function Board(p: Props): JSX.Element {
+  const [picked, setPicked] = useState<GoalPick>(() => loadPick(p.projectId));
+  const [archive, setArchive] = useState(false);
+  const pick = validPick(p.tasks, picked);
+  const shown = boardTasks(p.tasks, pick);
+  const onPick = (v: GoalPick): void => {
+    setPicked(v);
+    savePick(p.projectId, v);
+  };
   return (
+    <>
+      <GoalToolbar tasks={p.tasks} pick={pick} onPick={onPick} archive={archive} onArchive={setArchive} />
+      {archive ? (
+        <Archive tasks={p.tasks} qaRuns={p.qaRuns ?? []} merges={p.merges ?? []} usageByGoal={p.usageByGoal}
+          onOpenAgent={p.onOpenAgent} onReopen={(g) => p.onStatus(g, "review")} />
+      ) : (
     <div className="board">
       {taskStatuses.map((status) => (
         <section key={status} className="column">
           <h2>
-            {columnTitle[status]} <span className="muted">{p.tasks.filter((t) => t.status === status).length}</span>
+            {columnTitle[status]} <span className="muted">{shown.filter((t) => t.status === status).length}</span>
           </h2>
           {status === "todo" && <NewTask onCreate={p.onCreate} />}
-          {p.tasks
+          {shown
             .filter((t) => t.status === status)
             .map((t) => (
-              <TaskCard {...p} key={t.id} task={t} agents={p.agents.filter((a) => a.task_id === t.id)}
+              <TaskCard {...p} key={t.id} task={t} agents={p.agents.filter((a) => a.task_id === t.id)} allAgents={p.agents}
                 busy={goalBusy(t, p.agents, p.tasks)}
                 goal={p.tasks.find((g) => g.id === t.parent_task_id)}
                 prs={p.pullRequests.filter((pr) => pr.task_id === t.id)} />
@@ -69,6 +110,8 @@ export function Board(p: Props): JSX.Element {
         </section>
       ))}
     </div>
+      )}
+    </>
   );
 }
 
@@ -120,7 +163,8 @@ function NewTask({ onCreate }: Pick<Props, "onCreate">): JSX.Element {
 interface CardProps extends Props {
   busy?: GoalBusy; // another goal's Tech Lead or architect runs: why this goal's buttons are off
   task: Task;
-  agents: Agent[];
+  agents: Agent[]; // the card's own task's agents
+  allAgents: Agent[]; // every agent of the project (a goal counts its sub-tasks' too)
   goal?: Task;
   prs: PullRequest[];
 }
@@ -138,6 +182,19 @@ function TaskCard(p: CardProps): JSX.Element {
   const waiting = waitsFor(task, p.tasks);
   // Unanswered or unread messages to you about this task (ADR 0030).
   const notes = inboxFor(p.inbox ?? [], task).filter((i) => !i.read_at || (!i.answered_at && i.kind === "question")).slice(0, 3);
+  // Phase 17: closing a goal asks first when its agents still run; a reported
+  // goal whose QA passed offers Merge, then Push.
+  const [closing, setClosing] = useState(false);
+  const merges = p.merges ?? [];
+  const goalBusy = isGoal ? busyOf(task, p.allAgents, p.tasks) : 0;
+  const setStatus = (status: TaskStatus): void => {
+    if (isGoal && status === "done" && task.status !== "done" && goalBusy > 0) {
+      setClosing(true);
+      return;
+    }
+    onStatus(task, status);
+  };
+  const merged = isGoal ? latestMerge(merges, task.id) : undefined;
   return (
     <article className="task" id={`task-${task.id}`} tabIndex={-1}>
       {(goal || task.created_by) && (
@@ -172,8 +229,19 @@ function TaskCard(p: CardProps): JSX.Element {
       )}
       <TaskUsage own={p.usageByTask?.get(task.id)} team={isGoal ? p.usageByGoal?.get(task.id) : undefined} />
       {prs.map((pr) => <PRPanel key={pr.id} pr={pr} {...p} />)}
+      {isGoal && mergeOffered(task, p.qaRuns ?? [], merges) && <MergePanel goal={task} />}
+      {isGoal && merged && (pushOffered(merges, task.id) || merged.pushed_at) && <PushPanel goal={task} merge={merged} />}
+      {closing && (
+        <div className="close-confirm small" role="dialog" aria-label="Mark the goal done">
+          <p className="hint">{closeWarning(goalBusy)}</p>
+          <div className="row">
+            <button className="danger" onClick={() => { setClosing(false); onStatus(task, "done"); }}>Mark done and stop them</button>
+            <button onClick={() => setClosing(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
       <div className="row">
-        <select value={task.status} onChange={(e) => onStatus(task, e.target.value as TaskStatus)}>
+        <select value={task.status} onChange={(e) => setStatus(e.target.value as TaskStatus)}>
           {taskStatuses.map((s) => <option key={s} value={s}>{columnTitle[s]}</option>)}
         </select>
         {roles.length > 1 && (
