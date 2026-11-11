@@ -1,6 +1,6 @@
 # Phase 18 plan: UI and office polish
 
-- **Status:** In progress. Written 2026-11-12 with the recommended option for every choice, as Ozan asked
+- **Status:** Done; waiting for Ozan's review. Written 2026-11-12 with the recommended option for every choice, as Ozan asked
   ("run it like the earlier phases ... with the recommended options, no check-ins, one summary at the end").
 - **Roadmap:** [docs/plan.md](../plan.md), Phase 18. Progress: [PROGRESS.md](../../PROGRESS.md).
 - **Source:** Ozan's use of agent-office after Phase 17.
@@ -94,4 +94,39 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
 
 ## Changes during the phase
 
-(Appended as the phase goes.)
+- **Agent details moved off the list.** Decision 5 put an agent's details and actions in its row,
+  expanded when open. They went into a header above the agent's terminal instead (on every width):
+  the rail stays a list of one-line rows, and the phone's terminal view gets the same header with a
+  back button. The rows say "needs you" when the agent waits on the user.
+- **The open-terminal tabs** show above a terminal only, as planned; on a phone there are none (the
+  header names the open agent).
+- **Archive** stayed a segmented mode of the board on every width (decision 6); there is no rail entry.
+- **Layout parsing stops at room problems.** A room that is missing or misplaced made every door and
+  reachability check fail too; problems with rooms are reported first, doors and reachability once
+  the rooms are right.
+- **Presets:** classic has 12 desks (six columns fit its 26 tiles), open plan 20; the plan said 8 and 16.
+- **The user's character is drawn still** (ADR 0058): the user is present whenever the office is
+  looked at, and Phase 7's rule that an office where nothing moves draws nothing (render on demand,
+  tested) would otherwise never hold. Its desk is a desk node like an agent's, so the empty desk has
+  its screen off.
+- **Deskless agents and "waited longest":** the order beyond the desks is the order they got their
+  place in the assignment, which is arrival order; a freed desk goes to the lowest.
+- **Branch clean-up of a goal** lists the branches of every agent of the goal (workers, QA, lead,
+  architect, reviewers) that still exist; a goal's lead branch with no commits is usually already gone
+  (removal deletes empty branches, ADR 0010).
+- **Found by the browser tests:** the shared `button:active` transform overrode the nameplates'
+  centring transform, so a tap moved the plate from under the finger and nothing opened; dropped. The
+  connection dot was a `status` region and clashed with the terminal's notices; it is an image now.
+  Phone touch targets are 44 px (the plan's token), not 40.
+- **Independent reviews.** A security review found an integer overflow in the layout's bounds check
+  (huge coordinates wrapped past it; values are now checked one by one), a race that could leave a
+  page present after it disconnected (the reader now ends before the page is dropped) and branches
+  hidden by a tag of the same name (`for-each-ref` reads full refs); fixed. Recorded, not changed: an
+  agent started on a branch between a clean-up's preview and its delete is not detected (agent branches
+  carry the agent's id, so a new agent never reuses one; a resume re-imports its own); a paired device
+  can toggle presence quickly (paired devices are trusted). A code review found the queue at the user's
+  door built in the wrong direction for doors between stacked rooms (the doorway's shape was used, not
+  the rooms'; a test now checks that the queue starts at the door, and failed for two presets),
+  presence updates that could publish out of order (now under the pages' lock), the same presence race,
+  and a full scene rebuild on every project update with a custom layout (plans are compared, not
+  objects); fixed.
