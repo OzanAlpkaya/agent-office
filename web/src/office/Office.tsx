@@ -248,7 +248,7 @@ export default function Office({
         {xf && userHere && (() => {
           const u = planOf(xf.grid).userDesk;
           return (
-            <div className="nameplate user-plate" data-testid="user-plate" title={presenceText(presence)}
+            <div className="user-plate" data-testid="user-plate" title={presenceText(presence)}
               style={{ left: xf.x + (u.x + inCell.nameplate.x) * xf.scale, top: xf.y + (u.y + inCell.nameplate.y) * xf.scale }}>
               <span className="dot" style={{ color: "var(--accent)" }} />
               <span className="nameplate-text"><span className="nameplate-name">You</span></span>

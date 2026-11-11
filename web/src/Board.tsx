@@ -106,7 +106,7 @@ export function Board(p: BoardProps): JSX.Element {
   return (
     <div className="board-view">
       <div className="board-toolbar">
-        <div className="segmented" role="group" aria-label="Goals">
+        <div className="segmented" role="group" aria-label="Board view">
           <button aria-pressed={!archive} onClick={() => setArchive(false)}>Active</button>
           <button aria-pressed={archive} onClick={() => setArchive(true)}
             title="Done goals with their sub-tasks, agents, cost and QA result">Archive ({done})</button>

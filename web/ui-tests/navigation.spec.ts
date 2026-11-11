@@ -22,12 +22,18 @@ const switcher = (page: Page) => page.getByRole("dialog", { name: "Find an agent
 
 test("agents have names, with the id as secondary text", async ({ page }) => {
   const errors = await open(page, new MockDaemon(team(10)));
-  const card = page.locator('.card[data-agent="b2c3d4000001"]');
-  await expect(card.locator(".agent-first")).toHaveText("Emma");
-  await expect(card.locator(".agent-id")).toHaveText("b2c3d4");
-  await expect(card.locator(".agent-name")).toHaveAttribute("title", "worker · Emma · b2c3d4000001");
-  // the board's task cards name their agents too
-  await expect(page.locator('.task-agents [data-agent="a1ead0000001"]')).toHaveText("tech-lead Kofi");
+  const row = page.locator('.agent-row[data-agent="b2c3d4000001"]');
+  await expect(row.locator(".agent-first")).toHaveText("Emma");
+  await expect(row).toContainText("Tag model and migration");
+  // the board's cards name the agent working on them: a goal its Tech Lead, and how many more
+  await expect(page.locator('#task-g00000000001 .task-agent[data-agent="a1ead0000001"]')).toHaveText("Kofi+7");
+  await expect(page.locator('#task-t00000000001 .task-agent[data-agent="b2c3d4000001"]')).toHaveText("Emma");
+  // above its terminal, the agent's name with its id as secondary text
+  await row.getByRole("button").click();
+  const header = page.locator('.agent-header[data-agent="b2c3d4000001"]');
+  await expect(header.locator(".agent-first")).toHaveText("Emma");
+  await expect(header.locator(".agent-id")).toHaveText("b2c3d4");
+  await expect(header.locator(".agent-name")).toHaveAttribute("title", "worker · Emma · b2c3d4000001");
   expect(errors).toEqual([]);
 });
 
@@ -111,11 +117,16 @@ test("tabs hold the agents you opened: at most six, closable, movable, kept on r
   await page.getByRole("tab", { name: /^Lena/ }).dragTo(page.getByRole("tab", { name: /^Yuki/ }));
   await expect(tabs(page).locator(".agent-tab-name")).toHaveText(["Lena", "Yuki", "Kofi", "Priya"]);
 
+  // The strip shows above a terminal only: the board has none.
+  await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Board" }).click();
+  await expect(tabs(page)).toHaveCount(0);
+
   // The tabs survive a reload; a removed agent's tab closes.
   // The board shows before the daemon's snapshot; tabs appear once it names
   // their agents, so the check waits for them (a one-shot read here was flaky).
   await page.reload();
   await expect(page.locator(".board")).toBeVisible();
+  await page.locator('.agent-row[data-agent="f6a7b8000005"] button').click(); // Lena, already a tab
   await expect(tabs(page).locator(".agent-tab-name")).toHaveText(["Lena", "Yuki", "Kofi", "Priya"]);
   daemon.removeAgent("e5f6a7000004"); // Priya
   await expect(tabs(page)).toHaveCount(3);
@@ -130,18 +141,20 @@ test("an approval request arriving moves nothing; the drawer decides it", async 
   await expect(badge).toHaveAccessibleName("Approvals: 2 waiting");
   await expect(page).toHaveTitle("(2) agent-office");
   const before = await page.locator(".board").boundingBox();
-  const header = await page.locator("header").boundingBox();
+  const header = await page.locator("header.topbar").boundingBox();
 
   daemon.accessRequest({ id: 2, agent_id: "c3d4e5000002", kind: "domain", value: "registry.npmjs.org",
     reason: "install the markdown linter", status: "pending", created_at: new Date().toISOString() });
   await expect(badge).toHaveAccessibleName("Approvals: 3 waiting");
   await expect(page).toHaveTitle("(3) agent-office");
   expect(await page.locator(".board").boundingBox()).toEqual(before);
-  expect(await page.locator("header").boundingBox()).toEqual(header);
+  expect(await page.locator("header.topbar").boundingBox()).toEqual(header);
+  // The waiting agent's row says so, and its card on the board.
+  await expect(page.locator('.agent-row[data-agent="c3d4e5000002"]')).toContainText("needs you");
+  await expect(page.locator("#task-t00000000002 [data-testid=card-status]")).toHaveText("Needs you");
   await page.screenshot({ path: `${screens}/approvals-badge.png` });
 
-  // The waiting agent's card links to the drawer.
-  await page.locator('.card[data-agent="c3d4e5000002"]').getByRole("button", { name: "1 request waits for your approval" }).click();
+  await badge.click();
   const drawer = page.getByRole("dialog", { name: "Approvals" });
   await expect(drawer.locator(".waiting-entry")).toHaveCount(3);
   await expect(drawer).toContainText("Yuki");
@@ -157,6 +170,11 @@ test("an approval request arriving moves nothing; the drawer decides it", async 
   await page.keyboard.press("Escape");
   await expect(drawer).toHaveCount(0);
   await expect(badge).toHaveAccessibleName("Approvals: 2 waiting");
+
+  // Above a waiting agent's terminal, a link to the drawer.
+  await page.locator('.agent-row[data-agent="b8c9d0000007"] button').click(); // Amara
+  await page.locator(".agent-header").getByRole("button", { name: "1 request waits for your approval" }).click();
+  await expect(drawer.locator('.waiting-entry[data-agent="b8c9d0000007"]')).toBeVisible();
   expect(errors).toEqual([]);
 });
 
@@ -222,7 +240,7 @@ const { defaultBrowserType: _, ...pixel } = devices["Pixel 7"] as BrowserContext
 test.describe("on a phone", () => {
   test.use(pixel);
 
-  test("the switcher is a full-screen sheet and the strip shows the open agent only", async ({ page }) => {
+  test("the switcher is a full-screen sheet; an agent opens full width with its header", async ({ page }) => {
     const daemon = new MockDaemon(team(20));
     const errors = await open(page, daemon);
     await page.getByRole("button", { name: /^Find an agent/ }).click();
@@ -237,11 +255,15 @@ test.describe("on a phone", () => {
     await page.getByRole("button", { name: /^Find an agent/ }).click();
     await switcher(page).getByRole("searchbox").fill("emma");
     await switcher(page).getByRole("option", { name: /Emma/ }).click();
-    await expect(tabs(page)).toHaveCount(1);
-    await expect(tabs(page).first()).toContainText("Emma");
+    // No strip of tabs on a phone: the header names the open agent, and leads back.
+    await expect(tabs(page)).toHaveCount(0);
+    await expect(page.locator(".agent-header .agent-first")).toHaveText("Emma");
+    await expect(page.locator(".xterm")).toContainText("mock terminal of b2c3d4000001");
     const [sw, w] = await page.evaluate(() => [document.documentElement.scrollWidth, innerWidth]);
     expect(sw).toBeLessThanOrEqual(w);
     await page.screenshot({ path: `${screens}/phone-terminal-tab.png` });
+    await page.getByRole("button", { name: "Back to the agents" }).click();
+    await expect(page.locator(".agents-pane")).toBeVisible();
 
     // Approvals open as a bottom sheet over the page.
     await page.getByRole("button", { name: "Approvals: 2 waiting" }).click();

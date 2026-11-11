@@ -396,7 +396,9 @@ export class OfficeScene {
     while (this.nodes.length > want) this.nodes.pop()?.root.destroy({ children: true });
     for (const n of this.nodes) n.place(grid);
     if (!this.userNode) {
-      this.userNode = new DeskNode(this, this.textures, { kind: "user" }, this.opts.reducedMotion, false);
+      // Drawn still: the user is there whenever the office is looked at, and
+      // an office where no agent moves must not redraw (ADR 0024).
+      this.userNode = new DeskNode(this, this.textures, { kind: "user" }, true, false);
       this.sorted.addChild(this.userNode.root);
       this.userNode.setSeat(this.userPresent ? userSeat : undefined);
     }

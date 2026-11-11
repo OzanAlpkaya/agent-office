@@ -1,7 +1,7 @@
 // Remote access (ADR 0038-0040) against a mocked daemon: pairing, devices, the
 // phone layout, the terminal key bar, copy and paste, and the PWA.
 import { type BrowserContext, type BrowserContextOptions, type Page, devices, expect, test } from "@playwright/test";
-import { MockDaemon, mockCode, team } from "./daemon";
+import { MockDaemon, agentRow, settingsTab, mockCode, team } from "./daemon";
 
 const screens = "test-results/screens";
 const worker = "b2c3d4000001"; // a working agent of team(4) with a live terminal
@@ -54,7 +54,7 @@ test("the link agent-office pair prints fills in the code and leaves no trace in
 test("sign out all other devices", async ({ page }) => {
   const daemon = new MockDaemon(team(4));
   await open(page, daemon);
-  await page.getByRole("button", { name: "Devices" }).click();
+  await settingsTab(page, "Devices");
   const panel = page.getByRole("region", { name: "Devices" });
   await expect(panel.locator(".device")).toHaveCount(2);
   await panel.getByRole("button", { name: "Sign out all other devices" }).click();
@@ -80,7 +80,7 @@ test("a browser signed out from another device returns to the pairing screen", a
 test("the Devices panel pairs a device and signs devices out", async ({ page }) => {
   const daemon = new MockDaemon(team(4));
   const errors = await open(page, daemon);
-  await page.getByRole("button", { name: "Devices" }).click();
+  await settingsTab(page, "Devices");
   const panel = page.getByRole("region", { name: "Devices" });
   await expect(panel.locator(".device")).toHaveCount(2);
   await expect(panel.locator(".device").first()).toContainText("this device");
@@ -146,13 +146,13 @@ for (const [name, device] of phones) {
       const [inner, outer] = await board.evaluate((el) => [el.scrollWidth, el.clientWidth]);
       expect(inner).toBeGreaterThan(outer);
 
-      // The agent list is a tab.
-      await expect(page.locator("aside")).toHaveCount(0);
+      // The agent list is a tab of the bottom bar; the rail is not there.
+      await expect(page.locator(".rail")).toHaveCount(0);
       await page.getByRole("button", { name: /^Agents · \d+$/ }).click();
-      await expect(page.locator("aside.agents-pane")).toBeVisible();
+      await expect(page.locator(".agents-pane")).toBeVisible();
       await noHorizontalScroll(page);
       await page.screenshot({ path: `${screens}/phone-${slug}-agents.png` });
-      await page.locator("aside .card", { hasText: worker }).click();
+      await agentRow(page, worker).getByRole("button").click();
 
       // The terminal, with the keys a phone keyboard lacks.
       await expect(page.locator(".xterm")).toContainText(`mock terminal of ${worker}`);
@@ -173,12 +173,12 @@ for (const [name, device] of phones) {
   });
 }
 
-test("the desktop layout keeps the sidebar and hides the key bar", async ({ page }) => {
+test("the desktop layout keeps the rail and hides the key bar", async ({ page }) => {
   const daemon = new MockDaemon(team(4));
   await open(page, daemon);
-  await expect(page.locator("aside")).toBeVisible();
+  await expect(page.locator(".rail")).toBeVisible();
   await expect(page.getByRole("button", { name: /^Agents · / })).toHaveCount(0);
-  await page.locator("aside .card", { hasText: worker }).click();
+  await agentRow(page, worker).getByRole("button").click();
   await expect(page.locator(".xterm")).toContainText(`mock terminal of ${worker}`);
   await expect(page.getByRole("toolbar", { name: "Terminal keys" })).toBeHidden();
 });
@@ -186,7 +186,7 @@ test("the desktop layout keeps the sidebar and hides the key bar", async ({ page
 test("the terminal in use sets the size", async ({ page }) => {
   const daemon = new MockDaemon(team(4));
   await open(page, daemon);
-  await page.locator("aside .card", { hasText: worker }).click();
+  await agentRow(page, worker).getByRole("button").click();
   await expect(page.locator(".xterm")).toContainText(`mock terminal of ${worker}`);
   const resizes = (): number => daemon.terminalInput.filter((m) => m.includes('"resize"')).length;
   await expect.poll(resizes).toBeGreaterThan(0);
@@ -210,7 +210,7 @@ async function clipboardPage(page: Page, context: BrowserContext, setup?: (d: Mo
   const daemon = new MockDaemon(team(4));
   setup?.(daemon);
   await open(page, daemon);
-  await page.locator("aside .card", { hasText: worker }).click();
+  await agentRow(page, worker).getByRole("button").click();
   await expect(page.locator(".xterm")).toContainText(`mock terminal of ${worker}`);
   return {
     daemon,
@@ -319,7 +319,7 @@ test("Paste on the phone key bar pastes the clipboard", async ({ browser }) => {
   const daemon = new MockDaemon(team(4));
   await open(page, daemon);
   await page.getByRole("button", { name: /^Agents · / }).click();
-  await page.locator("aside .card", { hasText: worker }).click();
+  await agentRow(page, worker).getByRole("button").click();
   await expect(page.locator(".xterm")).toContainText(`mock terminal of ${worker}`);
   await page.evaluate(() => navigator.clipboard.writeText("hello-from-the-clipboard"));
   await page.getByRole("toolbar", { name: "Terminal keys" }).getByRole("button", { name: "Paste" }).click();

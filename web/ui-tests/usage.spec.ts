@@ -1,6 +1,6 @@
 // The Usage tab, usage on cards and the resume note, against a mocked daemon (ADR 0025, 0026).
 import { type Page, expect, test } from "@playwright/test";
-import { MockDaemon, session, team, teamUsage } from "./daemon";
+import { MockDaemon, session, team, teamUsage, nav, openAgent, openCard } from "./daemon";
 
 const screens = "test-results/screens";
 
@@ -57,9 +57,14 @@ test("the Usage tab totals and groups sessions, money as integers", async ({ pag
 test("agent and task cards show their usage", async ({ page }) => {
   const daemon = new MockDaemon(teamUsage(team(10)));
   const errors = await open(page, daemon);
-  const card = page.locator(".card", { hasText: "b2c3d4000001" });
-  await expect(card.locator(".usage-line")).toHaveText("15.0k tokens · $1.23");
-  const goal = page.locator(".task").filter({ has: page.locator(".task-title", { hasText: /^Add tags to saved links$/ }) });
+  // the rail shows each agent's cost, the header above its terminal its tokens too
+  await expect(page.locator('.agent-row[data-agent="b2c3d4000001"] .agent-row-cost')).toHaveText("$1.23");
+  const header = await openAgent(page, "b2c3d4000001");
+  await expect(header.locator(".usage-line")).toHaveText("15.0k tokens · $1.23");
+  // a goal's card shows its team's cost; its modal the tokens, its own and its team's
+  await nav(page, "Board");
+  await expect(page.locator("#task-g00000000001 .task-cost")).toHaveText("$1.32");
+  const goal = await openCard(page, "g00000000001");
   await expect(goal.locator(".usage-line")).toContainText("32.0k tokens · $0.0125");
   await expect(goal.locator(".usage-line")).toContainText("team 48.2k tokens · $1.32");
   await page.screenshot({ path: `${screens}/usage-cards.png` });

@@ -871,7 +871,7 @@ function ProjectSwitcher({ project, projects, elsewhere, connection, onSelect }:
   };
   return (
     <span className="project-switcher">
-      <span className={`conn conn-${connection}`} role="status" aria-label={connection === "open" ? "connected" : connection}
+      <span className={`conn conn-${connection}`} role="img" aria-label={connection === "open" ? "connected" : connection}
         title={connection === "open" ? "Connected to the daemon" : `Daemon connection: ${connection}`}>
         <span className="dot" />
       </span>

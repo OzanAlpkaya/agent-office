@@ -116,7 +116,6 @@ button {
   cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 button:hover:not(:disabled) { background: var(--surface-3); border-color: #3a4256; }
-button:active:not(:disabled) { transform: translateY(0.5px); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: var(--weight-strong); }
 button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
@@ -258,8 +257,8 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 0 5px; border: 1p
 
 /* --------------------------------------------- phone: touch-sized controls */
 @media (pointer: coarse), (max-width: 760px) {
-  button, input, select { min-height: 40px; }
-  button.sm { min-height: 34px; }
+  button, input, select { min-height: var(--touch); }
+  button.sm { min-height: 36px; }
   button.link, .segmented button, .tab-list button { min-height: 36px; }
   .modal { inset: 0; top: 0; left: 0; transform: none; width: 100%; max-height: none; height: 100%; border-radius: 0; border: none; animation: rise-in 0.16s ease-out; }
   .modal-foot { border-radius: 0; padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom)); }

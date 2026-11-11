@@ -44,11 +44,17 @@ test("desktop tour", async ({ page }) => {
   await expect(page.getByRole("tabpanel", { name: "Project" })).toBeVisible();
   await page.waitForTimeout(500);
   await shot(page, "settings");
+  const layout = page.getByTestId("layout-settings");
+  await layout.getByRole("button", { name: "Own layout" }).click();
+  await layout.getByRole("button", { name: "Open plan" }).click();
+  await expect(layout.getByTestId("layout-summary")).toBeVisible();
+  await layout.scrollIntoViewIfNeeded();
+  await shot(page, "settings-layout");
 
   await nav(page, "Board").click();
   await page.getByRole("button", { name: /^Archive/ }).click();
   await page.getByRole("button", { name: /Sprint 3: full-text search/ }).click();
-  await expect(page.getByTestId("goal-record")).toBeVisible();
+  await expect(page.getByTestId("goal-record").getByText("Tech Lead's report")).toBeVisible();
   await shot(page, "archive");
 
   await nav(page, "Office").click();
