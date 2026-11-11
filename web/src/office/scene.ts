@@ -381,7 +381,8 @@ export class OfficeScene {
   }
 
   private setGrid(grid: Grid): void {
-    const sameColumns = grid.columns === this.grid.columns && grid.layout === this.grid.layout && this.nodes.length > 0;
+    const sameColumns = grid.columns === this.grid.columns && planOf(grid).custom === this.plan.custom &&
+      (!grid.layout || planOf(grid) === this.plan) && this.nodes.length > 0;
     this.grid = grid;
     this.plan = planOf(grid);
     // A custom layout has its own number of desks; the default plan a full grid.

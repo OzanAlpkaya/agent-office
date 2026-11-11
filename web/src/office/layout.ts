@@ -114,7 +114,9 @@ export function planOf(g: Grid): FloorPlan {
 }
 
 // sameGrid says whether two grids give the same plan.
-export const sameGrid = (a: Grid, b: Grid): boolean => a.columns === b.columns && a.rows === b.rows && a.layout === b.layout;
+// A layout parsed again (any project update) is the same plan: compared by plan, not object (code review).
+export const sameGrid = (a: Grid, b: Grid): boolean =>
+  a.columns === b.columns && a.rows === b.rows && (a.layout === b.layout || (!!a.layout && !!b.layout && planOf(a) === planOf(b)));
 
 export function worldSize(g: Grid): { w: number; h: number } {
   const p = planOf(g);

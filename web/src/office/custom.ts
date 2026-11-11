@@ -195,7 +195,10 @@ function build(l: OfficeLayout): FloorPlan {
   const next = userDoorPair ? (userDoorPair.a === "user" ? userDoorPair.b : userDoorPair.a) as RoomId : undefined;
   const nr = next ? F(next) : undefined;
   if (nr) {
-    const vertical = userDoor.w > userDoor.h;
+    // From the rooms, not the doorway's shape (code review): stacked rooms
+    // queue straight down or up from the door, side by side across.
+    const ur = byId.get("user"), nx = byId.get(next as RoomId);
+    const vertical = ur !== undefined && nx !== undefined && (ur.y + ur.h === nx.y || nx.y + nx.h === ur.y);
     const line: Point[] = [];
     if (vertical) {
       const qx = userDoor.x + doorwayW / 2;

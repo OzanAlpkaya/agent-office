@@ -35,6 +35,11 @@ describe.each(Object.keys(layouts))("preset %s", (name) => {
     for (const s of p.spots.coffee) expect(room(s)).toBe("kitchen");
     for (const s of p.spots.review) expect(room(s)).toBe("review");
     expect(p.spots.queue.length).toBeGreaterThanOrEqual(4);
+    // the queue starts just outside the user's door, in the next room
+    const door = { x: p.userDoor.x + p.userDoor.w / 2, y: p.userDoor.y + p.userDoor.h / 2 };
+    const q0 = p.spots.queue[0];
+    expect(Math.hypot(q0.x - door.x, q0.y - door.y), JSON.stringify({ q0, door })).toBeLessThanOrEqual(40);
+    expect(room(q0)).not.toBe("user");
   });
 
   it("has a station and furniture only for the rooms it has", () => {

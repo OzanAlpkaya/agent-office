@@ -32,22 +32,16 @@ func (h *Hub) SetPage(id, device string, visible bool) {
 		h.pages.byID = map[string]page{}
 	}
 	h.pages.byID[id] = page{device: device, visible: visible}
-	p, changed := h.pages.compute()
+	h.pages.publishLocked(h)
 	h.pages.mu.Unlock()
-	if changed {
-		h.publish(HubUpdate{Type: "presence", Presence: &p})
-	}
 }
 
 // DropPage forgets a page whose event stream ended.
 func (h *Hub) DropPage(id string) {
 	h.pages.mu.Lock()
 	delete(h.pages.byID, id)
-	p, changed := h.pages.compute()
+	h.pages.publishLocked(h)
 	h.pages.mu.Unlock()
-	if changed {
-		h.publish(HubUpdate{Type: "presence", Presence: &p})
-	}
 }
 
 // Presence returns the user's presence now.
@@ -55,6 +49,15 @@ func (h *Hub) Presence() Presence {
 	h.pages.mu.Lock()
 	defer h.pages.mu.Unlock()
 	return Presence{Devices: slices.Clone(h.pages.last)}
+}
+
+// publishLocked publishes the presence if it changed. It runs under mu, so
+// two changes at once reach subscribers in order (code review); publish
+// takes h.mu, which never waits for mu.
+func (ps *pages) publishLocked(h *Hub) {
+	if p, changed := ps.compute(); changed {
+		h.publish(HubUpdate{Type: "presence", Presence: &p})
+	}
 }
 
 // compute recomputes the visible devices; the caller holds mu.
