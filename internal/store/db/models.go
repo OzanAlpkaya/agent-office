@@ -58,6 +58,16 @@ type Agent struct {
 	AutoResumes         int64
 }
 
+type DeletedBranch struct {
+	ID        int64
+	ProjectID string
+	GoalID    sql.NullString
+	Name      string
+	Head      string
+	Class     string
+	DeletedAt time.Time
+}
+
 type Device struct {
 	ID         string
 	Name       string

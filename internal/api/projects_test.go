@@ -373,3 +373,37 @@ func TestPresence(t *testing.T) {
 		t.Fatalf("the visible page closed: %q", got)
 	}
 }
+
+// TestBranchCleanupAPI: the project-wide preview and delete, and a goal's
+// preview refused until it is done (Phase 18, ADR 0059).
+func TestBranchCleanupAPI(t *testing.T) {
+	f := newFixture(t)
+	repo := f.eng.Project().RepoPath
+	git := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	git("branch", "agent-office/old")
+	var p engine.BranchPreview
+	jsonBody(t, f.do(t, "GET", f.pp+"/branches", nil), http.StatusOK, &p)
+	if len(p.Branches) != 1 || p.Branches[0].Name != "agent-office/old" || p.Branches[0].Class != engine.BranchMerged {
+		t.Fatalf("preview %+v", p)
+	}
+	body := fmt.Sprintf(`{"branches": [{"name": "agent-office/old", "head": %q}], "unmerged": []}`, p.Branches[0].Head)
+	var res engine.BranchDeleteResult
+	jsonBody(t, f.doBody(t, "POST", f.pp+"/branches/delete", jsonCT, body), http.StatusOK, &res)
+	if len(res.Deleted) != 1 || len(res.Refused) != 0 {
+		t.Fatalf("delete %+v", res)
+	}
+	if r := f.doBody(t, "POST", f.pp+"/branches/delete", jsonCT, `{"branches": [], "unmerged": []}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty delete: %d", r.StatusCode)
+	}
+	var task engine.Task
+	jsonBody(t, f.doBody(t, "POST", f.pp+"/tasks", jsonCT, `{"title": "a goal"}`), http.StatusCreated, &task)
+	if r := f.do(t, "GET", f.pp+"/tasks/"+task.ID+"/branches", nil); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("branches of a goal not done: %d", r.StatusCode)
+	}
+}

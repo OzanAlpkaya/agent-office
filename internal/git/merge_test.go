@@ -174,3 +174,37 @@ func TestPushBranchToBareRemote(t *testing.T) {
 		t.Fatal("a remote name that reads as an option was accepted")
 	}
 }
+
+func TestAgentBranchesAndDeleteBranchAt(t *testing.T) {
+	ctx := context.Background()
+	repo, main, feature := featureRepo(t)
+	g := Git{}
+	gitT(t, repo, "branch", "agent-office/other", main)
+	gitT(t, repo, "branch", "release", main)
+	list, err := g.AgentBranches(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0] != (Branch{Name: "agent-office/other", Head: main}) || list[1] != (Branch{Name: "agent-office/qa", Head: feature}) {
+		t.Fatalf("agent branches %+v", list)
+	}
+	// Only at the head the caller saw, only agent-office branches.
+	if err := g.DeleteBranchAt(ctx, repo, "agent-office/qa", main); !errors.Is(err, ErrBranchMoved) {
+		t.Fatalf("delete at a stale head: %v", err)
+	}
+	if err := g.DeleteBranchAt(ctx, repo, "release", main); err == nil {
+		t.Fatal("deleted a branch outside agent-office/")
+	}
+	if err := g.DeleteBranchAt(ctx, repo, "agent-office/qa", "HEAD"); err == nil {
+		t.Fatal("deleted at a symbolic head")
+	}
+	if err := g.DeleteBranchAt(ctx, repo, "agent-office/qa", feature); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := g.BranchExists(ctx, repo, "agent-office/qa"); ok {
+		t.Fatal("the branch is still there")
+	}
+	if ok, _ := g.BranchExists(ctx, repo, "release"); !ok {
+		t.Fatal("release was deleted")
+	}
+}

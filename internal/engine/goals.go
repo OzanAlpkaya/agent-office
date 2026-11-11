@@ -86,6 +86,8 @@ type GoalRecord struct {
 	QARuns   []QARun     `json:"qa_runs"` // newest first
 	Report   *GoalReport `json:"report,omitempty"`
 	Merges   []GoalMerge `json:"merges"` // newest first
+	// DeletedBranches are its branches the user deleted (Phase 18, ADR 0059), with their heads.
+	DeletedBranches []DeletedBranch `json:"deleted_branches"`
 }
 
 // getGoal is a top-level task of this project.
@@ -153,6 +155,9 @@ func (e *Engine) GoalRecord(ctx context.Context, id string) (GoalRecord, error) 
 		if m.GoalID == id {
 			rec.Merges = append(rec.Merges, goalMergeFromRow(m))
 		}
+	}
+	if rec.DeletedBranches, err = e.goalDeletedBranches(ctx, id); err != nil {
+		return GoalRecord{}, err
 	}
 	return rec, nil
 }
