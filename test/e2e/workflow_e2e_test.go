@@ -5,6 +5,7 @@ package e2e
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -48,7 +49,8 @@ type wfQARun struct {
 // approved through the API (the user's step), committed as a spec and turned
 // into sub-tasks; the Tech Lead assigns them in order, the dependent one
 // starting from its dependency's work; QA merges both and passes; the goal is
-// reported; the lead stays until the goal is marked done.
+// reported; the user merges it into main and pushes it to a local bare
+// remote; marking it done closes its sub-tasks; its agents are removed.
 func TestTeamWorkflowEndToEnd(t *testing.T) {
 	d, repo, listAgents := teamDaemon(t, "--max-agents", "4")
 
@@ -175,7 +177,106 @@ func TestTeamWorkflowEndToEnd(t *testing.T) {
 		t.Errorf("the user's checkout changed: %q", st)
 	}
 
-	// 4. The user marks the goal done: the Tech Lead ends.
+	// 4. Phase 17 (ADR 0055): the user merges the goal's tested work into main
+	// and pushes it, on this throwaway clone with a local bare remote (origin
+	// is replaced first, so nothing reaches the playground's own remote).
+	if b := gitOut(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); strings.TrimSpace(b) != "main" {
+		t.Fatalf("the clone is on %q; the merge target is main", b)
+	}
+	bare := t.TempDir()
+	gitOut(t, bare, "init", "-q", "--bare", "-b", "main")
+	gitOut(t, repo, "remote", "set-url", "origin", bare)
+	gitOut(t, repo, "remote", "set-url", "--push", "origin", bare)
+	gitOut(t, repo, "push", "-q", "origin", "main")
+	var rec struct {
+		Report *struct {
+			Summary       string `json:"summary"`
+			CommitMessage string `json:"commit_message"`
+		} `json:"report"`
+		Agents []struct {
+			ID      string `json:"id"`
+			Removed bool   `json:"removed"`
+		} `json:"agents"`
+	}
+	d.json("GET", "/api/tasks/"+goal.ID+"/record", nil, 200, &rec)
+	if rec.Report == nil || rec.Report.Summary == "" {
+		t.Fatalf("no Tech Lead report in the record: %+v", rec)
+	}
+	t.Logf("the Tech Lead's commit message: %q", rec.Report.CommitMessage)
+	var p struct {
+		Ready      bool   `json:"ready"`
+		Reason     string `json:"reason"`
+		Branch     string `json:"branch"`
+		SourceHead string `json:"source_head"`
+		Target     string `json:"target"`
+		TargetHead string `json:"target_head"`
+		Message    string `json:"message"`
+		RemoteURL  string `json:"remote_url"`
+	}
+	d.json("GET", "/api/tasks/"+goal.ID+"/merge", nil, 200, &p)
+	if !p.Ready || p.Branch != runs[0].Branch || p.Target != "main" || p.Message == "" || p.RemoteURL != bare {
+		t.Fatalf("merge preview %+v", p)
+	}
+	if rec.Report.CommitMessage != "" && p.Message != rec.Report.CommitMessage {
+		t.Errorf("the preview's message is not the Tech Lead's: %q", p.Message)
+	}
+	before := strings.TrimSpace(gitOut(t, repo, "rev-parse", "main"))
+	var m struct {
+		Commit   string `json:"commit"`
+		PushedAt string `json:"pushed_at"`
+	}
+	d.json("POST", "/api/tasks/"+goal.ID+"/merge", map[string]string{"target_head": p.TargetHead,
+		"source_head": p.SourceHead, "message": p.Message}, 200, &m)
+	if head := strings.TrimSpace(gitOut(t, repo, "rev-parse", "main")); head != m.Commit || head == before {
+		t.Fatalf("main at %s after the merge %s (before %s)", head, m.Commit, before)
+	}
+	for f, want := range map[string]string{"wf-alpha.txt": "alpha", "wf-beta.txt": "beta"} {
+		if b, err := os.ReadFile(filepath.Join(repo, f)); err != nil || strings.TrimSpace(string(b)) != want {
+			t.Errorf("%s in the checked-out main after the merge: %q %v", f, b, err)
+		}
+	}
+	if st := gitOut(t, repo, "status", "--porcelain"); st != "" {
+		t.Errorf("the checkout is not clean after the merge: %q", st)
+	}
+	d.json("POST", "/api/tasks/"+goal.ID+"/merge", map[string]string{"target_head": m.Commit,
+		"source_head": p.SourceHead, "message": "again"}, 409, nil)
+
+	// 5. The user marks the goal done: its sub-tasks are done, the Tech Lead
+	// ends; the push and the cleanup work on the done goal.
 	d.json("PATCH", "/api/tasks/"+goal.ID, map[string]string{"status": "done"}, 200, nil)
 	waitAgent(t, listAgents, lead, 30*time.Second, func(a teamAgent) bool { return a.State == "exited" })
+	d.json("GET", "/api/tasks", nil, 200, &tasks)
+	for _, x := range tasks {
+		if x.ParentTaskID == goal.ID && x.Status != "done" {
+			t.Errorf("sub-task %s is %s after the goal was marked done", x.ID, x.Status)
+		}
+	}
+	d.json("POST", "/api/tasks/"+goal.ID+"/push", nil, 200, &m)
+	if m.PushedAt == "" || strings.TrimSpace(gitOut(t, bare, "rev-parse", "main")) != m.Commit {
+		t.Fatalf("push: %+v; the bare remote's main is %s", m, gitOut(t, bare, "rev-parse", "main"))
+	}
+	var cleanup struct {
+		Removed []struct {
+			AgentID string `json:"agent_id"`
+		} `json:"removed"`
+		Kept []struct {
+			AgentID string `json:"agent_id"`
+			Reason  string `json:"reason"`
+		} `json:"kept"`
+	}
+	d.json("POST", "/api/tasks/"+goal.ID+"/remove-agents", nil, 200, &cleanup)
+	t.Logf("cleanup: removed %d, kept %+v", len(cleanup.Removed), cleanup.Kept)
+	if len(cleanup.Removed) == 0 {
+		t.Errorf("no agent removed: %+v", cleanup)
+	}
+	d.json("GET", "/api/tasks/"+goal.ID+"/record", nil, 200, &rec)
+	removed := 0
+	for _, a := range rec.Agents {
+		if a.Removed {
+			removed++
+		}
+	}
+	if removed != len(cleanup.Removed) {
+		t.Errorf("the record lists %d removed agents, the cleanup removed %d", removed, len(cleanup.Removed))
+	}
 }
