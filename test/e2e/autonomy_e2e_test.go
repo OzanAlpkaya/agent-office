@@ -91,7 +91,9 @@ func TestAutonomousTeamEndToEnd(t *testing.T) {
 
 	var goal taskInfo
 	d.json("POST", "/api/tasks", map[string]string{"title": "E2E autonomy: a reachability note",
-		"description": "Create exactly one sub-task with this description, word for word, and assign it right away:\n\n" +
+		"description": "You are the Tech Lead: do none of the steps below yourself, and do not call request_access yourself. " +
+			"Create exactly one sub-task whose description is the numbered list below, word for word, and assign it right " +
+			"away; its worker does the steps.\n\n" +
 			"1. Call the agent-office request_access tool for the host example.com (kind domain) with the reason " +
 			"\"record whether example.com answers\", then end your turn and wait for the decision message.\n" +
 			"2. Once it is approved, run: curl -sS -o /dev/null -w '%{http_code}' https://example.com/ and write the " +
