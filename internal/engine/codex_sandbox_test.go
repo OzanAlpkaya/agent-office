@@ -72,7 +72,7 @@ type codexFixture struct {
 	upstream []string // "METHOD path auth=<real|other>"
 }
 
-func newCodexFixture(t *testing.T) *codexFixture {
+func newCodexFixture(t *testing.T, clis ...map[string]string) *codexFixture {
 	t.Helper()
 	f := sandboxFixture(t, false)
 	cf := &codexFixture{fixture: f}
@@ -110,7 +110,11 @@ func newCodexFixture(t *testing.T) *codexFixture {
 		Login: func() (sandbox.CodexLogin, error) {
 			return sandbox.CodexLogin{Token: secret.New(real), Account: "acct-test", Plan: "plus"}, nil
 		}}
-	roles, err := role.MustBuiltins().WithCLIs(map[string]string{"worker": role.CLICodex})
+	use := map[string]string{"worker": role.CLICodex}
+	if len(clis) > 0 {
+		use = clis[0]
+	}
+	roles, err := role.MustBuiltins().WithCLIs(use)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,4 +236,81 @@ func TestSandboxedCodexWorker(t *testing.T) {
 		t.Fatal("the real Codex token is inside the container")
 	}
 	exitAgent(t, e, log, w)
+}
+
+// TestSandboxedCodexReviewer: a Codex reviewer reviews a Claude Code
+// worker's pull request (Phase 15 DoD) through the review loop (ADR 0021):
+// the review is posted on (fake) GitHub from the Codex agent's
+// submit_review over the in-container bridge.
+func TestSandboxedCodexReviewer(t *testing.T) {
+	cf := newCodexFixture(t, map[string]string{"reviewer": role.CLICodex})
+	f := cf.fixture
+	_, srv, _ := withGitHub(t, f)
+	e := f.engine(t)
+	log := record(t, e)
+	ctx := context.Background()
+	task, _ := e.CreateTask(ctx, TaskInput{Title: "Add tags"})
+	w, err := e.Start(ctx, StartRequest{TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.CLI != role.CLIClaude {
+		t.Fatalf("the worker runs on %q", w.CLI)
+	}
+	log.wait(t, 60*time.Second, agentState(w.ID, hooks.Idle))
+	typeLine(t, e, w.ID, "commit")
+	screen(t, e, w.ID, "committed 1")
+	typeLine(t, e, w.ID, `mcp report_done {"summary":"tags added"}`)
+	pr := log.wait(t, 90*time.Second, func(u Update) bool { return u.Type == "pull_request" && u.PullRequest.State == PROpen }).PullRequest
+	typeLine(t, e, w.ID, "exit")
+	r := log.wait(t, 90*time.Second, func(u Update) bool {
+		return u.Type == "agent" && u.Agent.Kind == KindReviewer && u.Agent.State == string(hooks.Idle)
+	}).Agent
+	if r.CLI != role.CLICodex {
+		t.Fatalf("the reviewer runs on %q", r.CLI)
+	}
+	screen(t, e, r.ID, "responses=200") // its review prompt was its first turn
+	typeLine(t, e, r.ID, `mcp submit_review {"verdict":"comment","summary":"looks fine, from Codex","comments":[]}`)
+	if out := screen(t, e, r.ID, "mcp-reply="); !strings.Contains(out, `"posted":true`) {
+		t.Fatalf("submit_review through the bridge:\n%s", out)
+	}
+	got := srv.ReviewsOf(1)
+	if len(got) != 1 || got[0].CommitID != pr.Head || !strings.Contains(got[0].Body, "looks fine, from Codex") {
+		t.Fatalf("posted reviews %+v", got)
+	}
+}
+
+// TestSandboxedCodexRestore: after a daemon restart, a Codex worker the stop
+// interrupted is restored by resuming its own Codex session (ADR 0035, 0049).
+func TestSandboxedCodexRestore(t *testing.T) {
+	cf := newCodexFixture(t)
+	f := cf.fixture
+	f.opts.RestoreAgents = true
+	ctx := context.Background()
+	e1, err := New(ctx, f.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := record(t, e1)
+	task, _ := e1.CreateTask(ctx, TaskInput{Title: "Restore me"})
+	w, err := e1.Start(ctx, StartRequest{TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.wait(t, 60*time.Second, agentState(w.ID, hooks.Idle))
+	out := screen(t, e1, w.ID, "responses=")
+	codexSID := strings.Fields(out[strings.LastIndex(out, "session=")+len("session="):])[0]
+	e1.Shutdown()
+
+	e2 := f.engine(t)
+	eventually(t, "the Codex worker's restore", func() bool {
+		a, _ := e2.Get(w.ID)
+		return a.State == string(hooks.Idle) && a.ResumedFrom == w.SessionID
+	})
+	out = screen(t, e2, w.ID, "session="+codexSID+" source=resume")
+	if !strings.Contains(out, "args=resume "+codexSID+" ") {
+		t.Fatalf("restore command:\n%s", out)
+	}
+	log2 := record(t, e2)
+	exitAgent(t, e2, log2, w.ID)
 }
