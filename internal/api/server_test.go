@@ -481,6 +481,65 @@ func TestAccessRequestsAPI(t *testing.T) {
 	}
 }
 
+// The goal routes of Phase 17 (ADR 0054, 0055): a goal's record, the merge
+// preview, and the refusals of merge, push and cleanup with their statuses.
+// The merge itself is covered end to end in the engine's tests.
+func TestGoalRoutes(t *testing.T) {
+	f := newFixture(t)
+	ct := map[string]string{"Content-Type": "application/json"}
+	r := f.doBody(t, "POST", f.pp+"/tasks", ct, `{"title":"Goal"}`)
+	var goal struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&goal); err != nil || goal.ID == "" {
+		t.Fatalf("create: %v", err)
+	}
+	g := f.pp + "/tasks/" + goal.ID
+	r = f.do(t, "GET", g+"/record", nil)
+	var rec struct {
+		Goal     struct{ ID string } `json:"goal"`
+		SubTasks []any               `json:"sub_tasks"`
+		Agents   []any               `json:"agents"`
+	}
+	if r.StatusCode != http.StatusOK || json.NewDecoder(r.Body).Decode(&rec) != nil || rec.Goal.ID != goal.ID || rec.SubTasks == nil {
+		t.Fatalf("record: %d %+v", r.StatusCode, rec)
+	}
+	r = f.do(t, "GET", g+"/merge", nil)
+	var p struct {
+		Ready  bool   `json:"ready"`
+		Reason string `json:"reason"`
+		Target string `json:"target"`
+	}
+	if r.StatusCode != http.StatusOK || json.NewDecoder(r.Body).Decode(&p) != nil || p.Ready || p.Target != "main" ||
+		!strings.Contains(p.Reason, "the goal is todo") {
+		t.Fatalf("preview: %d %+v", r.StatusCode, p)
+	}
+	for _, tc := range []struct {
+		method, path, body string
+		hdr                map[string]string
+		want               int
+	}{
+		{"POST", g + "/merge", `{"message":"m"}`, map[string]string{"Content-Type": "application/json", "Origin": "https://evil.example"}, http.StatusForbidden},
+		{"POST", g + "/merge", `{"message":"m","target_head":"x","source_head":"y"}`, ct, http.StatusConflict},
+		{"POST", g + "/merge", `{"message":""}`, ct, http.StatusBadRequest},
+		{"POST", g + "/merge", `{"message":"m","force":true}`, ct, http.StatusBadRequest},
+		{"POST", g + "/push", "", nil, http.StatusConflict},
+		{"POST", g + "/push", "", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		{"POST", g + "/remove-agents", "", nil, http.StatusBadRequest},
+		{"GET", f.pp + "/tasks/nope/record", "", nil, http.StatusNotFound},
+		{"GET", f.pp + "/tasks/nope/merge", "", nil, http.StatusNotFound},
+	} {
+		if r := f.doBody(t, tc.method, tc.path, tc.hdr, tc.body); r.StatusCode != tc.want {
+			b, _ := io.ReadAll(r.Body)
+			t.Errorf("%s %s %s: %d %s, want %d", tc.method, tc.path, tc.body, r.StatusCode, b, tc.want)
+		}
+	}
+	r = f.do(t, "GET", f.pp+"/goal-merges", nil)
+	if b, _ := io.ReadAll(r.Body); r.StatusCode != http.StatusOK || strings.TrimSpace(string(b)) != "[]" {
+		t.Fatalf("merges: %d %s", r.StatusCode, b)
+	}
+}
+
 // Access grants are listed and revoked (Phase 17); a revocation is a DELETE
 // with the origin guard, unknown and malformed ids are refused.
 func TestAccessGrantsAPI(t *testing.T) {
