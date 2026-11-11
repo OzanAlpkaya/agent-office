@@ -1,10 +1,33 @@
 -- Queries for sqlc (run `make generate` after changing this file).
 
--- name: UpsertProject :one
-INSERT INTO projects (id, name, repo_path, slug, created_at)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (repo_path) DO UPDATE SET name = excluded.name
+-- Projects (migration 0013, ADR 0046).
+
+-- name: CreateProject :one
+INSERT INTO projects (id, name, repo_path, slug, created_at, settings)
+VALUES (?, ?, ?, ?, ?, ?)
 RETURNING *;
+
+-- name: GetProject :one
+SELECT * FROM projects WHERE id = ?;
+
+-- name: GetProjectByRepo :one
+SELECT * FROM projects WHERE repo_path = ?;
+
+-- name: ListProjects :many
+-- Registered projects, oldest first; removed ones are hidden.
+SELECT * FROM projects WHERE removed_at IS NULL ORDER BY created_at, id;
+
+-- name: RestoreProject :one
+-- Brings a removed project back with its history.
+UPDATE projects SET removed_at = NULL WHERE id = ?
+RETURNING *;
+
+-- name: UpdateProject :one
+UPDATE projects SET name = ?, settings = ? WHERE id = ? AND removed_at IS NULL
+RETURNING *;
+
+-- name: RemoveProject :execrows
+UPDATE projects SET removed_at = ? WHERE id = ? AND removed_at IS NULL;
 
 -- name: CreateTask :one
 INSERT INTO tasks (id, project_id, title, description, status, created_at, updated_at, parent_task_id, created_by,
@@ -70,7 +93,7 @@ ORDER BY agents.started_at, agents.id;
 -- name: MarkUnfinishedAgentsExited :execrows
 -- A crash: the last recorded state is what a restore resumes from (ADR 0035).
 UPDATE agents SET resume_state = state, state = 'exited', activity = '', exited_at = ?, exit_reason = 'daemon_restart'
-WHERE state != 'exited';
+WHERE project_id = ? AND state != 'exited';
 
 -- name: CreateSession :exec
 INSERT INTO sessions (id, agent_id, started_at, resumed_from) VALUES (?, ?, ?, ?);
@@ -313,7 +336,8 @@ UPDATE sessions SET cli_cost_micro_usd = ? WHERE id = ?;
 -- Retention (ADR 0028).
 
 -- name: DeleteEventsBefore :execrows
-DELETE FROM events WHERE at < ?;
+-- One project's events (ADR 0028, 0046): every project engine prunes its own.
+DELETE FROM events WHERE at < ? AND agent_id IN (SELECT id FROM agents WHERE project_id = ?);
 
 -- Conflict rounds (ADR 0032).
 

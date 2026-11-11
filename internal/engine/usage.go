@@ -695,7 +695,7 @@ func (e *Engine) pruneEvents(ctx context.Context) {
 	if e.opts.EventRetention <= 0 {
 		return
 	}
-	n, err := e.q.DeleteEventsBefore(ctx, now().Add(-e.opts.EventRetention))
+	n, err := e.q.DeleteEventsBefore(ctx, db.DeleteEventsBeforeParams{At: now().Add(-e.opts.EventRetention), ProjectID: e.project.ID})
 	if err != nil {
 		e.log.Warn("event retention", "err", err)
 		return
