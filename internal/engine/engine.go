@@ -284,6 +284,8 @@ type Engine struct {
 	slots   *slotPool // the daemon-wide agent cap (ADR 0047)
 	hubbed  bool      // opened by a hub, which does the daemon-wide restart work (ADR 0046)
 
+	grantsMu sync.Mutex // orders stored access grants with the running sessions' copies (ADR 0053, Phase 17)
+
 	mu           sync.Mutex
 	agents       map[string]*agentProc
 	order        []string

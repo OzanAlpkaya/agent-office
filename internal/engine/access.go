@@ -251,6 +251,8 @@ func (e *Engine) decideAccess(ctx context.Context, id int64, d accessDecision) (
 		status = AccessApproved
 	}
 	var row db.AccessRequest
+	e.grantsMu.Lock() // the stored grant and the running sessions change together (revocation recomputes them)
+	defer e.grantsMu.Unlock()
 	err = e.st.Tx(ctx, func(q *db.Queries) error {
 		var err error
 		row, err = q.DecideAccessRequest(ctx, db.DecideAccessRequestParams{Status: status, DecidedAt: nullTime(now()),
@@ -340,19 +342,102 @@ func (e *Engine) applyGrant(agentID, host, scope string) {
 	}
 }
 
-// loadGrants fills a launching agent's grants: its project's and its own
-// (ADR 0053). That is what makes an approval survive a resume.
+// loadGrants sets a launching agent's grants to its project's and its own
+// (ADR 0053): what makes an approval survive a resume. It replaces what g
+// holds, so a grant revoked meanwhile is gone (Phase 17).
 func (e *Engine) loadGrants(ctx context.Context, agentID string, g *sandbox.Grants) error {
+	e.grantsMu.Lock()
+	defer e.grantsMu.Unlock()
+	return e.loadGrantsLocked(ctx, agentID, g)
+}
+
+// loadGrantsLocked is loadGrants with e.grantsMu held.
+func (e *Engine) loadGrantsLocked(ctx context.Context, agentID string, g *sandbox.Grants) error {
 	rows, err := e.q.ListAccessGrants(ctx, db.ListAccessGrantsParams{ProjectID: e.project.ID, AgentID: sql.NullString{String: agentID, Valid: true}})
 	if err != nil {
 		return err
 	}
+	hosts := make([]string, 0, len(rows))
 	for _, r := range rows {
-		if err := g.Add(r.Host); err != nil {
-			return err
+		hosts = append(hosts, r.Host)
+	}
+	return g.Set(hosts)
+}
+
+// AccessGrant is a stored approval (ADR 0053): a host every launch of the
+// agents it covers may reach. DecisionReason was written by the user or a
+// Tech Lead: render it as text only.
+type AccessGrant struct {
+	ID             int64     `json:"id"`
+	Host           string    `json:"host"`
+	Scope          string    `json:"scope"`              // agent | project
+	AgentID        string    `json:"agent_id,omitempty"` // an agent grant's agent
+	RequestID      int64     `json:"request_id"`
+	CreatedAt      time.Time `json:"created_at"`
+	DecidedBy      string    `json:"decided_by,omitempty"` // user | lead
+	DeciderAgentID string    `json:"decider_agent_id,omitempty"`
+	DecisionReason string    `json:"decision_reason,omitempty"`
+}
+
+// AccessGrants lists the project's stored grants, oldest first.
+func (e *Engine) AccessGrants(ctx context.Context) ([]AccessGrant, error) {
+	rows, err := e.q.ListProjectAccessGrants(ctx, e.project.ID)
+	if err != nil {
+		return nil, fmt.Errorf("engine: list access grants: %w", err)
+	}
+	out := make([]AccessGrant, 0, len(rows))
+	for _, r := range rows {
+		g := AccessGrant{ID: r.ID, Host: r.Host, Scope: ScopeProject, RequestID: r.RequestID, CreatedAt: r.CreatedAt.UTC(),
+			DecidedBy: r.DecidedBy, DeciderAgentID: r.DeciderAgentID, DecisionReason: r.DecisionReason}
+		if r.AgentID.Valid {
+			g.Scope, g.AgentID = ScopeAgent, r.AgentID.String
+		}
+		out = append(out, g)
+	}
+	return out, nil
+}
+
+// RevokeAccessGrant deletes a stored grant (Phase 17) and recomputes the
+// grants of every running session from the ones left, so a host another
+// grant still covers stays allowed. Running connections stay open; new ones
+// to the host are refused. The agents are not told.
+func (e *Engine) RevokeAccessGrant(ctx context.Context, id int64) (AccessGrant, error) {
+	e.grantsMu.Lock()
+	defer e.grantsMu.Unlock()
+	r, err := e.q.DeleteAccessGrant(ctx, db.DeleteAccessGrantParams{ID: id, ProjectID: e.project.ID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return AccessGrant{}, ErrNotFound
+	}
+	if err != nil {
+		return AccessGrant{}, err
+	}
+	g := AccessGrant{ID: r.ID, Host: r.Host, Scope: ScopeProject, RequestID: r.RequestID, CreatedAt: r.CreatedAt.UTC()}
+	if r.AgentID.Valid {
+		g.Scope, g.AgentID = ScopeAgent, r.AgentID.String
+	}
+	type running struct {
+		id     string
+		grants *sandbox.Grants
+	}
+	var live []running
+	e.mu.Lock()
+	for id, a := range e.agents {
+		if a.running() && a.sandbox != nil && a.sandbox.grants != nil {
+			live = append(live, running{id, a.sandbox.grants})
 		}
 	}
-	return nil
+	e.mu.Unlock()
+	for _, l := range live {
+		if err := e.loadGrantsLocked(ctx, l.id, l.grants); err != nil {
+			// Fail closed: a session whose grants cannot be recomputed loses them all.
+			_ = l.grants.Set(nil)
+			e.log.Warn("recompute access grants after a revocation", "agent_id", l.id, "err", err)
+		}
+	}
+	e.log.Info("access grant revoked", "grant_id", g.ID, "host", g.Host, "scope", g.Scope, "agent_id", g.AgentID,
+		"sessions_recomputed", len(live))
+	e.publish(Update{Type: "access_grants"})
+	return g, nil
 }
 
 // AccessRequests lists the project's access requests, pending first, then

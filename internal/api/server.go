@@ -121,6 +121,8 @@ func (s *server) routes() []route {
 		{pattern: "GET /api/projects/{project}/access-requests", handler: s.listAccess, project: true},
 		{pattern: "POST /api/projects/{project}/access-requests/{id}/approve", handler: s.decideAccess(true), project: true},
 		{pattern: "POST /api/projects/{project}/access-requests/{id}/deny", handler: s.decideAccess(false), project: true},
+		{pattern: "GET /api/projects/{project}/access-grants", handler: s.listGrants, project: true},
+		{pattern: "DELETE /api/projects/{project}/access-grants/{id}", handler: s.revokeGrant, project: true},
 		{pattern: "GET /api/projects/{project}/pull-requests", handler: s.listPullRequests, project: true},
 		{pattern: "POST /api/projects/{project}/tasks/{id}/pull-request", handler: s.openPullRequest, project: true},
 		{pattern: "POST /api/projects/{project}/tasks/{id}/resolve-conflict", handler: s.resolveConflict, project: true},
@@ -621,6 +623,32 @@ func (s *server) decideAccess(approve bool) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, ar)
 	}
+}
+
+// listGrants lists the project's stored access grants (ADR 0053).
+func (s *server) listGrants(w http.ResponseWriter, r *http.Request) {
+	list, err := eng(r).AccessGrants(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// revokeGrant deletes a stored access grant (Phase 17). Revoking narrows the
+// sandbox, so any paired device may; the origin guard applies to DELETE.
+func (s *server) revokeGrant(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		writeError(w, http.StatusBadRequest, "invalid access grant id")
+		return
+	}
+	g, err := eng(r).RevokeAccessGrant(r.Context(), id)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
 }
 
 // listPullRequests lists the project's pull requests with their reviews

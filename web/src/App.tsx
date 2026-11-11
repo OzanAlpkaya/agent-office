@@ -11,6 +11,7 @@ import { AgentName, AgentsContext } from "./AgentName";
 import { AgentSwitcher } from "./AgentSwitcher";
 import { type Tabs, closeTab, keepTabs, labelOf, moveTab, neighbourTab, openTab, parseTabs } from "./agents";
 import { Board } from "./Board";
+import { GrantsPanel } from "./Grants";
 import { Drawer } from "./Drawer";
 import { DevicesPanel } from "./Devices";
 import { narrowQuery, useMedia } from "./useMedia";
@@ -375,7 +376,12 @@ export function App({
             using tools. Restart the daemon with <span className="mono">--sandbox podman</span> to isolate them.
           </div>
         )}
-        {showPack && status?.sandbox === "podman" && <PackPanel status={status} />}
+        {showPack && status?.sandbox === "podman" && (
+          <>
+            <PackPanel status={status} />
+            <div className="pack-panel"><GrantsPanel api={api} requests={accessRequests} /></div>
+          </>
+        )}
         {panel === "inbox" && (
           <InboxPanel items={inbox} tasks={tasks} specs={specs} onOpenAgent={openAgent}
             onRead={(i) => void run(() => api.readInbox(i.id))}

@@ -481,6 +481,31 @@ func TestAccessRequestsAPI(t *testing.T) {
 	}
 }
 
+// Access grants are listed and revoked (Phase 17); a revocation is a DELETE
+// with the origin guard, unknown and malformed ids are refused.
+func TestAccessGrantsAPI(t *testing.T) {
+	f := newFixture(t)
+	r := f.doBody(t, "GET", f.pp+"/access-grants", nil, "")
+	body, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "[]" {
+		t.Fatalf("list: %d %s", r.StatusCode, body)
+	}
+	for _, tc := range []struct {
+		path string
+		hdr  map[string]string
+		want int
+	}{
+		{f.pp + "/access-grants/1", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		{f.pp + "/access-grants/1", nil, http.StatusNotFound},
+		{f.pp + "/access-grants/abc", nil, http.StatusBadRequest},
+		{f.pp + "/access-grants/0", nil, http.StatusBadRequest},
+	} {
+		if r := f.do(t, "DELETE", tc.path, tc.hdr); r.StatusCode != tc.want {
+			t.Errorf("DELETE %s %v: %d, want %d", tc.path, tc.hdr, r.StatusCode, tc.want)
+		}
+	}
+}
+
 // Without --github the pull request endpoints refuse clearly; the list is
 // empty; the origin guard applies to every POST.
 func TestPullRequestsAPIWithoutGitHub(t *testing.T) {

@@ -95,6 +95,22 @@ func (g *Grants) Add(host string) error {
 	return nil
 }
 
+// Set replaces the granted hosts with hosts, each a ValidHost: what a revoked
+// grant leaves (Phase 17). On an invalid name nothing changes.
+func (g *Grants) Set(hosts []string) error {
+	next := make(map[string]bool, len(hosts))
+	for _, h := range hosts {
+		if !validHostname(h) {
+			return fmt.Errorf("sandbox: invalid host name %q", h)
+		}
+		next[h] = true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.hosts = next
+	return nil
+}
+
 // Allows reports whether host was granted.
 func (g *Grants) Allows(host string) bool {
 	if g == nil {

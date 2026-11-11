@@ -433,6 +433,25 @@ export interface AccessRequest {
   decider?: "user" | "lead"; // a pending request: who is asked; the user can always decide first
 }
 
+// AccessGrant is a stored approval (ADR 0053): a host every launch of the
+// agents it covers may reach. decision_reason is the decider's words.
+export interface AccessGrant {
+  id: number;
+  host: string;
+  scope: AccessScope;
+  agent_id?: string; // an agent grant's agent
+  request_id: number;
+  created_at: string;
+  decided_by?: string; // user | lead
+  decider_agent_id?: string;
+  decision_reason?: string;
+}
+
+export function isAccessGrant(v: unknown): v is AccessGrant {
+  return isObj(v) && typeof v.id === "number" && typeof v.host === "string" &&
+    (v.scope === "agent" || v.scope === "project") && typeof v.created_at === "string";
+}
+
 // AccessScope is who an approval covers (ADR 0053): the asking agent in every
 // later session, or every agent of the project.
 export type AccessScope = "agent" | "project";
@@ -860,6 +879,11 @@ export function projectApi(projectId: string) {
     approveAccess: (id: number, scope?: AccessScope): Promise<AccessRequest> =>
       request("POST", `${base}/access-requests/${id}/approve`, scope ? { scope } : undefined),
     denyAccess: (id: number): Promise<AccessRequest> => request("POST", `${base}/access-requests/${id}/deny`),
+    accessGrants: async (): Promise<AccessGrant[]> => {
+      const gs: unknown = await request("GET", `${base}/access-grants`);
+      return Array.isArray(gs) ? gs.filter(isAccessGrant) : [];
+    },
+    revokeGrant: (id: number): Promise<AccessGrant> => request("DELETE", `${base}/access-grants/${id}`),
     createTask: (title: string, description: string): Promise<Task> =>
       request("POST", `${base}/tasks`, { title, description }),
     updateTask: (id: string, patch: Partial<Pick<Task, "title" | "description" | "status">>): Promise<Task> =>

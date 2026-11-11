@@ -899,3 +899,78 @@ func TestQueueCapIsPerSender(t *testing.T) {
 		t.Fatalf("forged header not quoted:\n%s", out)
 	}
 }
+
+// Revoking a stored grant (Phase 17) removes it from the running sessions it
+// covered, keeps hosts another grant still covers, and later launches do not
+// get it back.
+func TestRevokeAccessGrant(t *testing.T) {
+	tf := newTeam(t)
+	ctx := context.Background()
+	e, tm := tf.e, tf.team
+	_, w := tf.worker(t, "Docs")
+	_, w2 := tf.worker(t, "Other")
+	g, g2 := fakeSandboxed(t, e, w.ID), fakeSandboxed(t, e, w2.ID)
+	approve := func(agentID, host, scope string) {
+		t.Helper()
+		r, err := tm.RequestAccess(ctx, agentID, mcp.RequestAccessInput{Kind: "domain", Value: host, Reason: "needed"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.DecideAccessAs(ctx, r.RequestID, true, scope, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	approve(w.ID, "mirror.example.com", ScopeProject)
+	approve(w.ID, "docs.example.com", ScopeAgent)
+	approve(w2.ID, "docs.example.com", ScopeAgent)
+	if !g.Allows("mirror.example.com") || !g2.Allows("mirror.example.com") || !g2.Allows("docs.example.com") {
+		t.Fatal("approvals not applied")
+	}
+	grants, err := e.AccessGrants(ctx)
+	if err != nil || len(grants) != 3 {
+		t.Fatalf("grants: %+v %v", grants, err)
+	}
+	var project, wDocs AccessGrant
+	for _, gr := range grants {
+		switch {
+		case gr.Scope == ScopeProject:
+			project = gr
+		case gr.AgentID == w.ID:
+			wDocs = gr
+		}
+	}
+	if project.Host != "mirror.example.com" || project.AgentID != "" || project.DecidedBy != DecidedByUser ||
+		wDocs.Host != "docs.example.com" || wDocs.Scope != ScopeAgent {
+		t.Fatalf("grant views: %+v %+v", project, wDocs)
+	}
+
+	mark := tf.log.mark()
+	if _, err := e.RevokeAccessGrant(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	tf.log.waitFrom(t, time.Second, mark, func(u Update) bool { return u.Type == "access_grants" })
+	if g.Allows("mirror.example.com") || g2.Allows("mirror.example.com") {
+		t.Fatal("a revoked project grant still allowed in a running session")
+	}
+	if !g.Allows("docs.example.com") || !g2.Allows("docs.example.com") {
+		t.Fatal("revoking one grant removed hosts other grants cover")
+	}
+	if _, err := e.RevokeAccessGrant(ctx, wDocs.ID); err != nil {
+		t.Fatal(err)
+	}
+	if g.Allows("docs.example.com") || !g2.Allows("docs.example.com") {
+		t.Fatal("an agent grant's revocation reached the wrong agent")
+	}
+	if _, err := e.RevokeAccessGrant(ctx, wDocs.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked twice: %v", err)
+	}
+	// A later launch of w loads what is left: nothing.
+	fresh := &sandbox.Grants{}
+	_ = fresh.Add("mirror.example.com")
+	if err := e.loadGrants(ctx, w.ID, fresh); err != nil || fresh.Allows("mirror.example.com") {
+		t.Fatalf("a launch got a revoked grant back: %v", err)
+	}
+	if left, _ := e.AccessGrants(ctx); len(left) != 1 || left[0].AgentID != w2.ID {
+		t.Fatalf("grants left: %+v", left)
+	}
+}
