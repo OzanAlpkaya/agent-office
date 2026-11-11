@@ -5,7 +5,11 @@ import { type JSX, useState } from "react";
 import { type DaemonStatus, type Project, type ProjectSettings, api } from "./api";
 import { formatMoney } from "./usage";
 
-type Run = <T>(fn: () => Promise<T>) => Promise<T | undefined>;
+// Failure is the last action's error, shown where that action was asked for.
+interface Failure {
+  at: string; // "add", "save:<id>", "item:<id>" (retry, remove)
+  message: string;
+}
 
 // SettingsDraft is the form: text fields, "" = inherit.
 export interface SettingsDraft {
@@ -101,9 +105,24 @@ function SettingsFields({ draft, onChange, defaults, sandboxed }: {
 
 const emptyDraft: SettingsDraft = { pack: "", model: "", maxAgents: "", github: "", budgetSessionUSD: "", budgetGoalUSD: "", egress: "" };
 
-export function ProjectsPanel({ projects, current, status, run, onSelect }: {
-  projects: Project[]; current?: string; status?: DaemonStatus; run: Run; onSelect: (id: string) => void;
+export function ProjectsPanel({ projects, current, status, running, onSelect }: {
+  projects: Project[]; current?: string; status?: DaemonStatus;
+  running: number; // agents that have not exited, in every project: live, unlike the status
+  onSelect: (id: string) => void;
 }): JSX.Element {
+  const [failure, setFailure] = useState<Failure>();
+  // act runs one action of the panel; its error is shown next to the control that asked for it.
+  const act = async <T,>(at: string, fn: () => Promise<T>): Promise<T | undefined> => {
+    setFailure(undefined);
+    try {
+      return await fn();
+    } catch (e) {
+      setFailure({ at, message: e instanceof Error ? e.message : String(e) });
+      return undefined;
+    }
+  };
+  const errorAt = (at: string): JSX.Element | null =>
+    failure?.at === at ? <p className="error small" role="alert">{failure.message}</p> : null;
   const [repo, setRepo] = useState("");
   const [name, setName] = useState("");
   const [draft, setDraft] = useState<SettingsDraft>(emptyDraft);
@@ -114,7 +133,7 @@ export function ProjectsPanel({ projects, current, status, run, onSelect }: {
   const sandboxed = status?.sandbox !== "host";
 
   const add = async (): Promise<void> => {
-    const p = await run(() => api.addProject(repo.trim(), name.trim(), settingsOf(draft)));
+    const p = await act("add", () => api.addProject(repo.trim(), name.trim(), settingsOf(draft)));
     if (p) {
       setRepo("");
       setName("");
@@ -127,7 +146,7 @@ export function ProjectsPanel({ projects, current, status, run, onSelect }: {
       <h2>Projects</h2>
       <p className="muted small">
         Each project is one repository with its own team, board, inbox, memory and office floor.
-        {status && ` At most ${status.max_agents} agents run across all projects (${status.running} now).`}
+        {status && ` At most ${status.max_agents} agents run across all projects (${running} now).`}
       </p>
       <ul className="project-list">
         {projects.map((p) => (
@@ -146,7 +165,7 @@ export function ProjectsPanel({ projects, current, status, run, onSelect }: {
             {p.error && <p className="error small">{p.error}</p>}
             <div className="actions">
               {p.id !== current && p.state === "open" && <button onClick={() => onSelect(p.id)}>Open</button>}
-              {p.state === "error" && <button onClick={() => void run(() => api.retryProject(p.id))}>Retry</button>}
+              {p.state === "error" && <button onClick={() => void act(`item:${p.id}`, () => api.retryProject(p.id))}>Retry</button>}
               <button aria-expanded={editing === p.id} onClick={() => {
                 setEditing(editing === p.id ? undefined : p.id);
                 setEdit(draftOf(p.settings));
@@ -155,7 +174,7 @@ export function ProjectsPanel({ projects, current, status, run, onSelect }: {
               {removing === p.id ? (
                 <>
                   <span className="small">Remove {p.name}? Its history, branches and worktrees are kept.</span>
-                  <button className="danger" onClick={() => void run(async () => {
+                  <button className="danger" onClick={() => void act(`item:${p.id}`, async () => {
                     await api.removeProject(p.id);
                     setRemoving(undefined);
                     return true;
@@ -166,10 +185,11 @@ export function ProjectsPanel({ projects, current, status, run, onSelect }: {
                 <button onClick={() => setRemoving(p.id)}>Remove…</button>
               )}
             </div>
+            {errorAt(`item:${p.id}`)}
             {editing === p.id && (
               <form className="project-settings" onSubmit={(e) => {
                 e.preventDefault();
-                void run(async () => {
+                void act(`save:${p.id}`, async () => {
                   const next = await api.updateProject(p.id, { name: editName.trim(), settings: settingsOf(edit, p.settings) });
                   setEditing(undefined);
                   return next;
@@ -180,7 +200,10 @@ export function ProjectsPanel({ projects, current, status, run, onSelect }: {
                 </label>
                 <SettingsFields draft={edit} onChange={setEdit} defaults={status?.defaults} sandboxed={sandboxed} />
                 <p className="muted small">New settings restart nothing: they are refused while the project's agents run.</p>
-                <button className="primary" type="submit">Save</button>
+                <div className="row">
+                  <button className="primary" type="submit">Save</button>
+                  {errorAt(`save:${p.id}`)}
+                </div>
               </form>
             )}
           </li>
@@ -199,7 +222,10 @@ export function ProjectsPanel({ projects, current, status, run, onSelect }: {
           <input value={name} placeholder="the directory's name" aria-label="Project name" onChange={(e) => setName(e.target.value)} />
         </label>
         <SettingsFields draft={draft} onChange={setDraft} defaults={status?.defaults} sandboxed={sandboxed} />
-        <button className="primary" type="submit" disabled={repo.trim() === ""}>Add project</button>
+        <div className="row">
+          <button className="primary" type="submit" disabled={repo.trim() === ""}>Add project</button>
+          {errorAt("add")}
+        </div>
       </form>
     </section>
   );

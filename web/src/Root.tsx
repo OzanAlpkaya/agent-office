@@ -3,7 +3,7 @@
 // project's view leaks into another's.
 import { type JSX, useEffect, useMemo, useState } from "react";
 import { type AuthSession, type DaemonStatus, api } from "./api";
-import { App } from "./App";
+import { App, type MainTab } from "./App";
 import { ProjectsPanel } from "./Projects";
 import { elsewhere, pickProject } from "./projects";
 import { useProjects, useWatchers } from "./useProjects";
@@ -31,7 +31,7 @@ export function Root({ session, onSignedOut }: { session: AuthSession; onSignedO
   const [status, setStatus] = useState<DaemonStatus>();
   const [chosen, setChosen] = useState<string | undefined>(loadChoice);
   const [openAgent, setOpenAgent] = useState<string>();
-  const [error, setError] = useState<string>();
+  const [openTab, setOpenTab] = useState<MainTab>();
 
   // The daemon's status on every (re)connect: a reconnect may be a restarted daemon.
   useEffect(() => {
@@ -43,19 +43,11 @@ export function Root({ session, onSignedOut }: { session: AuthSession; onSignedO
   const worlds = useWatchers(projects, current?.id);
   const others = useMemo(() => elsewhere(projects, current?.id, worlds), [projects, current?.id, worlds]);
 
-  const select = (id: string, agentId?: string): void => {
+  const select = (id: string, agentId?: string, tab?: MainTab): void => {
     setChosen(id);
     saveChoice(id);
     setOpenAgent(agentId);
-  };
-  const run = async <T,>(fn: () => Promise<T>): Promise<T | undefined> => {
-    setError(undefined);
-    try {
-      return await fn();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      return undefined;
-    }
+    setOpenTab(tab);
   };
 
   if (!loaded) return <div className="empty">Connecting to agent-office…</div>;
@@ -73,14 +65,14 @@ export function Root({ session, onSignedOut }: { session: AuthSession; onSignedO
             <p className="lead-text">No project yet. Add a git repository to start a team on it, or start the daemon with{" "}
               <span className="mono">--repo</span>.</p>
           )}
-          {error && <p className="error">{error}</p>}
-          <ProjectsPanel projects={projects} current={current?.id} status={status} run={run} onSelect={(id) => select(id)} />
+          <ProjectsPanel projects={projects} current={current?.id} status={status}
+            running={others.reduce((n, e) => n + e.running, 0)} onSelect={(id) => select(id)} />
         </main>
       </div>
     );
   }
   return (
     <App key={current.id} session={session} onSignedOut={onSignedOut} project={current} projects={projects}
-      daemon={status} elsewhere={others} initialAgent={openAgent} onSelectProject={select} />
+      daemon={status} elsewhere={others} initialAgent={openAgent} initialTab={openTab} onSelectProject={select} />
   );
 }

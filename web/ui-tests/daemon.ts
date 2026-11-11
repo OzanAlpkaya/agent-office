@@ -174,6 +174,7 @@ export class MockDaemon {
   readonly terminals: string[] = []; // agent ids whose terminal was opened
   readonly requests: string[] = []; // "METHOD path body" of every write the page sent
   readonly projectRequests: string[] = []; // "project METHOD path" of every write to a project's routes
+  refuseProjectUpdate?: string; // PATCH /api/projects/{id} answers 409 with this error (agents running)
   readonly terminalInput: string[] = []; // text frames the page sent to terminals
   // A terminal program for tests: what follows the greeting (e.g. mouse tracking
   // on, like Claude Code's fullscreen mode) and how it answers input.
@@ -299,6 +300,9 @@ export class MockDaemon {
           this.projects.splice(i, 1);
           this.hubEvents?.send(JSON.stringify({ type: "project_removed", id: proj[1] }));
           return route.fulfill({ status: 204 });
+        }
+        if (method === "PATCH" && this.refuseProjectUpdate) {
+          return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: this.refuseProjectUpdate }) });
         }
         const patch = (route.request().postDataJSON() ?? {}) as { name?: string; settings?: ProjectSettings };
         const cur = this.projects[i].project;

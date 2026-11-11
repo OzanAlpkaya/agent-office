@@ -140,7 +140,9 @@ test("the office has a floor per project; choosing a floor shows that project's 
   await expect(page.locator(".nameplate")).toHaveCount(linkshelf);
   await floors.locator('.floor[data-floor="p2"]').click();
   await expect(switcher(page)).toHaveValue("p2");
-  await page.getByRole("button", { name: "Office" }).click();
+  // It stays in the Office, on the other floor (Ozan's Phase 14 review).
+  await expect(page.getByRole("button", { name: "Office" })).toHaveClass(/active/);
+  await expect(page.locator(".board")).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "Floors" }).locator('.floor[data-floor="p2"]')).toHaveAttribute("aria-current", "true");
   await expect(page.locator(".nameplate")).toHaveCount(2);
   await expect(page.locator('.nameplate[data-agent="bbbb00000002"]')).toBeVisible();
@@ -183,4 +185,41 @@ test("each project keeps its own open agent tabs across switches", async ({ page
   await expect(tabs).toHaveCount(1);
   await expect(tabs.first()).toContainText("Emma");
   expect(errors).toEqual([]);
+});
+
+test("switching projects in the header keeps the tab the user is on", async ({ page }) => {
+  const errors = await open(page, twoProjects());
+  await page.getByRole("button", { name: "Usage" }).click();
+  await switcher(page).selectOption("p2");
+  await expect(page.getByRole("button", { name: "Usage" })).toHaveClass(/active/);
+  await expect(page.getByRole("region", { name: "All projects" })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("a refused settings change is shown next to its Save button, not in the sidebar", async ({ page }) => {
+  const daemon = twoProjects();
+  daemon.refuseProjectUpdate = "the project has running agents; stop them first";
+  await open(page, daemon);
+  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  const item = page.getByRole("region", { name: "Projects" }).locator(".project-item").filter({ hasText: "webapp" });
+  await item.getByRole("button", { name: "Settings" }).click();
+  await item.getByLabel("Model").fill("sonnet");
+  await item.getByRole("button", { name: "Save" }).click();
+  const form = item.locator(".project-settings");
+  await expect(form.getByRole("alert")).toHaveText("the project has running agents; stop them first");
+  await expect(form.getByRole("button", { name: "Save" })).toBeVisible(); // the form stays open
+  await expect(page.locator("aside .error")).toHaveCount(0);
+});
+
+test("the Projects panel counts the agents running in every project, live", async ({ page }) => {
+  const daemon = twoProjects();
+  await open(page, daemon);
+  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Projects" });
+  // linkshelf runs nine (one has exited), webapp two
+  await expect(panel).toContainText("At most 8 agents run across all projects (11 now).");
+  daemon.addAgent(agent("f00000000099", "worker", "working", { name: "Ada" }));
+  await expect(panel).toContainText("(12 now)");
+  daemon.sendTo("p2", { type: "agent", agent: { ...webapp().agents[1], state: "exited" } });
+  await expect(panel).toContainText("(11 now)");
 });

@@ -120,6 +120,9 @@ function typingTarget(t: EventTarget | null): boolean {
   return t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.closest(".xterm") !== null;
 }
 
+// MainTab is a tab of the main pane that every project has.
+export type MainTab = "board" | "office" | "usage";
+
 // "agents" is the phone layout's tab for the agent list (the sidebar on wider screens, ADR 0040).
 type View = { kind: "board" } | { kind: "office" } | { kind: "usage" } | { kind: "agents" } | { kind: "agent"; id: string };
 
@@ -133,10 +136,13 @@ export interface AppProps {
   daemon?: DaemonStatus;
   elsewhere: Elsewhere[]; // the other projects' waits, for the Approvals badge (ADR 0048)
   initialAgent?: string; // open this agent once it is known (a switch from another project's approval)
-  onSelectProject: (id: string, agentId?: string) => void;
+  initialTab?: MainTab; // the tab the other project showed, kept across a switch (e.g. the office's floors)
+  onSelectProject: (id: string, agentId?: string, tab?: MainTab) => void;
 }
 
-export function App({ session, onSignedOut, project, projects, daemon, elsewhere, initialAgent, onSelectProject }: AppProps): JSX.Element {
+export function App({
+  session, onSignedOut, project, projects, daemon, elsewhere, initialAgent, initialTab, onSelectProject,
+}: AppProps): JSX.Element {
   // The project's routes, plus the daemon's (health, devices, projects) under one name.
   const papi = useMemo(() => projectApi(project.id), [project.id]);
   const api = useMemo(() => ({ ...daemonApi, ...papi }), [papi]);
@@ -145,7 +151,9 @@ export function App({ session, onSignedOut, project, projects, daemon, elsewhere
   const [roles, setRoles] = useState<RoleInfo[]>([]);
   const [panel, setPanel] = useState<Panel>();
   const narrow = useMedia(narrowQuery);
-  const [view, setView] = useState<View>({ kind: "board" });
+  const [view, setView] = useState<View>({ kind: initialTab ?? "board" });
+  // A switch to another project keeps the main tab (Board, Office, Usage) the user is on.
+  const tab: MainTab = view.kind === "office" || view.kind === "usage" ? view.kind : "board";
   const [tabs, setTabs] = useState<Tabs>(() => loadTabs(project.id));
   const [switcher, setSwitcher] = useState(false);
   const [approvalsOpen, setApprovalsOpen] = useState(false);
@@ -311,7 +319,7 @@ export function App({ session, onSignedOut, project, projects, daemon, elsewhere
       <div className="app">
         <header>
           <h1>agent-office</h1>
-          <ProjectSwitcher project={project} projects={projects} elsewhere={elsewhere} onSelect={(id) => onSelectProject(id)}
+          <ProjectSwitcher project={project} projects={projects} elsewhere={elsewhere} onSelect={(id) => onSelectProject(id, undefined, tab)}
             onManage={() => togglePanel("projects")} managing={panel === "projects"} />
           <span className="muted small">{version && `v${version}`}</span>
           {status?.sandbox === "podman" && (
@@ -384,8 +392,9 @@ export function App({ session, onSignedOut, project, projects, daemon, elsewhere
             onDelete={(m) => void run(async () => { await api.deleteMemory(m.id); return true; })} />
         )}
         {panel === "projects" && (
-          <ProjectsPanel projects={projects} current={project.id} status={daemon} run={run}
-            onSelect={(id) => onSelectProject(id)} />
+          <ProjectsPanel projects={projects} current={project.id} status={daemon}
+            running={elsewhere.reduce((n, e) => n + e.running, running)}
+            onSelect={(id) => onSelectProject(id, undefined, tab)} />
         )}
         {panel === "devices" && (
           <DevicesPanel remoteHosts={status?.remote_hosts ?? []} run={run} onSignedOut={onSignedOut} />
@@ -534,7 +543,7 @@ export function App({ session, onSignedOut, project, projects, daemon, elsewhere
                     ...elsewhere.filter((e) => e.project.state === "open").map((e) => ({ id: e.project.id, name: e.project.name,
                       waiting: e.waiting.length, running: e.running, current: false }))]
                     .sort((a, b) => projects.findIndex((p) => p.id === a.id) - projects.findIndex((p) => p.id === b.id))}
-                  onFloor={(id) => onSelectProject(id)} />
+                  onFloor={(id) => onSelectProject(id, undefined, "office")} />
               </Suspense>
             ) : view.kind === "usage" ? (
               <Suspense fallback={<div className="empty">Loading usage…</div>}>
