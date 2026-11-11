@@ -79,7 +79,7 @@ func TestMessageUserAndChain(t *testing.T) {
 	if _, err := tm.MessageUser(ctx, w.ID, mcp.MessageUserInput{Kind: "blocked", Body: "My lead left."}); err != nil {
 		t.Fatalf("worker without a lead: %v", err)
 	}
-	// Replies to an agent that is not running are refused.
+	// A reply to an agent that is not running waits for its resume (ADR 0051).
 	items, _ = e.Inbox(ctx)
 	var leadItem int64
 	for _, x := range items {
@@ -87,8 +87,15 @@ func TestMessageUserAndChain(t *testing.T) {
 			leadItem = x.ID
 		}
 	}
-	if _, err := e.ReplyInbox(ctx, leadItem, "late"); err == nil || !strings.Contains(err.Error(), "not running") {
+	if _, err := e.ReplyInbox(ctx, leadItem, "late"); err != nil {
 		t.Fatalf("reply to an exited agent: %v", err)
+	}
+	waiting := false
+	for _, m := range messagesTo(t, e, lead) {
+		waiting = waiting || (m.Body == "late" && m.FromUser && m.DeliveredAt == nil)
+	}
+	if !waiting {
+		t.Fatal("the reply does not wait for the lead")
 	}
 }
 

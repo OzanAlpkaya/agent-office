@@ -273,14 +273,15 @@ func (e *Engine) ReplyInbox(ctx context.Context, id int64, body string) (InboxIt
 func (e *Engine) MessageAgent(ctx context.Context, id, body string) (Message, error) {
 	e.mu.Lock()
 	a, ok := e.agents[id]
-	running := ok && a.running()
+	running, holds := ok && a.running(), ok && holdsMessages(a)
 	e.mu.Unlock()
 	switch {
 	case !ok:
 		return Message{}, ErrNotFound
-	case !running:
-		return Message{}, invalid("agent %s is not running; start it again to continue", id)
+	case !running && !holds:
+		return Message{}, invalid("agent %s is not running and cannot be resumed; start a new one to continue", id)
 	}
+	// ADR 0051: to an agent that can be resumed, the words wait for its resume.
 	return e.sendUserMessage(ctx, id, body)
 }
 
