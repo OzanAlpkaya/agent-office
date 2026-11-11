@@ -11,6 +11,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
+	"github.com/OzanAlpkaya/agent-office/internal/office"
 )
 
 type projectKey struct{}
@@ -208,4 +209,32 @@ func projectErrorStatus(err error) (int, bool) {
 		return http.StatusServiceUnavailable, true
 	}
 	return 0, false
+}
+
+// officeLayouts lists the shipped office layouts (Phase 18, ADR 0057).
+func (s *server) officeLayouts(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, office.Presets())
+}
+
+// layoutCheck is a layout's YAML, parsed for the settings' preview: the
+// layout when it is valid, else every problem.
+type layoutCheck struct {
+	Layout   *office.Layout `json:"layout,omitempty"`
+	Problems []string       `json:"problems"`
+}
+
+// checkOfficeLayout parses a layout without storing it, for the preview.
+func (s *server) checkOfficeLayout(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		YAML string `json:"yaml"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	l, err := office.Parse(body.YAML)
+	if err != nil {
+		writeJSON(w, http.StatusOK, layoutCheck{Problems: office.Problems(err)})
+		return
+	}
+	writeJSON(w, http.StatusOK, layoutCheck{Layout: &l, Problems: []string{}})
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
+	"github.com/OzanAlpkaya/agent-office/internal/office"
 )
 
 func newGitRepo(t *testing.T) string {
@@ -256,4 +257,45 @@ func TestRemoteDevicesCannotWidenProjects(t *testing.T) {
 	// From this machine all of it works.
 	local := map[string]string{"Content-Type": "application/json"}
 	jsonBody(t, f.doBody(t, "POST", "/api/projects", local, fmt.Sprintf(`{"repo": %q}`, repo)), http.StatusCreated, nil)
+}
+
+// TestOfficeLayoutsAPI: the presets, the preview's check, and a project's
+// layout through PATCH (Phase 18, ADR 0057).
+func TestOfficeLayoutsAPI(t *testing.T) {
+	f := newFixture(t)
+	var presets []office.Preset
+	jsonBody(t, f.do(t, "GET", "/api/office-layouts", nil), http.StatusOK, &presets)
+	if len(presets) != 4 || presets[0].Name != "classic" || !strings.Contains(presets[0].YAML, "version: 1") {
+		t.Fatalf("presets %+v", presets)
+	}
+	type check struct {
+		Layout   *office.Layout `json:"layout"`
+		Problems []string       `json:"problems"`
+	}
+	var ok check
+	body, _ := json.Marshal(map[string]string{"yaml": presets[0].YAML})
+	jsonBody(t, f.doBody(t, "POST", "/api/office-layouts/check", jsonCT, string(body)), http.StatusOK, &ok)
+	if ok.Layout == nil || ok.Layout.Desks != 12 || len(ok.Problems) != 0 {
+		t.Fatalf("check of a preset %+v", ok)
+	}
+	var bad check
+	jsonBody(t, f.doBody(t, "POST", "/api/office-layouts/check", jsonCT, `{"yaml": "version: 1\nrooms: []\n"}`), http.StatusOK, &bad)
+	if bad.Layout != nil || len(bad.Problems) != 4 {
+		t.Fatalf("check of an empty layout %+v", bad)
+	}
+	if r := f.doBody(t, "POST", "/api/office-layouts/check", jsonCT, `{"yml": ""}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown field: %d", r.StatusCode)
+	}
+	// Saved through the project's settings; an invalid one is refused with its problems.
+	settings, _ := json.Marshal(map[string]any{"settings": map[string]string{"office_layout": presets[1].YAML}})
+	var p engine.ProjectInfo
+	jsonBody(t, f.doBody(t, "PATCH", "/api/projects/"+f.pid, jsonCT, string(settings)), http.StatusOK, &p)
+	if p.Office.Source != engine.OfficeCustom || p.Office.Layout == nil || p.Office.Layout.Desks != 6 {
+		t.Fatalf("project office %+v", p.Office)
+	}
+	r := f.doBody(t, "PATCH", "/api/projects/"+f.pid, jsonCT, `{"settings": {"office_layout": "version: 1\nrooms: []\n"}}`)
+	b, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), "room lead is missing") {
+		t.Fatalf("invalid layout: %d %s", r.StatusCode, b)
+	}
 }

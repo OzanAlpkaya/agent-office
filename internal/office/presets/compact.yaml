@@ -1,0 +1,16 @@
+# Compact: a small team. The Tech Lead, your office, a kitchen and the lobby
+# over a workroom of 6 desks. No planning room, QA lab or review room: the
+# architect, QA and reviewers work at desks.
+version: 1
+rooms:
+  - { id: lead,    x: 0, y: 0, w: 8, h: 7 }
+  - { id: user,    x: 8, y: 0, w: 7, h: 7 }
+  - { id: kitchen, x: 0, y: 7, w: 6, h: 7 }
+  - { id: lobby,   x: 6, y: 7, w: 9, h: 7 }
+  - { id: work,    x: 0, y: 14, w: 15, h: 11, desks: 6 }
+doors:
+  - [lead, kitchen]
+  - [user, lobby]
+  - [kitchen, lobby]
+  - [kitchen, work]
+  - [lobby, work]

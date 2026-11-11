@@ -1,0 +1,20 @@
+# Open plan: every room around one large workroom of 20 desks. The decision
+# makers along the back wall, QA, the kitchen and the lobby along the front.
+version: 1
+rooms:
+  - { id: planning, x: 0,  y: 0, w: 7,  h: 7 }
+  - { id: lead,     x: 7,  y: 0, w: 10, h: 7 }
+  - { id: review,   x: 17, y: 0, w: 8,  h: 7 }
+  - { id: user,     x: 25, y: 0, w: 7,  h: 7 }
+  - { id: work,     x: 0,  y: 7, w: 32, h: 15, desks: 20, name: Open office }
+  - { id: qa,       x: 0,  y: 22, w: 8, h: 7 }
+  - { id: kitchen,  x: 8,  y: 22, w: 7, h: 7 }
+  - { id: lobby,    x: 15, y: 22, w: 17, h: 7 }
+doors:
+  - [planning, work]
+  - [lead, work]
+  - [review, work]
+  - [user, work]
+  - [work, qa]
+  - [work, kitchen]
+  - [work, lobby]

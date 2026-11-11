@@ -1,0 +1,21 @@
+# Tall: two narrow columns of rooms over the workroom, so a phone shows the
+# office larger. The lobby is at the bottom, under 6 desks.
+version: 1
+rooms:
+  - { id: planning, x: 0, y: 0,  w: 6,  h: 7 }
+  - { id: lead,     x: 6, y: 0,  w: 8,  h: 7 }
+  - { id: user,     x: 0, y: 7,  w: 6,  h: 7 }
+  - { id: review,   x: 6, y: 7,  w: 8,  h: 7 }
+  - { id: qa,       x: 0, y: 14, w: 6,  h: 7 }
+  - { id: kitchen,  x: 6, y: 14, w: 8,  h: 7 }
+  - { id: work,     x: 0, y: 21, w: 14, h: 11, desks: 6 }
+  - { id: lobby,    x: 0, y: 32, w: 14, h: 7 }
+doors:
+  - [user, review]
+  - [planning, lead]
+  - [lead, review]
+  - [review, kitchen]
+  - [qa, kitchen]
+  - [kitchen, work]
+  - [qa, work]
+  - [work, lobby]

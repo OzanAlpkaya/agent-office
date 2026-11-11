@@ -1,0 +1,350 @@
+{
+  "classic": {
+    "columns": 26,
+    "rows": 25,
+    "rooms": [
+      {
+        "id": "planning",
+        "x": 0,
+        "y": 0,
+        "w": 7,
+        "h": 7
+      },
+      {
+        "id": "lead",
+        "x": 7,
+        "y": 0,
+        "w": 10,
+        "h": 7
+      },
+      {
+        "id": "user",
+        "x": 17,
+        "y": 0,
+        "w": 9,
+        "h": 7
+      },
+      {
+        "id": "qa",
+        "x": 0,
+        "y": 7,
+        "w": 6,
+        "h": 7
+      },
+      {
+        "id": "review",
+        "x": 6,
+        "y": 7,
+        "w": 8,
+        "h": 7
+      },
+      {
+        "id": "kitchen",
+        "x": 14,
+        "y": 7,
+        "w": 5,
+        "h": 7
+      },
+      {
+        "id": "lobby",
+        "x": 19,
+        "y": 7,
+        "w": 7,
+        "h": 7
+      },
+      {
+        "id": "work",
+        "x": 0,
+        "y": 14,
+        "w": 26,
+        "h": 11
+      }
+    ],
+    "doors": [
+      {
+        "a": "planning",
+        "b": "qa"
+      },
+      {
+        "a": "lead",
+        "b": "review"
+      },
+      {
+        "a": "user",
+        "b": "lobby"
+      },
+      {
+        "a": "qa",
+        "b": "work"
+      },
+      {
+        "a": "review",
+        "b": "work"
+      },
+      {
+        "a": "kitchen",
+        "b": "work"
+      },
+      {
+        "a": "lobby",
+        "b": "work"
+      }
+    ],
+    "desks": 12
+  },
+  "compact": {
+    "columns": 15,
+    "rows": 25,
+    "rooms": [
+      {
+        "id": "lead",
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 7
+      },
+      {
+        "id": "user",
+        "x": 8,
+        "y": 0,
+        "w": 7,
+        "h": 7
+      },
+      {
+        "id": "kitchen",
+        "x": 0,
+        "y": 7,
+        "w": 6,
+        "h": 7
+      },
+      {
+        "id": "lobby",
+        "x": 6,
+        "y": 7,
+        "w": 9,
+        "h": 7
+      },
+      {
+        "id": "work",
+        "x": 0,
+        "y": 14,
+        "w": 15,
+        "h": 11
+      }
+    ],
+    "doors": [
+      {
+        "a": "lead",
+        "b": "kitchen"
+      },
+      {
+        "a": "user",
+        "b": "lobby"
+      },
+      {
+        "a": "kitchen",
+        "b": "lobby"
+      },
+      {
+        "a": "kitchen",
+        "b": "work"
+      },
+      {
+        "a": "lobby",
+        "b": "work"
+      }
+    ],
+    "desks": 6
+  },
+  "open-plan": {
+    "columns": 32,
+    "rows": 29,
+    "rooms": [
+      {
+        "id": "planning",
+        "x": 0,
+        "y": 0,
+        "w": 7,
+        "h": 7
+      },
+      {
+        "id": "lead",
+        "x": 7,
+        "y": 0,
+        "w": 10,
+        "h": 7
+      },
+      {
+        "id": "review",
+        "x": 17,
+        "y": 0,
+        "w": 8,
+        "h": 7
+      },
+      {
+        "id": "user",
+        "x": 25,
+        "y": 0,
+        "w": 7,
+        "h": 7
+      },
+      {
+        "id": "work",
+        "name": "Open office",
+        "x": 0,
+        "y": 7,
+        "w": 32,
+        "h": 15
+      },
+      {
+        "id": "qa",
+        "x": 0,
+        "y": 22,
+        "w": 8,
+        "h": 7
+      },
+      {
+        "id": "kitchen",
+        "x": 8,
+        "y": 22,
+        "w": 7,
+        "h": 7
+      },
+      {
+        "id": "lobby",
+        "x": 15,
+        "y": 22,
+        "w": 17,
+        "h": 7
+      }
+    ],
+    "doors": [
+      {
+        "a": "planning",
+        "b": "work"
+      },
+      {
+        "a": "lead",
+        "b": "work"
+      },
+      {
+        "a": "review",
+        "b": "work"
+      },
+      {
+        "a": "user",
+        "b": "work"
+      },
+      {
+        "a": "work",
+        "b": "qa"
+      },
+      {
+        "a": "work",
+        "b": "kitchen"
+      },
+      {
+        "a": "work",
+        "b": "lobby"
+      }
+    ],
+    "desks": 20
+  },
+  "tall": {
+    "columns": 14,
+    "rows": 39,
+    "rooms": [
+      {
+        "id": "planning",
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 7
+      },
+      {
+        "id": "lead",
+        "x": 6,
+        "y": 0,
+        "w": 8,
+        "h": 7
+      },
+      {
+        "id": "user",
+        "x": 0,
+        "y": 7,
+        "w": 6,
+        "h": 7
+      },
+      {
+        "id": "review",
+        "x": 6,
+        "y": 7,
+        "w": 8,
+        "h": 7
+      },
+      {
+        "id": "qa",
+        "x": 0,
+        "y": 14,
+        "w": 6,
+        "h": 7
+      },
+      {
+        "id": "kitchen",
+        "x": 6,
+        "y": 14,
+        "w": 8,
+        "h": 7
+      },
+      {
+        "id": "work",
+        "x": 0,
+        "y": 21,
+        "w": 14,
+        "h": 11
+      },
+      {
+        "id": "lobby",
+        "x": 0,
+        "y": 32,
+        "w": 14,
+        "h": 7
+      }
+    ],
+    "doors": [
+      {
+        "a": "user",
+        "b": "review"
+      },
+      {
+        "a": "planning",
+        "b": "lead"
+      },
+      {
+        "a": "lead",
+        "b": "review"
+      },
+      {
+        "a": "review",
+        "b": "kitchen"
+      },
+      {
+        "a": "qa",
+        "b": "kitchen"
+      },
+      {
+        "a": "kitchen",
+        "b": "work"
+      },
+      {
+        "a": "qa",
+        "b": "work"
+      },
+      {
+        "a": "work",
+        "b": "lobby"
+      }
+    ],
+    "desks": 6
+  }
+}
