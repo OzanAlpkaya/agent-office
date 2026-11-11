@@ -108,6 +108,7 @@ type Options struct {
 	Git                 git.Git       // git CLI wrapper
 	MaxAgents           int           // this project's running agents at once; default 4 (ADR 0047)
 	Model               string        // optional default model; a role's own model wins (ADR 0029)
+	CodexModel          string        // Codex agents' default model; "": Codex's own (ADR 0050)
 	Roles               *role.Set     // team roles (ADR 0029); nil: the built-in roles
 	QA                  bool          // a goal's report needs a passing QA run (ADR 0033)
 	InheritUserSettings bool          // host mode: load the user's own Claude Code settings
@@ -186,6 +187,7 @@ type AgentInfo struct {
 	Model               string      `json:"model,omitempty"`
 	InheritUserSettings bool        `json:"inherit_user_settings"`
 	Sandbox             string      `json:"sandbox"` // SandboxHost | SandboxPodman
+	CLI                 string      `json:"cli"`     // the agent CLI: CLIClaude | CLICodex (ADR 0050)
 	Kind                string      `json:"kind"`    // the behaviour: KindLead, KindWorker, ...
 	Role                string      `json:"role"`    // the role's name, e.g. tech-lead, worker, docs
 	Branch              string      `json:"branch"`
@@ -244,6 +246,7 @@ type agentProc struct {
 	usage      *sessionUsage  // this session's token usage (ADR 0026); nil for agents of a previous run
 	log        *slog.Logger   // this session's logger: agent, session and task ids (ADR 0028)
 	resumeFrom string         // the session this one continues (ADR 0035); "" for a fresh one
+	cliSession string         // Codex: its own session id, learned from the first hook (ADR 0049); guarded by Engine.mu
 
 	sessionStarted bool          // the main agent's SessionStart arrived; guarded by Engine.mu
 	historyDone    chan struct{} // closed after the session's terminal was saved for the last time (ADR 0036); nil for agents of a previous run
@@ -529,6 +532,9 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		return AgentInfo{}, err
 	}
 	role := string(def.Behaviour) // the kind; authority comes from it
+	if err := e.checkCLI(def.CLI); err != nil {
+		return AgentInfo{}, fmt.Errorf("role %s: %w", def.Name, err)
+	}
 	// The task first: an id of another project is not found, whatever the cap (ADR 0046).
 	var task *db.Task
 	if req.TaskID != "" {
@@ -645,7 +651,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		if err := q.CreateAgent(ctx, db.CreateAgentParams{
 			ID: id, ProjectID: e.project.ID, TaskID: nullString(req.TaskID), Model: e.modelOf(def),
 			InheritUserSettings: inherit, State: string(hooks.Starting), StartedAt: started,
-			Sandbox: mode, Kind: role, Role: def.Name, Name: name,
+			Sandbox: mode, Kind: role, Role: def.Name, Name: name, Cli: cliOr(def.CLI),
 		}); err != nil {
 			return err
 		}
@@ -694,7 +700,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		prompt += nameSection(name, id) // ADR 0043
 	}
 	l := launchInfo{id: id, sid: sid, name: name, role: role, def: def, branch: branch, path: wtPath, base: base, taskID: req.TaskID,
-		started: started, prompt: prompt, reviewID: req.reviewID}
+		started: started, prompt: prompt, reviewID: req.reviewID, cli: def.CLI}
 	if e.opts.Sandbox != nil {
 		a, err = e.launchSandboxed(l, prep)
 	} else {
@@ -727,6 +733,8 @@ type launchInfo struct {
 	prev                                *agentProc     // a relaunch: the exited agent it replaces (ADR 0022)
 	followup                            *followupRound // a relaunch to address a review (ADR 0022)
 	resumeFrom                          string         // a resume: the session whose conversation continues (ADR 0035)
+	cli                                 string         // the agent CLI (ADR 0050); a relaunch keeps the agent's
+	cliResume                           string         // Codex: its session id to continue (codex resume <id>, ADR 0049)
 	since                               time.Time      // messages from this time on are delivered; zero: started
 }
 
@@ -742,6 +750,7 @@ func (l launchInfo) roleName() string {
 // relaunch started again (keeping its place, start time and last import).
 func (e *Engine) registerLocked(a *agentProc, l launchInfo) {
 	a.reviewID, a.since, a.followup, a.resumeFrom = l.reviewID, l.started, l.followup, l.resumeFrom
+	a.cliSession, a.info.CLI = l.cliResume, l.cli
 	a.info.ResumedFrom = l.resumeFrom
 	if !l.since.IsZero() {
 		a.since = l.since
@@ -942,9 +951,54 @@ func (e *Engine) watch(a *agentProc) {
 	}
 }
 
+// parseHook reads a hook payload in the format of the agent's CLI.
+func parseHook(cli string, payload []byte) (agent.Event, error) {
+	if cli == role.CLICodex {
+		return agent.ParseCodexHook(payload)
+	}
+	return agent.ParseClaudeHook(payload)
+}
+
+// checkSessionLocked refuses a hook of another session. Claude Code runs
+// under the daemon's session id. Codex picks its own: the first SessionStart
+// on the agent's socket names it (a resume knows it already), and later hooks
+// must carry it (ADR 0049). The event then carries the daemon's id, like a
+// Claude Code one.
+func (e *Engine) checkSessionLocked(ctx context.Context, a *agentProc, ev *agent.Event, log *slog.Logger) error {
+	if a.info.CLI != role.CLICodex {
+		if ev.SessionID != a.info.SessionID {
+			return ErrSession
+		}
+		return nil
+	}
+	if a.cliSession == "" {
+		if ev.Kind != agent.SessionStarted || (ev.Detail != "startup" && ev.Detail != "resume") {
+			return ErrSession
+		}
+		// Recorded before it is used, so a resume and a restore can always find
+		// it; a failed write refuses the hook and the next SessionStart retries.
+		if err := e.q.SetSessionCLIID(ctx, db.SetSessionCLIIDParams{CliSessionID: ev.SessionID, ID: a.info.SessionID}); err != nil {
+			log.Error("record the Codex session id", "err", err)
+			return err
+		}
+		a.cliSession = ev.SessionID
+	}
+	if ev.SessionID != a.cliSession {
+		return ErrSession
+	}
+	ev.SessionID = a.info.SessionID
+	return nil
+}
+
 func (e *Engine) hookHandler(id string, log *slog.Logger) hooks.Handler {
 	return func(ctx context.Context, payload []byte) ([]byte, error) {
-		ev, err := agent.ParseClaudeHook(payload)
+		e.mu.Lock()
+		cli := ""
+		if a, ok := e.agents[id]; ok {
+			cli = a.info.CLI
+		}
+		e.mu.Unlock()
+		ev, err := parseHook(cli, payload)
 		if err != nil {
 			return nil, err
 		}
@@ -954,8 +1008,8 @@ func (e *Engine) hookHandler(id string, log *slog.Logger) hooks.Handler {
 		if !ok {
 			return nil, ErrNotFound
 		}
-		if ev.SessionID != a.info.SessionID {
-			return nil, ErrSession
+		if err := e.checkSessionLocked(ctx, a, &ev, log); err != nil {
+			return nil, err
 		}
 		if ev.Kind == agent.SessionStarted && !ev.Subagent {
 			a.sessionStarted = true
@@ -1380,7 +1434,8 @@ func (a *agentProc) view() AgentInfo {
 func infoFromRow(r db.ListVisibleAgentsRow) AgentInfo {
 	info := AgentInfo{
 		ID: r.ID, Name: r.Name, TaskID: r.TaskID.String, State: r.State, Model: r.Model,
-		InheritUserSettings: r.InheritUserSettings && r.Sandbox == SandboxHost, Sandbox: r.Sandbox, Kind: r.Kind, Role: r.Role, Branch: r.Branch,
+		InheritUserSettings: r.InheritUserSettings && r.Sandbox == SandboxHost, Sandbox: r.Sandbox, CLI: r.Cli, Kind: r.Kind,
+		Role: r.Role, Branch: r.Branch,
 		WorktreePath:  r.WorktreePath,
 		WorkspaceKind: r.WorktreeKind, WorktreeStatus: r.WorktreeStatus, StartedAt: r.StartedAt, ExitReason: r.ExitReason,
 	}

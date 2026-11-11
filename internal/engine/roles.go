@@ -59,7 +59,30 @@ func (e *Engine) modelOf(def *role.Role) string {
 	if def.Model != "" {
 		return def.Model
 	}
+	if def.CLI == role.CLICodex {
+		return e.opts.CodexModel // --model names Claude Code models
+	}
 	return e.opts.Model
+}
+
+// checkCLI says whether agents can run on cli in this daemon: Codex agents
+// need the sandbox and a Codex installation and login (ADR 0049).
+func (e *Engine) checkCLI(cli string) error {
+	switch cli {
+	case role.CLIClaude, "":
+		return nil
+	case role.CLICodex:
+		if e.opts.Sandbox == nil {
+			return invalid("Codex agents run sandboxed only (--sandbox podman): their credential is injected outside the " +
+				"container, which host-mode agents do not have (ADR 0049)")
+		}
+		if e.opts.Sandbox.Codex == nil {
+			return invalid("Codex is not set up in this daemon: install the Codex CLI, sign in with `codex login` (ChatGPT) " +
+				"and restart the daemon (ADR 0049)")
+		}
+		return nil
+	}
+	return invalid("unknown agent CLI %q", cli)
 }
 
 // single reports whether at most one agent of kind runs at a time (ADR 0017:

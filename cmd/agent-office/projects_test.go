@@ -153,3 +153,29 @@ func TestDaemonDefaults(t *testing.T) {
 		t.Fatalf("merged %+v", eff)
 	}
 }
+
+func TestCodexFlags(t *testing.T) {
+	c, err := parseServe([]string{"--role-cli", "worker=codex,reviewer=codex", "--codex-model", "gpt-6.1-sol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := daemonDefaults(c)
+	if d.RoleCLIs["worker"] != "codex" || *d.CodexModel != "gpt-6.1-sol" || !usesCodex(c.roleCLIs) {
+		t.Fatalf("defaults %+v", d)
+	}
+	for _, args := range [][]string{{"--role-cli", "worker=gemini"}, {"--role-cli", "worker=codex", "--sandbox", "host"}} {
+		if _, err := parseServe(args); err == nil {
+			t.Errorf("%v accepted", args)
+		}
+	}
+	if _, err := resolveCodex(filepath.Join(t.TempDir(), "codex")); err == nil {
+		t.Fatal("a missing Codex resolved")
+	}
+	// The installed one, where there is one: the npm launcher resolves to its static binaries.
+	if _, err := exec.LookPath("codex"); err == nil {
+		ci, err := resolveCodex("codex")
+		if err != nil || ci.version == "" || filepath.Base(ci.dir) != "bin" {
+			t.Fatalf("installed Codex: %+v %v", ci, err)
+		}
+	}
+}

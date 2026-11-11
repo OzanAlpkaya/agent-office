@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/pack"
+	"github.com/OzanAlpkaya/agent-office/internal/role"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/secret"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
@@ -41,9 +43,63 @@ type SandboxOptions struct {
 	Memory        string            // per-worker memory limit; empty: sandbox default
 	Pids          int               // per-worker pids limit; 0: sandbox default
 	Pack          *pack.Pack        // stack pack (ADR 0023); nil: none. Image and Allow already reflect it.
+	Codex         *CodexOptions     // Codex agents (ADR 0049); nil: not set up, Codex roles are refused
 	SecretsDir    string            // where the pack's secret values live (pack.DefaultSecretsDir)
 
 	apiUpstream *url.URL // tests only: the API proxy's upstream; nil: the Anthropic API
+}
+
+// CodexOptions is the daemon's Codex installation and login (ADR 0049),
+// shared by every project.
+type CodexOptions struct {
+	Dir     string                             // host dir with the static codex and codex-code-mode-host binaries
+	Version string                             // e.g. "0.167.1"
+	Login   func() (sandbox.CodexLogin, error) // the user's ChatGPT login, read at every request
+	CA      *sandbox.LocalCA                   // the loopback TLS leg's CA
+
+	upstream *url.URL // tests only: the ChatGPT backend; nil: sandbox.ChatGPTBackend
+}
+
+// codexFiles are a Codex agent's daemon-written files (ADR 0049).
+type codexFiles struct {
+	dir, config, login, ca string // host paths, mounted read-only
+	bearer                 string // the placeholder login's bearer, which the API socket expects
+}
+
+// writeCodexFiles writes a Codex agent's config.toml, its placeholder login
+// and the loopback CA into runDir (daemon-owned, mounted read-only), and the
+// mount points into its config dir. The user's login is read for its account
+// id and plan only; its token stays on the host.
+func (e *Engine) writeCodexFiles(runDir, cfgDir string, fresh bool) (codexFiles, error) {
+	s := e.opts.Sandbox
+	login, err := s.Codex.Login()
+	if err != nil {
+		return codexFiles{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	placeholder, bearer, err := agent.CodexPlaceholder(login.Account, login.Plan)
+	if err != nil {
+		return codexFiles{}, err
+	}
+	cfg, err := agent.CodexConfig(agent.CodexConfigSpec{BackendOrigin: sandbox.CodexOrigin, HookCommand: sandbox.AgentOfficeBin + " hook",
+		MCPCommand: sandbox.AgentOfficeBin, MCPSocket: sandbox.MCPSocket, Workspace: sandbox.WorkspaceDir, Extra: packServers(s.Pack)})
+	if err != nil {
+		return codexFiles{}, err
+	}
+	cx := codexFiles{dir: s.Codex.Dir, config: filepath.Join(runDir, "codex-config.toml"),
+		login: filepath.Join(runDir, "codex-login.json"), ca: filepath.Join(runDir, "loopback-ca.pem"), bearer: bearer}
+	for p, b := range map[string][]byte{cx.config: cfg, cx.login: placeholder, cx.ca: s.Codex.CA.CertPEM()} {
+		if err := os.WriteFile(p, b, 0o644); err != nil { // read by the container user; nothing secret; dir is 0700
+			return codexFiles{}, err
+		}
+	}
+	if fresh { // mount points, while the config dir still belongs to the user
+		for _, name := range []string{"config.toml", "auth.json"} {
+			if err := os.WriteFile(filepath.Join(cfgDir, name), nil, 0o644); err != nil {
+				return codexFiles{}, err
+			}
+		}
+	}
+	return cx, nil
 }
 
 // workspacesReadme is put into the workspaces root (ADR 0014).
@@ -213,26 +269,36 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	if err := os.MkdirAll(res.dir, 0o700); err != nil {
 		return fail(err)
 	}
-	settings, err := agent.SandboxSettings(sandbox.AgentOfficeBin+" hook", l.def.DenyRules())
-	if err != nil {
-		return fail(err)
-	}
-	settingsPath := filepath.Join(res.dir, "settings.json")
-	if err := os.WriteFile(settingsPath, settings, 0o644); err != nil { // read by the container user; dir is 0700
-		return fail(err)
-	}
-	seed, err := agent.SeedConfig(s.ClaudeVersion, sandbox.WorkspaceDir)
-	if err != nil {
-		return fail(err)
-	}
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		return fail(err)
 	}
-	// A relaunch (ADR 0022) keeps the config the agent's first session left; it
-	// belongs to the sandbox user by now.
-	if _, err := os.Lstat(filepath.Join(cfgDir, ".claude.json")); l.prev == nil || err != nil {
-		if err := os.WriteFile(filepath.Join(cfgDir, ".claude.json"), seed, 0o644); err != nil {
+	codex := l.cli == role.CLICodex
+	var settingsPath string
+	var cx codexFiles
+	if codex {
+		var err error
+		if cx, err = e.writeCodexFiles(res.dir, cfgDir, l.prev == nil); err != nil {
 			return fail(err)
+		}
+	} else {
+		settings, err := agent.SandboxSettings(sandbox.AgentOfficeBin+" hook", l.def.DenyRules())
+		if err != nil {
+			return fail(err)
+		}
+		settingsPath = filepath.Join(res.dir, "settings.json")
+		if err := os.WriteFile(settingsPath, settings, 0o644); err != nil { // read by the container user; dir is 0700
+			return fail(err)
+		}
+		seed, err := agent.SeedConfig(s.ClaudeVersion, sandbox.WorkspaceDir)
+		if err != nil {
+			return fail(err)
+		}
+		// A relaunch (ADR 0022) keeps the config the agent's first session left; it
+		// belongs to the sandbox user by now.
+		if _, err := os.Lstat(filepath.Join(cfgDir, ".claude.json")); l.prev == nil || err != nil {
+			if err := os.WriteFile(filepath.Join(cfgDir, ".claude.json"), seed, 0o644); err != nil {
+				return fail(err)
+			}
 		}
 	}
 	// The pack's skills become the agent's personal skills (ADR 0023): written
@@ -246,6 +312,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		}
 	}
 	var skillsPath string
+	var err error
 	if p := s.Pack; p != nil && len(p.Skills) > 0 {
 		skillsPath = filepath.Join(res.dir, "skills")
 		if err := p.WriteSkills(skillsPath); err != nil {
@@ -256,13 +323,16 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	if ln, err = hooks.Listen(filepath.Join(res.dir, "hook.sock"), e.hookHandler(id, log), log); err != nil {
 		return fail(err)
 	}
-	mcpPath, mcpConfig := filepath.Join(res.dir, "mcp.sock"), filepath.Join(res.dir, "mcp.json")
-	cfg, err := agent.MCPConfig(sandbox.AgentOfficeBin, sandbox.MCPSocket, packServers(s.Pack))
-	if err != nil {
-		return fail(err)
-	}
-	if err := os.WriteFile(mcpConfig, cfg, 0o644); err != nil { // read by the container user; dir is 0700
-		return fail(err)
+	mcpPath, mcpConfig := filepath.Join(res.dir, "mcp.sock"), ""
+	if !codex { // Codex's MCP servers are in its config.toml
+		mcpConfig = filepath.Join(res.dir, "mcp.json")
+		cfg, err := agent.MCPConfig(sandbox.AgentOfficeBin, sandbox.MCPSocket, packServers(s.Pack))
+		if err != nil {
+			return fail(err)
+		}
+		if err := os.WriteFile(mcpConfig, cfg, 0o644); err != nil { // read by the container user; dir is 0700
+			return fail(err)
+		}
 	}
 	if mln, err = e.listenMCP(mcpPath, id, l, log); err != nil {
 		return fail(err)
@@ -283,10 +353,20 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		return fail(err)
 	}
 	apiLog := log.With("proxy", "api")
-	api := &sandbox.APIProxy{Token: prep.token, Upstream: s.apiUpstream, OnEvent: onEvent, Log: apiLog,
-		OnUsage: func(m usage.Message) { e.meterUsage(su, m, apiLog) },
-		Allow:   func() error { return e.allowRequest(su) }}
-	res.api = &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	var handler http.Handler
+	if codex {
+		// The ChatGPT backend with the user's login, over TLS on the loopback leg (ADR 0049).
+		cp := &sandbox.CodexProxy{Login: s.Codex.Login, Placeholder: cx.bearer, Upstream: s.Codex.upstream, OnEvent: onEvent,
+			Log: apiLog, OnUsage: func(m usage.Message) { e.meterUsage(su, m, apiLog) },
+			Allow: func() error { return e.allowRequest(su) }}
+		handler, apiLn = cp.Handler(), s.Codex.CA.Listener(apiLn)
+	} else {
+		api := &sandbox.APIProxy{Token: prep.token, Upstream: s.apiUpstream, OnEvent: onEvent, Log: apiLog,
+			OnUsage: func(m usage.Message) { e.meterUsage(su, m, apiLog) },
+			Allow:   func() error { return e.allowRequest(su) }}
+		handler = api.Handler()
+	}
+	res.api = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = res.api.Serve(apiLn) }()
 
 	socks := []string{ln.Path(), mcpPath, egressPath, apiPath}
@@ -310,9 +390,15 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		return fail(err)
 	}
 
-	command, err := agent.ContainerArgs(agent.ContainerSpec{Bin: sandbox.ClaudeBin, SessionID: sid,
-		Model: e.modelOf(l.def), SettingsPath: sandbox.SettingsFile, MCPConfigPath: sandbox.MCPConfigFile, InitialPrompt: l.prompt,
-		ResumeFrom: l.resumeFrom})
+	var command []string
+	if codex {
+		command, err = agent.CodexContainerArgs(agent.CodexContainerSpec{Bin: sandbox.CodexBin, Model: e.modelOf(l.def),
+			InitialPrompt: l.prompt, ResumeFrom: l.cliResume})
+	} else {
+		command, err = agent.ContainerArgs(agent.ContainerSpec{Bin: sandbox.ClaudeBin, SessionID: sid,
+			Model: e.modelOf(l.def), SettingsPath: sandbox.SettingsFile, MCPConfigPath: sandbox.MCPConfigFile, InitialPrompt: l.prompt,
+			ResumeFrom: l.resumeFrom})
+	}
 	if err != nil {
 		return fail(err)
 	}
@@ -321,6 +407,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		HookSocket: ln.Path(), MCPSocket: mcpPath, MCPConfig: mcpConfig, EgressSocket: egressPath, APISocket: apiPath,
 		SecretsSocket: secretsPath, Skills: skillsPath, AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
 		Git: prep.ident, Memory: s.Memory, Pids: s.Pids, Command: command, ReadOnlyWorkspace: l.def.ReadOnly,
+		CLI: cliOr(l.cli), Codex: cx.dir, CodexConfig: cx.config, CodexAuth: cx.login, CodexCA: cx.ca,
 	})
 	if err != nil {
 		return fail(err)
@@ -357,9 +444,39 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		"workspace", wsPath, "container", res.container, "image", s.Image, "pack", packName(s.Pack),
 		"secrets", secretNames(prep.secrets), "model", e.modelOf(l.def), "role_name", l.def.Name, "read_only", l.def.ReadOnly)
 	e.keepHistory(a)
+	if codex && l.prompt == "" {
+		e.codexReadyWithoutPrompt(a, log)
+	}
 	e.wg.Add(1)
 	go e.watch(a)
 	return view, nil
+}
+
+// codexSettle is how long a Codex TUI takes to come up (Spike G: about a
+// second); tests shorten it.
+var codexSettle = 3 * time.Second
+
+// codexReadyWithoutPrompt marks a Codex agent idle that started without a
+// prompt (a restore or Resume of an idle conversation, a worker without a
+// task): Codex sends SessionStart only with the first prompt (checked with
+// 0.167.1, fresh and resumed), so no hook would end "starting". Its session
+// id is learned from that first prompt's SessionStart (ADR 0049).
+func (e *Engine) codexReadyWithoutPrompt(a *agentProc, log *slog.Logger) {
+	e.wg.Add(1)
+	time.AfterFunc(codexSettle, func() {
+		defer e.wg.Done()
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if !a.running() || a.status.State != hooks.Starting {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// Up for codexSettle with its conversation: not a failed resume (ADR 0035).
+		a.sessionStarted = true
+		e.applyLocked(ctx, a, agent.Event{Kind: agent.Idle, SessionID: a.info.SessionID, Hook: "codex_ready"}, log)
+		e.scheduleDeliveryLocked(ctx, a) // what was queued for it is typed in once it settles
+	})
 }
 
 // closeSandbox stops the proxies, removes the container if it is still there

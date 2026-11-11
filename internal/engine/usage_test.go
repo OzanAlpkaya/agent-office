@@ -474,3 +474,41 @@ func TestHostUsageForkedTranscript(t *testing.T) {
 		t.Fatalf("forked session usage %+v (cli %d)", fork, *fork.CLICostMicroUSD)
 	}
 }
+
+// Usage per vendor (ADR 0050): a Codex session's tokens are OpenAI's and,
+// without a price for its model, unpriced; a Claude Code session's are
+// Anthropic's.
+func TestUsagePerVendor(t *testing.T) {
+	f, _, _ := usageFixture(t)
+	e := f.engine(t)
+	ctx := context.Background()
+	for _, a := range []struct{ id, cli, model string }{{"c1", "claude", "claude-haiku-5-5"}, {"x1", "codex", "gpt-6.1-sol"}} {
+		if _, err := f.store.DB.Exec(`INSERT INTO agents (id, project_id, inherit_user_settings, state, started_at, sandbox, cli)
+			VALUES (?, ?, 0, 'idle', ?, 'podman', ?)`, a.id, e.project.ID, now(), a.cli); err != nil {
+			t.Fatal(err)
+		}
+		su := e.newSessionUsage(launchInfo{id: a.id, sid: "s-" + a.id, role: RoleWorker, started: now(), cli: a.cli}, SandboxPodman)
+		if err := e.q.CreateSession(ctx, db.CreateSessionParams{ID: "s-" + a.id, AgentID: a.id, StartedAt: now()}); err != nil {
+			t.Fatal(err)
+		}
+		e.meterUsage(su, usage.Message{ID: "m-" + a.id, Model: a.model, Tokens: usage.Tokens{Input: 100, CacheRead: 50, Output: 10}}, e.log)
+		e.flushUsage(su, e.log)
+	}
+	rep, err := e.Usage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Vendors) != 2 || rep.Vendors[0].Vendor != "anthropic" || rep.Vendors[1].Vendor != "openai" {
+		t.Fatalf("vendors %+v", rep.Vendors)
+	}
+	a, o := rep.Vendors[0], rep.Vendors[1]
+	if a.Sessions != 1 || a.CostMicroUSD == 0 || a.UnpricedTokens != 0 || o.Sessions != 1 || o.CostMicroUSD != 0 ||
+		o.UnpricedTokens != 160 || o.Tokens.CacheRead != 50 {
+		t.Fatalf("anthropic %+v, openai %+v", a, o)
+	}
+	for _, s := range rep.Sessions {
+		if (s.AgentID == "x1") != (s.CLI == "codex") {
+			t.Fatalf("session %+v", s)
+		}
+	}
+}

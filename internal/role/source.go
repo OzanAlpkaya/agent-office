@@ -261,6 +261,27 @@ func (s *Set) WithModels(models map[string]string) (*Set, error) {
 	return out, nil
 }
 
+// WithCLIs returns a copy of the set in which the named roles run on another
+// agent CLI (--role-cli, a project's role_clis; ADR 0050).
+func (s *Set) WithCLIs(clis map[string]string) (*Set, error) {
+	out := &Set{roles: map[string]*Role{}, names: s.names}
+	for n, r := range s.roles {
+		c := *r
+		out.roles[n] = &c
+	}
+	for n, cli := range clis {
+		r, ok := out.roles[n]
+		if !ok {
+			return nil, fmt.Errorf("--role-cli: unknown role %q (run `agent-office role list`)", n)
+		}
+		if why := checkCLI(cli, r.Deny); why != "" {
+			return nil, fmt.Errorf("--role-cli: role %s: %s", n, why)
+		}
+		r.CLI = cli
+	}
+	return out, nil
+}
+
 // ParseModels parses "role=model,role=model".
 func ParseModels(s string) (map[string]string, error) {
 	out := map[string]string{}
@@ -337,3 +358,17 @@ func checkPerm(p, what string) []Problem {
 // accepts (e.g. haiku, claude-sonnet-4-5, opus[1m]); used for project
 // settings (ADR 0046).
 func ValidModel(m string) bool { return m != "" && len(m) <= maxModel && modelRe.MatchString(m) }
+
+// ParseCLIs parses "role=cli,role=cli" (--role-cli, AGENT_OFFICE_ROLE_CLIS).
+func ParseCLIs(s string) (map[string]string, error) {
+	m, err := ParseModels(s)
+	if err != nil {
+		return nil, fmt.Errorf("--role-cli%s", strings.TrimPrefix(err.Error(), "--role-model"))
+	}
+	for n, cli := range m {
+		if cli != CLIClaude && cli != CLICodex {
+			return nil, fmt.Errorf("--role-cli: role %s: %q is not an agent CLI; use %s or %s", n, cli, CLIClaude, CLICodex)
+		}
+	}
+	return m, nil
+}

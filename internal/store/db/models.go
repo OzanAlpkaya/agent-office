@@ -39,6 +39,7 @@ type Agent struct {
 	Role                string
 	ResumeState         string
 	Name                string
+	Cli                 string
 }
 
 type Device struct {
@@ -195,6 +196,7 @@ type Session struct {
 	ToolCalls       int64
 	CliCostMicroUsd sql.NullInt64
 	ResumedFrom     string
+	CliSessionID    string
 }
 
 type Spec struct {

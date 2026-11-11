@@ -4,8 +4,8 @@ Each phase has a goal, a scope and a Definition of Done (DoD). Every phase start
 approved plan and ends with an updated `PROGRESS.md` and a plain-language summary. Later phases are
 intentionally coarser; their DoD is refined at the start of the phase.
 
-**Order** (decided 2026-11-08): phases run 0–8, then 12, 9, 10, 11, 13, then 14 (added
-2026-11-11). Numbers are kept, so references in ADRs and plans stay valid.
+**Order** (decided 2026-11-08): phases run 0–8, then 12, 9, 10, 11, 13, then 14 and 15
+(added 2026-11-11). Numbers are kept, so references in ADRs and plans stay valid.
 
 ---
 
@@ -567,3 +567,47 @@ Added by Ozan after Phase 13 was merged (2026-11-11).
   behind the engine's checks.
 - A GitHub token file per project (one fine-grained token covers every project's repository today).
 - Error messages to remote devices name host paths (the repository, git's stderr).
+
+---
+
+## Phase 15: Codex adapter
+
+Added by Ozan after Phase 14 was merged (2026-11-11).
+
+**Goal:** Codex agents work next to Claude Code agents: one team can mix both, and every agent
+stays sandboxed with the credential outside its container.
+
+**Scope** (see `docs/plans/phase-15.md`)
+- Start with a spike against the installed Codex CLI: hook payloads and states, usage reporting,
+  resume, and whether a Codex agent runs in the network-less sandbox with the credential injected
+  by the daemon. If the real credential would have to be inside the container, stop and ask Ozan.
+- A Codex adapter behind the existing agent interface.
+- Roles and projects choose the agent CLI and model (for example a Claude Tech Lead with Codex
+  workers, or a Codex reviewer).
+- The team MCP tools work for Codex agents.
+- Usage per vendor.
+
+**Definition of Done**
+- [x] In a sandboxed team with a Claude lead, a Codex worker implements a sub-task end to end:
+      `TestCodexTeamEndToEnd` (a haiku Tech Lead assigns, a Codex worker commits and reports through
+      the team MCP tools, its branch is imported, its usage is metered as OpenAI's);
+      `TestSandboxedCodexWorker` with a fake Codex in a real Podman worker.
+- [x] A Codex reviewer reviews a Claude worker's branch: the GitHub e2e with
+      `AO_E2E_REVIEWER_CLI=codex` (the review on the playground's pull request came from a Codex
+      reviewer); `TestSandboxedCodexReviewer` with the GitHub fake.
+- [x] Restart behaviour is tested: `TestCodexTeamEndToEnd` SIGKILLs the daemon with an idle Codex
+      worker, which comes back on its own Codex session and recalls a codeword from before;
+      `TestSandboxedCodexRestore`. Limits are in ADR 0049 (Codex starts a session only with its
+      first prompt; prompt-less agents are marked idle once their TUI is up).
+- [x] `make check`, `make ui-test` (79), `make sandbox-test` and `make e2e` (host, sandbox, team,
+      workflow, multi-project, Codex team, and the GitHub run with a Codex reviewer) pass.
+
+**Backlog** (from Phase 15)
+- Codex agents in host mode (refused today: the credential could not be kept from a host process).
+- Prices for OpenAI models (Codex usage is unpriced unless `prices.yaml` has the model), and a
+  conservative count for Responses streams broken off before their final event.
+- A repository's own `.codex/config.toml` is loaded for the trusted workspace; consider mounting an
+  empty one over it.
+- Several goals at once in one project, when real use shows the need. Today a project runs one
+  goal at a time (one Tech Lead, architect and QA, ADR 0017); the Board says so on the other goals'
+  cards. Two goals can already run in parallel as two projects (Phase 14).

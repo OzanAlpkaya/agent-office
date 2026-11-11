@@ -256,3 +256,40 @@ func TestBehaviourTools(t *testing.T) {
 		}
 	}
 }
+
+func TestCLIs(t *testing.T) {
+	r, err := load(roleFS("schema: 1\nname: x\ndescription: d\nbehaviour: worker\ncli: codex\nprompt: p\n"), "x", "x", "x")
+	if err != nil || r.CLI != CLICodex {
+		t.Fatalf("codex role %+v %v", r, err)
+	}
+	if r, _ := load(roleFS(valid), "sec", "x", "sec/role.yaml"); r.CLI != CLIClaude {
+		t.Fatalf("default CLI %q", r.CLI)
+	}
+	for yaml, want := range map[string]string{
+		"schema: 1\nname: x\ndescription: d\nbehaviour: worker\ncli: gemini\nprompt: p\n":                           `"gemini" is not an agent CLI`,
+		"schema: 1\nname: x\ndescription: d\nbehaviour: worker\ncli: codex\ntools: {deny: [WebFetch]}\nprompt: p\n": "Claude Code permission rules",
+	} {
+		if _, err := load(roleFS(yaml), "x", "x", "x"); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v", yaml, err)
+		}
+	}
+	m, err := ParseCLIs("worker=codex, reviewer=codex")
+	if err != nil || m["worker"] != CLICodex || m["reviewer"] != CLICodex {
+		t.Fatalf("%v %v", m, err)
+	}
+	if _, err := ParseCLIs("worker=gemini"); err == nil || !strings.Contains(err.Error(), "--role-cli") {
+		t.Fatalf("bad CLI: %v", err)
+	}
+	s := MustBuiltins()
+	s2, err := s.WithCLIs(map[string]string{"worker": CLICodex, "reviewer": CLICodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(s *Set, n string) *Role { r, _ := s.Get(n); return r }
+	if get(s2, "worker").CLI != CLICodex || get(s, "worker").CLI != CLIClaude || get(s2, "tech-lead").CLI != CLIClaude {
+		t.Fatal("WithCLIs must copy and change only the named roles")
+	}
+	if _, err := s.WithCLIs(map[string]string{"nobody": CLICodex}); err == nil {
+		t.Fatal("unknown role accepted")
+	}
+}

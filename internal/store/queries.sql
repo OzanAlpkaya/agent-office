@@ -66,8 +66,8 @@ RETURNING *;
 DELETE FROM tasks WHERE id = ?;
 
 -- name: CreateAgent :exec
-INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, kind, role, name)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, kind, role, name, cli)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: SetAgentName :exec
 -- Names agents recorded before names existed (ADR 0043).
@@ -96,7 +96,11 @@ UPDATE agents SET resume_state = state, state = 'exited', activity = '', exited_
 WHERE project_id = ? AND state != 'exited';
 
 -- name: CreateSession :exec
-INSERT INTO sessions (id, agent_id, started_at, resumed_from) VALUES (?, ?, ?, ?);
+INSERT INTO sessions (id, agent_id, started_at, resumed_from, cli_session_id) VALUES (?, ?, ?, ?, ?);
+
+-- name: SetSessionCLIID :exec
+-- A Codex session's own id, from its first hook (migration 0014, ADR 0049); set once.
+UPDATE sessions SET cli_session_id = ? WHERE id = ? AND cli_session_id = '';
 
 -- name: EndSessions :exec
 UPDATE sessions SET ended_at = ? WHERE agent_id = ? AND ended_at IS NULL;
@@ -322,7 +326,7 @@ WHERE a.project_id = ? ORDER BY u.id;
 
 -- name: ListProjectSessions :many
 SELECT s.id, s.agent_id, s.started_at, s.ended_at, s.turns, s.tool_calls, s.cli_cost_micro_usd,
-       a.kind, a.role, a.sandbox, a.task_id, a.model, a.removed_at
+       a.kind, a.role, a.sandbox, a.task_id, a.model, a.removed_at, a.cli
 FROM sessions s JOIN agents a ON a.id = s.agent_id
 WHERE a.project_id = ? ORDER BY s.started_at;
 

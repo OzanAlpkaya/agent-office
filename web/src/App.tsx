@@ -44,7 +44,7 @@ const exitLabel: Record<string, string> = {
   follow_up: "ended for a follow-up",
   goal_done: "goal marked done",
   plan_approved: "plan approved",
-  resume_failed: "resume failed: Claude Code could not load the previous conversation",
+  resume_failed: "resume failed: the agent CLI could not load the previous conversation",
 };
 
 // What each kind of agent does (ADR 0029); the role name is shown next to it.
@@ -656,9 +656,14 @@ function AgentCard({
         {a.branch}
       </div>
       <div className="small muted">
+        {a.cli === "codex" && (
+          <><span className="badge small cli-codex" title="Runs on the Codex CLI with your ChatGPT plan; the login stays on this machine (ADR 0049)">
+            codex</span>{" "}</>
+        )}
         {a.model ? `model ${a.model}` : "default model"} ·{" "}
         {sandboxed
-          ? <span title="Sandboxed agents get a clean Claude Code config; your own settings never apply.">sandbox config</span>
+          ? <span title={`Sandboxed agents get a clean ${a.cli === "codex" ? "Codex" : "Claude Code"} config; your own settings never apply.`}>
+            sandbox config</span>
           : `user settings ${a.inherit_user_settings ? "on" : "off"}`}
       </div>
       {a.state === "exited" && (

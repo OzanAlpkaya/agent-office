@@ -43,6 +43,7 @@ order they were made; grouped here by topic. New ones start from [0000-template.
 | [0014](0014-git-in-the-sandbox.md) | A shared clone per agent; work handed back as a verified git bundle |
 | [0015](0015-agent-credential.md) | The OAuth token in a user-only file |
 | [0016](0016-sandbox-network-and-api-injection.md) | `--network none`; egress allowlist and an API socket that injects the token |
+| [0049](0049-codex-agents-and-their-credential.md) | Codex agents, sandboxed, with a placeholder ChatGPT login and the real token added outside |
 | [0019](0019-access-requests.md) | Network access requests approved by a human, per agent |
 | [0041](0041-reproducible-worker-images.md) | Worker images from a pinned Debian snapshot |
 | [0038](0038-remote-access-tailscale-serve.md) | Remote access: the loopback daemon behind `tailscale serve` |
@@ -56,6 +57,7 @@ order they were made; grouped here by topic. New ones start from [0000-template.
 | [0017](0017-team-roles-and-authority.md) | Authority comes from the socket an agent calls on, never from arguments |
 | [0018](0018-message-delivery.md) | Messages claimed once in SQLite, delivered on Stop or typed when idle |
 | [0029](0029-roles-as-data.md) | Roles as YAML over six engine behaviours; a model per role |
+| [0050](0050-agent-cli-per-role.md) | The agent CLI (Claude Code or Codex) per role, overridable like the model; usage per vendor |
 | [0030](0030-escalation-and-messages-to-the-user.md) | Escalation chain worker → Tech Lead → Architect → user |
 | [0031](0031-architect-and-specs.md) | The architect's plan: approved by the user, committed as a spec |
 | [0032](0032-dependencies-and-conflicts.md) | Dependencies, file ownership, `merge-tree` conflict checks |

@@ -100,13 +100,34 @@ type Role struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
 	Behaviour   Behaviour `json:"behaviour"`
-	Model       string    `json:"model,omitempty"` // empty: the daemon's --model
+	Model       string    `json:"model,omitempty"` // empty: the daemon's --model (Claude Code) or --codex-model
+	CLI         string    `json:"cli"`             // the agent CLI: CLIClaude or CLICodex (ADR 0050)
 	ReportsTo   string    `json:"reports_to"`
 	ReadOnly    bool      `json:"read_only"`
 	TeamTools   []string  `json:"team_tools"`
 	Deny        []string  `json:"deny"` // Claude Code permission rules denied to the agent
 	Prompt      string    `json:"-"`
 	Source      string    `json:"source"` // SourceBuiltin or the role directory
+}
+
+// Agent CLIs a role can run on (ADR 0050).
+const (
+	CLIClaude = "claude"
+	CLICodex  = "codex"
+)
+
+// checkCLI says why a role cannot run on cli, or "".
+func checkCLI(cli string, deny []string) string {
+	switch cli {
+	case CLIClaude:
+		return ""
+	case CLICodex:
+		if len(deny) > 0 {
+			return "tools.deny holds Claude Code permission rules, which Codex has no equivalent for; remove them or run the role on claude"
+		}
+		return ""
+	}
+	return fmt.Sprintf("%q is not an agent CLI; use %s or %s", cli, CLIClaude, CLICodex)
 }
 
 // SourceBuiltin is Role.Source for roles embedded in the binary.
@@ -185,6 +206,7 @@ type file struct {
 	Description string `yaml:"description"`
 	Behaviour   string `yaml:"behaviour"`
 	Model       string `yaml:"model"`
+	CLI         string `yaml:"cli"`
 	ReportsTo   string `yaml:"reports_to"`
 	Workspace   string `yaml:"workspace"`
 	Tools       *struct {
@@ -304,6 +326,12 @@ func load(fsys fs.FS, dir, source, label string) (*Role, error) {
 				r.Deny = append(r.Deny, d)
 			}
 		}
+	}
+	if r.CLI = strings.TrimSpace(f.CLI); r.CLI == "" {
+		r.CLI = CLIClaude
+	}
+	if why := checkCLI(r.CLI, r.Deny); why != "" {
+		e.add("cli", "%s", why)
 	}
 	r.Prompt = strings.TrimSpace(f.Prompt)
 	switch {

@@ -3,6 +3,7 @@
 package secret
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -47,6 +48,47 @@ func ReadFile(path string, kind error) (Secret, error) {
 	fail := func(format string, a ...any) (Secret, error) {
 		return Secret{}, fmt.Errorf("%w %s: "+format, append([]any{kind, path}, a...)...)
 	}
+	b, err := readOwned(path, kind, MaxFileBytes)
+	if err != nil {
+		return Secret{}, err
+	}
+	tok := strings.TrimSpace(string(b))
+	if tok == "" {
+		return fail("is empty")
+	}
+	// Bytes, not runes: anything outside printable ASCII (a stray Escape or
+	// arrow key from pasting, a non-breaking space, invalid UTF-8) is rejected.
+	// Such a byte cannot be part of the token, so naming it reveals nothing.
+	for i := 0; i < len(tok); i++ {
+		if c := tok[i]; c < 0x21 || c > 0x7e {
+			return fail("must contain only the token on one line; byte %#02x at offset %d is not printable ASCII (re-create the file)", c, i)
+		}
+	}
+	return Secret{v: tok}, nil
+}
+
+// ReadJSONFile reads a credential file in JSON (e.g. Codex's auth.json, ADR
+// 0049) with the same checks as ReadFile, at most limit bytes, into v. A
+// decoding error names the file, never its contents.
+func ReadJSONFile(path string, kind error, limit int, v any) error {
+	if kind == nil {
+		kind = ErrFile
+	}
+	b, err := readOwned(path, kind, limit)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		return fmt.Errorf("%w %s: not valid JSON", kind, path)
+	}
+	return nil
+}
+
+// readOwned reads a user-only file in a directory only its owner can write.
+func readOwned(path string, kind error, limit int) ([]byte, error) {
+	fail := func(format string, a ...any) ([]byte, error) {
+		return nil, fmt.Errorf("%w %s: "+format, append([]any{kind, path}, a...)...)
+	}
 	uid := uint32(os.Getuid())
 
 	dir, err := os.Lstat(filepath.Dir(path))
@@ -81,24 +123,12 @@ func ReadFile(path string, kind error) (Secret, error) {
 		return fail("mode is %#o; it must be readable only by you (chmod 600 %s)", fi.Mode().Perm(), path)
 	}
 
-	b, err := io.ReadAll(io.LimitReader(f, MaxFileBytes+1))
+	b, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
 	if err != nil {
 		return fail("%v", err)
 	}
-	if len(b) > MaxFileBytes {
-		return fail("larger than %d bytes", MaxFileBytes)
+	if len(b) > limit {
+		return fail("larger than %d bytes", limit)
 	}
-	tok := strings.TrimSpace(string(b))
-	if tok == "" {
-		return fail("is empty")
-	}
-	// Bytes, not runes: anything outside printable ASCII (a stray Escape or
-	// arrow key from pasting, a non-breaking space, invalid UTF-8) is rejected.
-	// Such a byte cannot be part of the token, so naming it reveals nothing.
-	for i := 0; i < len(tok); i++ {
-		if c := tok[i]; c < 0x21 || c > 0x7e {
-			return fail("must contain only the token on one line; byte %#02x at offset %d is not printable ASCII (re-create the file)", c, i)
-		}
-	}
-	return Secret{v: tok}, nil
+	return b, nil
 }

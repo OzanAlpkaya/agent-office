@@ -1,6 +1,6 @@
 // Pure helpers for the team workflow UI (Phase 12): inbox, plans, QA,
 // dependencies and conflicts. No React here, so Vitest covers them.
-import type { InboxItem, Plan, PlanSubTask, QARun, RoleInfo, Spec, Task } from "./api";
+import type { Agent, InboxItem, Plan, PlanSubTask, QARun, RoleInfo, Spec, Task } from "./api";
 
 // unread counts the inbox items the user has not opened yet.
 export function unread(items: readonly InboxItem[]): number {
@@ -106,4 +106,27 @@ export function newSubTask(f: PlanForm): SubTaskForm {
   let n = f.subTasks.length + 1;
   while (used.has(`task-${n}`)) n++;
   return { key: `task-${n}`, title: "", description: "", role: "", dependsOn: "", files: "", acceptance: "" };
+}
+
+// GoalBusy says why a goal cannot get its own Tech Lead or architect now:
+// one of them runs for another goal of the project (one goal at a time per
+// project, ADR 0017), and which agent to open.
+export interface GoalBusy {
+  agentId: string;
+  text: string;
+}
+
+export function goalBusy(goal: Task, agents: readonly Agent[], tasks: readonly Task[]): GoalBusy | undefined {
+  if (goal.parent_task_id) return undefined;
+  const other = agents.find((a) => (a.kind === "lead" || a.kind === "architect") && a.state !== "exited" &&
+    a.task_id !== goal.id);
+  if (!other) return undefined;
+  const title = tasks.find((t) => t.id === other.task_id)?.title;
+  const who = other.kind === "lead" ? "Tech Lead" : "architect";
+  const of = title ? ` of “${title}”` : "";
+  return {
+    agentId: other.id,
+    text: `One goal at a time in this project: the ${who}${of} is still running. To start this goal, mark that ` +
+      `goal done or stop its ${who}; or add this repository as another project to run both at once.`,
+  };
 }

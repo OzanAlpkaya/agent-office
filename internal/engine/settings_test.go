@@ -1,9 +1,14 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/OzanAlpkaya/agent-office/internal/agent"
+	"github.com/OzanAlpkaya/agent-office/internal/role"
+	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
 
 func TestProjectSettingsParseAndValidate(t *testing.T) {
@@ -77,4 +82,62 @@ func (s ProjectSettings) ReviewerOrEmpty() string {
 		return ""
 	}
 	return *s.Reviewer
+}
+
+func TestProjectSettingsCLIs(t *testing.T) {
+	if _, err := ParseProjectSettings([]byte(`{"role_clis": {"worker": "codex"}, "codex_model": "gpt-6.1-sol"}`)); err != nil {
+		t.Fatal(err)
+	}
+	for in, want := range map[string]string{
+		`{"role_clis": {"worker": "gemini"}}`: `role_clis: "gemini" is not an agent CLI`,
+		`{"codex_model": "has space"}`:        "codex_model",
+	} {
+		if _, err := ParseProjectSettings([]byte(in)); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", in, err)
+		}
+	}
+	d := NeutralDefaults()
+	d.RoleCLIs = map[string]string{"reviewer": "codex"}
+	eff := d.Merge(ProjectSettings{RoleCLIs: map[string]string{"worker": "codex"}, CodexModel: Ptr("gpt-6.1-sol")})
+	if eff.RoleCLIs["reviewer"] != "codex" || eff.RoleCLIs["worker"] != "codex" || *eff.CodexModel != "gpt-6.1-sol" {
+		t.Fatalf("merged %+v", eff)
+	}
+}
+
+// Codex's session id is learned only from a SessionStart of a startup or a
+// resume, and every later hook must carry it (ADR 0049).
+func TestCodexSessionLearning(t *testing.T) {
+	f := newFixture(t)
+	e := f.engine(t)
+	ctx := context.Background()
+	if _, err := f.store.DB.Exec(`INSERT INTO agents (id, project_id, inherit_user_settings, state, started_at, sandbox, cli)
+		VALUES ('cx1', ?, 0, 'starting', ?, 'podman', 'codex')`, e.project.ID, now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.q.CreateSession(ctx, db.CreateSessionParams{ID: "s-cx1", AgentID: "cx1", StartedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	a := &agentProc{info: AgentInfo{ID: "cx1", SessionID: "s-cx1", CLI: role.CLICodex}}
+	log := e.log
+	ev := func(kind agent.EventKind, sid, detail string) *agent.Event {
+		return &agent.Event{Kind: kind, SessionID: sid, Detail: detail}
+	}
+	for _, bad := range []*agent.Event{ev(agent.TurnStarted, "codex-1", ""), ev(agent.SessionStarted, "codex-1", "clear")} {
+		if err := e.checkSessionLocked(ctx, a, bad, log); !errors.Is(err, ErrSession) || a.cliSession != "" {
+			t.Fatalf("%+v named the session: %v %q", bad, err, a.cliSession)
+		}
+	}
+	first := ev(agent.SessionStarted, "codex-1", "startup")
+	if err := e.checkSessionLocked(ctx, a, first, log); err != nil || a.cliSession != "codex-1" || first.SessionID != "s-cx1" {
+		t.Fatalf("startup: %v %q %+v", err, a.cliSession, first)
+	}
+	if s, _ := e.q.GetSession(ctx, "s-cx1"); s.CliSessionID != "codex-1" {
+		t.Fatalf("recorded %q", s.CliSessionID)
+	}
+	if err := e.checkSessionLocked(ctx, a, ev(agent.TurnStarted, "codex-2", ""), log); !errors.Is(err, ErrSession) {
+		t.Fatalf("another session's hook: %v", err)
+	}
+	if err := e.checkSessionLocked(ctx, a, ev(agent.TurnStarted, "codex-1", ""), log); err != nil {
+		t.Fatalf("its own hook: %v", err)
+	}
 }

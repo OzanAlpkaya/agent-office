@@ -511,3 +511,23 @@ func TestHubRefusesPathsThatAreNotProjects(t *testing.T) {
 		}
 	}
 }
+
+// A project can run a role on Codex; in host mode such an agent is refused
+// with the reason, before anything is created (ADR 0049).
+func TestHubCodexRoleNeedsTheSandbox(t *testing.T) {
+	hf := newHubFixture(t, 4, ProjectSettings{RoleCLIs: map[string]string{"worker": "codex"}})
+	ctx := context.Background()
+	_, err := hf.eb.Start(ctx, StartRequest{})
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "Codex agents run sandboxed only") {
+		t.Fatalf("a Codex worker in host mode: %v", err)
+	}
+	if len(hf.eb.List()) != 0 {
+		t.Fatal("a refused start left an agent")
+	}
+	if a, err := hf.ea.Start(ctx, StartRequest{}); err != nil || a.CLI != "claude" {
+		t.Fatalf("project A still runs Claude Code workers: %+v %v", a, err)
+	}
+	if _, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{RoleCLIs: map[string]string{"nobody": "codex"}}}); err == nil {
+		t.Fatal("an unknown role in role_clis accepted")
+	}
+}

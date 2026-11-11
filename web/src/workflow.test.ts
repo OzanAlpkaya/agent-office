@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { InboxItem, Plan, QARun, Spec, Task } from "./api";
 import {
-  currentSpec, fromForm, inboxFor, latestQA, needsAnswer, newSubTask, proposedSpec, specsOf, splitList, toForm, unread,
+  currentSpec, fromForm, goalBusy, inboxFor, latestQA, needsAnswer, newSubTask, proposedSpec, specsOf, splitList, toForm, unread,
   waitsFor,
 } from "./workflow";
+import { agent } from "./office/testutil";
 
 const at = "2026-11-08T10:00:00Z";
 const task = (id: string, over: Partial<Task> = {}): Task =>
@@ -80,5 +81,24 @@ describe("dependencies and QA", () => {
     const run = (id: number, goal: string): QARun =>
       ({ id, goal_id: goal, status: "passed", branch: "b", merged: [], bugs: [], created_at: at, updated_at: at });
     expect(latestQA([run(1, "g"), run(3, "h"), run(2, "g")], "g")?.id).toBe(2);
+  });
+});
+
+describe("goalBusy", () => {
+  const goal = (id: string, title: string): Task => ({ id, title, description: "", status: "todo", created_at: "", updated_at: "" });
+  const a = goal("g1", "Add tags"), b = goal("g2", "Add search");
+  it("names the goal whose Tech Lead runs, and how to start this one", () => {
+    const lead = agent("l1", { kind: "lead", role: "tech-lead", state: "idle", task_id: "g1" });
+    const busy = goalBusy(b, [lead], [a, b]);
+    expect(busy?.agentId).toBe("l1");
+    expect(busy?.text).toContain("One goal at a time in this project: the Tech Lead of “Add tags” is still running");
+    expect(busy?.text).toContain("mark that goal done or stop its Tech Lead");
+    expect(goalBusy(a, [lead], [a, b])).toBeUndefined(); // its own lead: the card shows the agent
+  });
+  it("names a running architect too, and nothing once they exited or for sub-tasks", () => {
+    const arch = agent("r1", { kind: "architect", role: "architect", state: "working", task_id: "g1" });
+    expect(goalBusy(b, [arch], [a, b])?.text).toContain("the architect of “Add tags”");
+    expect(goalBusy(b, [{ ...arch, state: "exited" }], [a, b])).toBeUndefined();
+    expect(goalBusy({ ...b, parent_task_id: "g1" }, [arch], [a, b])).toBeUndefined();
   });
 });

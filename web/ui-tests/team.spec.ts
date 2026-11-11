@@ -3,7 +3,7 @@
 // project memory.
 import { type Page, expect, test } from "@playwright/test";
 import type { Spec } from "../src/api";
-import { MockDaemon, type World, agent, task } from "./daemon";
+import { MockDaemon, type World, agent, task, team } from "./daemon";
 
 const screens = "test-results/screens";
 const at = "2026-11-08T10:05:00Z";
@@ -203,4 +203,21 @@ test("a question and a plan waiting for you are in Approvals, and the architect 
   await expect(page.locator('.nameplate[data-agent="a7c4e1000001"]')).toHaveAttribute("data-place", "queue");
   await expect(page.locator(".queue-sign")).toHaveAttribute("data-waiting", "1");
   expect(errors).toEqual([]);
+});
+
+test("a second goal says why its Tech Lead cannot start yet, and opens the running one", async ({ page }) => {
+  const world = team(10);
+  world.tasks.push(task("g00000000002", "Add search", "todo"));
+  const daemon = new MockDaemon(world);
+  await daemon.install(page);
+  await page.goto("/");
+  const card = page.locator("#task-g00000000002");
+  await expect(card.getByRole("button", { name: "Start Tech Lead" })).toBeDisabled();
+  const note = card.getByRole("note");
+  await expect(note).toContainText("One goal at a time in this project: the Tech Lead of “Add tags to saved links” is still running");
+  await expect(note).toContainText("mark that goal done or stop its Tech Lead");
+  await note.getByRole("button", { name: "Open it" }).click();
+  await expect(page.getByRole("tab", { name: /Kofi/ })).toHaveAttribute("aria-selected", "true");
+  // The goal with the running lead has no such note: its own lead is on it.
+  await expect(page.locator("#task-g00000000001").getByRole("note")).toHaveCount(0);
 });
