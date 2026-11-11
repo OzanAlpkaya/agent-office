@@ -59,11 +59,14 @@ func (e *Engine) watchMemory(a *agentProc, res *sandboxRes) {
 			return // the worker ended, or this host's cgroups look different
 		}
 		if prev := res.oomKills.Swap(n); n > prev {
+			// If the kill was the agent itself, its exit follows within moments
+			// and says so (ADR 0051): wait for that before telling it anything.
 			select {
-			case <-a.exited: // the agent itself died: its exit says so (ADR 0051)
+			case <-a.exited:
 				return
-			default:
+			case <-time.After(2 * time.Second):
 			}
+			res.oomTold.Add(n - prev)
 			e.oomKilled(a, res, n-prev)
 		}
 	}

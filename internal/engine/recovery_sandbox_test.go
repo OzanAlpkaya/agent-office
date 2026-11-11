@@ -21,6 +21,11 @@ import (
 func TestSandboxedOOMKillIsExplained(t *testing.T) {
 	f := sandboxFixture(t, false)
 	f.opts.Sandbox.Memory = "256m"
+	// A fast running watch, so it may read the counter between the kill and
+	// the exit (it did in an e2e run): the agent's death must still read as OOM.
+	old := memWatchEvery
+	memWatchEvery = 50 * time.Millisecond
+	t.Cleanup(func() { memWatchEvery = old })
 	e := f.engine(t)
 	log := record(t, e)
 	a := startIdle(t, e, log)

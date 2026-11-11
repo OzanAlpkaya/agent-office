@@ -135,7 +135,8 @@ type sandboxRes struct {
 	secrets   net.Listener    // one-shot pack secrets socket (ADR 0023); nil without secrets
 	grants    *sandbox.Grants // hosts approved at run time (ADR 0019)
 	memory    string          // the worker's memory limit, e.g. "2g" (ADR 0051)
-	oomKills  atomic.Int64    // OOM kills the running watch saw in the worker's cgroup
+	oomKills  atomic.Int64    // the worker cgroup's oom_kill count when the running watch last read it
+	oomTold   atomic.Int64    // OOM kills the watch told the agent about: processes it ran, not itself
 }
 
 // eventLimit is the per-agent rate limit for sandbox events.

@@ -69,7 +69,7 @@ func (e *Engine) sandboxExit(res *sandboxRes, waitErr error, log *slog.Logger) e
 	if err != nil {
 		log.Warn("worker exit report", "err", err)
 	}
-	seen := res.oomKills.Load() // OOM kills of processes the agent ran, reported while it ran
+	seen := res.oomTold.Load() // OOM kills of processes the agent ran, told to it while it ran
 	if r != nil {
 		x.code, x.signal, x.oomKills = r.Code, r.Signal, r.OOMKills
 		x.oom = r.Signal == "KILL" && r.OOMKills > seen
