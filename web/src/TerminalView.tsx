@@ -200,7 +200,9 @@ function LiveTerminal({ agent, onResume }: Props): JSX.Element {
 function ResumeNote({ agent }: { agent: Agent }): JSX.Element {
   return (
     <span className="muted" data-testid="resume-note">
-      Claude Code’s “Resume this session with: claude --resume …” line does not apply here: the
+      {agent.cli === "codex"
+        ? "Codex’s “To continue this session, run: codex resume …” line"
+        : "Claude Code’s “Resume this session with: claude --resume …” line"} does not apply here: the
       session belongs to this agent’s workspace and config{agent.sandbox === "podman" ? " in its sandbox" : ""}.
       {agent.resumable ? " Use Resume to continue it in agent-office." : ""}
     </span>

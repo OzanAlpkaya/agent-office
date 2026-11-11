@@ -102,6 +102,16 @@ function report(w: World): UsageReport {
       },
     },
     sessions, models: w.models ?? [],
+    vendors: [...new Set(sessions.map((s) => (s.cli === "codex" ? "openai" : "anthropic")))].sort().map((vendor) => {
+      const of = sessions.filter((s) => (s.cli === "codex" ? "openai" : "anthropic") === vendor);
+      const add = (f: (s: SessionUsage) => number): number => of.reduce((n, s) => n + f(s), 0);
+      return {
+        vendor, sessions: of.length, messages: add((s) => s.messages), cost_micro_usd: add((s) => s.cost_micro_usd),
+        unpriced_tokens: add((s) => s.unpriced_tokens),
+        tokens: { input: add((s) => s.tokens.input), output: add((s) => s.tokens.output), cache_read: add((s) => s.tokens.cache_read),
+          cache_write_5m: add((s) => s.tokens.cache_write_5m), cache_write_1h: add((s) => s.tokens.cache_write_1h) },
+      };
+    }),
   };
 }
 
@@ -175,6 +185,7 @@ export class MockDaemon {
   readonly requests: string[] = []; // "METHOD path body" of every write the page sent
   readonly projectRequests: string[] = []; // "project METHOD path" of every write to a project's routes
   refuseProjectUpdate?: string; // PATCH /api/projects/{id} answers 409 with this error (agents running)
+  roles: RoleInfo[] = roles; // what GET roles answers
   readonly terminalInput: string[] = []; // text frames the page sent to terminals
   // A terminal program for tests: what follows the greeting (e.g. mouse tracking
   // on, like Claude Code's fullscreen mode) and how it answers input.
@@ -324,7 +335,7 @@ export class MockDaemon {
       }
       if (p === "/api/status") return route.fulfill(json(status));
       if (p === "/api/usage") return route.fulfill(json(report(w)));
-      if (p === "/api/roles") return route.fulfill(json(roles));
+      if (p === "/api/roles") return route.fulfill(json(this.roles));
       if (method !== "GET") {
         this.requests.push(`${method} ${p} ${route.request().postData() ?? ""}`.trim());
         if (/^\/api\/inbox\/\d+\/(reply|read)$/.test(p)) {

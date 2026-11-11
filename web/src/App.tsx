@@ -656,9 +656,14 @@ function AgentCard({
         {a.branch}
       </div>
       <div className="small muted">
+        {a.cli === "codex" && (
+          <><span className="badge small cli-codex" title="Runs on the Codex CLI with your ChatGPT plan; the login stays on this machine (ADR 0049)">
+            codex</span>{" "}</>
+        )}
         {a.model ? `model ${a.model}` : "default model"} ·{" "}
         {sandboxed
-          ? <span title="Sandboxed agents get a clean Claude Code config; your own settings never apply.">sandbox config</span>
+          ? <span title={`Sandboxed agents get a clean ${a.cli === "codex" ? "Codex" : "Claude Code"} config; your own settings never apply.`}>
+            sandbox config</span>
           : `user settings ${a.inherit_user_settings ? "on" : "off"}`}
       </div>
       {a.state === "exited" && (

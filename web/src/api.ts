@@ -22,8 +22,12 @@ export const defaultRole: Record<Kind, Role> = {
 export const taskStatuses: readonly TaskStatus[] = ["todo", "in_progress", "review", "done", "blocked"];
 const agentStates: readonly string[] = ["starting", "idle", "working", "waiting_permission", "exited"];
 
+// AgentCLI is the agent CLI an agent runs on (ADR 0050).
+export type AgentCLI = "claude" | "codex";
+
 export interface Agent {
   id: string; // the key everywhere: API, logs, branch names
+  cli?: AgentCLI; // absent from daemons before Phase 15: claude
   name: string; // a first name for people, unique among listed agents (ADR 0043)
   session_id?: string;
   task_id?: string;
@@ -171,6 +175,7 @@ export function isSessionInfo(v: unknown): v is SessionInfo {
 export interface SessionUsage {
   session_id: string;
   agent_id: string;
+  cli?: AgentCLI;
   task_id?: string;
   goal_id?: string;
   kind: Kind;
@@ -189,6 +194,16 @@ export interface SessionUsage {
   models: string[];
 }
 
+// VendorUsage is one vendor's share of a project's usage (ADR 0050).
+export interface VendorUsage {
+  vendor: string; // anthropic (Claude Code) | openai (Codex)
+  sessions: number;
+  messages: number;
+  tokens: Tokens;
+  cost_micro_usd: number;
+  unpriced_tokens: number;
+}
+
 export interface ModelUsage {
   model: string;
   priced: boolean;
@@ -203,6 +218,7 @@ export interface UsageReport {
   totals: { sessions: number; messages: number; tokens: Tokens; cost_micro_usd: number; unpriced_tokens: number };
   sessions: SessionUsage[];
   models: ModelUsage[];
+  vendors?: VendorUsage[]; // absent from daemons before Phase 15
 }
 
 // Review of a pull request (ADR 0021). Summary and comments are written by a
@@ -280,7 +296,8 @@ export interface RoleInfo {
   name: string;
   description: string;
   behaviour: Kind;
-  model: string; // the model it runs with; "" = Claude Code's default
+  model: string; // the model it runs with; "" = the CLI's default
+  cli?: AgentCLI; // absent from daemons before Phase 15: claude
   reports_to: string;
   read_only: boolean;
   team_tools: string[];

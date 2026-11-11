@@ -391,3 +391,6 @@ button.approval-link { align-self: flex-start; padding: 0.1rem 0.5rem; font-size
   .project-switcher select { max-width: 9rem; }
   .elevator .floor { min-height: 44px; }
 }
+
+/* Agent CLI (ADR 0050) */
+.badge.cli-codex { color: #7bd88f; border-color: #7bd88f55; }

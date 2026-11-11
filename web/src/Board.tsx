@@ -177,7 +177,7 @@ function TaskCard(p: CardProps): JSX.Element {
         {roles.length > 1 && (
           <select aria-label="Role" value={role} onChange={(e) => setRole(e.target.value)}
             title={roles.find((r) => r.name === role)?.description}>
-            {roles.map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
+            {roles.map((r) => <option key={r.name} value={r.name}>{r.name}{r.cli === "codex" ? " · codex" : ""}</option>)}
           </select>
         )}
         <button disabled={!canStart || running || waiting.length > 0}

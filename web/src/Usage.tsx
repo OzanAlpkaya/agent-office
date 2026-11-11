@@ -1,5 +1,5 @@
 import { type JSX, useEffect, useMemo, useRef, useState } from "react";
-import { type Agent, type DaemonUsage, type ModelUsage, type SessionUsage, type Status, type Task, type UsageReport, api as daemonApi } from "./api";
+import { type Agent, type DaemonUsage, type ModelUsage, type VendorUsage, type SessionUsage, type Status, type Task, type UsageReport, api as daemonApi } from "./api";
 import { useApi } from "./ProjectContext";
 import { AgentName } from "./AgentName";
 import { type UsageRow, formatMoney, formatTokens, groupSessions, sessionList, share, totalTokens } from "./usage";
@@ -91,7 +91,10 @@ export default function Usage({ usage, agents, tasks, status, onOpenAgent }: Pro
       {sessions.length === 0 ? (
         <p className="empty">No usage yet. Start an agent; its tokens appear here as it works.</p>
       ) : grouping === "model" ? (
-        <ModelTable models={report?.models ?? []} />
+        <>
+          {(report?.vendors?.length ?? 0) > 1 && <VendorTable vendors={report?.vendors ?? []} />}
+          <ModelTable models={report?.models ?? []} />
+        </>
       ) : grouping === "session" ? (
         <SessionTable sessions={sessions} title={title} onOpenAgent={onOpenAgent} agentKnown={(id) => agentById.has(id)} />
       ) : (
@@ -259,6 +262,31 @@ function SessionTable({ sessions, title, onOpenAgent, agentKnown }: {
             <TokenCells r={s} />
             <CostCell micro={s.cost_micro_usd} max={max} unpriced={s.unpriced_tokens} />
             <td className="num muted">{s.cli_cost_micro_usd !== undefined ? formatMoney(s.cli_cost_micro_usd) : "–"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+const vendorName: Record<string, string> = { anthropic: "Anthropic (Claude Code)", openai: "OpenAI (Codex)" };
+
+// VendorTable is usage per vendor (ADR 0050), when a project uses more than one.
+function VendorTable({ vendors }: { vendors: VendorUsage[] }): JSX.Element {
+  const max = Math.max(0, ...vendors.map((v) => v.cost_micro_usd));
+  return (
+    <table className="usage-table" aria-label="Usage by vendor">
+      <thead>
+        <tr><th>Vendor</th><th className="num">Sessions</th><th className="num">Messages</th>{tokenHeads}<th className="cost">Estimated cost</th></tr>
+      </thead>
+      <tbody>
+        {vendors.map((v) => (
+          <tr key={v.vendor} data-vendor={v.vendor}>
+            <td className="name">{vendorName[v.vendor] ?? v.vendor}</td>
+            <td className="num">{v.sessions}</td>
+            <td className="num">{v.messages}</td>
+            <TokenCells r={v} />
+            <CostCell micro={v.cost_micro_usd} max={max} unpriced={v.unpriced_tokens} />
           </tr>
         ))}
       </tbody>
