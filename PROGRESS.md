@@ -1,7 +1,6 @@
 # Progress
 
-**Current phase:** Phase 15 (Codex adapter) done on `phase-15/codex-adapter`, waiting for Ozan's
-review. Phase 14 (Multi-project office) was merged into `main` on 2026-11-11.
+**Current phase:** none in progress. Phase 15 (Codex adapter) was merged into `main` on 2026-11-11.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -25,7 +24,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 12: Team workflow and roles
 - [x] Phase 13: Office v2
 - [x] Phase 14: Multi-project office
-- [x] Phase 15: Codex adapter (waiting for review)
+- [x] Phase 15: Codex adapter
 
 ## Log
 
@@ -332,3 +331,12 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   (79), `make sandbox-test` (plus `TestWorkerEgress` with `AO_SANDBOX_NET=1`) and `make e2e` (host,
   sandbox, team, workflow, multi-project, a Claude-led team with a Codex worker including a SIGKILL
   and restore, and the GitHub run with a Codex reviewer) pass.
+- 2026-11-11: Phase 15 review: all decisions approved, including the real ChatGPT account id and plan
+  type in the placeholder login. Ozan tested it by hand in a real browser on the real daemon (a Claude
+  Tech Lead with a Codex worker, codex tag and role picker, the Codex terminal with no login dialog,
+  usage per vendor, a SIGKILL restart that recalled PLUM73, only placeholders in the container's
+  `auth.json`). Fixed before the merge: a goal's card says why its Tech Lead cannot start while
+  another goal's runs (one goal at a time per project) and opens the running one (Vitest and
+  Playwright). The Codex terminal's one warning is Codex's notice that `--dangerously-bypass-hook-trust`
+  is on, which agent-office passes on purpose; harmless. Backlog: several goals at once in one
+  project. `make check` and `make ui-test` (80) pass. Merged into `main` (`--no-ff`).

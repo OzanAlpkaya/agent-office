@@ -1,6 +1,6 @@
 # Phase 15 plan: Codex adapter
 
-- **Status:** Done on `phase-15/codex-adapter`, waiting for Ozan's review (not merged). Written 2026-11-11 with the recommended option
+- **Status:** Done on `phase-15/codex-adapter`; approved by Ozan and merged into `main` (2026-11-11). Written 2026-11-11 with the recommended option
   for every open question, as Ozan asked ("run it like the earlier phases"), with one exception he
   set: if the spike shows that the real credential would have to be inside the container, the phase
   stops and he decides.
