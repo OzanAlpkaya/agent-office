@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 0 design, updated through Phase 11 and the UI/UX polish pass (portfolio polish; phases ran 0-8, 12, 9, 10, 11), based on the spikes in `spikes/` and
+Status: Phase 0 design, updated through Phase 14 (multi-project office; phases ran 0-8, 12, 9, 10, 11, 13, 14), based on the spikes in `spikes/` and
 the ADRs in `docs/adr/`. Parts marked *(later)* belong to later phases and will be detailed then.
 
 ## Overview
@@ -10,6 +10,11 @@ Codex later), each in its own PTY, git worktree and later its own rootless Podma
 browser UI talks to the daemon over HTTP and WebSocket. Agents talk to the daemon through hooks and
 a team MCP server. Both go through one small forwarder, the same binary run as `agent-office hook`
 or `agent-office mcp`, connected to a **per-agent unix socket**.
+
+One daemon runs several **projects** (Phase 14, ADR 0046): each is a repository with its own
+settings, and the engine below is one **project engine** per open project, under a **hub** that
+owns the store, the project registry and the daemon-wide agent cap (ADR 0047). An agent's sockets
+belong to its project's engine, so everything it can reach is its own project's.
 
 ```mermaid
 flowchart LR
@@ -56,7 +61,7 @@ flowchart LR
 | Package | Responsibility |
 |---|---|
 | `agent` | Adapter per agent CLI: command line (also `--resume … --fork-session`, ADR 0035), env, settings file, and translating CLI-specific hook payloads into common events. |
-| `engine` | Owns the lifecycle of agents, tasks, worktrees and messages. All state changes go through it. |
+| `engine` | Owns the lifecycle of agents, tasks, worktrees and messages, one engine per project; all state changes go through it. The `Hub` opens, adds, reconfigures and removes projects, resolves their settings over the daemon's flags and holds the daemon-wide slot pool (ADR 0046, 0047). |
 | `hooks` | Accepts forwarded hook events from the per-agent sockets and runs the agent state machine. |
 | `mcp` | Team MCP server (go-sdk v1.8.0): `create_task`, `assign_task`, `list_tasks`, `send_message`, `report_done`, `request_access`, `submit_review` (reviewers), `report_no_change` (workers in a review follow-up), and from Phase 12 `message_user`, `submit_plan`, `start_qa`, `report_qa`, `get_briefing`, `list_memory`, `propose_memory`, over a `Team` interface the engine implements; each agent's server lists only its role's tools; per-agent socket listener; the `agent-office mcp` stdio bridge (ADR 0006). |
 | `store` | SQLite via modernc + sqlc, forward-only goose migrations; refuses schemas newer than the binary and backs up before migrating (ADR 0004, 0011, 0012, 0013). |
@@ -69,7 +74,7 @@ flowchart LR
 | `usage` | Token usage and cost (ADR 0026): transcript reader and API response meter (numbers and ids only), the price table (built in plus a user file; integer nano-USD). |
 | `role` | Team roles (ADR 0029): strict YAML loader over six behaviours (architect, lead, worker, qa, reviewer, assistant), built-in roles and user roles from a user-owned directory, model overrides. |
 | `auth` | Paired devices (ADR 0039): one-time pairing codes in memory, device tokens stored as SHA-256, 30-day idle expiry, revocation that cancels the device's open connections. |
-| `api` | HTTP + WebSocket for the UI; serves the embedded UI build (a PWA, ADR 0040); request ids; one route table whose every route needs a paired device unless it is public; Host, Origin and Tailscale header checks (ADR 0038); the control socket's handler (pairing codes, script tokens). |
+| `api` | HTTP + WebSocket for the UI; serves the embedded UI build (a PWA, ADR 0040); request ids; one route table whose every route needs a paired device unless it is public, with project routes under `/api/projects/{project}/` resolved to that project's engine (ADR 0046); Host, Origin and Tailscale header checks (ADR 0038); the control socket's handler (pairing codes, script tokens, project operations for `agent-office project`). |
 
 ## Key flows
 
@@ -475,6 +480,7 @@ events: logged, stored (rate-limited), pushed to the UI live and listed by
 
 | Entity | Key fields | Notes |
 |---|---|---|
+| **Project** | id, name, repo_path, slug, settings (JSON overrides of the daemon's flags), created_at, removed_at | One repository with its own team (ADR 0046); every other entity belongs to exactly one project; removal hides it and keeps its data. |
 | **Agent** | id, name (a first name for people, ADR 0043), kind (architect / lead / worker / qa / reviewer / assistant), role (the role's name), model, sandbox, state, task_id, current_session_id | One live session at a time; at most one running lead, architect, QA and assistant (ADR 0017, 0029); workers and architects can be relaunched in their workspace with a new session (ADR 0022, 0031); workers, architects, leads and assistants can be resumed with their conversation, and are restored after a restart from `resume_state` (ADR 0035). |
 | **Session** | id (= CLI session UUID), agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from | One per CLI process; the correlation id of its logs (ADR 0028); a resumed one names the session whose conversation it continues; its terminal output is saved in the data dir (ADR 0035, 0036). |
 | **UsageMessage** | session_id, message_id, agent_id, task_id, source (api / transcript), request_id, model, speed, inference_geo, input / output / cache read / cache write 5m / 1h tokens | One per API message, upserted; priced when read (ADR 0026). |
@@ -554,3 +560,5 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Saved terminal output leaks (it holds whatever the agent printed: prompts, code, possibly a pack secret it echoed) | Files only in the data dir, directory 0700 and files 0600, written through a temp file; served only to the loopback UI for that agent's own sessions (`TestResumeAndSessionsAPI`, `TestSessionHistory`: another agent's session is not found), read without following symlinks, size-capped; never logged, never in the repository; deleted with the agent and by event retention. The token canary checks of `TestSandboxEndToEnd` scan the data dir, which now includes them. Residual: like the database, readable by the user's own processes | 9 |
 | A restore or resume widens what an agent may do | A resumed agent keeps its kind, role, workspace, sandbox mode and task; one-at-a-time and `--max-agents` limits apply; QA and reviewers are never resumed; a fresh session budget, as for relaunches. The restore prompt is agent-office's fixed text, never stored agent output. Tested: `TestResumeRefusals`, `TestRestoreAfterShutdown`, `TestRestoreAfterCrash` | 9 |
 | A hook payload points the daemon at a file to read (host mode) | The transcript path must be `<session-id>.jsonl`, absolute and clean, a regular file owned by the user, opened without following symlinks, read in bounded chunks with capped lines; only numbers are kept. Host agents already run as the user, so they gain nothing they could not read themselves | 8 |
+| An agent of one project reaches another project (tasks, messages, worktrees, memory) | One engine per project; an agent's hook, MCP, API and secrets sockets are bound to its project's engine, which only sees its project; by-id lookups check the project; the API resolves `/api/projects/{project}/` before any id; sandboxed workers mount only their own workspace and their project's objects. Tested: `TestAgentsCannotReachAnotherProject` (every team tool over the real MCP socket with another project's ids and names; another project's session on a hook socket), `TestProjectRoutesAreIsolated`, `TestProjectEventsCarryOnlyTheirProject`, `TestSandboxedProjectsAreIsolated`, `TestMultiProjectEndToEnd` (no branch crosses repositories). Residual: host-mode agents run as the user and can read any project's files; isolation for them is the API and MCP level only | 14 |
+| One project starves the others or the host (agents, spend) | One `--max-agents` cap across projects, checked and reserved in one critical section; an optional smaller cap per project; budgets per project (ADR 0047). Tested: `TestHubCapHoldsUnderConcurrentStarts`, `TestHubCapAcrossProjects`, `TestHubProjectCap`, `TestHubCapCountsResumes` | 14 |

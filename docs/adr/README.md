@@ -90,3 +90,11 @@ order they were made; grouped here by topic. New ones start from [0000-template.
 | [0040](0040-pwa-and-phone-ui.md) | PWA, phone layout, terminal keys and clipboard |
 | [0043](0043-agent-names.md) | A first name per agent, chosen and stored by the daemon |
 | [0044](0044-agent-switcher-and-approvals-drawer.md) | Agent switcher, open tabs, approvals drawer |
+| [0048](0048-ui-across-projects.md) | The UI across projects: one shown, the others watched lightly, a floor per project |
+
+## Projects
+
+| ADR | Decision |
+|---|---|
+| [0046](0046-projects-and-the-hub.md) | One engine per project under a hub; project settings override the daemon's flags |
+| [0047](0047-daemon-wide-agent-cap.md) | A daemon-wide agent cap across projects, with an optional cap per project |
