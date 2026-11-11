@@ -211,6 +211,9 @@ func TestProjectEventsCarryOnlyTheirProject(t *testing.T) {
 	if m := read(hub); string(m["type"]) != `"projects"` || !strings.Contains(string(m["projects"]), f.pid) {
 		t.Fatalf("daemon snapshot %v", m)
 	}
+	if m := read(hub); string(m["type"]) != `"presence"` {
+		t.Fatalf("presence after the snapshot %v", m)
+	}
 	b := f.addProject(t, fmt.Sprintf(`{"repo": %q}`, newGitRepo(t)))
 	if m := read(hub); string(m["type"]) != `"project"` || !strings.Contains(string(m["project"]), b.ID) {
 		t.Fatalf("daemon update %v", m)
@@ -299,3 +302,75 @@ func TestOfficeLayoutsAPI(t *testing.T) {
 		t.Fatalf("invalid layout: %d %s", r.StatusCode, b)
 	}
 }
+
+// TestPresence: each UI page reports whether it is visible on the hub
+// stream; the stream carries the devices with a visible page (Phase 18, ADR
+// 0058). A hidden or closed page stops counting.
+func TestPresence(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	dial := func() *websocket.Conn {
+		c, _, err := websocket.Dial(ctx, f.ws+"/api/events", f.dialOpts())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.CloseNow() })
+		return c
+	}
+	// next reads until a presence message and returns its devices.
+	next := func(c *websocket.Conn) []string {
+		t.Helper()
+		for {
+			_, data, err := c.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var m struct {
+				Type     string           `json:"type"`
+				Presence *engine.Presence `json:"presence"`
+			}
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatal(err)
+			}
+			if m.Type == "presence" {
+				return m.Presence.Devices
+			}
+		}
+	}
+	send := func(c *websocket.Conn, msg string) {
+		if err := c.Write(ctx, websocket.MessageText, []byte(msg)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := dial()
+	if d := next(a); len(d) != 0 {
+		t.Fatalf("nobody yet: %q", d)
+	}
+	send(a, `{"type":"presence","visible":true}`)
+	d := next(a)
+	if len(d) != 1 || d[0] == "" {
+		t.Fatalf("a visible page: %q", d)
+	}
+	device := d[0]
+	b := dial()
+	if got := next(b); len(got) != 1 || got[0] != device {
+		t.Fatalf("a new page sees the presence: %q", got)
+	}
+	send(b, `{"type":"presence","visible":true}`) // the same device: no change, no message
+	send(a, `{"type":"presence","visible":false}`) // b still shows it: no change either
+	send(b, `not json`)                            // ignored
+	send(b, `{"type":"presence","visible":false}`) // now nobody
+	if got := next(a); len(got) != 0 {
+		t.Fatalf("every page hidden: %q", got)
+	}
+	send(b, `{"type":"presence","visible":true}`)
+	if got := next(a); len(got) != 1 {
+		t.Fatalf("visible again: %q", got)
+	}
+	b.Close(websocket.StatusNormalClosure, "")
+	if got := next(a); len(got) != 0 {
+		t.Fatalf("the visible page closed: %q", got)
+	}
+}
+

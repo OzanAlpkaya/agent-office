@@ -79,9 +79,10 @@ type ProjectInfo struct {
 
 // HubUpdate is a change of the project list, broadcast to subscribers.
 type HubUpdate struct {
-	Type    string       `json:"type"` // "project" | "project_removed"
-	Project *ProjectInfo `json:"project,omitempty"`
-	ID      string       `json:"id,omitempty"`
+	Type     string       `json:"type"` // "project" | "project_removed" | "presence"
+	Project  *ProjectInfo `json:"project,omitempty"`
+	ID       string       `json:"id,omitempty"`
+	Presence *Presence    `json:"presence,omitempty"`
 }
 
 // HubStatus is the daemon-wide state.
@@ -131,6 +132,8 @@ type Hub struct {
 	defaultID string
 	subs      map[chan HubUpdate]struct{}
 	closed    bool
+
+	pages pages // the open UI pages, for the user's presence (ADR 0058)
 }
 
 // NewHub removes the previous run's containers and opens every registered

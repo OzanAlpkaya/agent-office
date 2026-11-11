@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -161,7 +163,9 @@ func (s *server) retryProject(w http.ResponseWriter, r *http.Request) {
 
 // hubEventsWS streams the project list: a snapshot, then one message per
 // change ("project", "project_removed"). Each project's own updates come
-// from its events stream.
+// from its events stream. The page says on it whether it is visible
+// ({"type":"presence","visible":bool}); the stream carries the user's
+// presence back (Phase 18, ADR 0058).
 func (s *server) hubEventsWS(w http.ResponseWriter, r *http.Request) {
 	c, err := s.accept(w, r)
 	if err != nil {
@@ -170,7 +174,31 @@ func (s *server) hubEventsWS(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	updates, unsubscribe := s.hub.Subscribe() // before the snapshot, so no update is missed
 	defer unsubscribe()
-	ctx := c.CloseRead(context.WithoutCancel(r.Context()))
+	dev, _ := s.device(r)
+	pageID := randomID()
+	defer s.hub.DropPage(pageID)
+	// Not the request's context, as in terminalWS: a revoked device gets StatusSignedOut.
+	ctx, stop := context.WithCancel(context.WithoutCancel(r.Context()))
+	defer stop()
+	c.SetReadLimit(maxPresenceMessage)
+	go func() {
+		defer stop() // the page closed the stream or sent something else
+		for {
+			_, b, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var m struct {
+				Type    string `json:"type"`
+				Visible *bool  `json:"visible"`
+			}
+			if json.Unmarshal(b, &m) != nil || m.Type != "presence" || m.Visible == nil {
+				s.log.Debug("hub events: ignoring a message from the page")
+				continue
+			}
+			s.hub.SetPage(pageID, dev.Name, *m.Visible)
+		}
+	}()
 	write := func(v any) error {
 		b, _ := json.Marshal(v)
 		wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -178,6 +206,9 @@ func (s *server) hubEventsWS(w http.ResponseWriter, r *http.Request) {
 		return c.Write(wctx, websocket.MessageText, b)
 	}
 	if err := write(map[string]any{"type": "projects", "projects": s.hub.Projects()}); err != nil {
+		return
+	}
+	if err := write(engine.HubUpdate{Type: "presence", Presence: ptr(s.hub.Presence())}); err != nil {
 		return
 	}
 	for {
@@ -197,6 +228,17 @@ func (s *server) hubEventsWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// maxPresenceMessage bounds what a page may send on the hub stream.
+const maxPresenceMessage = 1024
+
+func ptr[T any](v T) *T { return &v }
+
+func randomID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // projectErrorStatus maps the registry's errors.
