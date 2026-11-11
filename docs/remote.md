@@ -51,11 +51,11 @@ agent-office pair            # make pair for the dev daemon of `make serve`
 # Phone or other machine on your tailnet: open https://box.tail1234.ts.net/ and enter the code
 ```
 
-A code works once and for 5 minutes. A paired browser creates more in **Devices → Pair a device**:
+A code works once and for 5 minutes. A paired browser creates more in **Settings → Devices → Pair a device**:
 open the tailnet URL on the phone, type the code and a name for the device. After 10 wrong codes in
 10 minutes, pairing stops for a while and the open codes are dropped.
 
-**Devices** lists every paired browser and script, where it was paired (this machine, or over
+**Settings → Devices** lists every paired browser and script, where it was paired (this machine, or over
 Tailscale with your login) and when it was last used. **Sign out device** ends one at once,
 including its open terminals, together with every device that was paired with a code it created;
 **Sign out all other devices** keeps only the browser you are using. A device unused for 30 days
@@ -100,5 +100,5 @@ When the daemon or Tailscale is down, the app shows an offline page instead of a
 | "accepts remote requests only from a tailnet user's device" | The request came from a tagged device or without Tailscale's identity; use a device logged in as you. |
 | "refuses requests through Tailscale Funnel" | Funnel is on for this port; turn it off (`tailscale funnel status` shows it; Tailscale's Funnel docs say how) and use `tailscale serve` only. |
 | "no agent-office daemon is running with data dir …" from `pair` | Start the daemon, or pass its `--data-dir` (the dev daemon: `make pair`). |
-| The pairing screen comes back | This device was signed out (from Devices, or after 30 idle days). Pair it again. |
+| The pairing screen comes back | This device was signed out (from Settings → Devices, or after 30 idle days). Pair it again. |
 | `tailscale serve` is refused for your user | Tailscale's docs say forwarding a port needs no root, but some installs restrict the CLI; run it with `sudo` or follow Tailscale's docs for your distribution. |

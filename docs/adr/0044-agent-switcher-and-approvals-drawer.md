@@ -109,3 +109,10 @@ holds an agent whose question to the user (an inbox question or blocked notice, 
 answer yet, and an architect whose plan waits for approval (ADR 0031). Still one entry per agent.
 The drawer shows each with a way to act: "Answer in the inbox" and "Review plan" (the goal's card,
 where the plan is open). The Office's queue at the user's door counts the same list (ADR 0045).
+
+## Amendment (2026-11-12, Phase 18, ADR 0056)
+
+The tab strip no longer holds Board, Office and Usage (they are in the rail, or the phone's tab bar);
+the open-terminal tabs show above a terminal only. The Inbox became a drawer like Approvals, so
+nothing opens under the header. A waiting agent's row in the rail says "needs you" and the header
+above its terminal links to the drawer; "Review plan" opens the goal's modal.

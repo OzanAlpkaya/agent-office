@@ -63,6 +63,7 @@ order they were made; grouped here by topic. New ones start from [0000-template.
 | [0053](0053-access-decisions-by-the-lead.md) | Access decisions by the Tech Lead per project (optionally within a host policy); grants scoped to the agent or project that outlive a session |
 | [0054](0054-goal-archive-and-closing.md) | The board shows active goals; marking a goal done closes its sub-tasks and agents; done goals go to an archive with their record |
 | [0055](0055-merge-and-push-from-the-goal.md) | Merge and Push on the goal card: the user's confirmed squash merge of QA-passed work, and its push |
+| [0059](0059-branch-cleanup.md) | Branch clean-up of a done goal or a project: merged, squashed or unmerged; compare-and-swap deletes; every head recorded |
 | [0030](0030-escalation-and-messages-to-the-user.md) | Escalation chain worker → Tech Lead → Architect → user |
 | [0031](0031-architect-and-specs.md) | The architect's plan: approved by the user, committed as a spec |
 | [0032](0032-dependencies-and-conflicts.md) | Dependencies, file ownership, `merge-tree` conflict checks |
@@ -98,6 +99,9 @@ order they were made; grouped here by topic. New ones start from [0000-template.
 | [0043](0043-agent-names.md) | A first name per agent, chosen and stored by the daemon |
 | [0044](0044-agent-switcher-and-approvals-drawer.md) | Agent switcher, open tabs, approvals drawer |
 | [0048](0048-ui-across-projects.md) | The UI across projects: one shown, the others watched lightly, a floor per project |
+| [0056](0056-design-system-and-navigation.md) | One design system, a rail and a phone tab bar, Settings as a page, compact cards with a modal |
+| [0057](0057-office-layouts.md) | Office layouts per project in YAML, validated by the daemon, with presets and hot desks |
+| [0058](0058-user-presence.md) | The user at their desk while a device has the UI open and visible |
 
 ## Projects
 

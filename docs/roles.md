@@ -109,9 +109,9 @@ Codex role relies on the read-only workspace mount. Usage shows each vendor's sh
 
 ## Starting agents by role
 
-- **Board:** a task's **Start agent** offers every worker role; a goal has **Start architect** (the
-  plan first) and **Start Tech Lead** (skip the architect for small goals). **Briefing** in the
-  header starts the assistant.
+- **Board:** a card's modal has **Start agent** with every worker role; a goal has **Start
+  architect** (the plan first) and **Start Tech Lead** (skip the architect for small goals).
+  **Briefing** at the top of the Inbox starts the assistant.
 - **Tech Lead:** `create_task(role=...)` or `assign_task(role=...)` picks a worker role for a
   sub-task; `list_tasks` lists them. An architect's plan can name a role per sub-task.
 - **API:** `POST /api/agents {"task_id": ..., "role": "docs"}`; `"lead"` is still accepted for
