@@ -1,6 +1,22 @@
-# Codex CLI: integration surface (Phase 0, docs only)
+# Codex CLI: integration surface
 
-Codex CLI is not installed. Nothing here has been run. Reviewed 2026-11-06. The official docs
+**Verified 2026-11-11 against Codex CLI 0.167.1 in Spike G** (`spikes/codex/README.md`): hooks,
+usage, resume, folder trust, the ChatGPT-plan login behind a credential-injecting proxy, and the
+network-less worker. Where the Phase 0 notes below differ, the spike wins:
+
+- Hooks are inline `[[hooks.<Event>]]` tables in `config.toml` (or `hooks.json`); they need trust,
+  which `--dangerously-bypass-hook-trust` skips for one run (embedded mode, no shared server).
+  Events seen: SessionStart, UserPromptSubmit, PreModelRequest, PostModelRequest (`token_usage`),
+  PreToolUse/PostToolUse, Stop, SessionEnd.
+- Usage: `PostModelRequest.token_usage`, and the same numbers in the Responses stream's
+  `response.completed` event.
+- The session id is Codex's (UUIDv7); `codex resume <id> [prompt]` continues under the same id.
+- A custom model provider with `requires_openai_auth = true` plus `chatgpt_base_url` send the
+  ChatGPT bearer to agent-office's proxy, which adds the real token: the container holds placeholder
+  tokens only (and the account id). The TUI needs HTTPS for the ChatGPT base URL (custom CA via
+  `CODEX_CA_CERTIFICATE`) and a seeded folder trust.
+
+The Phase 0 notes follow (docs only, written before Codex was installed; reviewed 2026-11-06). The official docs
 moved from developers.openai.com/codex to learn.chatgpt.com/docs. Items marked *(secondhand)* come
 from community sources and must be verified against the installed version before use.
 
