@@ -1,7 +1,7 @@
 # Progress
 
-**Current phase:** none in progress. Phase 14 (Multi-project office) was merged into `main` on
-2026-11-11.
+**Current phase:** Phase 15 (Codex adapter) in progress on `phase-15/codex-adapter`, starting with
+the Codex spike. Phase 14 (Multi-project office) was merged into `main` on 2026-11-11.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -25,6 +25,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 12: Team workflow and roles
 - [x] Phase 13: Office v2
 - [x] Phase 14: Multi-project office
+- [ ] Phase 15: Codex adapter
 
 ## Log
 
