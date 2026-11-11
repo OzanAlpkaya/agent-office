@@ -5,7 +5,7 @@ approved plan and ends with an updated `PROGRESS.md` and a plain-language summar
 intentionally coarser; their DoD is refined at the start of the phase.
 
 **Order** (decided 2026-11-08): phases run 0–8, then 12, 9, 10, 11, 13, then 14 and 15
-(added 2026-11-11), then 16. Numbers are kept, so references in ADRs and plans stay valid.
+(added 2026-11-11), then 16 and 17. Numbers are kept, so references in ADRs and plans stay valid.
 
 ---
 
@@ -687,3 +687,36 @@ seen what he saw and had the tools to act.
   it got a prompt is skipped, so its partial conversation is not continued (its git work is kept).
 - Revoking project-wide access grants from the UI.
 - Per-sub-task memory limits for one heavy job.
+
+---
+
+## Phase 17: Daily use
+
+Added by Ozan after Phase 16 was merged (2026-11-11), from using agent-office on PulseGo Sprints 3–6.
+
+**Goal:** The things a user does every day after a goal reaches review (finding the current goal,
+closing it, merging it) take one click, and what looks like a problem is one.
+
+**Scope** (see `docs/plans/phase-17.md`)
+1. Goal view and archive. The board shows only active goals and their sub-tasks by default, with a
+   goal picker to show one goal. Done goals move to an archive, where a goal opens with its
+   sub-tasks, agents, cost and QA result. Nothing is deleted.
+2. Closing a goal. Marking a goal Done also marks its sub-tasks Done, and its exited agents can be
+   removed in one action.
+3. Mid-turn resume. A session killed mid-turn after it got a prompt is currently skipped and the
+   resume continues the last session that finished a turn (ADR 0035). Continue the interrupted
+   session instead, or document precisely why that is not possible.
+4. Project-wide access grants can be revoked from the UI.
+5. Claude Code's background requests (update checks, count_tokens and similar) are expected
+   traffic. They should not show as warnings or blocked-network events that look like problems.
+6. The pids limit can be set per pack and per project, like the worker memory limit.
+   PulseGo's integration suite hit the default 256.
+7. Merge button on the goal card. When QA has passed, a Merge button squash-merges the goal's QA
+   branch into the project's target branch (default main) with the commit message the Tech Lead
+   prepared in its report. An optional Push button pushes the target branch. Both run only when the
+   user clicks them, after a confirmation that shows the branch, the target and the message. They
+   are refused on a dirty tree, a conflict or a target that moved, with a clear reason.
+
+**Definition of Done**
+- [ ] Each item has tests. Item 7 is covered end to end on a throwaway repo with a local bare remote.
+- [ ] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass.
