@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -246,6 +247,8 @@ type MergePreview struct {
 	TargetHead string     `json:"target_head"`
 	Message    string     `json:"message"`     // the Tech Lead's commit message, or a default
 	Files      int        `json:"files"`       // files the squash changes
+	Paths      []string   `json:"paths"`       // the first of them (maxPreviewPaths), for the user to read
+	Sensitive  []string   `json:"sensitive"`   // changed paths that run code on CI or in hooks
 	Untested   int        `json:"untested"`    // target commits QA did not test with (the target moved since)
 	CheckedOut bool       `json:"checked_out"` // the target is checked out in the repository: its files change
 	Ready      bool       `json:"ready"`
@@ -306,6 +309,7 @@ type mergeState struct {
 	sourceHead, branch     string
 	checkedOut             bool
 	files, untested        int
+	paths                  []string
 	alreadyMerged          *GoalMerge
 	report                 *GoalReport
 	worktreeOfTarget, repo string
@@ -373,7 +377,7 @@ func (e *Engine) checkMerge(ctx context.Context, goalID string) (st mergeState, 
 		return st, mergeRefused("the goal's changes are already in %s", st.target)
 	}
 	if files, ferr := e.git.ChangedFiles(ctx, st.repo, st.targetHead, mr.Tree); ferr == nil {
-		st.files = len(files)
+		st.files, st.paths = len(files), files
 	}
 	wts, werr := e.git.ListWorktrees(ctx, st.repo)
 	if werr != nil {
@@ -413,7 +417,8 @@ func (e *Engine) MergePreview(ctx context.Context, goalID string) (MergePreview,
 		return MergePreview{}, err
 	}
 	p := MergePreview{GoalID: goalID, QARunID: st.run.ID, Branch: st.branch, SourceHead: st.sourceHead, Target: st.target,
-		TargetHead: st.targetHead, Files: st.files, Untested: st.untested, CheckedOut: st.checkedOut, Ready: err == nil,
+		TargetHead: st.targetHead, Files: st.files, Paths: firstN(st.paths, maxPreviewPaths),
+		Sensitive: sensitivePaths(st.paths), Untested: st.untested, CheckedOut: st.checkedOut, Ready: err == nil,
 		Merged: st.alreadyMerged, Remote: e.pushRemote()}
 	p.Message = defaultMergeMessage(st.goal, st.report)
 	if st.report != nil && st.report.CommitMessage != "" {
@@ -426,7 +431,7 @@ func (e *Engine) MergePreview(ctx context.Context, goalID string) (MergePreview,
 		p.Reason = strings.TrimPrefix(err.Error(), ErrMergeRefused.Error()+": ")
 	}
 	if u, uerr := e.git.RemoteURL(ctx, e.project.RepoPath, p.Remote); uerr == nil {
-		p.RemoteURL = u
+		p.RemoteURL = redactURL(u)
 	}
 	return p, nil
 }
@@ -466,14 +471,27 @@ func (e *Engine) MergeGoal(ctx context.Context, goalID string, req MergeRequest)
 			return GoalMerge{}, mergeRefused("git refused to update %s in your working tree: %s", st.target, gitReason(err))
 		}
 	} else if err = e.git.MoveBranch(ctx, st.repo, st.target, sha, st.targetHead); errors.Is(err, git.ErrBranchMoved) {
+		// Residual (review): a checkout of the target in the instant between
+		// the worktree check and this compare-and-swap is not detected.
 		return GoalMerge{}, mergeRefused("%s moved during the merge: review it again", st.target)
 	} else if err != nil {
 		return GoalMerge{}, err
 	}
-	row, err := e.q.InsertGoalMerge(ctx, db.InsertGoalMergeParams{GoalID: goalID, QaRunID: sql.NullInt64{Int64: st.run.ID, Valid: true},
-		Target: st.target, SourceHead: st.sourceHead, TargetBefore: st.targetHead, CommitSha: sha, Message: msg, CreatedAt: now()})
+	// The branch has moved: the record must follow, or Push and the archive
+	// would not know (review finding). A few tries, then a loud log line.
+	params := db.InsertGoalMergeParams{GoalID: goalID, QaRunID: sql.NullInt64{Int64: st.run.ID, Valid: true},
+		Target: st.target, SourceHead: st.sourceHead, TargetBefore: st.targetHead, CommitSha: sha, Message: msg, CreatedAt: now()}
+	var row db.GoalMerge
+	for try := 0; try < 3; try++ {
+		if row, err = e.q.InsertGoalMerge(context.WithoutCancel(ctx), params); err == nil {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 	if err != nil {
-		return GoalMerge{}, fmt.Errorf("merged as %s, but recording it failed: %w", short(sha), err)
+		e.log.Error("goal merged but not recorded", "task_id", goalID, "target", st.target, "commit", sha,
+			"previous", st.targetHead, "source", st.sourceHead, "err", err)
+		return GoalMerge{}, fmt.Errorf("merged into %s as %s, but recording it failed: %w", st.target, short(sha), err)
 	}
 	m := goalMergeFromRow(row)
 	e.log.Info("goal merged", "task_id", goalID, "target", st.target, "commit", sha, "previous", st.targetHead,
@@ -482,15 +500,15 @@ func (e *Engine) MergeGoal(ctx context.Context, goalID string, req MergeRequest)
 	return m, nil
 }
 
-// PushGoal pushes the target branch the goal was last merged into to the
+// PushGoal pushes the goal's latest merge commit to its target branch on the
 // project's remote (ADR 0055): never forced; the remote refuses a branch that
 // moved there.
 func (e *Engine) PushGoal(ctx context.Context, goalID string) (GoalMerge, error) {
 	if _, err := e.getGoal(ctx, goalID); err != nil {
 		return GoalMerge{}, err
 	}
-	e.mergeMu.Lock()
-	defer e.mergeMu.Unlock()
+	// The push runs outside mergeMu (a slow remote must not block merges);
+	// recording it is a compare-and-swap.
 	row, err := e.q.LatestGoalMerge(ctx, goalID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return GoalMerge{}, mergeRefused("the goal has not been merged; merge it first")
@@ -509,11 +527,17 @@ func (e *Engine) PushGoal(ctx context.Context, goalID string) (GoalMerge, error)
 	if head, err := e.git.RevParse(ctx, e.project.RepoPath, "refs/heads/"+m.Target); err != nil || !e.isAncestor(ctx, m.Commit, head) {
 		return GoalMerge{}, mergeRefused("%s no longer contains the merge %s", m.Target, short(m.Commit))
 	}
-	if err := e.git.PushBranch(ctx, e.project.RepoPath, remote, m.Target); err != nil {
+	// Exactly the merge the user confirmed (security review): later commits on
+	// the target are not pushed with it.
+	if err := e.git.PushCommit(ctx, e.project.RepoPath, remote, m.Commit, m.Target); err != nil {
 		e.log.Warn("goal push failed", "task_id", goalID, "target", m.Target, "remote", remote, "err", err)
 		return GoalMerge{}, mergeRefused("git push %s %s failed: %s", remote, m.Target, gitReason(err))
 	}
-	row, err = e.q.MarkGoalMergePushed(ctx, db.MarkGoalMergePushedParams{PushedAt: nullTime(now()), PushRemote: remote, ID: m.ID})
+	row, err = e.q.MarkGoalMergePushed(context.WithoutCancel(ctx), db.MarkGoalMergePushedParams{PushedAt: nullTime(now()),
+		PushRemote: remote, ID: m.ID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return GoalMerge{}, mergeRefused("already pushed to %s", remote) // a concurrent push recorded it first
+	}
 	if err != nil {
 		return GoalMerge{}, fmt.Errorf("pushed, but recording it failed: %w", err)
 	}
@@ -521,6 +545,46 @@ func (e *Engine) PushGoal(ctx context.Context, goalID string) (GoalMerge, error)
 	e.log.Info("goal pushed", "task_id", goalID, "target", m.Target, "remote", remote, "commit", m.Commit)
 	e.publish(Update{Type: "goal_merge", GoalMerge: &m})
 	return m, nil
+}
+
+// maxPreviewPaths bounds the changed paths the merge preview lists.
+const maxPreviewPaths = 200
+
+func firstN(s []string, n int) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s[:min(len(s), n)]
+}
+
+// sensitivePrefixes are paths whose change runs code outside the review: CI
+// pipelines and git or package-manager hooks (security review, Phase 17).
+var sensitivePrefixes = []string{".github/", ".gitlab-ci.yml", ".gitlab/", ".circleci/", ".buildkite/", "Jenkinsfile",
+	".githooks/", ".husky/", ".pre-commit-config.yaml", ".gitattributes", ".gitmodules", ".devcontainer/", ".vscode/tasks.json",
+	".claude/", ".codex/", ".mcp.json", "CLAUDE.md", "AGENTS.md"}
+
+// sensitivePaths lists the changed paths a reviewer should read before merging.
+func sensitivePaths(paths []string) []string {
+	out := []string{}
+	for _, p := range paths {
+		for _, pre := range sensitivePrefixes {
+			if p == strings.TrimSuffix(pre, "/") || strings.HasPrefix(p, pre) {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// redactURL drops credentials from a remote URL shown to paired devices.
+func redactURL(u string) string {
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.User == nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return u // scp-like (git@host:path), ssh:// or a path: a user name, no secret
+	}
+	parsed.User = nil
+	return parsed.String()
 }
 
 // gitReason is git's own message of a failed command: its stderr's last

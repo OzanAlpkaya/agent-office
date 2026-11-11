@@ -75,7 +75,8 @@ func TestProjectSettingsParseAndValidate(t *testing.T) {
 		t.Fatalf("merged %+v", eff)
 	}
 	// Letting the lead decide widens the sandbox: from this machine only (ADR 0046).
-	if ch := NeutralDefaults().SandboxChanges(eff); !slices.Contains(ch, "access_decider") || !slices.Contains(ch, "lead_access_hosts") {
+	if ch := NeutralDefaults().SandboxChanges(eff); !slices.Contains(ch, "access_decider") || !slices.Contains(ch, "lead_access_hosts") ||
+		!slices.Contains(ch, "merge_target") { // the branch Merge and Push write (security review, Phase 17)
 		t.Fatalf("sandbox changes %v", ch)
 	}
 }

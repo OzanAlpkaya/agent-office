@@ -21,6 +21,8 @@ function world(): World {
   const preview: MergePreview = {
     goal_id: active.id, qa_run_id: 1, branch: qa.branch, source_head: qaHead, target: "main", target_head: mainHead,
     message: "feat: tags for links\n\nAdds a tags table and a filter.", files: 4, untested: 2, checked_out: true, ready: true,
+    paths: [".github/workflows/ci.yml", "internal/tags/tags.go", "internal/tags/tags_test.go", "migrations/0003_tags.sql"],
+    sensitive: [".github/workflows/ci.yml"],
     remote: "origin", remote_url: "github-personal:OzanAlpkaya/pulsego.git",
   };
   const record: GoalRecord = {
@@ -143,7 +145,10 @@ test("Merge and Push run after a confirmation that shows the branch, the target 
   await expect(dlg).toContainText("at 11111111 (QA passed)");
   await expect(dlg).toContainText("main at 22222222");
   await expect(dlg).toContainText("4 files; main is checked out");
-  await expect(dlg.getByRole("note")).toContainText("main has 2 commits QA did not test with");
+  await expect(dlg.getByText("main has 2 commits QA did not test with", { exact: false })).toBeVisible();
+  await expect(dlg.getByTestId("merge-sensitive")).toContainText(".github/workflows/ci.yml");
+  await dlg.getByText("Changed files").click();
+  await expect(dlg.getByText("migrations/0003_tags.sql")).toBeVisible();
   const msg = dlg.getByLabel("Commit message");
   await expect(msg).toHaveValue("feat: tags for links\n\nAdds a tags table and a filter.");
   await page.screenshot({ path: `${screens}/merge-confirm.png`, fullPage: true });
@@ -159,7 +164,7 @@ test("Merge and Push run after a confirmation that shows the branch, the target 
   await c.getByRole("button", { name: "Push…" }).click();
   const push = c.getByRole("dialog", { name: "Confirm the push" });
   await expect(push).toContainText("origin (github-personal:OzanAlpkaya/pulsego.git)");
-  await expect(push).toContainText("main at abcdef01");
+  await expect(push).toContainText("abcdef01 to main (the merge only");
   await expect(push).toContainText("feat: tags");
   expect(daemon.requests.filter((r) => r.includes("/push"))).toEqual([]);
   await push.getByRole("button", { name: "Push to origin" }).click();

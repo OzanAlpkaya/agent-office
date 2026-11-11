@@ -417,6 +417,8 @@ export interface MergePreview {
   target_head: string;
   message: string; // the Tech Lead's (agent-written): render as text
   files: number;
+  paths: string[]; // the changed paths (at most 200), agent-chosen names: render as text
+  sensitive: string[]; // changed paths that run code on CI or in hooks
   untested: number; // target commits QA did not test with
   checked_out: boolean;
   ready: boolean;

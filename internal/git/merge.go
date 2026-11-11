@@ -112,6 +112,15 @@ func (g Git) MoveBranch(ctx context.Context, repo, branch, newSHA, old string) e
 // no tags, without a controlling terminal (ADR 0020). The remote refuses a
 // non-fast-forward update.
 func (g Git) PushBranch(ctx context.Context, repo, remote, branch string) error {
+	return g.PushCommit(ctx, repo, remote, "refs/heads/"+branch, branch)
+}
+
+// PushCommit pushes src (a commit or a local ref) to branch on remote, the
+// same way: exactly what src names, nothing later.
+func (g Git) PushCommit(ctx context.Context, repo, remote, src, branch string) error {
+	if src == "" || strings.HasPrefix(src, "-") || strings.ContainsAny(src, ": ") {
+		return fmt.Errorf("git: invalid push source %q", src)
+	}
 	if !remoteName.MatchString(remote) {
 		return fmt.Errorf("git: invalid remote name %q", remote)
 	}
@@ -121,7 +130,7 @@ func (g Git) PushBranch(ctx context.Context, repo, remote, branch string) error 
 	if err := g.checkTrusted(repo, nil); err != nil {
 		return err
 	}
-	ref := "refs/heads/" + branch
-	_, err := g.execWith(ctx, repo, PushTimeout, true, "push", "--no-follow-tags", "--quiet", "--end-of-options", remote, ref+":"+ref)
+	_, err := g.execWith(ctx, repo, PushTimeout, true, "push", "--no-follow-tags", "--quiet", "--end-of-options", remote,
+		src+":refs/heads/"+branch)
 	return err
 }

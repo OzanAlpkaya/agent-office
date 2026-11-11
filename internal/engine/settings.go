@@ -295,7 +295,8 @@ func NeutralDefaults() ProjectSettings {
 }
 
 // SandboxChanges names the settings that change what a project's agents can
-// reach (pack, secrets, network, pushes) between s and t. The API accepts
+// reach (pack, secrets, network, pushes, the branch their work is merged into
+// and pushed to) between s and t. The API accepts
 // them from this machine only (ADR 0046).
 func (s ProjectSettings) SandboxChanges(t ProjectSettings) []string {
 	var out []string
@@ -309,7 +310,8 @@ func (s ProjectSettings) SandboxChanges(t ProjectSettings) []string {
 		a, b any
 	}{{"pack", s.Pack, t.Pack}, {"secrets_dir", s.SecretsDir, t.SecretsDir}, {"egress_allow", s.EgressAllow, t.EgressAllow},
 		{"github", s.GitHub, t.GitHub}, {"github_remote", s.GitHubRemote, t.GitHubRemote},
-		{"access_decider", s.AccessDecider, t.AccessDecider}, {"lead_access_hosts", s.LeadAccessHosts, t.LeadAccessHosts}} {
+		{"access_decider", s.AccessDecider, t.AccessDecider}, {"lead_access_hosts", s.LeadAccessHosts, t.LeadAccessHosts},
+		{"merge_target", s.MergeTarget, t.MergeTarget}} {
 		if !same(f.a, f.b) {
 			out = append(out, f.name)
 		}

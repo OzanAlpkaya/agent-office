@@ -76,6 +76,19 @@ export function MergePanel({ goal }: { goal: Task }): JSX.Element {
         <dt>Into</dt><dd className="mono">{p.target} <span className="muted">at {p.target_head ? shortSha(p.target_head) : "?"}</span></dd>
         {p.ready && <><dt>Changes</dt><dd>{p.files} file{p.files === 1 ? "" : "s"}{p.checked_out ? `; ${p.target} is checked out, its files are updated` : ""}</dd></>}
       </dl>
+      {p.ready && p.sensitive.length > 0 && (
+        <div className="hint" role="note" data-testid="merge-sensitive">
+          Read these first: they run code on CI or in hooks.
+          <ul>{p.sensitive.map((f) => <li key={f} className="mono">{f}</li>)}</ul>
+        </div>
+      )}
+      {p.ready && p.paths.length > 0 && (
+        <details>
+          <summary className="muted">Changed files</summary>
+          <ul>{p.paths.map((f) => <li key={f} className="mono">{f}</li>)}</ul>
+          {p.files > p.paths.length && <p className="muted">and {p.files - p.paths.length} more</p>}
+        </details>
+      )}
       {p.ready && p.untested > 0 && (
         <p className="hint" role="note">
           {p.target} has {p.untested} commit{p.untested === 1 ? "" : "s"} QA did not test with. The merge is clean, but
@@ -135,7 +148,7 @@ export function PushPanel({ goal, merge }: { goal: Task; merge: GoalMerge }): JS
           <p className="strong">Push {merge.target}?</p>
           <dl>
             <dt>Remote</dt><dd className="mono">{preview.remote}{preview.remote_url ? ` (${preview.remote_url})` : " (not set up)"}</dd>
-            <dt>Branch</dt><dd className="mono">{merge.target} at {shortSha(merge.commit)} or later</dd>
+            <dt>Pushes</dt><dd className="mono">{shortSha(merge.commit)} to {merge.target} (the merge only; later local commits stay local)</dd>
             <dt>Message</dt><dd className="quote">{merge.message.split("\n")[0]}</dd>
           </dl>
           <div className="row">
@@ -205,7 +218,7 @@ function GoalRecordView({ goal, usage, onBack, onOpenAgent, onReopen, qaRuns, me
     let live = true;
     api.goalRecord(goal.id).then((r) => { if (live) setRec(r); }, (e: unknown) => { if (live) setError(errText(e)); });
     return () => { live = false; };
-  }, [api, goal.id, goal.updated_at, reload]);
+  }, [api, goal.id, goal.updated_at, reload, merged?.id, merged?.pushed_at]);
   const branchOf = (taskId: string): string =>
     rec?.agents.filter((a) => a.task_id === taskId && a.kind === "worker").map((a) => a.branch).at(-1) ?? "";
   const exited = rec?.agents.filter((a) => !a.removed && a.state === "exited").length ?? 0;

@@ -94,7 +94,7 @@ func TestMergeGoalIntoCheckedOutMain(t *testing.T) {
 	mainHead := gitIn(t, repo, "rev-parse", "main")
 	if err != nil || !p.Ready || p.Target != "main" || p.TargetHead != mainHead || p.SourceHead != rec.QARuns[0].Head ||
 		p.Branch != rec.QARuns[0].Branch || p.Message != leadMessage || !p.CheckedOut || p.Files != 1 || p.Untested != 0 ||
-		p.Remote != "origin" || p.RemoteURL != "" {
+		p.Remote != "origin" || p.RemoteURL != "" || len(p.Paths) != 1 || p.Paths[0] != "tags.go" || len(p.Sensitive) != 0 {
 		t.Fatalf("preview %+v %v", p, err)
 	}
 	req := MergeRequest{TargetHead: p.TargetHead, SourceHead: p.SourceHead, Message: p.Message}
@@ -200,6 +200,12 @@ func TestMergeGoalIntoCheckedOutMain(t *testing.T) {
 	}
 	gitIn(t, bare, "update-ref", "refs/heads/main", p.TargetHead) // they undo it
 
+	// The user commits on main after the merge: Push sends the merge only.
+	if err := os.WriteFile(filepath.Join(repo, "LATER.md"), []byte("l\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "LATER.md")
+	gitIn(t, repo, "commit", "-q", "-m", "later")
 	pushed, err := e.PushGoal(ctx, tf.goal.ID)
 	if err != nil || pushed.PushedAt == nil || pushed.PushRemote != "origin" {
 		t.Fatalf("push %+v %v", pushed, err)
@@ -301,5 +307,25 @@ func TestRemoveGoalAgents(t *testing.T) {
 	}
 	if again, err := e.RemoveGoalAgents(ctx, tf.goal.ID); err != nil || len(again.Removed) != 0 {
 		t.Fatalf("second cleanup %+v %v", again, err)
+	}
+}
+
+func TestMergePreviewHelpers(t *testing.T) {
+	got := sensitivePaths([]string{"main.go", ".github/workflows/ci.yml", ".gitattributes", "docs/.github.md", "CLAUDE.md",
+		".claude/settings.json", "web/package.json"})
+	want := []string{".github/workflows/ci.yml", ".gitattributes", "CLAUDE.md", ".claude/settings.json"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("sensitive %v, want %v", got, want)
+	}
+	for in, want := range map[string]string{
+		"https://x-access-token:ghp_secret@github.com/o/r.git": "https://github.com/o/r.git",
+		"https://ghp_secret@github.com/o/r.git":                "https://github.com/o/r.git",
+		"github-personal:OzanAlpkaya/pulsego.git":              "github-personal:OzanAlpkaya/pulsego.git",
+		"ssh://git@github.com/o/r.git":                         "ssh://git@github.com/o/r.git",
+		"/tmp/bare":                                            "/tmp/bare",
+	} {
+		if got := redactURL(in); got != want {
+			t.Errorf("redactURL(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
