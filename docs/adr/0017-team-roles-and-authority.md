@@ -1,6 +1,7 @@
 # 0017. Team roles: a lead per goal, workers per sub-task, authority from the socket
 
-- **Status:** Accepted
+- **Status:** Accepted; what marking a goal done ends amended by ADR 0054 (Phase 17): every agent of the goal
+  and its sub-tasks, and its sub-tasks become done
 - **Date:** 2026-11-07
 
 ## Context

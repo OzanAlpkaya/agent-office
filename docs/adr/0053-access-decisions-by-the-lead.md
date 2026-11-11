@@ -1,6 +1,6 @@
 # 0053. Access decisions by the Tech Lead, scoped grants that outlive a session
 
-- **Status:** Accepted
+- **Status:** Accepted; revocation added in Phase 17 (2026-11-11)
 - **Date:** 2026-11-11
 - **Amends:** ADR 0019
 
@@ -48,8 +48,13 @@ Option 3, plus stored grants.
   with it; `TestUserDecidesByDefault` checks the stored grant without Podman.
 - With `lead`, a persuasive worker can get any one host approved for its project; `lead_policy`
   bounds that to the user's list. Both are off by default.
-- Project-wide grants are not revocable from the UI yet; removing the project's agents does not
-  remove them. Backlog.
+- ~~Project-wide grants are not revocable from the UI yet.~~ **Phase 17:** the sandbox panel lists
+  every stored grant (host, project or agent scope, who approved it and why) with Revoke
+  (`GET`/`DELETE /access-grants`). A revocation deletes the row and recomputes the grants of every
+  running session from the rows left (under a lock shared with approvals), so a host another grant
+  still covers stays allowed; open connections are not cut, new ones are refused. A launch's grants
+  are now replaced from the store, not added to, so a launch racing a revocation cannot keep the host.
+  Revoking narrows the sandbox, so any paired device may. `TestRevokeAccessGrant`, `TestAccessGrantsAPI`.
 - Tested: `TestLeadDecidesAccess`, `TestUserDecidesByDefault`, `TestAccessRequests`,
   `TestRestartKeepsAccessRequests`, `TestProjectSettingsParseAndValidate`; live in
   `TestAutonomousTeamEndToEnd`.

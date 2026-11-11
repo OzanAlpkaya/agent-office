@@ -40,6 +40,11 @@ at once.</sub>
   project can let the Tech Lead decide network access within a host list you write. You are asked
   for merges, pushes, secrets and setting changes
   ([ADR 0051](docs/adr/0051-exit-reasons-and-self-recovery.md)–[0053](docs/adr/0053-access-decisions-by-the-lead.md)).
+- **Closing a goal.** When QA has passed, Merge squash-merges the goal's tested branch into `main` with
+  the commit message its Tech Lead wrote, after a confirmation that shows the branch, the target and the
+  message; Push is a second confirmed click. Done goals leave the board for an archive that keeps who
+  worked on them, what they cost and what QA found
+  ([ADR 0054](docs/adr/0054-goal-archive-and-closing.md), [0055](docs/adr/0055-merge-and-push-from-the-goal.md)).
 - **GitHub loop.** Finished work becomes a pull request. A reviewer agent (or CodeRabbit) reviews
   it, and the original worker is relaunched to address the feedback.
 - **Cost and history.** Token usage and estimated cost per goal, task, agent, session and model.
