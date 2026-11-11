@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"os/exec"
@@ -48,9 +49,11 @@ func oomKill(t *testing.T, agentID string) {
 // request decided by the Tech Lead within the project's host policy (and
 // still allowed after the worker's resume, request #4); a working worker
 // OOM-killed by the kernel twice (resumed once by agent-office, then the
-// lead's to deal with); a worker stopped by the user with a message waiting
-// for it while the whole team sits idle until the stall watchdog wakes the
-// lead. The goal must reach review without a human answering anything.
+// lead's to deal with: resume or reclaim and reassign); a worker the user
+// stops and leaves a message, delivered when it is resumed; and a stall in
+// which the worker sits interrupted while the lead waits for its report,
+// until the stall watchdog wakes the lead. The goal must reach review
+// without the team asking the user anything.
 func TestAutonomousTeamEndToEnd(t *testing.T) {
 	d, repo, listAgents := teamDaemon(t, "--max-agents", "3", "--qa=false", "--stall-after", "30s")
 	t.Cleanup(func() { // what the team did, when something went wrong (before the daemon stops)
@@ -187,15 +190,14 @@ func TestAutonomousTeamEndToEnd(t *testing.T) {
 	})
 	t.Logf("worker %s works again (resumed from %q)", current.ID, current.ResumedFrom)
 
-	// Incidents 4 and 5: the user stops it and leaves it a message; nobody
-	// else moves, so the watchdog wakes the lead, which resumes it; the
-	// message is delivered then.
+	// Incident 4: the user stops it and leaves it a message; the message waits
+	// and reaches it when it is resumed.
 	d.json("POST", "/api/agents/"+current.ID+"/stop", nil, http.StatusOK, nil)
 	d.json("POST", "/api/agents/"+current.ID+"/message", map[string]string{
 		"body": "Note from the user: keep reach.txt to the status code only."}, http.StatusCreated, nil)
 	stopped := findAgent(listAgents(), current.ID)
-	waitFor(t, "the watchdog wakes the lead", 4*time.Minute, func() bool { return leadSays("[agent-office] Status check") })
-	waitFor(t, "the user's message reaches the resumed worker", 6*time.Minute, func() bool {
+	d.json("POST", "/api/agents/"+current.ID+"/resume", map[string]string{}, http.StatusOK, nil)
+	waitFor(t, "the user's message reaches the resumed worker", 3*time.Minute, func() bool {
 		var msgs []userMessage
 		d.json("GET", "/api/agents/"+current.ID+"/messages", nil, http.StatusOK, &msgs)
 		return slices.ContainsFunc(msgs, func(m userMessage) bool {
@@ -205,6 +207,17 @@ func TestAutonomousTeamEndToEnd(t *testing.T) {
 	if a := findAgent(listAgents(), current.ID); a.SessionID == stopped.SessionID {
 		t.Errorf("the message was delivered without a new session: %+v", a)
 	}
+
+	// Incident 5: everyone waits for someone else. The worker is interrupted in
+	// the middle of its turn (it sits idle), the lead waits for its report;
+	// nobody tells anyone, so the stall watchdog wakes the lead.
+	working(current.ID)
+	waitAgent(t, listAgents, lead.ID, 3*time.Minute, func(a teamAgent) bool { return a.State == "idle" })
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	attach(t, ctx, d.base, current.ID).send(ctx, "\x1b")
+	waitAgent(t, listAgents, current.ID, time.Minute, func(a teamAgent) bool { return a.State == "idle" })
+	waitFor(t, "the watchdog wakes the lead", 3*time.Minute, func() bool { return leadSays("[agent-office] Status check") })
 
 	// The goal reaches review without the user answering anything.
 	deadline := time.Now().Add(12 * time.Minute)
