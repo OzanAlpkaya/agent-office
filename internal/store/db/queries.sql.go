@@ -1031,6 +1031,22 @@ func (q *Queries) GetMemory(ctx context.Context, id int64) (Memory, error) {
 	return i, err
 }
 
+const getProfile = `-- name: GetProfile :one
+SELECT id, name, look, updated_at FROM profile WHERE id = 1
+`
+
+func (q *Queries) GetProfile(ctx context.Context) (Profile, error) {
+	row := q.db.QueryRowContext(ctx, getProfile)
+	var i Profile
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Look,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getProject = `-- name: GetProject :one
 SELECT id, name, repo_path, slug, created_at, settings, removed_at FROM projects WHERE id = ?
 `
@@ -3882,6 +3898,30 @@ type SetAgentNameParams struct {
 func (q *Queries) SetAgentName(ctx context.Context, arg SetAgentNameParams) error {
 	_, err := q.db.ExecContext(ctx, setAgentName, arg.Name, arg.ID)
 	return err
+}
+
+const setProfile = `-- name: SetProfile :one
+INSERT INTO profile (id, name, look, updated_at) VALUES (1, ?, ?, ?)
+ON CONFLICT (id) DO UPDATE SET name = excluded.name, look = excluded.look, updated_at = excluded.updated_at
+RETURNING id, name, look, updated_at
+`
+
+type SetProfileParams struct {
+	Name      string
+	Look      string
+	UpdatedAt time.Time
+}
+
+func (q *Queries) SetProfile(ctx context.Context, arg SetProfileParams) (Profile, error) {
+	row := q.db.QueryRowContext(ctx, setProfile, arg.Name, arg.Look, arg.UpdatedAt)
+	var i Profile
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Look,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const setPullRequestFlagged = `-- name: SetPullRequestFlagged :one

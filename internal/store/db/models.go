@@ -168,6 +168,13 @@ type Message struct {
 	FromUser    bool
 }
 
+type Profile struct {
+	ID        int64
+	Name      string
+	Look      string
+	UpdatedAt time.Time
+}
+
 type Project struct {
 	ID        string
 	Name      string

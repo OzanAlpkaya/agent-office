@@ -219,6 +219,13 @@ func (s *server) hubEventsWS(w http.ResponseWriter, r *http.Request) {
 	if err := write(engine.HubUpdate{Type: "presence", Presence: ptr(s.hub.Presence())}); err != nil {
 		return
 	}
+	if prof, err := s.hub.Profile(r.Context()); err == nil {
+		if err := write(engine.HubUpdate{Type: "profile", Profile: &prof}); err != nil {
+			return
+		}
+	} else {
+		s.log.Warn("hub events: load the profile", "err", err)
+	}
 	for {
 		select {
 		case <-r.Context().Done():
@@ -287,4 +294,28 @@ func (s *server) checkOfficeLayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, layoutCheck{Layout: &l, Problems: []string{}})
+}
+
+// getProfile returns the user's profile (Phase 18 review, ADR 0058).
+func (s *server) getProfile(w http.ResponseWriter, r *http.Request) {
+	p, err := s.hub.Profile(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// putProfile saves the user's name and look; every open page gets it.
+func (s *server) putProfile(w http.ResponseWriter, r *http.Request) {
+	var p engine.Profile
+	if !decodeJSON(w, r, &p) {
+		return
+	}
+	saved, err := s.hub.SetProfile(r.Context(), p)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
 }

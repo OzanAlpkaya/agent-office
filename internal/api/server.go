@@ -102,6 +102,8 @@ func (s *server) routes() []route {
 		{pattern: "DELETE /api/projects/{project}", handler: s.removeProject},
 		{pattern: "POST /api/projects/{project}/retry", handler: s.retryProject},
 		{pattern: "GET /api/office-layouts", handler: s.officeLayouts},
+		{pattern: "GET /api/profile", handler: s.getProfile},
+		{pattern: "PUT /api/profile", handler: s.putProfile},
 		{pattern: "POST /api/office-layouts/check", handler: s.checkOfficeLayout},
 		{pattern: "GET /api/projects/{project}/status", handler: s.getStatus, project: true},
 		{pattern: "GET /api/projects/{project}/usage", handler: s.getUsage, project: true},

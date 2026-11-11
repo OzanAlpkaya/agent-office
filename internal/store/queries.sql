@@ -617,3 +617,11 @@ RETURNING *;
 
 -- name: ListGoalDeletedBranches :many
 SELECT * FROM deleted_branches WHERE goal_id = ? ORDER BY id;
+
+-- name: GetProfile :one
+SELECT * FROM profile WHERE id = 1;
+
+-- name: SetProfile :one
+INSERT INTO profile (id, name, look, updated_at) VALUES (1, ?, ?, ?)
+ON CONFLICT (id) DO UPDATE SET name = excluded.name, look = excluded.look, updated_at = excluded.updated_at
+RETURNING *;

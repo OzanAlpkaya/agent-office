@@ -83,6 +83,7 @@ type HubUpdate struct {
 	Project  *ProjectInfo `json:"project,omitempty"`
 	ID       string       `json:"id,omitempty"`
 	Presence *Presence    `json:"presence,omitempty"`
+	Profile  *Profile     `json:"profile,omitempty"` // "profile": the user's name and look (ADR 0058)
 }
 
 // HubStatus is the daemon-wide state.

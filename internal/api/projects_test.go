@@ -214,6 +214,9 @@ func TestProjectEventsCarryOnlyTheirProject(t *testing.T) {
 	if m := read(hub); string(m["type"]) != `"presence"` {
 		t.Fatalf("presence after the snapshot %v", m)
 	}
+	if m := read(hub); string(m["type"]) != `"profile"` {
+		t.Fatalf("the user's profile after the presence %v", m)
+	}
 	b := f.addProject(t, fmt.Sprintf(`{"repo": %q}`, newGitRepo(t)))
 	if m := read(hub); string(m["type"]) != `"project"` || !strings.Contains(string(m["project"]), b.ID) {
 		t.Fatalf("daemon update %v", m)
@@ -405,5 +408,61 @@ func TestBranchCleanupAPI(t *testing.T) {
 	jsonBody(t, f.doBody(t, "POST", f.pp+"/tasks", jsonCT, `{"title": "a goal"}`), http.StatusCreated, &task)
 	if r := f.do(t, "GET", f.pp+"/tasks/"+task.ID+"/branches", nil); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("branches of a goal not done: %d", r.StatusCode)
+	}
+}
+
+// TestProfileAPI: the user's profile is saved daemon-wide, validated, and
+// sent to every open page on the hub stream (Phase 18 review, ADR 0058).
+func TestProfileAPI(t *testing.T) {
+	f := newFixture(t)
+	var p engine.Profile
+	jsonBody(t, f.do(t, "GET", "/api/profile", nil), http.StatusOK, &p)
+	if p.Set || p.Name != "" {
+		t.Fatalf("unsaved profile %+v", p)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	hub, _, err := websocket.Dial(ctx, f.ws+"/api/events", f.dialOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.CloseNow()
+	nextProfile := func() engine.Profile {
+		t.Helper()
+		for {
+			_, data, err := hub.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var m engine.HubUpdate
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatal(err)
+			}
+			if m.Type == "profile" {
+				return *m.Profile
+			}
+		}
+	}
+	if got := nextProfile(); got.Set {
+		t.Fatalf("profile after the snapshot %+v", got)
+	}
+	body := `{"name": " Ozan ", "look": {"skin": 2, "hair": 3, "style": 1, "shirt": 9, "pants": 2}}`
+	jsonBody(t, f.doBody(t, "PUT", "/api/profile", jsonCT, body), http.StatusOK, &p)
+	want := engine.Profile{Name: "Ozan", Look: engine.ProfileLook{Skin: 2, Hair: 3, Style: 1, Shirt: 9, Pants: 2}, Set: true}
+	if p != want {
+		t.Fatalf("saved %+v", p)
+	}
+	if got := nextProfile(); got != want {
+		t.Fatalf("pushed %+v", got)
+	}
+	jsonBody(t, f.do(t, "GET", "/api/profile", nil), http.StatusOK, &p)
+	if p != want {
+		t.Fatalf("reloaded %+v", p)
+	}
+	for _, bad := range []string{`{"name": "<script>", "look": {}}`, `{"name": "x", "look": {"skin": 64}}`,
+		`{"name": "x", "look": {"skin": -1}}`, `{"name": "` + strings.Repeat("a", 25) + `", "look": {}}`, `{"name": "x", "colour": 1}`} {
+		if r := f.doBody(t, "PUT", "/api/profile", jsonCT, bad); r.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: %d", bad, r.StatusCode)
+		}
 	}
 }
