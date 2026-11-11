@@ -92,7 +92,7 @@ func newCodexFixture(t *testing.T, clis ...map[string]string) *codexFixture {
 		cf.upstream = append(cf.upstream, r.Method+" "+r.URL.Path+" auth="+who)
 		cf.mu.Unlock()
 		if r.URL.Path == "/backend-api/codex/responses" {
-			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header()["Content-Type"] = nil // like ChatGPT's backend: no Content-Type on the stream
 			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_`+time.Now().Format("150405.000000000")+
 				`","model":"gpt-6.1-sol","usage":{"input_tokens":1000,"input_tokens_details":{"cached_tokens":400},"output_tokens":50}}}`+"\n\n")
 			return

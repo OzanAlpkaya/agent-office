@@ -22,6 +22,13 @@ func TestMeterResponses(t *testing.T) {
 	var got []Message
 	body := MeterResponses(io.NopCloser(strings.NewReader(responsesStream)), "text/event-stream; charset=utf-8", "req-1",
 		func(m Message) { got = append(got, m) }, func(err error) { t.Fatal(err) })
+	// ChatGPT's backend sends the stream without a Content-Type.
+	var untyped []Message
+	_, _ = io.ReadAll(MeterResponses(io.NopCloser(strings.NewReader(responsesStream)), "", "",
+		func(m Message) { untyped = append(untyped, m) }, nil))
+	if len(untyped) != 1 || untyped[0].Output != 5 {
+		t.Fatalf("an untyped stream is not metered: %+v", untyped)
+	}
 	out, err := io.ReadAll(body)
 	if err != nil || string(out) != responsesStream {
 		t.Fatalf("the bytes changed: %v", err)

@@ -17,9 +17,11 @@ const maxResponsesLine = 16 << 20
 // uses (ADR 0049): usage arrives once, in the final response.completed (or
 // .incomplete / .failed) event. input_tokens includes the cached tokens, so
 // Input is what was not read from the cache. The bytes pass through
-// unchanged and unbuffered.
+// unchanged and unbuffered. ChatGPT's backend sends the stream without a
+// Content-Type (found in the Phase 15 e2e run), so an untyped body is
+// metered as a stream too.
 func MeterResponses(body io.ReadCloser, contentType, requestID string, report func(Message), onError func(error)) io.ReadCloser {
-	if mt, _, _ := mime.ParseMediaType(contentType); mt != "text/event-stream" {
+	if mt, _, _ := mime.ParseMediaType(contentType); contentType != "" && mt != "text/event-stream" {
 		return body
 	}
 	return &responsesMeter{body: body, report: report, onError: onError, requestID: id(requestID)}

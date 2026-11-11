@@ -198,11 +198,12 @@ func (c *LocalCA) Listener(l net.Listener) net.Listener {
 // codexRoutes are the ChatGPT backend requests a Codex agent may make
 // (Spike G: with plugins, apps, analytics and updates off).
 var codexRoutes = map[string]bool{
-	"GET /backend-api/codex/models":        true,
-	"GET /backend-api/wham/accounts/check": true,
-	"GET /backend-api/wham/settings/user":  true,
-	"GET /backend-api/wham/usage":          true, // the plan's rate limits, shown in the TUI
-	"POST /backend-api/codex/responses":    true,
+	"GET /backend-api/codex/models":                  true,
+	"GET /backend-api/wham/accounts/check":           true,
+	"GET /backend-api/wham/settings/user":            true,
+	"GET /backend-api/wham/usage":                    true, // the plan's rate limits, shown in the TUI
+	"GET /backend-api/wham/rate-limit-reset-credits": true, // shown in the TUI next to them (Phase 15 e2e)
+	"POST /backend-api/codex/responses":              true,
 }
 
 // CodexProxy is the API socket of a Codex agent: like APIProxy for Claude
