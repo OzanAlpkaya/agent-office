@@ -1,7 +1,7 @@
 # Progress
 
-**Current phase:** Phase 15 (Codex adapter) in progress on `phase-15/codex-adapter`, starting with
-the Codex spike. Phase 14 (Multi-project office) was merged into `main` on 2026-11-11.
+**Current phase:** Phase 15 (Codex adapter) done on `phase-15/codex-adapter`, waiting for Ozan's
+review. Phase 14 (Multi-project office) was merged into `main` on 2026-11-11.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -25,7 +25,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 12: Team workflow and roles
 - [x] Phase 13: Office v2
 - [x] Phase 14: Multi-project office
-- [ ] Phase 15: Codex adapter
+- [x] Phase 15: Codex adapter (waiting for review)
 
 ## Log
 
@@ -314,3 +314,21 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   Projects panel's running count was stale. The sandbox seed was re-checked with Claude Code 2.1.322
   (unchanged keys and dialogs); the tested version is now 2.1.322. `make check` and `make ui-test`
   (77) pass. Merged into `main` (`--no-ff`).
+- 2026-11-11: Phase 15 "Codex adapter" added to `docs/plan.md` by Ozan, and done on
+  `phase-15/codex-adapter`; plan written with the recommended options and executed without a separate
+  approval, as Ozan asked (`docs/plans/phase-15.md`). Spike G against Codex CLI 0.167.1 (ChatGPT
+  plan login) showed that Codex runs in the network-less worker with a placeholder login while the
+  daemon adds the real access token on the API socket, so the gate Ozan set (stop if the real
+  credential must be in the container) did not trigger; the container holds the account id and plan
+  (identifiers). ADRs 0049 (Codex agents and their credential: placeholder login, TLS on the loopback
+  leg from an in-memory CA, a route allowlist, the refresh token never read, sandboxed only) and 0050
+  (the agent CLI per role, overridable like models; usage per vendor). Migration 0014 (`agents.cli`,
+  `sessions.cli_session_id`); no new dependencies. Roles, `--role-cli`, project `role_clis` and
+  `--codex-model` choose CLI and model; the UI shows a codex tag, roles' CLI and usage per vendor.
+  The e2e runs found that ChatGPT's backend sends the Responses stream without a Content-Type and that
+  Codex sends SessionStart only with the first prompt (both handled). An independent code review led
+  to 5 fixes and a security review to 4 (cookies and personal account fields kept from the agent,
+  encoded paths and upgrades refused, session learning, packs' env). `make check`, `make ui-test`
+  (79), `make sandbox-test` (plus `TestWorkerEgress` with `AO_SANDBOX_NET=1`) and `make e2e` (host,
+  sandbox, team, workflow, multi-project, a Claude-led team with a Codex worker including a SIGKILL
+  and restore, and the GitHub run with a Codex reviewer) pass.

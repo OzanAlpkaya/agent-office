@@ -86,3 +86,13 @@ Option 3; no stop was needed, since the real credential stays outside.
   agent can spend inference; budgets apply only with prices for its models (none are built in).
 - Codex changes fast: the backend routes, the TUI's checks and the lazy SessionStart were found by
   running it; a new version may need the route list or the config updated (the warning says so).
+- **From the Phase 15 security review** (no path for the real token into the container was found):
+  the socket drops `Set-Cookie` and `Cookie`, blanks the user's name, email and picture in the
+  account routes' answers, and refuses encoded paths and protocol upgrades; Codex's session id is
+  learned only from a startup or resume SessionStart and is recorded before it is used; `CODEX_` and
+  `OPENAI_` variables are reserved from stack packs. Residuals, accepted and listed here: usage is
+  metered from the stream's final event, so a stream the agent breaks off before it is not counted,
+  and parallel requests pass a budget check before any is metered; a repository's own
+  `.codex/config.toml` is loaded for the trusted workspace (at worst it breaks that agent's own
+  session; it has no network); the upstream transport honours the daemon's `HTTPS_PROXY`; the
+  loopback certificates last 400 days, renewed at every daemon start.

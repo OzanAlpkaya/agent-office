@@ -1,6 +1,6 @@
 # Phase 15 plan: Codex adapter
 
-- **Status:** In progress on `phase-15/codex-adapter`. Written 2026-11-11 with the recommended option
+- **Status:** Done on `phase-15/codex-adapter`, waiting for Ozan's review (not merged). Written 2026-11-11 with the recommended option
   for every open question, as Ozan asked ("run it like the earlier phases"), with one exception he
   set: if the spike shows that the real credential would have to be inside the container, the phase
   stops and he decides.
@@ -124,4 +124,35 @@ stop and ask Ozan. Otherwise the findings go into `docs/research/codex-cli.md` a
 
 ## Changes during the phase
 
-(appended as the phase runs)
+- **Spike G answered the gate: no stop.** With a placeholder ChatGPT login and its backend base URLs
+  at a proxy, every Codex request carries the placeholder and the daemon side adds the real access
+  token; the container never holds it. Two findings shaped the design: the TUI requires HTTPS for the
+  ChatGPT base URL (TLS ends on the daemon side of the API socket, with an in-memory loopback CA the
+  container trusts through `CODEX_CA_CERTIFICATE`), and it checks the login's account id, so the
+  placeholder carries the user's real **account id and plan** (identifiers, not credentials; listed
+  in ADR 0049). The refresh token is never read; agent-office never refreshes the login.
+- **Codex runs sandboxed only.** Host mode was dropped from the scope (decision): the credential
+  could not be kept from a host process.
+- **Sessions.** Codex picks its own session id (learned from the first SessionStart, kept in
+  `sessions.cli_session_id`, migration 0014) and resumes under the same id; SessionStart comes only
+  with the first prompt, so prompt-less Codex agents are marked idle once their TUI is up (found by
+  the e2e restore step).
+- **Messages** reach Codex agents typed in when idle; the Stop-hook reply is Claude Code's.
+- **Usage:** ChatGPT's backend sends the Responses stream without a Content-Type, so the first e2e run
+  metered nothing; untyped streams are metered now.
+- **The adapter "interface"** is per-CLI functions in `internal/agent` (hook parsing, config, command
+  line) chosen by the agent's recorded CLI, not one Go interface: the two CLIs differ in most of the
+  launch (files, mounts, session ids, delivery), so a shared interface would have been as large as
+  the two adapters.
+- **Codex reviewer:** proven with the GitHub e2e on the playground repository (`AO_E2E_REVIEWER_CLI`,
+  new) and a sandbox test with the GitHub fake; the e2e pushed a branch and opened a pull request
+  there and closed it afterwards, as the Phase 5 runs did.
+- **Independent code review** (5 fixes): a prompt-less Codex resume that exits before its first
+  prompt was recorded as a failed resume (and the label named Claude Code); the Codex session id is
+  recorded before it is used; a login read during the user's own refresh uses the last good login; a
+  log field reported the CA instead of the login; Start records the CLI with its default.
+- **Independent security review** (no path for the real token into the container; 4 fixes): the
+  socket drops cookies, blanks the user's name, email and picture in account answers, and refuses
+  encoded paths and protocol upgrades; the session id is learned only from a startup or resume
+  SessionStart; DEL is escaped in the generated TOML; `CODEX_`/`OPENAI_` variables are reserved from
+  packs. Residuals are listed in ADR 0049.

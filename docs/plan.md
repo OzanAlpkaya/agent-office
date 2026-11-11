@@ -588,7 +588,23 @@ stays sandboxed with the credential outside its container.
 - Usage per vendor.
 
 **Definition of Done**
-- [ ] In a sandboxed team with a Claude lead, a Codex worker implements a sub-task end to end.
-- [ ] A Codex reviewer reviews a Claude worker's branch.
-- [ ] Restart behaviour is tested, or its limits are documented.
-- [ ] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass.
+- [x] In a sandboxed team with a Claude lead, a Codex worker implements a sub-task end to end:
+      `TestCodexTeamEndToEnd` (a haiku Tech Lead assigns, a Codex worker commits and reports through
+      the team MCP tools, its branch is imported, its usage is metered as OpenAI's);
+      `TestSandboxedCodexWorker` with a fake Codex in a real Podman worker.
+- [x] A Codex reviewer reviews a Claude worker's branch: the GitHub e2e with
+      `AO_E2E_REVIEWER_CLI=codex` (the review on the playground's pull request came from a Codex
+      reviewer); `TestSandboxedCodexReviewer` with the GitHub fake.
+- [x] Restart behaviour is tested: `TestCodexTeamEndToEnd` SIGKILLs the daemon with an idle Codex
+      worker, which comes back on its own Codex session and recalls a codeword from before;
+      `TestSandboxedCodexRestore`. Limits are in ADR 0049 (Codex starts a session only with its
+      first prompt; prompt-less agents are marked idle once their TUI is up).
+- [x] `make check`, `make ui-test` (79), `make sandbox-test` and `make e2e` (host, sandbox, team,
+      workflow, multi-project, Codex team, and the GitHub run with a Codex reviewer) pass.
+
+**Backlog** (from Phase 15)
+- Codex agents in host mode (refused today: the credential could not be kept from a host process).
+- Prices for OpenAI models (Codex usage is unpriced unless `prices.yaml` has the model), and a
+  conservative count for Responses streams broken off before their final event.
+- A repository's own `.codex/config.toml` is loaded for the trusted workspace; consider mounting an
+  empty one over it.
