@@ -5,6 +5,7 @@ package engine
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -138,4 +139,36 @@ func TestSandboxedRelaunchReplacesALeftoverExitReport(t *testing.T) {
 		t.Fatalf("resume over a leftover exit report: %v", err)
 	}
 	log.waitFrom(t, 30*time.Second, mark, agentState(a.ID, hooks.Idle))
+}
+
+// TestSandboxedPidsLimitIsReported: a worker that reaches its process limit
+// (PulseGo's integration suite at the default 256) is told the limit and
+// where to raise it, and the UI gets a sandbox event (Phase 17). The limit
+// comes from the project or pack (Sandbox.Pids), as podman runs it.
+func TestSandboxedPidsLimitIsReported(t *testing.T) {
+	f := sandboxFixture(t, false)
+	f.opts.Sandbox.Pids = 64
+	old := memWatchEvery
+	memWatchEvery = 300 * time.Millisecond
+	t.Cleanup(func() { memWatchEvery = old })
+	e := f.engine(t)
+	log := record(t, e)
+	a := startIdle(t, e, log)
+	name := sandbox.ContainerName(a.ID)
+	out, err := exec.Command("podman", "inspect", "--format", "{{.HostConfig.PidsLimit}}", name).Output()
+	if err != nil || strings.TrimSpace(string(out)) != "64" {
+		t.Fatalf("the worker's pids limit: %q %v", out, err)
+	}
+	time.Sleep(2 * time.Second) // the watch found the worker's cgroup
+	// More processes than the limit, in the worker's cgroup; some forks fail.
+	_ = exec.Command("podman", "exec", name, "sh", "-c", "for i in $(seq 1 120); do sleep 3 & done; wait").Run()
+	log.wait(t, 30*time.Second, func(u Update) bool {
+		return u.Type == "sandbox_event" && u.SandboxEvent.AgentID == a.ID && u.SandboxEvent.Event.Kind == sandbox.PidsLimit
+	})
+	eventually(t, "the agent is told", func() bool {
+		return bodiesContaining(messagesTo(t, e, a.ID), "reached its limit of 64 processes") >= 1
+	})
+	if got, _ := e.Get(a.ID); got.State == string(hooks.Exited) {
+		t.Fatal("the agent died")
+	}
 }

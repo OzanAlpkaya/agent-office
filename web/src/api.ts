@@ -93,6 +93,7 @@ export interface Status {
   image?: string;
   egress?: string[]; // sandboxed agents' allowlist
   worker_memory?: string; // sandboxed workers' memory limit (ADR 0051)
+  worker_pids?: number; // sandboxed workers' process limit (Phase 17)
   pack?: PackStatus;
   warnings: string[];
   github?: { repo: string; base: string; remote: string; reviewer: string; rounds: number };
@@ -457,6 +458,8 @@ export interface ProjectSettings {
   access_decider?: AccessDecider; // default user (ADR 0053)
   lead_access_hosts?: string[]; // lead_policy: hosts the Tech Lead may approve
   worker_memory?: string; // sandboxed workers' memory limit, e.g. 4g (ADR 0051)
+  worker_pids?: number; // sandboxed workers' process limit; 0: the pack's or --sandbox-pids (Phase 17)
+  merge_target?: string; // the branch the goal's Merge button squash-merges into; default main (ADR 0055)
 }
 
 // A registered project (ADR 0046): one repository with its own team.

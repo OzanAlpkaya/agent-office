@@ -72,6 +72,7 @@ type Pack struct {
 	Skills        []string
 	MCPServers    map[string]MCPServer
 	Memory        string // the workers' memory limit, e.g. 4g (resources.memory, ADR 0051); "": the daemon's
+	Pids          int    // the workers' process limit (resources.pids, Phase 17); 0: the daemon's
 
 	fsys   fs.FS             // the pack directory
 	skills map[string][]byte // skill files read and checked at load, by path under skills/
@@ -160,6 +161,7 @@ type file struct {
 	} `yaml:"mcp_servers"`
 	Resources *struct {
 		Memory string `yaml:"memory"`
+		Pids   *int   `yaml:"pids"`
 	} `yaml:"resources"`
 }
 
@@ -211,10 +213,18 @@ func load(fsys fs.FS, dir, source, label string) (*Pack, error) {
 
 	if r := f.Resources; r != nil {
 		p.Memory = strings.TrimSpace(r.Memory)
-		if p.Memory == "" {
-			e.add("resources.memory", "missing; give the workers' memory limit such as 4g, or remove `resources`")
-		} else if !sandbox.ValidMemory(p.Memory) {
+		switch {
+		case p.Memory == "" && r.Pids == nil:
+			e.add("resources", "empty; give the workers' memory limit (memory: 4g) or process limit (pids: 1024), or remove `resources`")
+		case p.Memory != "" && !sandbox.ValidMemory(p.Memory):
 			e.add("resources.memory", "%q must be a size between 256m and 256g such as 512m or 4g", p.Memory)
+		}
+		if r.Pids != nil {
+			if *r.Pids < sandbox.MinPids || *r.Pids > sandbox.MaxPids {
+				e.add("resources.pids", "%d must be between %d and %d", *r.Pids, sandbox.MinPids, sandbox.MaxPids)
+			} else {
+				p.Pids = *r.Pids
+			}
 		}
 	}
 	if f.Toolchain != nil {

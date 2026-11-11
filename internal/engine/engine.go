@@ -153,6 +153,7 @@ type Status struct {
 	Image    string        `json:"image,omitempty"`
 	Egress   []string      `json:"egress,omitempty"`        // sandboxed agents' allowlist
 	Memory   string        `json:"worker_memory,omitempty"` // sandboxed workers' memory limit (ADR 0051)
+	Pids     int           `json:"worker_pids,omitempty"`   // sandboxed workers' process limit (Phase 17)
 	Pack     *PackStatus   `json:"pack,omitempty"`          // stack pack (ADR 0023)
 	Warnings []string      `json:"warnings"`
 	GitHub   *GitHubStatus `json:"github,omitempty"`
@@ -517,7 +518,7 @@ func (e *Engine) Status() Status {
 	st := Status{Sandbox: SandboxHost, Warnings: append([]string{}, e.opts.Warnings...)}
 	if sb := e.opts.Sandbox; sb != nil {
 		st.Sandbox, st.Image, st.Egress = SandboxPodman, sb.Image, append([]string{}, sb.AllowNames...)
-		st.Memory = e.workerMemory()
+		st.Memory, st.Pids = e.workerMemory(), e.workerPids()
 		if p := sb.Pack; p != nil {
 			st.Pack = &PackStatus{Name: p.Name, Description: p.Description, Source: p.Source,
 				Egress: append([]string{}, p.Egress...), Secrets: p.SecretStatus(sb.SecretsDir),

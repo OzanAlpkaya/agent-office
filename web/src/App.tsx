@@ -87,6 +87,7 @@ const eventLabel: Record<string, string> = {
   api_budget: "Budget spent",
   api_meter: "Usage not readable",
   oom_kill: "Out of memory",
+  pids_limit: "Process limit reached",
 };
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
@@ -990,6 +991,8 @@ function PackPanel({ status }: { status: Status }) {
         <dd className="mono">{status.image}</dd>
         <dt>Network</dt>
         <dd className="mono">{list(status.egress)}</dd>
+        <dt>Worker limits</dt>
+        <dd className="mono">{status.worker_memory ?? "default"} memory · {status.worker_pids ?? "default"} processes</dd>
         {p && (
           <>
             <dt>Secrets</dt>

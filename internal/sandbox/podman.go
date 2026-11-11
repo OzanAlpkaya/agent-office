@@ -41,6 +41,8 @@ const (
 	LabelInstance   = "io.agent-office.instance" // which daemon (data dir) owns the container
 	DefaultMemory   = "2g"
 	DefaultPids     = 256
+	MinPids         = 64    // the smallest per-worker pids limit a pack or project may set (Phase 17)
+	MaxPids         = 65536 // the largest
 	helperMemory    = "512m"
 	helperPids      = 64
 	containerPrefix = "ao-"

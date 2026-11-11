@@ -258,6 +258,9 @@ func (h *Hub) options(ctx context.Context, row db.Project, s ProjectSettings) (O
 	if m := eff.WorkerMemory; m != nil && *m != "" && o.Sandbox != nil {
 		o.Sandbox.Memory = *m // the project's own copy (above); over the pack's and --sandbox-memory (ADR 0051)
 	}
+	if n := eff.WorkerPids; n != nil && *n != 0 && o.Sandbox != nil {
+		o.Sandbox.Pids = *n // over the pack's and --sandbox-pids, like memory (Phase 17)
+	}
 	return o, nil
 }
 

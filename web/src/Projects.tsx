@@ -21,6 +21,8 @@ export interface SettingsDraft {
   budgetGoalUSD: string;
   egress: string;
   workerMemory: string; // e.g. 4g (ADR 0051)
+  workerPids: string; // e.g. 1024 (Phase 17)
+  mergeTarget: string; // e.g. main (ADR 0055)
   accessDecider: "" | AccessDecider; // ADR 0053
   leadHosts: string; // comma-separated
 }
@@ -34,6 +36,7 @@ export function draftOf(s: ProjectSettings): SettingsDraft {
     budgetSessionUSD: usd(s.budget_session_micro_usd), budgetGoalUSD: usd(s.budget_goal_micro_usd),
     egress: (s.egress_allow ?? []).join(", "),
     workerMemory: s.worker_memory ?? "", accessDecider: s.access_decider ?? "",
+    workerPids: s.worker_pids ? String(s.worker_pids) : "", mergeTarget: s.merge_target ?? "",
     leadHosts: (s.lead_access_hosts ?? []).join(", "),
   };
 }
@@ -68,6 +71,12 @@ export function settingsOf(d: SettingsDraft, base: ProjectSettings = {}): Projec
   const mem = d.workerMemory.trim();
   if (mem !== "" && !/^[1-9][0-9]{0,5}[mg]$/.test(mem)) throw new Error("Worker memory: a size such as 512m or 4g");
   set("worker_memory", mem || undefined);
+  const pids = d.workerPids.trim();
+  if (pids !== "" && (!/^\d+$/.test(pids) || Number(pids) < 64 || Number(pids) > 65536)) {
+    throw new Error("Worker processes: a whole number between 64 and 65536");
+  }
+  set("worker_pids", pids === "" ? undefined : Number(pids));
+  set("merge_target", d.mergeTarget.trim() || undefined);
   set("access_decider", d.accessDecider || undefined);
   const hosts = d.leadHosts.split(",").map((h) => h.trim()).filter((h) => h !== "");
   set("lead_access_hosts", hosts.length > 0 ? hosts : undefined);
@@ -81,6 +90,7 @@ function inherited(d: ProjectSettings | undefined): Record<keyof SettingsDraft, 
     github: d?.github ? "on" : "off", budgetSessionUSD: money(d?.budget_session_micro_usd),
     budgetGoalUSD: money(d?.budget_goal_micro_usd), egress: (d?.egress_allow ?? []).join(", ") || "none",
     workerMemory: d?.worker_memory || "pack's or --sandbox-memory", accessDecider: d?.access_decider ?? "user",
+    workerPids: d?.worker_pids ? String(d.worker_pids) : "pack's or --sandbox-pids", mergeTarget: d?.merge_target || "main",
     leadHosts: (d?.lead_access_hosts ?? []).join(", ") || "none",
   };
 }
@@ -113,6 +123,8 @@ function SettingsFields({ draft, onChange, defaults, sandboxed }: {
       {field("budgetGoalUSD", "Goal budget ($)", "refuse API requests once a goal's estimated cost reaches this; 0 = off")}
       {sandboxed && field("egress", "Extra egress", "host names its sandboxed agents may reach, comma-separated")}
       {sandboxed && field("workerMemory", "Worker memory", "each sandboxed worker's memory limit, e.g. 4g")}
+      {sandboxed && field("workerPids", "Worker processes", "each sandboxed worker's process and thread limit, e.g. 1024")}
+      {field("mergeTarget", "Merge target", "the branch a goal's Merge button squash-merges into")}
       {sandboxed && (
         <label className="setting">
           <span>Access decisions</span>
@@ -133,7 +145,7 @@ function SettingsFields({ draft, onChange, defaults, sandboxed }: {
 
 const emptyDraft: SettingsDraft = {
   pack: "", model: "", maxAgents: "", github: "", budgetSessionUSD: "", budgetGoalUSD: "", egress: "", workerMemory: "",
-  accessDecider: "", leadHosts: "",
+  workerPids: "", mergeTarget: "", accessDecider: "", leadHosts: "",
 };
 
 export function ProjectsPanel({ projects, current, status, running, onSelect }: {

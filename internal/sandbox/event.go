@@ -27,6 +27,8 @@ const (
 
 	// The worker's memory limit (ADR 0051).
 	OOMKill EventKind = "oom_kill" // the out-of-memory killer ended a process in the worker
+	// The worker's process limit (Phase 17).
+	PidsLimit EventKind = "pids_limit" // a process could not start: the worker reached its pids limit
 )
 
 // Event is one refusal or failure. Detail holds only the target (host:port or

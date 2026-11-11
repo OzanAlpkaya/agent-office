@@ -60,7 +60,8 @@ describe("projects", () => {
 describe("project settings form", () => {
   it("turns empty fields into inherited settings and dollars into micro-USD", () => {
     const s = settingsOf({ pack: " node ", model: "", maxAgents: "2", github: "off", budgetSessionUSD: "0.25",
-      budgetGoalUSD: "", egress: "registry.npmjs.org, , example.com", workerMemory: "", accessDecider: "", leadHosts: "" });
+      budgetGoalUSD: "", egress: "registry.npmjs.org, , example.com", workerMemory: "", workerPids: "", mergeTarget: "",
+      accessDecider: "", leadHosts: "" });
     expect(s).toEqual({ pack: "node", max_agents: 2, github: false, budget_session_micro_usd: 250000,
       egress_allow: ["registry.npmjs.org", "example.com"] });
   });
@@ -82,6 +83,11 @@ describe("project settings form", () => {
     expect(settingsOf(draftOf(base), base)).toEqual(base);
     expect(settingsOf({ ...draftOf(base), accessDecider: "", leadHosts: "", workerMemory: "" }, base)).toEqual({});
     expect(() => settingsOf({ ...draftOf({}), workerMemory: "4 GB" })).toThrow("Worker memory");
+    // Phase 17: the process limit and the merge target.
+    expect(settingsOf({ ...draftOf({}), workerPids: " 2048 ", mergeTarget: " develop " })).toEqual({ worker_pids: 2048, merge_target: "develop" });
+    expect(draftOf({ worker_pids: 1024, merge_target: "main" })).toMatchObject({ workerPids: "1024", mergeTarget: "main" });
+    expect(() => settingsOf({ ...draftOf({}), workerPids: "32" })).toThrow("Worker processes");
+    expect(() => settingsOf({ ...draftOf({}), workerPids: "1e3" })).toThrow("Worker processes");
   });
 
   it("refuses what is not a number", () => {

@@ -15,7 +15,9 @@ import (
 // agent's processes (a go test, a build) leaves the agent running with a
 // "Killed" it cannot explain; the watch tells it and the UI why. The agent's
 // own death is reported by its exit (sandbox-init's exit report), since the
-// cgroup is gone by then.
+// cgroup is gone by then. The same watch reads pids.events: a fork refused at
+// the worker's process limit ("Resource temporarily unavailable" in a test
+// suite) is told the same way (Phase 17).
 
 // memWatchEvery is how often a worker's memory events are read; tests shorten it.
 var memWatchEvery = 3 * time.Second
@@ -54,6 +56,11 @@ func (e *Engine) watchMemory(a *agentProc, res *sandboxRes) {
 			return
 		case <-t.C:
 		}
+		if hits, err := sandbox.PidsLimitHits(filepath.Join(filepath.Dir(events), "pids.events")); err == nil {
+			if prev := res.pidsHits.Swap(hits); hits > prev {
+				e.pidsLimitHit(a, res, hits-prev)
+			}
+		}
 		n, err := sandbox.OOMKills(events)
 		if err != nil {
 			return // the worker ended, or this host's cgroups look different
@@ -85,5 +92,22 @@ func (e *Engine) oomKilled(a *agentProc, res *sandboxRes, n int64) {
 	defer cancel()
 	if _, err := e.sendMessage(ctx, "", a.info.ID, body, false); err != nil {
 		log.Warn("tell the agent about an OOM kill", "err", err)
+	}
+}
+
+// pidsLimitHit reports forks refused at the worker's process limit.
+func (e *Engine) pidsLimitHit(a *agentProc, res *sandboxRes, n int64) {
+	log := a.logger(e)
+	log.Warn("process limit reached in the worker", "refused_forks", n, "pids", res.pids)
+	e.sandboxEvent(a.info.ID, sandbox.Event{Kind: sandbox.PidsLimit,
+		Detail: fmt.Sprintf("%d process start(s) refused, limit %d", n, res.pids), At: now()})
+	body := fmt.Sprintf("Your sandbox reached its limit of %d processes and threads: %d process start(s) failed "+
+		"(\"Resource temporarily unavailable\", \"fork\" or \"pthread_create\" errors). Run fewer at once (for example "+
+		"go test -p 1 or fewer parallel jobs) and stop background processes you do not need. If the task needs more, tell "+
+		"your lead: the user can raise worker_pids in the project's settings or resources.pids in the stack pack.", res.pids, n)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := e.sendMessage(ctx, "", a.info.ID, body, false); err != nil {
+		log.Warn("tell the agent about the process limit", "err", err)
 	}
 }

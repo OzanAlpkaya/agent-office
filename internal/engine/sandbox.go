@@ -135,8 +135,10 @@ type sandboxRes struct {
 	secrets   net.Listener    // one-shot pack secrets socket (ADR 0023); nil without secrets
 	grants    *sandbox.Grants // hosts approved at run time (ADR 0019)
 	memory    string          // the worker's memory limit, e.g. "2g" (ADR 0051)
+	pids      int             // the worker's process limit (Phase 17)
 	oomKills  atomic.Int64    // the worker cgroup's oom_kill count when the running watch last read it
 	oomTold   atomic.Int64    // OOM kills the watch told the agent about: processes it ran, not itself
+	pidsHits  atomic.Int64    // the worker cgroup's pids.events max count when the running watch last read it
 }
 
 // eventLimit is the per-agent rate limit for sandbox events.
@@ -256,7 +258,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	su := e.newSessionUsage(l, SandboxPodman)
 
 	res := &sandboxRes{dir: filepath.Join(e.opts.RuntimeDir, "agents", id), container: sandbox.ContainerName(id),
-		grants: &sandbox.Grants{}, memory: e.workerMemory()}
+		grants: &sandbox.Grants{}, memory: e.workerMemory(), pids: e.workerPids()}
 	cfgDir := filepath.Join(s.AgentsRoot, id, "config")
 	var ln *hooks.Listener
 	var mln *mcp.Listener
@@ -422,7 +424,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		Instance: s.Instance, AgentID: id, Image: s.Image, Workspace: wsPath, ObjectsDir: prep.objects, ConfigDir: cfgDir,
 		HookSocket: ln.Path(), MCPSocket: mcpPath, MCPConfig: mcpConfig, EgressSocket: egressPath, APISocket: apiPath,
 		SecretsSocket: secretsPath, ExitReport: exitReport, Skills: skillsPath, AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
-		Git: prep.ident, Memory: res.memory, Pids: s.Pids, Command: command, ReadOnlyWorkspace: l.def.ReadOnly,
+		Git: prep.ident, Memory: res.memory, Pids: res.pids, Command: command, ReadOnlyWorkspace: l.def.ReadOnly,
 		CLI: cliOr(l.cli), Codex: cx.dir, CodexConfig: cx.config, CodexAuth: cx.login, CodexCA: cx.ca,
 	})
 	if err != nil {
@@ -472,6 +474,14 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	go e.watch(a)
 	go e.watchMemory(a, res)
 	return view, nil
+}
+
+// workerPids is a worker's process limit (Phase 17).
+func (e *Engine) workerPids() int {
+	if n := e.opts.Sandbox.Pids; n > 0 {
+		return n
+	}
+	return sandbox.DefaultPids
 }
 
 // workerMemory is a worker's memory limit (ADR 0051).

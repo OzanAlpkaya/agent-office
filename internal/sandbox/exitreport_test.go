@@ -69,3 +69,27 @@ func TestReadExitReportRejectsBadInput(t *testing.T) {
 		t.Fatal("SignalFromCode")
 	}
 }
+
+func TestCgroupEventCounts(t *testing.T) {
+	dir := t.TempDir()
+	mem := filepath.Join(dir, "memory.events")
+	pids := filepath.Join(dir, "pids.events")
+	if err := os.WriteFile(mem, []byte("low 0\nhigh 0\nmax 4\noom 2\noom_kill 1\noom_group_kill 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pids, []byte("max 37\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := OOMKills(mem); err != nil || n != 1 {
+		t.Fatalf("oom_kill = %d, %v", n, err)
+	}
+	if n, err := PidsLimitHits(pids); err != nil || n != 37 {
+		t.Fatalf("pids max = %d, %v", n, err)
+	}
+	if _, err := PidsLimitHits(filepath.Join(dir, "none")); err == nil {
+		t.Fatal("a missing file read as a count")
+	}
+	if _, err := OOMKills(pids); err == nil {
+		t.Fatal("a file without oom_kill read as a count")
+	}
+}
