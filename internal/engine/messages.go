@@ -76,12 +76,13 @@ func (e *Engine) queueMessage(ctx context.Context, from, to, body string, limite
 	e.mu.Lock()
 	r, ok := e.agents[to]
 	switch {
-	case !ok || !r.running():
+	case !ok:
 		e.mu.Unlock()
 		return Message{}, invalid("agent %s is not running", to)
-	case r.stopAfterTurn:
+	case (!r.running() || r.stopAfterTurn) && !holdsMessages(r):
+		// ADR 0051: an agent that can be resumed keeps its messages until then.
 		e.mu.Unlock()
-		return Message{}, invalid("agent %s has reported done and is ending its session", to)
+		return Message{}, invalid("agent %s is not running and cannot be resumed, so it cannot get messages", to)
 	}
 	e.mu.Unlock()
 	if limited {
@@ -116,11 +117,45 @@ func (e *Engine) queueMessage(ctx context.Context, from, to, body string, limite
 	e.log.Info("message queued", "message_id", m.ID, "from", from, "from_user", fromUser, "to", to, "chars", len([]rune(body)))
 	e.mu.Lock()
 	e.publishLocked(Update{Type: "message", Message: &m})
-	if r.status.State == hooks.Idle {
-		e.scheduleDeliveryLocked(ctx, r)
+	if cur := e.agents[to]; cur != nil && cur.status.State == hooks.Idle {
+		e.scheduleDeliveryLocked(ctx, cur) // the current session: a resume may have replaced r
 	}
 	e.mu.Unlock()
 	return m, nil
+}
+
+// holdsMessages reports whether an agent that is not running (or is ending
+// after its report) can still get messages: once it is resumed or relaunched
+// in its workspace, they are delivered (ADR 0051).
+func holdsMessages(a *agentProc) bool {
+	return resumable(a.info.Kind) && a.info.WorktreeStatus != WorktreeRemoved
+}
+
+// waitingFor describes a recipient that gets a message only once it is
+// resumed, or "" for a running one; for the sender.
+func (e *Engine) waitingFor(id string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	a, ok := e.agents[id]
+	if !ok || (a.running() && !a.stopAfterTurn) {
+		return ""
+	}
+	why := "has reported and is ending its session"
+	if !a.running() {
+		why = "is not running (" + exitWords(a.info) + ")"
+	}
+	return fmt.Sprintf("agent %s %s: the message waits and is delivered when it is resumed (resume_agent)", teamLabel(a.info.Name, id), why)
+}
+
+// exitWords is a short reason for an exited agent.
+func exitWords(info AgentInfo) string {
+	if info.ExitDetail != "" {
+		return "exited: " + strings.TrimSuffix(info.ExitDetail, ".")
+	}
+	if info.ExitReason != "" {
+		return "exited: " + strings.ReplaceAll(info.ExitReason, "_", " ")
+	}
+	return "exited"
 }
 
 // onHookLocked runs the state machine for one hook event and returns the

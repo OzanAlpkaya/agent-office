@@ -177,6 +177,10 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 	if r.resume {
 		// Messages queued for the conversation it continues are its own.
 		l.resumeFrom, l.since = from.ID, from.StartedAt.UTC()
+	} else if info.ExitedAt != nil {
+		// ADR 0051: messages queued while it was exited are for this session;
+		// older ones belonged to the previous one (ADR 0022).
+		l.since = info.ExitedAt.UTC()
 	}
 	var out AgentInfo
 	if info.Sandbox == SandboxPodman {

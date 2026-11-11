@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -125,6 +126,9 @@ func fakeClaude() int {
 			return 0
 		case "crash":
 			return 7 // exit without a SessionEnd hook
+		case "killself": // killed by a signal, as by the OOM killer or podman kill
+			_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+			time.Sleep(time.Second)
 		case "usage": // a turn whose transcript and subagent transcript hold the usage fixture
 			src := os.Getenv("AO_FAKE_TRANSCRIPT_SRC")
 			main, _ := os.ReadFile(filepath.Join(src, usageFixtureSession+".jsonl"))

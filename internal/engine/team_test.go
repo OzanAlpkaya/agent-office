@@ -481,8 +481,10 @@ func TestReportDone(t *testing.T) {
 	if _, err := tm.ReportDone(ctx, w.ID, mcp.ReportDoneInput{Summary: "again"}); !isUser(err, ErrInvalid) {
 		t.Fatalf("second report: %v", err)
 	}
-	if _, err := tm.SendMessage(ctx, lead, mcp.SendMessageInput{To: w.ID, Body: "more"}); !isUser(err, ErrInvalid) {
-		t.Fatalf("message to a worker that reported: %v", err)
+	// ADR 0051: it waits for the worker's resume instead of being refused.
+	if out, err := tm.SendMessage(ctx, lead, mcp.SendMessageInput{To: w.ID, Body: "more"}); err != nil ||
+		out.Status != "waiting_for_resume" || !strings.Contains(out.Note, "resume_agent") {
+		t.Fatalf("message to a worker that reported: %+v %v", out, err)
 	}
 	m := messagesTo(t, e, lead)
 	if len(m) != 1 || !strings.Contains(m[0].Body, "Added the column.") || !strings.Contains(m[0].Body, w.Branch) ||

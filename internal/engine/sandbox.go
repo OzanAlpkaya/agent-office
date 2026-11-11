@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
@@ -133,6 +134,8 @@ type sandboxRes struct {
 	api       *http.Server
 	secrets   net.Listener    // one-shot pack secrets socket (ADR 0023); nil without secrets
 	grants    *sandbox.Grants // hosts approved at run time (ADR 0019)
+	memory    string          // the worker's memory limit, e.g. "2g" (ADR 0051)
+	oomKills  atomic.Int64    // OOM kills the running watch saw in the worker's cgroup
 }
 
 // eventLimit is the per-agent rate limit for sandbox events.
@@ -252,7 +255,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	su := e.newSessionUsage(l, SandboxPodman)
 
 	res := &sandboxRes{dir: filepath.Join(e.opts.RuntimeDir, "agents", id), container: sandbox.ContainerName(id),
-		grants: &sandbox.Grants{}}
+		grants: &sandbox.Grants{}, memory: e.workerMemory()}
 	cfgDir := filepath.Join(s.AgentsRoot, id, "config")
 	var ln *hooks.Listener
 	var mln *mcp.Listener
@@ -369,7 +372,11 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	res.api = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = res.api.Serve(apiLn) }()
 
-	socks := []string{ln.Path(), mcpPath, egressPath, apiPath}
+	exitReport := filepath.Join(res.dir, exitReportName) // sandbox-init's report (ADR 0051)
+	if err := os.WriteFile(exitReport, nil, 0o644); err != nil {
+		return fail(err)
+	}
+	socks := []string{ln.Path(), mcpPath, egressPath, apiPath, exitReport}
 	var secretsPath string
 	if len(prep.secrets) > 0 {
 		secretsPath = filepath.Join(res.dir, "secrets.sock")
@@ -405,8 +412,8 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	args, err := sandbox.WorkerArgs(sandbox.WorkerSpec{
 		Instance: s.Instance, AgentID: id, Image: s.Image, Workspace: wsPath, ObjectsDir: prep.objects, ConfigDir: cfgDir,
 		HookSocket: ln.Path(), MCPSocket: mcpPath, MCPConfig: mcpConfig, EgressSocket: egressPath, APISocket: apiPath,
-		SecretsSocket: secretsPath, Skills: skillsPath, AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
-		Git: prep.ident, Memory: s.Memory, Pids: s.Pids, Command: command, ReadOnlyWorkspace: l.def.ReadOnly,
+		SecretsSocket: secretsPath, ExitReport: exitReport, Skills: skillsPath, AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
+		Git: prep.ident, Memory: res.memory, Pids: s.Pids, Command: command, ReadOnlyWorkspace: l.def.ReadOnly,
 		CLI: cliOr(l.cli), Codex: cx.dir, CodexConfig: cx.config, CodexAuth: cx.login, CodexCA: cx.ca,
 	})
 	if err != nil {
@@ -450,6 +457,14 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	e.wg.Add(1)
 	go e.watch(a)
 	return view, nil
+}
+
+// workerMemory is a worker's memory limit (ADR 0051).
+func (e *Engine) workerMemory() string {
+	if m := e.opts.Sandbox.Memory; m != "" {
+		return m
+	}
+	return sandbox.DefaultMemory
 }
 
 // codexSettle is how long a Codex TUI takes to come up (Spike G: about a

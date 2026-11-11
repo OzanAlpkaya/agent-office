@@ -288,7 +288,11 @@ func (t team) SendMessage(ctx context.Context, caller string, in mcp.SendMessage
 	if err != nil {
 		return mcp.SendMessageOutput{}, userErr(err)
 	}
-	return mcp.SendMessageOutput{MessageID: m.ID, To: to, Status: "queued"}, nil
+	out := mcp.SendMessageOutput{MessageID: m.ID, To: to, Status: "queued"}
+	if w := e.waitingFor(to); w != "" {
+		out.Status, out.Note = "waiting_for_resume", w
+	}
+	return out, nil
 }
 
 // resolveRecipient applies the addressing rules: a worker reaches only the

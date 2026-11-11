@@ -183,6 +183,39 @@ func (p Podman) ListAgentContainers(ctx context.Context) ([]Container, error) {
 	return list, nil
 }
 
+// ContainerState is what podman inspect says about an ended container.
+type ContainerState struct {
+	Status    string `json:"Status"`
+	OOMKilled bool   `json:"OOMKilled"`
+	ExitCode  int    `json:"ExitCode"`
+	Error     string `json:"Error"`
+}
+
+// State inspects an agent-office container (ADR 0051).
+func (p Podman) State(ctx context.Context, name string) (ContainerState, error) {
+	if !strings.HasPrefix(name, containerPrefix) {
+		return ContainerState{}, fmt.Errorf("sandbox: refusing to inspect container %q outside %s*", name, containerPrefix)
+	}
+	out, err := p.call(ctx, "container", "inspect", "--format", "{{json .State}}", "--", name)
+	if err != nil {
+		return ContainerState{}, err
+	}
+	var st ContainerState
+	if err := json.Unmarshal([]byte(out), &st); err != nil {
+		return ContainerState{}, fmt.Errorf("sandbox: podman inspect output: %w", err)
+	}
+	return st, nil
+}
+
+// CgroupPath is a running container's cgroup (relative to /sys/fs/cgroup),
+// for its memory events (ADR 0051); "" if podman does not know it yet.
+func (p Podman) CgroupPath(ctx context.Context, name string) (string, error) {
+	if !strings.HasPrefix(name, containerPrefix) {
+		return "", fmt.Errorf("sandbox: refusing to inspect container %q outside %s*", name, containerPrefix)
+	}
+	return p.call(ctx, "container", "inspect", "--format", "{{.State.CgroupPath}}", "--", name)
+}
+
 // Remove stops (5 s grace) and removes a container; a missing one is fine.
 func (p Podman) Remove(ctx context.Context, name string) error {
 	if !strings.HasPrefix(name, containerPrefix) {

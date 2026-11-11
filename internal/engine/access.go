@@ -23,6 +23,9 @@ const (
 	AccessDenied   = "denied"
 	AccessExpired  = "expired"
 
+	ScopeAgent   = "agent"   // an approval for the asking agent, every later session too (ADR 0053)
+	ScopeProject = "project" // an approval for every agent of the project
+
 	maxAccessReason  = 1000
 	maxPendingAccess = 5
 	maxAccessListed  = 100
@@ -137,7 +140,7 @@ func (e *Engine) DecideAccess(ctx context.Context, id int64, approve bool) (Acce
 		}
 	}
 	row, err := e.q.DecideAccessRequest(ctx, db.DecideAccessRequestParams{Status: status, DecidedAt: nullTime(now()),
-		DecidedBy: "user", ID: id})
+		DecidedBy: "user", Scope: ScopeAgent, ID: id})
 	if errors.Is(err, sql.ErrNoRows) {
 		return AccessRequest{}, ErrDecided // decided concurrently
 	}

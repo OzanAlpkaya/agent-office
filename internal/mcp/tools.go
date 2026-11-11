@@ -284,7 +284,8 @@ type SendMessageInput struct {
 type SendMessageOutput struct {
 	MessageID int64  `json:"message_id"`
 	To        string `json:"to"`
-	Status    string `json:"status"` // queued: delivered at the recipient's next Stop or when it is idle
+	Status    string `json:"status"`         // queued: delivered at the recipient's next Stop or when it is idle; waiting_for_resume: once it is resumed
+	Note      string `json:"note,omitempty"` // why it waits, and what to do
 }
 
 // ReportDoneInput is report_done's input.

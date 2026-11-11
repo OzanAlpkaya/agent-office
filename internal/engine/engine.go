@@ -199,6 +199,9 @@ type AgentInfo struct {
 	ExitedAt            *time.Time  `json:"exited_at,omitempty"`
 	ExitCode            *int        `json:"exit_code,omitempty"`
 	ExitReason          string      `json:"exit_reason,omitempty"`
+	ExitSignal          string      `json:"exit_signal,omitempty"`  // the signal that ended it, e.g. KILL (ADR 0051)
+	OOMKilled           bool        `json:"oom_killed,omitempty"`   // the out-of-memory killer ended it
+	ExitDetail          string      `json:"exit_detail,omitempty"`  // why it ended, in plain words
 	LastImport          *ImportInfo `json:"last_import,omitempty"`  // sandboxed agents (ADR 0014)
 	Resumable           bool        `json:"resumable"`              // exited and can continue its conversation (ADR 0035)
 	ResumedFrom         string      `json:"resumed_from,omitempty"` // the session this one continues
@@ -859,13 +862,6 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 func (e *Engine) watch(a *agentProc) {
 	defer e.wg.Done()
 	<-a.term.Done()
-	code := 0
-	var exitErr *exec.ExitError
-	if err := a.term.ExitErr(); errors.As(err, &exitErr) {
-		code = exitErr.ExitCode()
-	} else if err != nil {
-		code = -1
-	}
 	_ = a.listener.Close()
 	e.mu.Lock()
 	mln := a.mcp
@@ -882,7 +878,9 @@ func (e *Engine) watch(a *agentProc) {
 		_ = os.Remove(a.mcpConfig)
 	}
 	alog := a.logger(e)
+	x := hostExit(a.term.ExitErr())
 	if a.sandbox != nil {
+		x = e.sandboxExit(a.sandbox, a.term.ExitErr(), alog) // before the container and its files are removed
 		e.closeSandbox(a.sandbox, alog)
 		e.mu.Lock()
 		a.sandbox = nil
@@ -901,6 +899,7 @@ func (e *Engine) watch(a *agentProc) {
 		}
 	}
 	a.status = hooks.Status{State: hooks.Exited}
+	code := x.code
 	a.info.ExitedAt, a.info.ExitCode, a.info.ExitReason = &t, &code, reason
 	e.syncSlotsLocked()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -909,6 +908,7 @@ func (e *Engine) watch(a *agentProc) {
 		ExitCode: sql.NullInt64{Int64: int64(code), Valid: true}, ExitReason: reason, ID: a.info.ID}); err != nil {
 		alog.Error("persist agent exit", "err", err)
 	}
+	e.recordExitDetailLocked(ctx, a, x, alog)
 	_ = e.q.EndSessions(ctx, db.EndSessionsParams{EndedAt: nullTime(t), AgentID: a.info.ID})
 	if reason == ExitResumeFailed {
 		// It never ran: a later resume continues the session before it (ADR 0035).
@@ -933,15 +933,23 @@ func (e *Engine) watch(a *agentProc) {
 	if reason == ExitResumeFailed {
 		e.removeSessionHistory(a)
 	}
-	alog.Info("agent exited", "exit_code", code, "reason", reason)
+	alog.Info("agent exited", "exit_code", code, "reason", reason, "signal", x.signal, "oom_killed", x.oom)
 	close(a.exited)
+	ictx, icancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// ADR 0051: a worker's uncommitted work is committed before anything else
+	// can happen to its workspace.
+	saved, err := e.autosave(ictx, a, alog)
+	if err != nil {
+		alog.Warn("save uncommitted work on exit", "err", err)
+	} else if saved != "" {
+		alog.Info("uncommitted work saved on exit", "commit", short(saved))
+	}
 	if a.info.Sandbox == SandboxPodman && imports(a.info.Kind) {
 		// ADR 0014: the work reaches the main repository on exit, before a
 		// relaunch (ADR 0022) may start a new session in the workspace.
-		ictx, icancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		_, _ = e.importAgent(ictx, a.info.ID, TriggerExit)
-		icancel()
 	}
+	icancel()
 	close(a.afterExit)
 	if a.reviewID != 0 {
 		e.reviewerExited(a.reviewID, a.info.ID)
@@ -949,6 +957,7 @@ func (e *Engine) watch(a *agentProc) {
 	if a.info.Kind == KindQA {
 		e.qaExited(a.info.ID)
 	}
+	e.afterExit(a, x, saved, alog)
 }
 
 // parseHook reads a hook payload in the format of the agent's CLI.
@@ -1438,6 +1447,7 @@ func infoFromRow(r db.ListVisibleAgentsRow) AgentInfo {
 		Role: r.Role, Branch: r.Branch,
 		WorktreePath:  r.WorktreePath,
 		WorkspaceKind: r.WorktreeKind, WorktreeStatus: r.WorktreeStatus, StartedAt: r.StartedAt, ExitReason: r.ExitReason,
+		ExitSignal: r.ExitSignal, OOMKilled: r.OomKilled, ExitDetail: r.ExitDetail,
 	}
 	if r.ExitedAt.Valid {
 		t := r.ExitedAt.Time

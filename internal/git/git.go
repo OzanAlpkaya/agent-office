@@ -223,6 +223,26 @@ func (g Git) IsDirty(ctx context.Context, path string) (bool, error) {
 	return out != "", nil
 }
 
+// CommitAll commits everything uncommitted in the worktree at path as one
+// commit by name <email> with trailer (ADR 0051: an exiting worker's work is
+// saved). The worktree's hooks and fsmonitor do not run: the agent wrote them.
+// It returns the new commit.
+func (g Git) CommitAll(ctx context.Context, path, name, email, message, trailer string) (string, error) {
+	ident := []string{"-c", "user.name=" + name, "-c", "user.email=" + email, "-c", "core.hooksPath=/dev/null",
+		"-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false"}
+	if _, err := g.run(ctx, path, append(ident, "add", "--all")...); err != nil {
+		return "", err
+	}
+	args := append(ident, "commit", "--quiet", "--no-verify", "-m", message)
+	if trailer != "" {
+		args = append(args, "--trailer", trailer)
+	}
+	if _, err := g.run(ctx, path, args...); err != nil {
+		return "", err
+	}
+	return g.run(ctx, path, "rev-parse", "HEAD")
+}
+
 // CommitsAhead counts commits on branch that are not reachable from base.
 func (g Git) CommitsAhead(ctx context.Context, repo, base, branch string) (int, error) {
 	out, err := g.run(ctx, repo, "rev-list", "--count", base+".."+branch, "--")

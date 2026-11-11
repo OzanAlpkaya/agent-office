@@ -259,21 +259,8 @@ func (e *Engine) SaveWork(ctx context.Context, id string) (ImportInfo, error) {
 	if n == 0 {
 		return ImportInfo{}, fmt.Errorf("%w: no uncommitted work to save", ErrInvalid)
 	}
-	co := sandbox.CoAuthor(agentName(id))
-	name, email, err := e.git.UserIdentity(ctx, e.project.RepoPath)
-	if err != nil {
+	if err := e.commitWorkLocked(ctx, info); err != nil {
 		return ImportInfo{}, err
-	}
-	ident := sandbox.GitIdentity{Name: name, Email: email, CoAuthor: co}
-	// No shell: the trailer is an argument. The agent's own hooks do not run.
-	for _, cmd := range [][]string{
-		{"git", "-c", "core.fsmonitor=false", "add", "--all"},
-		{"git", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "--no-verify",
-			"-m", "wip: uncommitted work saved by agent-office", "--trailer", "Co-Authored-By: " + co},
-	} {
-		if err := e.helper(ctx, info, ident, cmd, io.Discard, 1<<16); err != nil {
-			return ImportInfo{}, fmt.Errorf("save work: %w", err)
-		}
 	}
 	return e.importLocked(ctx, a, info, base, TriggerSaveWork)
 }
