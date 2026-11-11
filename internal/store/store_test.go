@@ -27,9 +27,9 @@ func open(t *testing.T) (*Store, string) {
 
 func seedProject(t *testing.T, s *Store) db.Project {
 	t.Helper()
-	p, err := s.Q.UpsertProject(context.Background(), db.UpsertProjectParams{
+	p, err := s.Q.CreateProject(context.Background(), db.CreateProjectParams{
 		ID: "p1", Name: "linkshelf", RepoPath: "/repo/linkshelf", Slug: "linkshelf-1234abcd",
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: time.Now().UTC(), Settings: "{}",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,12 @@ func TestAgentLifecycleAndRestart(t *testing.T) {
 	if err := s.Q.UpdateAgentState(ctx, db.UpdateAgentStateParams{State: "working", Activity: "Bash", ID: "a1"}); err != nil {
 		t.Fatal(err)
 	}
-	n, err := s.Q.MarkUnfinishedAgentsExited(ctx, sql.NullTime{Time: now, Valid: true})
+	if n, err := s.Q.MarkUnfinishedAgentsExited(ctx, db.MarkUnfinishedAgentsExitedParams{
+		ExitedAt: sql.NullTime{Time: now, Valid: true}, ProjectID: "other"}); err != nil || n != 0 {
+		t.Fatalf("another project's restart marked %d, %v", n, err)
+	}
+	n, err := s.Q.MarkUnfinishedAgentsExited(ctx, db.MarkUnfinishedAgentsExitedParams{
+		ExitedAt: sql.NullTime{Time: now, Valid: true}, ProjectID: "p1"})
 	if err != nil || n != 1 {
 		t.Fatalf("restart marked %d, %v", n, err)
 	}
@@ -278,7 +283,11 @@ func TestDeleteEventsBefore(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	n, err := s.Q.DeleteEventsBefore(ctx, recent.Add(-30*24*time.Hour))
+	cutoff := recent.Add(-30 * 24 * time.Hour)
+	if n, err := s.Q.DeleteEventsBefore(ctx, db.DeleteEventsBeforeParams{At: cutoff, ProjectID: "other"}); err != nil || n != 0 {
+		t.Fatalf("another project's retention deleted %d, %v", n, err)
+	}
+	n, err := s.Q.DeleteEventsBefore(ctx, db.DeleteEventsBeforeParams{At: cutoff, ProjectID: p.ID})
 	if err != nil || n != 2 {
 		t.Fatalf("deleted %d, %v", n, err)
 	}

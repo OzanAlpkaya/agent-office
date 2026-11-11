@@ -407,11 +407,103 @@ export interface AccessRequest {
   decided_by?: string;
 }
 
+// A project's overrides of the daemon's flags (ADR 0046); a missing field
+// inherits. Money is integer micro-USD (ADR 0026).
+export interface ProjectSettings {
+  pack?: string; // a stack pack name, or "none"
+  secrets_dir?: string;
+  egress_allow?: string[];
+  model?: string; // "": the CLI default
+  role_models?: Record<string, string>;
+  max_agents?: number;
+  github?: boolean;
+  github_remote?: string;
+  reviewer?: string;
+  review_rounds?: number;
+  budget_session_micro_usd?: number;
+  budget_goal_micro_usd?: number;
+}
+
+// A registered project (ADR 0046): one repository with its own team.
 export interface Project {
   id: string;
   name: string;
   repo_path: string;
   slug: string;
+  settings: ProjectSettings; // its own overrides
+  effective: ProjectSettings; // what it uses: the daemon's flags with its overrides
+  state: "open" | "error";
+  error?: string; // why it could not open
+  default: boolean; // serve --repo's project
+  created_at: string;
+}
+
+export function isProject(v: unknown): v is Project {
+  return isObj(v) && typeof v.id === "string" && v.id !== "" && typeof v.name === "string" &&
+    typeof v.repo_path === "string" && typeof v.slug === "string" && isObj(v.settings) && isObj(v.effective) &&
+    (v.state === "open" || v.state === "error") && typeof v.default === "boolean";
+}
+
+// The daemon-wide state (GET /api/status).
+export interface DaemonStatus {
+  sandbox: SandboxMode;
+  max_agents: number; // the cap across all projects (ADR 0047)
+  running: number;
+  warnings: string[];
+  defaults: ProjectSettings; // the daemon's flags, every field set
+  default_project?: string;
+  remote_hosts: string[];
+  version: string;
+}
+
+export interface UsageTotals {
+  sessions: number;
+  messages: number;
+  tokens: Tokens;
+  cost_micro_usd: number;
+  unpriced_tokens: number;
+}
+
+// Totals per project and overall (GET /api/usage).
+export interface DaemonUsage {
+  prices: PriceInfo;
+  projects: { project_id: string; name: string; state: string; totals: UsageTotals }[];
+  totals: UsageTotals;
+}
+
+function isTotals(v: unknown): v is UsageTotals {
+  return isObj(v) && isCount(v.sessions) && isCount(v.messages) && isTokens(v.tokens) && isCount(v.cost_micro_usd);
+}
+
+export function isDaemonUsage(v: unknown): v is DaemonUsage {
+  return isObj(v) && isObj(v.prices) && isTotals(v.totals) && Array.isArray(v.projects) &&
+    v.projects.every((p) => isObj(p) && typeof p.project_id === "string" && typeof p.name === "string" && isTotals(p.totals));
+}
+
+// ProjectsMessage is one message of the daemon's /api/events: the project list.
+export type ProjectsMessage =
+  | { type: "projects"; projects: Project[] }
+  | { type: "project"; project: Project }
+  | { type: "project_removed"; id: string };
+
+export function parseProjectsMessage(raw: string): ProjectsMessage | undefined {
+  let m: unknown;
+  try {
+    m = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!isObj(m)) return undefined;
+  switch (m.type) {
+    case "projects":
+      return Array.isArray(m.projects) && m.projects.every(isProject) ? { type: "projects", projects: m.projects } : undefined;
+    case "project":
+      return isProject(m.project) ? { type: "project", project: m.project } : undefined;
+    case "project_removed":
+      return typeof m.id === "string" ? { type: "project_removed", id: m.id } : undefined;
+    default:
+      return undefined;
+  }
 }
 
 export interface Health {
@@ -661,66 +753,20 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const api = {
   health: (): Promise<Health> => request("GET", "/api/health"),
-  project: (): Promise<Project> => request("GET", "/api/project"),
-  status: (): Promise<Status> => request("GET", "/api/status"),
-  usage: async (): Promise<UsageReport> => {
-    const rep: unknown = await request("GET", "/api/usage");
-    if (!isUsageReport(rep)) throw new ApiError("unexpected usage report", 200, undefined);
-    return rep;
+  status: async (): Promise<DaemonStatus> => request("GET", "/api/status"),
+  usageAll: async (): Promise<DaemonUsage> => {
+    const u: unknown = await request("GET", "/api/usage");
+    if (!isDaemonUsage(u)) throw new ApiError("unexpected usage totals", 200, undefined);
+    return u;
   },
-  startAgent: (taskId?: string, role: Role = "worker"): Promise<Agent> =>
-    request("POST", "/api/agents", taskId ? { task_id: taskId, role } : undefined),
-  stopAgent: (id: string): Promise<Agent> => request("POST", `/api/agents/${id}/stop`),
-  removeAgent: (id: string): Promise<RemoveResult> => request("DELETE", `/api/agents/${id}`),
-  discardAgent: (id: string): Promise<RemoveResult> => request("POST", `/api/agents/${id}/discard`),
-  importAgent: (id: string): Promise<ImportInfo> => request("POST", `/api/agents/${id}/import`),
-  resumeAgent: (id: string, prompt = ""): Promise<Agent> => request("POST", `/api/agents/${id}/resume`, { prompt }),
-  saveWork: (id: string): Promise<ImportInfo> => request("POST", `/api/agents/${id}/save-work`),
-  agentSessions: async (id: string): Promise<SessionInfo[]> => {
-    const ss: unknown = await request("GET", `/api/agents/${id}/sessions`);
-    return Array.isArray(ss) ? ss.filter(isSessionInfo) : [];
-  },
-  // The bytes one session's terminal received, to replay into a read-only terminal.
-  sessionTerminal: async (id: string, sid: string): Promise<Uint8Array> => {
-    const res = await fetch(`/api/agents/${id}/sessions/${sid}/terminal`, { headers: { Accept: "application/octet-stream" } });
-    if (res.status === 401) signalUnauthorized();
-    if (!res.ok) throw new ApiError(`GET saved terminal: ${res.status}`, res.status, undefined);
-    return new Uint8Array(await res.arrayBuffer());
-  },
-  agentEvents: async (id: string): Promise<SandboxEvent[]> => {
-    const evs: unknown = await request("GET", `/api/agents/${id}/events`);
-    return Array.isArray(evs) ? evs.filter(isSandboxEvent) : [];
-  },
-  agentMessages: async (id: string): Promise<Message[]> => {
-    const msgs: unknown = await request("GET", `/api/agents/${id}/messages`);
-    return Array.isArray(msgs) ? msgs.filter(isMessage) : [];
-  },
-  approveAccess: (id: number): Promise<AccessRequest> => request("POST", `/api/access-requests/${id}/approve`),
-  denyAccess: (id: number): Promise<AccessRequest> => request("POST", `/api/access-requests/${id}/deny`),
-  createTask: (title: string, description: string): Promise<Task> =>
-    request("POST", "/api/tasks", { title, description }),
-  updateTask: (id: string, patch: Partial<Pick<Task, "title" | "description" | "status">>): Promise<Task> =>
-    request("PATCH", `/api/tasks/${id}`, patch),
-  deleteTask: (id: string): Promise<void> => request("DELETE", `/api/tasks/${id}`),
-  openPullRequest: (taskId: string): Promise<PullRequest> => request("POST", `/api/tasks/${taskId}/pull-request`),
-  requestReview: (prId: number): Promise<PullRequest> => request("POST", `/api/pull-requests/${prId}/review`),
-  sendToWorker: (prId: number, reviewId: number): Promise<PullRequest> =>
-    request("POST", `/api/pull-requests/${prId}/follow-up`, { review_id: reviewId }),
-  acceptFlagged: (prId: number, commits: string[]): Promise<PullRequest> =>
-    request("POST", `/api/pull-requests/${prId}/accept`, { commits }),
-  // Phase 12 (ADR 0029-0034).
-  roles: (): Promise<RoleInfo[]> => request("GET", "/api/roles"),
-  readInbox: (id: number): Promise<InboxItem> => request("POST", `/api/inbox/${id}/read`),
-  replyInbox: (id: number, body: string): Promise<InboxItem> => request("POST", `/api/inbox/${id}/reply`, { body }),
-  messageAgent: (id: string, body: string): Promise<Message> => request("POST", `/api/agents/${id}/message`, { body }),
-  editSpec: (id: number, plan: Plan): Promise<Spec> => request("PUT", `/api/specs/${id}`, plan),
-  approveSpec: (id: number): Promise<ApproveResult> => request("POST", `/api/specs/${id}/approve`),
-  resolveConflict: (taskId: string): Promise<void> => request("POST", `/api/tasks/${taskId}/resolve-conflict`),
-  addMemory: (d: MemoryDraft): Promise<MemoryEntry> => request("POST", "/api/memory", d),
-  editMemory: (id: number, patch: Partial<MemoryDraft>): Promise<MemoryEntry> => request("PATCH", `/api/memory/${id}`, patch),
-  acceptMemory: (id: number): Promise<MemoryEntry> => request("POST", `/api/memory/${id}/accept`),
-  deleteMemory: (id: number): Promise<void> => request("DELETE", `/api/memory/${id}`),
-  askBriefing: (): Promise<Agent> => request("POST", "/api/assistant/briefing"),
+  // Projects (ADR 0046).
+  projects: (): Promise<Project[]> => request("GET", "/api/projects"),
+  addProject: (repo: string, name: string, settings: ProjectSettings): Promise<Project> =>
+    request("POST", "/api/projects", { repo, name, settings }),
+  updateProject: (id: string, patch: { name?: string; settings?: ProjectSettings }): Promise<Project> =>
+    request("PATCH", `/api/projects/${encodeURIComponent(id)}`, patch),
+  removeProject: (id: string): Promise<void> => request("DELETE", `/api/projects/${encodeURIComponent(id)}`),
+  retryProject: (id: string): Promise<Project> => request("POST", `/api/projects/${encodeURIComponent(id)}/retry`),
   // Phase 10 (ADR 0039).
   authSession: (): Promise<AuthSession> => request("GET", "/api/auth/session"),
   pair: (code: string, name: string): Promise<AuthSession> => request("POST", "/api/auth/pair", { code, name }),
@@ -730,6 +776,79 @@ export const api = {
   revokeDevice: (id: string): Promise<void> => request("DELETE", `/api/devices/${id}`),
   signOutOthers: (): Promise<{ signed_out: number }> => request("POST", "/api/devices/sign-out-others"),
 };
+
+
+// projectApi is the client of one project's routes (ADR 0046): every id it
+// takes belongs to that project.
+export function projectApi(projectId: string) {
+  const base = `/api/projects/${encodeURIComponent(projectId)}`;
+  return {
+    projectId,
+    eventsPath: `${base}/events`,
+    terminalPath: (agentId: string): string => `${base}/agents/${agentId}/terminal`,
+    status: (): Promise<Status> => request("GET", `${base}/status`),
+    usage: async (): Promise<UsageReport> => {
+      const rep: unknown = await request("GET", `${base}/usage`);
+      if (!isUsageReport(rep)) throw new ApiError("unexpected usage report", 200, undefined);
+      return rep;
+    },
+    startAgent: (taskId?: string, role: Role = "worker"): Promise<Agent> =>
+      request("POST", `${base}/agents`, taskId ? { task_id: taskId, role } : undefined),
+    stopAgent: (id: string): Promise<Agent> => request("POST", `${base}/agents/${id}/stop`),
+    removeAgent: (id: string): Promise<RemoveResult> => request("DELETE", `${base}/agents/${id}`),
+    discardAgent: (id: string): Promise<RemoveResult> => request("POST", `${base}/agents/${id}/discard`),
+    importAgent: (id: string): Promise<ImportInfo> => request("POST", `${base}/agents/${id}/import`),
+    resumeAgent: (id: string, prompt = ""): Promise<Agent> => request("POST", `${base}/agents/${id}/resume`, { prompt }),
+    saveWork: (id: string): Promise<ImportInfo> => request("POST", `${base}/agents/${id}/save-work`),
+    agentSessions: async (id: string): Promise<SessionInfo[]> => {
+      const ss: unknown = await request("GET", `${base}/agents/${id}/sessions`);
+      return Array.isArray(ss) ? ss.filter(isSessionInfo) : [];
+    },
+    // The bytes one session's terminal received, to replay into a read-only terminal.
+    sessionTerminal: async (id: string, sid: string): Promise<Uint8Array> => {
+      const res = await fetch(`${base}/agents/${id}/sessions/${sid}/terminal`, { headers: { Accept: "application/octet-stream" } });
+      if (res.status === 401) signalUnauthorized();
+      if (!res.ok) throw new ApiError(`GET saved terminal: ${res.status}`, res.status, undefined);
+      return new Uint8Array(await res.arrayBuffer());
+    },
+    agentEvents: async (id: string): Promise<SandboxEvent[]> => {
+      const evs: unknown = await request("GET", `${base}/agents/${id}/events`);
+      return Array.isArray(evs) ? evs.filter(isSandboxEvent) : [];
+    },
+    agentMessages: async (id: string): Promise<Message[]> => {
+      const msgs: unknown = await request("GET", `${base}/agents/${id}/messages`);
+      return Array.isArray(msgs) ? msgs.filter(isMessage) : [];
+    },
+    approveAccess: (id: number): Promise<AccessRequest> => request("POST", `${base}/access-requests/${id}/approve`),
+    denyAccess: (id: number): Promise<AccessRequest> => request("POST", `${base}/access-requests/${id}/deny`),
+    createTask: (title: string, description: string): Promise<Task> =>
+      request("POST", `${base}/tasks`, { title, description }),
+    updateTask: (id: string, patch: Partial<Pick<Task, "title" | "description" | "status">>): Promise<Task> =>
+      request("PATCH", `${base}/tasks/${id}`, patch),
+    deleteTask: (id: string): Promise<void> => request("DELETE", `${base}/tasks/${id}`),
+    openPullRequest: (taskId: string): Promise<PullRequest> => request("POST", `${base}/tasks/${taskId}/pull-request`),
+    requestReview: (prId: number): Promise<PullRequest> => request("POST", `${base}/pull-requests/${prId}/review`),
+    sendToWorker: (prId: number, reviewId: number): Promise<PullRequest> =>
+      request("POST", `${base}/pull-requests/${prId}/follow-up`, { review_id: reviewId }),
+    acceptFlagged: (prId: number, commits: string[]): Promise<PullRequest> =>
+      request("POST", `${base}/pull-requests/${prId}/accept`, { commits }),
+    // Phase 12 (ADR 0029-0034).
+    roles: (): Promise<RoleInfo[]> => request("GET", `${base}/roles`),
+    readInbox: (id: number): Promise<InboxItem> => request("POST", `${base}/inbox/${id}/read`),
+    replyInbox: (id: number, body: string): Promise<InboxItem> => request("POST", `${base}/inbox/${id}/reply`, { body }),
+    messageAgent: (id: string, body: string): Promise<Message> => request("POST", `${base}/agents/${id}/message`, { body }),
+    editSpec: (id: number, plan: Plan): Promise<Spec> => request("PUT", `${base}/specs/${id}`, plan),
+    approveSpec: (id: number): Promise<ApproveResult> => request("POST", `${base}/specs/${id}/approve`),
+    resolveConflict: (taskId: string): Promise<void> => request("POST", `${base}/tasks/${taskId}/resolve-conflict`),
+    addMemory: (d: MemoryDraft): Promise<MemoryEntry> => request("POST", `${base}/memory`, d),
+    editMemory: (id: number, patch: Partial<MemoryDraft>): Promise<MemoryEntry> => request("PATCH", `${base}/memory/${id}`, patch),
+    acceptMemory: (id: number): Promise<MemoryEntry> => request("POST", `${base}/memory/${id}/accept`),
+    deleteMemory: (id: number): Promise<void> => request("DELETE", `${base}/memory/${id}`),
+    askBriefing: (): Promise<Agent> => request("POST", `${base}/assistant/briefing`),
+  };
+}
+
+export type ProjectApi = ReturnType<typeof projectApi>;
 
 export function wsURL(path: string): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";

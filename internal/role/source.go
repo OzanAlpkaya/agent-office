@@ -332,3 +332,8 @@ func checkPerm(p, what string) []Problem {
 	}
 	return nil
 }
+
+// ValidModel reports whether m looks like a model name or alias Claude Code
+// accepts (e.g. haiku, claude-sonnet-4-5, opus[1m]); used for project
+// settings (ADR 0046).
+func ValidModel(m string) bool { return m != "" && len(m) <= maxModel && modelRe.MatchString(m) }

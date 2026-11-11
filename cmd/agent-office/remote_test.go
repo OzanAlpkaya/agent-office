@@ -89,7 +89,7 @@ func TestPairCommand(t *testing.T) {
 	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("socket mode: %v %v", fi.Mode(), err)
 	}
-	srv := &http.Server{Handler: api.NewControl(m, api.ControlInfo{LocalURL: "http://127.0.0.1:7680/",
+	srv := &http.Server{Handler: api.NewControl(m, nil, api.ControlInfo{LocalURL: "http://127.0.0.1:7680/",
 		RemoteHosts: []string{"box.tail1234.ts.net"}}, log)}
 	go func() { _ = srv.Serve(l) }()
 	defer srv.Close()

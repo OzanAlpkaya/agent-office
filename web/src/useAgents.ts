@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import {
   type AccessRequest, type Agent, type InboxItem, type MemoryEntry, type Message, type PullRequest, type QARun,
-  type SandboxEvent, type SessionUsage, type Spec, type Task, api, parseEventMessage, signalUnauthorized, statusSignedOut, wsURL,
+  type ProjectApi, type SandboxEvent, type SessionUsage, type Spec, type Task, api as daemonApi, parseEventMessage,
+  signalUnauthorized, statusSignedOut, wsURL,
 } from "./api";
 import { totalTokens } from "./usage";
 
@@ -79,10 +80,11 @@ function upsert<T extends { id: string }>(list: T[], item: T): T[] {
   return next;
 }
 
-// useWorld keeps agents and tasks in sync with /api/events: a snapshot on
+// useWorld keeps one project's agents and tasks in sync with its events
+// stream (ADR 0046): a snapshot on
 // connect, then one message per change. It reconnects with backoff, and every
 // reconnect starts with a fresh snapshot, so missed updates cannot accumulate.
-export function useWorld(): World {
+export function useWorld(api: ProjectApi): World {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [events, setEvents] = useState<Record<string, SandboxEvent[]>>({});
@@ -104,7 +106,7 @@ export function useWorld(): World {
 
     const connect = (): void => {
       setConnection("connecting");
-      ws = new WebSocket(wsURL("/api/events"));
+      ws = new WebSocket(wsURL(api.eventsPath));
       ws.onopen = () => {
         retry = 0;
         setConnection("open");
@@ -231,7 +233,7 @@ export function useWorld(): World {
         // browser is still paired; the app shows its pairing screen if not.
         if (e.code === statusSignedOut) signalUnauthorized();
         else if (e.code === 1006) {
-          void api.authSession().then((s) => { if (!s.authenticated) signalUnauthorized(); }, () => undefined);
+          void daemonApi.authSession().then((s) => { if (!s.authenticated) signalUnauthorized(); }, () => undefined);
         }
         const delay = Math.min(5000, 500 * 2 ** retry++);
         timer = window.setTimeout(connect, delay);
@@ -243,7 +245,7 @@ export function useWorld(): World {
       window.clearTimeout(timer);
       ws?.close();
     };
-  }, []);
+  }, [api]);
 
   return { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, connection };
 }

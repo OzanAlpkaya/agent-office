@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -318,24 +319,10 @@ func (e *Engine) cleanClone(ctx context.Context, a *agentProc, info AgentInfo, b
 // (the daemon died; conmon kept them running) and then imports, in the
 // background, the agents whose workers were interrupted.
 func (e *Engine) reconcileSandbox(ctx context.Context, interrupted []string) {
-	s := e.opts.Sandbox
-	list, err := s.Podman.ListAgentContainers(ctx)
-	if err != nil {
-		e.log.Warn("list containers", "err", err)
-	}
-	removed := 0
-	for _, c := range list {
-		if c.Instance != s.Instance {
-			continue
-		}
-		if err := s.Podman.Remove(ctx, c.Name); err != nil {
-			e.log.Warn("remove orphan container", "container", c.Name, "err", err)
-			continue
-		}
-		removed++
-	}
-	if removed > 0 {
-		e.log.Info("orphan containers removed", "count", removed)
+	if !e.hubbed {
+		// Under a hub, other projects' workers may run already: the hub removes
+		// the previous run's containers once, before any project opens (ADR 0046).
+		removeOrphanContainers(ctx, e.opts.Sandbox.Podman, e.opts.Sandbox.Instance, e.log)
 	}
 	for _, id := range interrupted {
 		e.wg.Add(1)
@@ -347,6 +334,29 @@ func (e *Engine) reconcileSandbox(ctx context.Context, interrupted []string) {
 			defer cancel()
 			_, _ = e.importAgent(ictx, id, TriggerRestart)
 		}()
+	}
+}
+
+// removeOrphanContainers removes this daemon instance's containers left by a
+// previous run (the daemon died; conmon kept them running).
+func removeOrphanContainers(ctx context.Context, pm sandbox.Podman, instance string, log *slog.Logger) {
+	list, err := pm.ListAgentContainers(ctx)
+	if err != nil {
+		log.Warn("list containers", "err", err)
+	}
+	removed := 0
+	for _, c := range list {
+		if c.Instance != instance {
+			continue
+		}
+		if err := pm.Remove(ctx, c.Name); err != nil {
+			log.Warn("remove orphan container", "container", c.Name, "err", err)
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		log.Info("orphan containers removed", "count", removed)
 	}
 }
 

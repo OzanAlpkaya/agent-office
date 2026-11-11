@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
@@ -59,62 +58,69 @@ func versionWarnings(ci claudeInfo, mode string) []string {
 	}
 }
 
-// sandboxOptions checks everything sandbox mode needs and fails loudly, with
-// the fix, when something is missing. There is no silent fallback to host
-// mode (ADR 0007). The returned warnings are shown in the UI.
-func sandboxOptions(ctx context.Context, cfg serveConfig, self string, ci claudeInfo, log *slog.Logger) (*engine.SandboxOptions, []string, error) {
-	hint := "or run agents unsandboxed with --sandbox host (permission prompts stay on)"
+// sandboxOptions checks everything sandbox mode needs for every project and
+// fails loudly, with the fix, when something is missing. There is no silent
+// fallback to host mode (ADR 0007). The pack of each project (image,
+// allowlist, secrets) is added when the project opens (applyPack, ADR 0046).
+func sandboxOptions(ctx context.Context, cfg serveConfig, self string, ci claudeInfo, log *slog.Logger) (*engine.SandboxOptions, error) {
 	p := sandbox.Podman{}
 	pv, err := p.Version(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("sandbox mode needs rootless podman: %w; %s", err, hint)
+		return nil, fmt.Errorf("sandbox mode needs rootless podman: %w; %s", err, sandboxHint)
 	}
 	if ok, err := isStatic(self); err != nil || !ok {
-		return nil, nil, fmt.Errorf("sandbox mode mounts this binary into workers, so it must be statically linked "+
+		return nil, fmt.Errorf("sandbox mode mounts this binary into workers, so it must be statically linked "+
 			"(build it with `make build`): %s (%v)", self, err)
 	}
 	if ci.version == "" {
-		return nil, nil, fmt.Errorf("sandbox mode needs the Claude Code version for the worker config: `%s --version` failed", ci.path)
+		return nil, fmt.Errorf("sandbox mode needs the Claude Code version for the worker config: `%s --version` failed", ci.path)
 	}
-	sp, warnings, err := packOptions(cfg)
+	tokenFile, err := sandbox.DefaultTokenFile()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	if ok, err := p.ImageExists(ctx, sp.image); err != nil {
-		return nil, nil, err
+	if _, err := sandbox.ReadTokenFile(tokenFile); err != nil { // checked now, read again at every launch
+		return nil, fmt.Errorf("%w\nsandboxed agents authenticate with a token from `claude setup-token`, stored in that "+
+			"file (mode 0600, directory 0700; see docs/adr/0015-agent-credential.md); %s", err, sandboxHint)
+	}
+	hooksDir := filepath.Join(cfg.dataDir, "git-hooks")
+	if err := sandbox.WriteGitHooks(hooksDir); err != nil {
+		return nil, err
+	}
+	log.Info("sandbox ready", "podman", pv, "token_file", tokenFile, "memory", cfg.sandboxMemory, "pids", cfg.sandboxPids)
+	sum := sha256.Sum256([]byte(cfg.dataDir))
+	return &engine.SandboxOptions{
+		Instance: hex.EncodeToString(sum[:6]), Podman: p,
+		WorkspaceRoot: filepath.Join(cfg.dataDir, "workspaces"), AgentsRoot: filepath.Join(cfg.dataDir, "agents"),
+		GitHooks: hooksDir, AgentOffice: self, Claude: ci.path, ClaudeVersion: ci.version,
+		TokenFile: tokenFile, Memory: cfg.sandboxMemory, Pids: cfg.sandboxPids,
+	}, nil
+}
+
+const sandboxHint = "or run agents unsandboxed with --sandbox host (permission prompts stay on)"
+
+// applyPack sets a project's stack pack on its copy of the sandbox options:
+// the image (which must be built), the allowlist and the secrets dir.
+func applyPack(ctx context.Context, sb *engine.SandboxOptions, spec packSpec) ([]string, error) {
+	sp, warnings, err := packOptions(spec)
+	if err != nil {
+		return nil, err
+	}
+	if ok, err := sb.Podman.ImageExists(ctx, sp.image); err != nil {
+		return nil, err
 	} else if !ok {
 		build := "agent-office worker-image"
 		if sp.pack != nil {
 			build += " --pack " + sp.pack.Name
 		}
-		return nil, nil, fmt.Errorf("worker image %s not found: build it with `%s`; %s", sp.image, build, hint)
-	}
-	tokenFile, err := sandbox.DefaultTokenFile()
-	if err != nil {
-		return nil, nil, err
-	}
-	if _, err := sandbox.ReadTokenFile(tokenFile); err != nil { // checked now, read again at every launch
-		return nil, nil, fmt.Errorf("%w\nsandboxed agents authenticate with a token from `claude setup-token`, stored in that "+
-			"file (mode 0600, directory 0700; see docs/adr/0015-agent-credential.md); %s", err, hint)
+		return nil, fmt.Errorf("worker image %s not found: build it with `%s`", sp.image, build)
 	}
 	allow, err := sandbox.ParseAllowlist(sp.hosts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("AGENT_OFFICE_EGRESS_ALLOW: %w", err)
+		return nil, fmt.Errorf("egress allowlist: %w", err)
 	}
-	hooksDir := filepath.Join(cfg.dataDir, "git-hooks")
-	if err := sandbox.WriteGitHooks(hooksDir); err != nil {
-		return nil, nil, err
-	}
-	log.Info("sandbox ready", "podman", pv, "image", sp.image, "pack", packName(sp.pack), "egress_allow",
-		strings.Join(sp.hosts, ","), "token_file", tokenFile, "memory", cfg.sandboxMemory, "pids", cfg.sandboxPids)
-	sum := sha256.Sum256([]byte(cfg.dataDir))
-	return &engine.SandboxOptions{
-		Instance: hex.EncodeToString(sum[:6]), Podman: p, Image: sp.image,
-		WorkspaceRoot: filepath.Join(cfg.dataDir, "workspaces"), AgentsRoot: filepath.Join(cfg.dataDir, "agents"),
-		GitHooks: hooksDir, AgentOffice: self, Claude: ci.path, ClaudeVersion: ci.version,
-		TokenFile: tokenFile, Allow: allow, AllowNames: sp.hosts, Memory: cfg.sandboxMemory, Pids: cfg.sandboxPids,
-		Pack: sp.pack, SecretsDir: cfg.secretsDir,
-	}, warnings, nil
+	sb.Image, sb.Allow, sb.AllowNames, sb.Pack, sb.SecretsDir = sp.image, allow, sp.hosts, sp.pack, spec.secretsDir
+	return warnings, nil
 }
 
 // sandboxPack is what the stack pack (or its absence) decides for workers.
@@ -124,37 +130,47 @@ type sandboxPack struct {
 	hosts []string // the egress allowlist
 }
 
+// packSpec is what decides a project's pack: the effective settings.
+type packSpec struct {
+	name       string   // "": no pack
+	label      string   // how the setting is named in errors: --pack, or the project setting
+	packsDir   string   // user packs
+	secretsDir string   // the pack's secret values
+	egress     []string // --egress-allow and the project's extra names
+	repo       string   // for the hint when no pack is set
+}
+
 // packOptions loads and checks the stack pack (ADR 0023): its image, its
-// allowlist (the Phase 3 default without a pack; --egress-allow extras in
-// both cases) and its required secrets. Warnings name optional secrets that
-// are not set, or a built-in pack that fits the repository when none is set.
-func packOptions(cfg serveConfig) (sandboxPack, []string, error) {
+// allowlist (the Phase 3 default without a pack; extra names in both cases)
+// and its required secrets. Warnings name optional secrets that are not set,
+// or a built-in pack that fits the repository when none is set.
+func packOptions(spec packSpec) (sandboxPack, []string, error) {
 	var warnings []string
-	if cfg.pack == "" {
-		sp := sandboxPack{image: sandbox.BaseImage(), hosts: append(append([]string{}, sandbox.DefaultEgressAllow...), cfg.egressAllow...)}
-		if name, marker := suggestPack(cfg.repo); name != "" {
+	if spec.name == "" {
+		sp := sandboxPack{image: sandbox.BaseImage(), hosts: append(append([]string{}, sandbox.DefaultEgressAllow...), spec.egress...)}
+		if name, marker := suggestPack(spec.repo); name != "" {
 			warnings = append(warnings, fmt.Sprintf("The repository has %s, but no stack pack is set, so sandboxed agents have "+
-				"no toolchain for it. Restart with --pack %s (build its image with `agent-office worker-image --pack %s`).",
+				"no toolchain for it. Set the project's pack to %s (build its image with `agent-office worker-image --pack %s`).",
 				marker, name, name))
 		}
 		return sp, warnings, nil
 	}
-	p, err := pack.Find(cfg.pack, cfg.packsDir)
+	p, err := pack.Find(spec.name, spec.packsDir)
 	if err != nil {
-		return sandboxPack{}, nil, fmt.Errorf("--pack: %w", err)
+		return sandboxPack{}, nil, fmt.Errorf("%s: %w", spec.label, err)
 	}
-	sp := sandboxPack{pack: p, image: sandbox.BaseImage(), hosts: append(append([]string{}, p.Egress...), cfg.egressAllow...)}
+	sp := sandboxPack{pack: p, image: sandbox.BaseImage(), hosts: append(append([]string{}, p.Egress...), spec.egress...)}
 	if sp.image, err = p.Image(); err != nil {
-		return sandboxPack{}, nil, fmt.Errorf("--pack %s: %w", p.Name, err)
+		return sandboxPack{}, nil, fmt.Errorf("%s %s: %w", spec.label, p.Name, err)
 	}
 	// Required secrets are checked now and read again at every launch.
-	_, skipped, err := p.ReadSecrets(cfg.secretsDir)
+	_, skipped, err := p.ReadSecrets(spec.secretsDir)
 	if err != nil {
 		return sandboxPack{}, nil, err
 	}
 	for _, n := range skipped {
 		warnings = append(warnings, fmt.Sprintf("Stack pack %s: the optional secret %s is not set (no file %s); agents run without it.",
-			p.Name, n, filepath.Join(cfg.secretsDir, n)))
+			p.Name, n, filepath.Join(spec.secretsDir, n)))
 	}
 	return sp, warnings, nil
 }

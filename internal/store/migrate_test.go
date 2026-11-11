@@ -170,8 +170,10 @@ func TestOpenBacksUpBeforeMigrating(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	if _, err := b.Q.UpsertProject(ctx, db.UpsertProjectParams{ID: "p1", Name: "linkshelf",
-		RepoPath: "/repo/linkshelf", Slug: "linkshelf-1234abcd", CreatedAt: time.Now().UTC()}); err != nil {
+	// Plain SQL: the generated queries follow the newest schema.
+	if _, err := b.DB.ExecContext(ctx, `INSERT INTO projects (id, name, repo_path, slug, created_at) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (repo_path) DO UPDATE SET name = excluded.name`,
+		"p1", "linkshelf", "/repo/linkshelf", "linkshelf-1234abcd", time.Now().UTC()); err != nil {
 		t.Fatalf("backup is not usable by the old schema: %v", err)
 	}
 	var n int

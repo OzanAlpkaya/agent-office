@@ -1,8 +1,12 @@
 import { type JSX, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   type AccessRequest, type Agent, type AgentState, ApiError, type ApproveResult, type AuthSession, type ImportInfo, type Kind, type Message,
-  type Project, type Role, type RoleInfo, type SandboxEvent, type Spec, type Status, type Task, type TaskStatus, api,
+  type DaemonStatus, type Project, type Role, type RoleInfo, type SandboxEvent, type Spec, type Status, type Task, type TaskStatus,
+  api as daemonApi, projectApi,
 } from "./api";
+import { ProjectApiContext } from "./ProjectContext";
+import { ProjectsPanel } from "./Projects";
+import { type Elsewhere, waitingTotal } from "./projects";
 import { AgentName, AgentsContext } from "./AgentName";
 import { AgentSwitcher } from "./AgentSwitcher";
 import { type Tabs, closeTab, keepTabs, labelOf, moveTab, neighbourTab, openTab, parseTabs } from "./agents";
@@ -88,19 +92,20 @@ const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
 // How long an agent may stay in "starting" before the UI flags it.
 const stuckAfterMs = 20_000;
 
-// The open terminal tabs are remembered per browser (ADR 0044): a convenience, so
-// storage that is missing or blocked only means starting with none.
-const tabsKey = "agent-office.tabs";
-function loadTabs(): Tabs {
+// The open terminal tabs are remembered per browser and project (ADR 0044,
+// 0048): a convenience, so storage that is missing or blocked only means
+// starting with none.
+const tabsKey = (projectId: string): string => `agent-office.tabs.${projectId}`;
+function loadTabs(projectId: string): Tabs {
   try {
-    return parseTabs(window.localStorage.getItem(tabsKey));
+    return parseTabs(window.localStorage.getItem(tabsKey(projectId)));
   } catch {
     return parseTabs(null); // storage blocked (private window, policy)
   }
 }
-function saveTabs(t: Tabs): void {
+function saveTabs(projectId: string, t: Tabs): void {
   try {
-    window.localStorage.setItem(tabsKey, JSON.stringify(t));
+    window.localStorage.setItem(tabsKey(projectId), JSON.stringify(t));
   } catch {
     // storage blocked or full: the tabs are only lost on reload
   }
@@ -115,21 +120,44 @@ function typingTarget(t: EventTarget | null): boolean {
   return t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.closest(".xterm") !== null;
 }
 
+// MainTab is a tab of the main pane that every project has.
+export type MainTab = "board" | "office" | "usage";
+
 // "agents" is the phone layout's tab for the agent list (the sidebar on wider screens, ADR 0040).
 type View = { kind: "board" } | { kind: "office" } | { kind: "usage" } | { kind: "agents" } | { kind: "agent"; id: string };
 
-export function App({ session, onSignedOut }: { session: AuthSession; onSignedOut: () => void }): JSX.Element {
+type Panel = "inbox" | "memory" | "devices" | "projects";
+
+export interface AppProps {
+  session: AuthSession;
+  onSignedOut: () => void;
+  project: Project; // the project this App shows (ADR 0046); the Root remounts the App for another
+  projects: Project[];
+  daemon?: DaemonStatus;
+  elsewhere: Elsewhere[]; // the other projects' waits, for the Approvals badge (ADR 0048)
+  initialAgent?: string; // open this agent once it is known (a switch from another project's approval)
+  initialTab?: MainTab; // the tab the other project showed, kept across a switch (e.g. the office's floors)
+  onSelectProject: (id: string, agentId?: string, tab?: MainTab) => void;
+}
+
+export function App({
+  session, onSignedOut, project, projects, daemon, elsewhere, initialAgent, initialTab, onSelectProject,
+}: AppProps): JSX.Element {
+  // The project's routes, plus the daemon's (health, devices, projects) under one name.
+  const papi = useMemo(() => projectApi(project.id), [project.id]);
+  const api = useMemo(() => ({ ...daemonApi, ...papi }), [papi]);
   const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, connection } =
-    useWorld();
+    useWorld(papi);
   const [roles, setRoles] = useState<RoleInfo[]>([]);
-  const [panel, setPanel] = useState<"inbox" | "memory" | "devices">();
+  const [panel, setPanel] = useState<Panel>();
   const narrow = useMedia(narrowQuery);
-  const [view, setView] = useState<View>({ kind: "board" });
-  const [tabs, setTabs] = useState<Tabs>(loadTabs);
+  const [view, setView] = useState<View>({ kind: initialTab ?? "board" });
+  // A switch to another project keeps the main tab (Board, Office, Usage) the user is on.
+  const tab: MainTab = view.kind === "office" || view.kind === "usage" ? view.kind : "board";
+  const [tabs, setTabs] = useState<Tabs>(() => loadTabs(project.id));
   const [switcher, setSwitcher] = useState(false);
   const [approvalsOpen, setApprovalsOpen] = useState(false);
   const [dragged, setDragged] = useState<string>();
-  const [project, setProject] = useState<Project>();
   const [version, setVersion] = useState("");
   const [status, setStatus] = useState<Status>();
   const [showPack, setShowPack] = useState(false);
@@ -139,7 +167,6 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
   useEffect(() => {
     // Fire-and-forget: header details are cosmetic; failures leave them empty.
     void api.health().then((h) => setVersion(h.version), () => setVersion(""));
-    void api.project().then(setProject, () => setProject(undefined));
     const t = window.setInterval(() => setNowMs(Date.now()), 5000);
     return () => window.clearInterval(t);
   }, []);
@@ -150,7 +177,7 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
     if (connection === "open") void api.status().then(setStatus, () => setStatus(undefined));
     // Roles belong to the daemon run as well (ADR 0029); a failure only hides the role picker.
     if (connection === "open") void api.roles().then(setRoles, () => setRoles([]));
-  }, [connection]);
+  }, [connection, api]);
 
   // Fall back to the board if the open agent disappears, or the agents tab on a wide screen.
   useEffect(() => {
@@ -162,7 +189,7 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
   useEffect(() => {
     if (connection === "open" && agents.length > 0) setTabs((t) => keepTabs(t, new Set(agents.map((a) => a.id))));
   }, [agents, connection]);
-  useEffect(() => saveTabs(tabs), [tabs]);
+  useEffect(() => saveTabs(project.id, tabs), [project.id, tabs]);
 
   // The open agent's tab is scrolled into view when the strip overflows.
   const openId = view.kind === "agent" ? view.id : undefined;
@@ -187,11 +214,13 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
   // tab title, the cards, the switcher and the Office all count it (ADR 0044).
   // Memoised: the Office redraws when this list changes, so it must not be new on every render.
   const waiting = useMemo(() => waitingOnUser(agents, accessRequests, inbox, specs), [agents, accessRequests, inbox, specs]);
-  const waitingCount = waiting.length;
+  // The badge and the title count every project (ADR 0048); the drawer lists this project's first.
+  const waitingCount = waitingTotal(waiting.length, elsewhere);
   // The tab title shows the count, so it is seen from other browser tabs too.
   useEffect(() => {
-    document.title = waitingCount > 0 ? `(${waitingCount}) agent-office` : "agent-office";
-  }, [waitingCount]);
+    const name = projects.length > 1 ? ` · ${project.name}` : ""; // with several projects, which one this tab shows
+    document.title = waitingCount > 0 ? `(${waitingCount}) agent-office${name}` : `agent-office${name}`;
+  }, [waitingCount, project.name, projects.length]);
 
   // run executes an API call from a click handler and shows its error. It
   // never rejects, so callers can discard the promise with `void`.
@@ -220,6 +249,15 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
     setTabs((t) => closeTab(t, id));
   };
 
+  // An approval of this project picked in another project's drawer opens its agent here.
+  const [pendingAgent, setPendingAgent] = useState(initialAgent);
+  useEffect(() => {
+    if (pendingAgent && agents.some((a) => a.id === pendingAgent)) {
+      setPendingAgent(undefined);
+      openAgent(pendingAgent);
+    }
+  }); // every render: openAgent is recreated each time, and the check is cheap
+
   const startAgent = async (taskId?: string, role: Role = "worker"): Promise<void> => {
     const a = await run(() => api.startAgent(taskId, role));
     if (a) openAgent(a.id);
@@ -241,7 +279,7 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
   const unreadCount = unread(inbox);
   const proposed = memory.filter((m) => m.status === "proposed").length;
   const ok = async (fn: () => Promise<unknown>): Promise<boolean> => (await run(fn)) !== undefined;
-  const togglePanel = (p: "inbox" | "memory" | "devices"): void => setPanel((cur) => (cur === p ? undefined : p));
+  const togglePanel = (p: Panel): void => setPanel((cur) => (cur === p ? undefined : p));
 
   // approveSpec approves a plan (ADR 0031); a Tech Lead that could not start is shown as an error.
   const approveSpec = async (s: Spec): Promise<ApproveResult> => {
@@ -276,11 +314,13 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
   const usageByGoal = usageBy(sessions, (s) => s.goal_id);
 
   return (
+    <ProjectApiContext.Provider value={papi}>
     <AgentsContext.Provider value={agents}>
       <div className="app">
         <header>
           <h1>agent-office</h1>
-          {project && <span className="mono small" title={project.repo_path}>{project.name}</span>}
+          <ProjectSwitcher project={project} projects={projects} elsewhere={elsewhere} onSelect={(id) => onSelectProject(id, undefined, tab)}
+            onManage={() => togglePanel("projects")} managing={panel === "projects"} />
           <span className="muted small">{version && `v${version}`}</span>
           {status?.sandbox === "podman" && (
             <span className="badge sandboxed" title={status.image ? `worker image ${status.image}` : undefined}>
@@ -351,6 +391,11 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
             onAccept={(m) => void run(() => api.acceptMemory(m.id))}
             onDelete={(m) => void run(async () => { await api.deleteMemory(m.id); return true; })} />
         )}
+        {panel === "projects" && (
+          <ProjectsPanel projects={projects} current={project.id} status={daemon}
+            running={elsewhere.reduce((n, e) => n + e.running, running)}
+            onSelect={(id) => onSelectProject(id, undefined, tab)} />
+        )}
         {panel === "devices" && (
           <DevicesPanel remoteHosts={status?.remote_hosts ?? []} run={run} onSignedOut={onSignedOut} />
         )}
@@ -358,7 +403,7 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
         {approvalsOpen && (
           <Drawer label="Approvals" onClose={() => setApprovalsOpen(false)}
             title={<>Waiting for you{waitingCount > 0 && <span className="muted"> · {waitingCount}</span>}</>}>
-            <Approvals waiting={waiting} taskTitle={taskTitle} onOpenAgent={(id) => {
+            <Approvals waiting={waiting} elsewhere={waitingCount - waiting.length} taskTitle={taskTitle} onOpenAgent={(id) => {
               setApprovalsOpen(false);
               openAgent(id);
             }}
@@ -373,6 +418,10 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
               onApprove={(r) => void run(() => api.approveAccess(r.id))}
               onDeny={(r) => void run(() => api.denyAccess(r.id))}
             />
+            <OtherProjects elsewhere={elsewhere} run={run} onSwitch={(id, agentId) => {
+              setApprovalsOpen(false);
+              onSelectProject(id, agentId);
+            }} />
           </Drawer>
         )}
         {switcher && (
@@ -489,7 +538,12 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
             {view.kind === "office" ? (
               <Suspense fallback={<div className="empty">Loading the office…</div>}>
                 <Office agents={agents} tasks={tasks} messages={messages} waiting={waiting}
-                  onOpenAgent={openAgent} />
+                  onOpenAgent={openAgent}
+                  floors={[{ id: project.id, name: project.name, waiting: waiting.length, running, current: true },
+                    ...elsewhere.filter((e) => e.project.state === "open").map((e) => ({ id: e.project.id, name: e.project.name,
+                      waiting: e.waiting.length, running: e.running, current: false }))]
+                    .sort((a, b) => projects.findIndex((p) => p.id === a.id) - projects.findIndex((p) => p.id === b.id))}
+                  onFloor={(id) => onSelectProject(id, undefined, "office")} />
               </Suspense>
             ) : view.kind === "usage" ? (
               <Suspense fallback={<div className="empty">Loading usage…</div>}>
@@ -527,6 +581,7 @@ export function App({ session, onSignedOut }: { session: AuthSession; onSignedOu
         </main>
       </div>
     </AgentsContext.Provider>
+    </ProjectApiContext.Provider>
   );
 }
 
@@ -704,8 +759,85 @@ function EventList({ events }: { events: SandboxEvent[] }): JSX.Element {
 // and the reason is the agent's own text. A permission prompt can only be
 // answered in the agent's terminal, a question in the inbox and a plan on its
 // goal's card, so those entries lead there.
-function Approvals({ waiting, taskTitle, onOpenAgent, onOpenInbox, onReviewPlan, onApprove, onDeny }: {
+// ProjectSwitcher chooses the project the UI shows (ADR 0048); each other
+// project says how many of its agents run and wait on the user.
+function ProjectSwitcher({ project, projects, elsewhere, onSelect, onManage, managing }: {
+  project: Project; projects: Project[]; elsewhere: Elsewhere[]; onSelect: (id: string) => void; onManage: () => void;
+  managing: boolean;
+}): JSX.Element {
+  const other = new Map(elsewhere.map((e) => [e.project.id, e]));
+  const label = (p: Project): string => {
+    if (p.id === project.id) return p.name;
+    const e = other.get(p.id);
+    if (p.state !== "open") return `${p.name} · could not open`;
+    const parts = [e?.running ? `${e.running} running` : "", e?.waiting.length ? `${e.waiting.length} waiting` : ""].filter(Boolean);
+    return parts.length > 0 ? `${p.name} · ${parts.join(" · ")}` : p.name;
+  };
+  return (
+    <span className="project-switcher">
+      <select aria-label="Project" value={project.id} title={project.repo_path} onChange={(e) => onSelect(e.target.value)}>
+        {projects.map((p) => <option key={p.id} value={p.id}>{label(p)}</option>)}
+      </select>
+      <button className="badge" aria-expanded={managing} onClick={onManage} title="Add, change or remove projects (ADR 0046)">
+        Projects
+      </button>
+    </span>
+  );
+}
+
+// OtherProjects lists what waits on the user in the projects not shown
+// (ADR 0048): access requests are decided here; everything else opens the
+// agent in its project.
+function OtherProjects({ elsewhere, run, onSwitch }: {
+  elsewhere: Elsewhere[]; run: <T>(fn: () => Promise<T>) => Promise<T | undefined>; onSwitch: (id: string, agentId?: string) => void;
+}): JSX.Element | null {
+  const busy = elsewhere.filter((e) => e.waiting.length > 0);
+  if (busy.length === 0) return null;
+  return (
+    <section className="approvals other-projects">
+      {busy.map(({ project: p, waiting }) => {
+        const papi = projectApi(p.id);
+        return (
+          <div key={p.id} className="other-project" data-project={p.id}>
+            <h3>
+              In {p.name} <span className="muted">· {waiting.length}</span>{" "}
+              <button className="link" onClick={() => onSwitch(p.id)}>Switch to {p.name}</button>
+            </h3>
+            <ul>
+              {waiting.map(({ agent: a, requests, permission, questions, plans }) => (
+                <li key={a.id} className="waiting-entry" data-agent={a.id}>
+                  <div>
+                    <button className="link agent-link" onClick={() => onSwitch(p.id, a.id)}>{a.name || a.id.slice(0, 6)}</button>
+                    {" "}({a.role}){" "}
+                    <span className="small muted">
+                      {[permission ? "a permission prompt" : "", questions.length ? `${questions.length} question(s)` : "",
+                        plans.length ? `${plans.length} plan(s) to approve` : ""].filter(Boolean).join(", ")}
+                    </span>
+                  </div>
+                  {requests.map((r) => (
+                    <div key={r.id} className="waiting-item request">
+                      <div>Asks for {r.kind === "domain" ? <>network access to <span className="mono strong">{r.value}</span></> : `${r.kind} ${r.value}`}</div>
+                      <div className="small muted">Agent&apos;s reason: <span className="quote">{r.reason}</span></div>
+                      <div className="row">
+                        <button onClick={() => void run(() => papi.approveAccess(r.id))}>Allow for this agent</button>
+                        <button className="danger" onClick={() => void run(() => papi.denyAccess(r.id))}>Deny</button>
+                      </div>
+                    </div>
+                  ))}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+function Approvals({ waiting, elsewhere = 0, taskTitle, onOpenAgent, onOpenInbox, onReviewPlan, onApprove, onDeny }: {
   waiting: Waiting[];
+  elsewhere?: number; // agents waiting in other projects
+
   taskTitle: (id?: string) => string | undefined;
   onOpenAgent: (id: string) => void;
   onOpenInbox: () => void;
@@ -713,6 +845,7 @@ function Approvals({ waiting, taskTitle, onOpenAgent, onOpenInbox, onReviewPlan,
   onApprove: (r: AccessRequest) => void;
   onDeny: (r: AccessRequest) => void;
 }): JSX.Element {
+  if (waiting.length === 0 && elsewhere > 0) return <p className="muted approvals-empty">Nothing waits in this project.</p>;
   if (waiting.length === 0) {
     return (
       <p className="muted approvals-empty">

@@ -293,3 +293,7 @@ func (p *Pack) WriteSkills(dst string) error {
 	}
 	return nil
 }
+
+// ValidName reports whether name can name a stack pack; whether such a pack
+// exists is Find's question.
+func ValidName(name string) bool { return nameRe.MatchString(name) }

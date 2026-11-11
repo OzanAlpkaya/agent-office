@@ -1,5 +1,6 @@
 import { type JSX, useEffect, useMemo, useRef, useState } from "react";
-import { type Agent, type ModelUsage, type SessionUsage, type Status, type Task, type UsageReport, api } from "./api";
+import { type Agent, type DaemonUsage, type ModelUsage, type SessionUsage, type Status, type Task, type UsageReport, api as daemonApi } from "./api";
+import { useApi } from "./ProjectContext";
 import { AgentName } from "./AgentName";
 import { type UsageRow, formatMoney, formatTokens, groupSessions, sessionList, share, totalTokens } from "./usage";
 
@@ -25,6 +26,7 @@ interface Props {
 // chosen grouping, each row with a bar of its share of the largest row's
 // estimated cost. Costs are integer micro-USD until formatted.
 export default function Usage({ usage, agents, tasks, status, onOpenAgent }: Props): JSX.Element {
+  const api = useApi();
   const [grouping, setGrouping] = useState<Grouping>("task");
   const [report, setReport] = useState<UsageReport>();
   const [loadError, setLoadError] = useState(false);
@@ -77,6 +79,8 @@ export default function Usage({ usage, agents, tasks, status, onOpenAgent }: Pro
         <Tile label="API messages" value={String(total?.messages ?? 0)} note={total ? `${total.turns} turns · ${total.toolCalls} tool calls` : undefined} testid="tile-messages" />
       </div>
 
+      <AllProjects usage={usage} />
+
       <div className="segmented" role="tablist" aria-label="Group usage">
         {groupings.map((g) => (
           <button key={g.id} role="tab" aria-selected={grouping === g.id} className={grouping === g.id ? "active" : ""}
@@ -96,6 +100,46 @@ export default function Usage({ usage, agents, tasks, status, onOpenAgent }: Pro
           onOpen={grouping === "agent" ? (k) => agentById.has(k) && onOpenAgent(k) : undefined} />
       )}
     </div>
+  );
+}
+
+// AllProjects is the usage of every project and the daemon's total (ADR
+// 0046), refreshed a little after this project's live usage changes. With
+// one project it says nothing new, so it is not shown.
+function AllProjects({ usage }: { usage: Props["usage"] }): JSX.Element | null {
+  const [all, setAll] = useState<DaemonUsage>();
+  const loaded = useRef(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      // Both outcomes are handled; a failure only hides the table.
+      void daemonApi.usageAll().then((u) => { loaded.current = true; setAll(u); }, () => setAll(undefined));
+    }, loaded.current ? 3000 : 0);
+    return () => window.clearTimeout(t);
+  }, [usage]);
+  if (!all || all.projects.length < 2) return null;
+  return (
+    <section className="all-projects" aria-label="All projects">
+      <h3>All projects</h3>
+      <table className="usage-table">
+        <thead><tr><th>Project</th><th>Sessions</th><th>Tokens</th><th>Estimated cost</th></tr></thead>
+        <tbody>
+          {all.projects.map((p) => (
+            <tr key={p.project_id} data-project={p.project_id}>
+              <td>{p.name}{p.state !== "open" ? " (not open)" : ""}</td>
+              <td>{p.totals.sessions}</td>
+              <td>{formatTokens(totalTokens(p.totals.tokens))}</td>
+              <td>{formatMoney(p.totals.cost_micro_usd)}</td>
+            </tr>
+          ))}
+          <tr className="total" data-testid="all-projects-total">
+            <td>All projects</td>
+            <td>{all.totals.sessions}</td>
+            <td>{formatTokens(totalTokens(all.totals.tokens))}</td>
+            <td>{formatMoney(all.totals.cost_micro_usd)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
   );
 }
 

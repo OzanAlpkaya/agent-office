@@ -1,9 +1,9 @@
 # Progress
 
-**Current phase:** Phase 13 (Office v2) done on `phase-13/office-v2`, waiting for Ozan's review;
-it is the last planned phase
+**Current phase:** none in progress. Phase 14 (Multi-project office) was merged into `main` on
+2026-11-11.
 
-**Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13. Phase numbers stay
+**Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
 
 See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
@@ -23,7 +23,8 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 10: Remote access (PWA over Tailscale)
 - [x] Phase 11: Portfolio polish
 - [x] Phase 12: Team workflow and roles
-- [x] Phase 13: Office v2 (waiting for review)
+- [x] Phase 13: Office v2
+- [x] Phase 14: Multi-project office
 
 ## Log
 
@@ -285,3 +286,30 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   own resolver) could not resolve `api.anthropic.com` and two recordings timed out; after Ozan
   fixed it (a symlink to systemd-resolved's stub), the GIF and the real-run stills were recorded
   again in the new office (goal reported after 57 s, $0.0237).
+- 2026-11-11: Phase 13 recorded as merged (2026-11-09). Phase 14 "Multi-project office" added to
+  `docs/plan.md` by Ozan.
+- 2026-11-11: Phase 14 done on `phase-14/multi-project`; plan written with the recommended options and
+  executed without a separate approval, as Ozan asked (`docs/plans/phase-14.md`). ADRs 0046 (one
+  engine per project under a hub; project settings override the daemon's flags; project-scoped API
+  under `/api/projects/{project}/`; `agent-office project list|add|set|remove|retry` over the control
+  socket), 0047 (a daemon-wide agent cap across projects through a shared slot pool, an optional cap
+  per project), 0048 (the UI shows one project and watches the others lightly, so Approvals counts
+  every project; a Projects panel; an elevator with a floor per project; All projects usage); ADRs
+  0017 and 0043 amended (one lead and unique names per project). Migration 0013 (`projects.settings`,
+  `removed_at`); no new dependencies. `serve` works without `--repo`; `--repo` registers and selects
+  its project. Restart reconciliation, retention and the orphan container cleanup no longer touch
+  other projects. An independent code review led to 5 fixes (stale event streams after a settings
+  change, settings checked before a project stops and rolled back if the reopen fails, a failed
+  removal, tabs per project, the default project first) and a security review to 4 (repositories and
+  sandbox-widening settings from this machine only, `secrets_dir` inside the daemon's, no agent
+  workspaces or linked worktrees as projects, a host-mode isolation warning). `make check`,
+  `make ui-test` (74), `make sandbox-test` (plus `TestWorkerEgress` with `AO_SANDBOX_NET=1`) and
+  `make e2e` (host, sandbox, team, workflow, and the new two-project run: go and node packs at once,
+  the cap across projects, both Tech Leads restored after a SIGKILL) pass; the GitHub e2e was not run.
+- 2026-11-11: Phase 14 review: all 11 decisions approved. Ozan tested it by hand in a real browser on
+  the real daemon (two packs, a team in each at once, approvals across projects, a refused settings
+  change, SIGKILL and restore; not the phone). Fixed before the merge, each with a Playwright test:
+  switching floors left the Office for the Board, a refused Save showed in the sidebar, and the
+  Projects panel's running count was stale. The sandbox seed was re-checked with Claude Code 2.1.322
+  (unchanged keys and dialogs); the tested version is now 2.1.322. `make check` and `make ui-test`
+  (77) pass. Merged into `main` (`--no-ff`).

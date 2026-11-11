@@ -1,6 +1,7 @@
 // Command agent-office runs a team of AI coding agents on a git repository.
 //
-//	agent-office serve --repo <path>   run the daemon and web UI
+//	agent-office serve [--repo <path>]  run the daemon and web UI
+//	agent-office project list|add|set|remove  manage the daemon's projects (ADR 0046)
 //	agent-office hook                  forward a hook payload (stdin) to the daemon; used by agents
 //	agent-office mcp                   team MCP server for an agent: stdio <-> the daemon (ADR 0006)
 //	agent-office sandbox-init -- cmd   in-container init of a sandboxed worker (ADR 0016)
@@ -76,6 +77,8 @@ func main() {
 		os.Exit(packCommand(os.Args[2:], os.Stdout, os.Stderr))
 	case "role":
 		os.Exit(roleCommand(os.Args[2:], os.Stdout, os.Stderr))
+	case "project":
+		os.Exit(projectCommand(os.Args[2:], os.Stdout, os.Stderr))
 	case "pair":
 		os.Exit(pairCommand(os.Args[2:], os.Stdout, os.Stderr))
 	case "version":
@@ -92,7 +95,15 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `usage: agent-office <command>
 
 commands:
-  serve     run the daemon and web UI (agent-office serve -h for flags)
+  serve     run the daemon and web UI (agent-office serve -h for flags); --repo adds
+            that repository as a project and selects it
+  project list            list the running daemon's projects
+  project add <repo> [flags]
+            add a repository as a project (agent-office project add -h for its settings)
+  project set <project> [flags]
+            change a project's settings (id or name)
+  project remove <project>
+            remove a project; its history, branches and worktrees are kept
   hook      forward a hook payload from stdin to the daemon (used by agents)
   mcp       team MCP server over stdio, bridged to the daemon (used by agents)
   sandbox-init -- <command>
@@ -265,14 +276,15 @@ func parseServe(args []string) (serveConfig, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	var c serveConfig
 	fs.StringVar(&c.addr, "addr", envOr("AGENT_OFFICE_ADDR", "127.0.0.1:7680"), "listen address; must be loopback [AGENT_OFFICE_ADDR]")
-	fs.StringVar(&c.repo, "repo", os.Getenv("AGENT_OFFICE_REPO"), "repository the agent works in [AGENT_OFFICE_REPO]")
+	fs.StringVar(&c.repo, "repo", os.Getenv("AGENT_OFFICE_REPO"),
+		"add this repository as a project (if it is not one) and select it; other projects are added with `agent-office project add` [AGENT_OFFICE_REPO]")
 	fs.StringVar(&c.dataDir, "data-dir", envOr("AGENT_OFFICE_DATA_DIR", defaultDataDir()),
 		"database and worktrees [AGENT_OFFICE_DATA_DIR]")
 	maxAgents, err := envInt("AGENT_OFFICE_MAX_AGENTS", 4)
 	if err != nil {
 		return c, err
 	}
-	fs.IntVar(&c.maxAgents, "max-agents", maxAgents, "agents running at the same time [AGENT_OFFICE_MAX_AGENTS]")
+	fs.IntVar(&c.maxAgents, "max-agents", maxAgents, "agents running at the same time, across all projects [AGENT_OFFICE_MAX_AGENTS]")
 	fs.StringVar(&c.model, "model", os.Getenv("AGENT_OFFICE_MODEL"), "model for agents, e.g. haiku; empty = CLI default [AGENT_OFFICE_MODEL]")
 	fs.StringVar(&c.claudeBin, "claude-bin", envOr("AGENT_OFFICE_CLAUDE_BIN", "claude"), "Claude Code binary [AGENT_OFFICE_CLAUDE_BIN]")
 	inherit, err := envBool("AGENT_OFFICE_INHERIT_USER_SETTINGS", true)
@@ -381,9 +393,6 @@ func parseServe(args []string) (serveConfig, error) {
 			c.pricesRequired = true
 		}
 	})
-	if c.repo == "" {
-		return c, errors.New("--repo is required")
-	}
 	if c.remoteHosts, err = parseRemoteHosts(*remoteHosts); err != nil {
 		return c, err
 	}
@@ -399,11 +408,11 @@ func parseServe(args []string) (serveConfig, error) {
 	if c.rolesDir, err = filepath.Abs(c.rolesDir); err != nil {
 		return c, err
 	}
-	abs, err := filepath.Abs(c.repo)
-	if err != nil {
-		return c, err
+	if c.repo != "" {
+		if c.repo, err = filepath.Abs(c.repo); err != nil {
+			return c, err
+		}
 	}
-	c.repo = abs
 	if c.dataDir, err = filepath.Abs(c.dataDir); err != nil {
 		return c, err
 	}
@@ -495,25 +504,20 @@ func serve(args []string) error {
 	if err != nil {
 		return fmt.Errorf("price table: %w", err)
 	}
-	// Money is integer from here on (ADR 0026): the flags' dollars become micro-USD.
-	budgets := engine.Budgets{SessionMicroUSD: int64(math.Round(cfg.budgetSessionUSD * 1e6)),
-		GoalMicroUSD: int64(math.Round(cfg.budgetGoalUSD * 1e6))}
 	roles, err := role.Load(cfg.rolesDir)
 	if err != nil {
 		return fmt.Errorf("roles: %w", err)
 	}
-	if roles, err = roles.WithModels(cfg.roleModels); err != nil {
+	// --role-model is a daemon default like the others (ADR 0046): checked
+	// now, applied per project together with the project's own role models.
+	if _, err := roles.WithModels(cfg.roleModels); err != nil {
 		return err
 	}
-	for _, r := range roles.List() {
-		if r.Model == "" {
-			continue
-		}
-		if err := checkBudgetModel(budgets, r.Model, prices); err != nil {
-			return fmt.Errorf("role %s: %w", r.Name, err)
-		}
+	defaults := daemonDefaults(cfg)
+	if err := defaults.Validate(); err != nil {
+		return err
 	}
-	if err := checkBudgetModel(budgets, cfg.model, prices); err != nil {
+	if err := checkBudgetModels(defaults, roles, prices); err != nil {
 		return err
 	}
 
@@ -535,19 +539,17 @@ func serve(args []string) error {
 	}
 
 	var sb *engine.SandboxOptions
-	var packWarnings []string
+	var containers *engine.SandboxInstance
 	if cfg.sandbox == modePodman {
-		if sb, packWarnings, err = sandboxOptions(context.Background(), cfg, self, ci, log); err != nil {
+		if sb, err = sandboxOptions(context.Background(), cfg, self, ci, log); err != nil {
 			return err
 		}
+		containers = &engine.SandboxInstance{Podman: sb.Podman, Instance: sb.Instance}
 	} else {
-		log.Warn("host mode: agents run unsandboxed on this machine, with permission prompts on")
+		log.Warn("host mode: agents run unsandboxed on this machine, with permission prompts on; they run as you, so " +
+			"they can read every project's files (ADR 0046)")
 	}
-	warnings := append(versionWarnings(ci, cfg.sandbox), packWarnings...)
-	if (budgets.SessionMicroUSD > 0 || budgets.GoalMicroUSD > 0) && cfg.sandbox == modeHost {
-		warnings = append(warnings, "budgets apply to sandboxed agents only: host-mode agents reach Anthropic directly "+
-			"and are not limited (ADR 0027)")
-	}
+	warnings := versionWarnings(ci, cfg.sandbox)
 	for _, w := range warnings {
 		log.Warn(w)
 	}
@@ -556,12 +558,6 @@ func serve(args []string) error {
 	gitVersion, err := g.Version(context.Background())
 	if err != nil {
 		return fmt.Errorf("git is required: %w", err)
-	}
-	var ghOpts *engine.GitHubOptions
-	if cfg.github {
-		if ghOpts, err = githubOptions(context.Background(), cfg, g, log); err != nil {
-			return err
-		}
 	}
 	st, err := store.Open(context.Background(), filepath.Join(cfg.dataDir, "agent-office.db"))
 	if err != nil {
@@ -572,18 +568,29 @@ func serve(args []string) error {
 		log.Info("database migrated", "from", m.From, "to", m.To, "backup", m.Backup)
 	}
 
-	eng, err := engine.New(context.Background(), engine.Options{
-		Repo: cfg.repo, WorktreeRoot: filepath.Join(cfg.dataDir, "worktrees"), Store: st, Git: g,
-		MaxAgents: cfg.maxAgents, Model: cfg.model, InheritUserSettings: cfg.inheritUserSettings,
-		ClaudeBin: claudeBin, HookCommand: agent.ShellQuote(self) + " hook",
-		RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
-		TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
-		Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version, GitHub: ghOpts,
-		Roles: roles, QA: cfg.qa, RestoreAgents: cfg.restoreAgents, HistoryDir: filepath.Join(cfg.dataDir, "terminals"),
-		Prices: prices, Budgets: budgets, EventRetention: time.Duration(cfg.eventRetentionDays) * 24 * time.Hour,
+	hub, err := engine.NewHub(context.Background(), engine.HubOptions{
+		Base: engine.Options{
+			WorktreeRoot: filepath.Join(cfg.dataDir, "worktrees"), Store: st, Git: g,
+			MaxAgents: cfg.maxAgents, InheritUserSettings: cfg.inheritUserSettings,
+			ClaudeBin: claudeBin, HookCommand: agent.ShellQuote(self) + " hook",
+			RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
+			TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
+			Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version,
+			Roles: roles, QA: cfg.qa, RestoreAgents: cfg.restoreAgents, HistoryDir: filepath.Join(cfg.dataDir, "terminals"),
+			Prices: prices, EventRetention: time.Duration(cfg.eventRetentionDays) * 24 * time.Hour,
+		},
+		Defaults:   defaults,
+		Configure:  configureProject(cfg, g, prices, log),
+		Containers: containers,
 	})
 	if err != nil {
 		return err
+	}
+	if cfg.repo != "" {
+		if _, err := hub.Register(context.Background(), cfg.repo); err != nil {
+			hub.Shutdown()
+			return fmt.Errorf("--repo %s: %w", cfg.repo, err)
+		}
 	}
 
 	ui, built := web.FS()
@@ -593,13 +600,13 @@ func serve(args []string) error {
 	}
 	devices, err := auth.New(context.Background(), st.Q, auth.Options{Logger: log})
 	if err != nil {
-		eng.Shutdown()
+		hub.Shutdown()
 		return err
 	}
 	_, port, _ := net.SplitHostPort(cfg.addr)
 	srv := &http.Server{
 		Addr: cfg.addr,
-		Handler: api.New(eng, ui, api.Options{Port: port, DevOrigins: devOrigins, Version: version, Logger: log,
+		Handler: api.New(hub, ui, api.Options{Port: port, DevOrigins: devOrigins, Version: version, Logger: log,
 			Auth: devices, RemoteHosts: cfg.remoteHosts, RemoteUsers: cfg.remoteUsers}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -607,17 +614,18 @@ func serve(args []string) error {
 	ctlPath := controlSocketPath(runtimeDir, cfg.dataDir)
 	ctlListener, err := listenControl(ctlPath)
 	if err != nil {
-		eng.Shutdown()
+		hub.Shutdown()
 		return err
 	}
 	ctl := &http.Server{
-		Handler:           api.NewControl(devices, api.ControlInfo{LocalURL: "http://" + cfg.addr + "/", RemoteHosts: cfg.remoteHosts}, log),
+		Handler:           api.NewControl(devices, hub, api.ControlInfo{LocalURL: "http://" + cfg.addr + "/", RemoteHosts: cfg.remoteHosts}, log),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() { _ = ctl.Serve(ctlListener) }()
 	defer func() { _ = ctl.Close(); _ = os.Remove(ctlPath) }()
 
-	log.Info("agent-office starting", "version", version, "addr", "http://"+cfg.addr, "repo", eng.Project().RepoPath,
+	projects := hub.Projects()
+	log.Info("agent-office starting", "version", version, "addr", "http://"+cfg.addr, "projects", len(projects),
 		"data_dir", cfg.dataDir, "max_agents", cfg.maxAgents, "git_version", gitVersion,
 		"claude", ci.path, "claude_version", ci.version, "sandbox", cfg.sandbox, "model", cfg.model,
 		"inherit_user_settings", cfg.inheritUserSettings, "github", cfg.github, "ui_built", built, "dev", cfg.dev,
@@ -625,6 +633,9 @@ func serve(args []string) error {
 		"budget_goal_usd", cfg.budgetGoalUSD, "event_retention_days", cfg.eventRetentionDays,
 		"remote_hosts", strings.Join(cfg.remoteHosts, ","), "remote_users", len(cfg.remoteUsers),
 		"paired_devices", len(devices.Devices()))
+	if len(projects) == 0 {
+		log.Info("no project yet: add one in the UI or with `agent-office project add <repo>`")
+	}
 	if len(devices.Devices()) == 0 {
 		log.Info("no device is paired yet: run `agent-office pair --data-dir " + cfg.dataDir + "` to pair this browser")
 	}
@@ -635,7 +646,7 @@ func serve(args []string) error {
 	go func() { errc <- srv.ListenAndServe() }()
 	select {
 	case err := <-errc:
-		eng.Shutdown()
+		hub.Shutdown()
 		return err
 	case <-ctx.Done():
 	}
@@ -643,7 +654,7 @@ func serve(args []string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
-	eng.Shutdown()
+	hub.Shutdown()
 	return nil
 }
 
@@ -715,8 +726,8 @@ func envFloat(key string, def float64) (float64, error) {
 	return f, nil
 }
 
-// checkBudgetModel refuses to start with a budget when --model names a model
-// the price table does not know, since its spend could not be measured (ADR
+// checkBudgetModel refuses a budget when a model is a full model id the
+// price table does not know, since its spend could not be measured (ADR
 // 0027). Aliases such as "haiku" resolve inside Claude Code and are checked
 // per request instead (an unpriced model is refused then).
 func checkBudgetModel(b engine.Budgets, model string, p *pricing.Prices) error {
@@ -724,10 +735,29 @@ func checkBudgetModel(b engine.Budgets, model string, p *pricing.Prices) error {
 		return nil
 	}
 	if _, ok := p.Lookup(model); !ok {
-		return fmt.Errorf("--model %s has no price in the price table, so a budget cannot be enforced; "+
+		return fmt.Errorf("model %s has no price in the price table, so a budget cannot be enforced; "+
 			"add it to %s or turn the budgets off", model, pricing.PricesFileEnv)
 	}
 	return nil
+}
+
+// checkBudgetModels checks the model and every role's model of settings s
+// (effective: the daemon's, or a project's).
+func checkBudgetModels(s engine.ProjectSettings, roles *role.Set, p *pricing.Prices) error {
+	b := engine.Budgets{SessionMicroUSD: *s.BudgetSessionMicroUSD, GoalMicroUSD: *s.BudgetGoalMicroUSD}
+	rs, err := roles.WithModels(s.RoleModels)
+	if err != nil {
+		return err
+	}
+	for _, r := range rs.List() {
+		if r.Model == "" {
+			continue
+		}
+		if err := checkBudgetModel(b, r.Model, p); err != nil {
+			return fmt.Errorf("role %s: %w", r.Name, err)
+		}
+	}
+	return checkBudgetModel(b, *s.Model, p)
 }
 
 func envInt(key string, def int) (int, error) {

@@ -38,6 +38,11 @@ at once.</sub>
 - **Cost and history.** Token usage and estimated cost per goal, task, agent, session and model.
   Every session's terminal output is kept. Agents resume their conversations after a restart, and
   project memory reaches the agents it applies to ([docs/usage.md](docs/usage.md)).
+- **Several projects at once.** One daemon runs several repositories, each with its own stack
+  pack, models, GitHub settings, budgets, board, inbox, memory and office floor. One agent cap
+  holds across all of them, the Approvals badge counts every project, and an agent of one project
+  cannot reach another's tasks, messages, worktrees or memory
+  ([ADR 0046](docs/adr/0046-projects-and-the-hub.md)).
 - **From your phone.** An installable PWA over Tailscale, with every device paired by a one-time
   code ([docs/remote.md](docs/remote.md)).
 - **An office you can watch.** A pixel-art floor plan with a room for every role: the Tech Lead's
@@ -138,6 +143,15 @@ claude setup-token                           # prints a token
 ./bin/agent-office serve --repo ~/src/some-go-project --pack go --model haiku
 ```
 
+More repositories become projects of the same daemon, each with its own settings (flags they do
+not set come from `serve`'s). Add them in the UI's **Projects** panel or from the command line:
+
+```sh
+./bin/agent-office worker-image --pack node
+./bin/agent-office project add ~/src/some-node-app --pack node --max-agents 2
+./bin/agent-office project list
+```
+
 In a second terminal, pair your browser once:
 
 ```sh
@@ -171,7 +185,7 @@ The record of how it was built is in the repository:
 - [docs/plan.md](docs/plan.md): the roadmap, with a Definition of Done per phase.
 - [docs/plans/](docs/plans/): the approved plan of each phase, the answers to its open questions,
   and what changed while it ran.
-- [docs/adr/](docs/adr/README.md): 42 decisions, each with its alternatives.
+- [docs/adr/](docs/adr/README.md): 48 decisions, each with its alternatives.
 - [docs/architecture.md](docs/architecture.md): components, flows and the threat model, row by row
   with the tests that cover each mitigation.
 - [PROGRESS.md](PROGRESS.md): the log of every phase and review.

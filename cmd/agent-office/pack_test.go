@@ -43,7 +43,7 @@ func TestPackOptions(t *testing.T) {
 	repo := filepath.Join(root, "repo")
 	writeFile(t, filepath.Join(repo, "go.mod"), "module x\n", 0o644)
 	packs, secrets := filepath.Join(root, "packs"), filepath.Join(root, "secrets")
-	cfg := serveConfig{repo: repo, packsDir: packs, secretsDir: secrets, egressAllow: []string{"extra.example.com"}}
+	cfg := packSpec{label: "--pack", repo: repo, packsDir: packs, secretsDir: secrets, egress: []string{"extra.example.com"}}
 
 	// No pack: base image, the Phase 3 default allowlist plus extras, a hint for the repository.
 	sp, warnings, err := packOptions(cfg)
@@ -51,19 +51,19 @@ func TestPackOptions(t *testing.T) {
 		strings.Join(sp.hosts, ",") != strings.Join(append(append([]string{}, sandbox.DefaultEgressAllow...), "extra.example.com"), ",") {
 		t.Fatalf("%+v %v", sp, err)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "has go.mod") || !strings.Contains(warnings[0], "--pack go") {
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "has go.mod") || !strings.Contains(warnings[0], "pack to go") {
 		t.Fatalf("hint %v", warnings)
 	}
 
 	// The go pack: its image and only its hosts plus extras.
-	cfg.pack = "go"
+	cfg.name = "go"
 	sp, warnings, err = packOptions(cfg)
 	if err != nil || sp.pack == nil || !strings.HasPrefix(sp.image, "localhost/agent-office-pack-go:") ||
 		strings.Join(sp.hosts, ",") != "proxy.golang.org,sum.golang.org,extra.example.com" || len(warnings) != 0 {
 		t.Fatalf("%+v %v %v", sp, warnings, err)
 	}
 
-	cfg.pack = "rust"
+	cfg.name = "rust"
 	if _, _, err := packOptions(cfg); err == nil || !strings.Contains(err.Error(), `--pack: unknown stack pack "rust"`) {
 		t.Fatalf("unknown pack: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestPackOptions(t *testing.T) {
 	// A user pack with a required and an optional secret.
 	writeFile(t, filepath.Join(packs, "svc", "pack.yaml"), "schema: 1\nname: svc\ndescription: A service.\nenv:\n"+
 		"  - {name: SVC_KEY, required: true}\n  - {name: SVC_OPT}\n", 0o600)
-	cfg.pack = "svc"
+	cfg.name = "svc"
 	if _, _, err := packOptions(cfg); err == nil || !strings.Contains(err.Error(), "stack pack svc needs SVC_KEY") {
 		t.Fatalf("missing required secret: %v", err)
 	}

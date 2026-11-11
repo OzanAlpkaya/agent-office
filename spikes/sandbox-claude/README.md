@@ -94,6 +94,16 @@ base `docker.io/library/debian:trixie-slim@sha256:7378260c0a098d27ac206225db5e7d
 | Memory / processes during a session | ~162 MB, 29 PIDs |
 | Nested user namespaces (prerequisite for Claude Code's own bubblewrap sandbox) | allowed even with `--cap-drop=all`; the sandbox itself not tested (needs bubblewrap + socat in the image) |
 
+**Re-check with Claude Code 2.1.322 (2026-11-11, Phase 14 review):** `./run.sh interactive` with the
+pre-seed (`lastOnboardingVersion` 2.1.322) and `FLAG_SETTINGS=1`: no dialog, straight to the prompt
+in bypass mode, `SessionStart` after 0.3 s. Controls, one key left out each: without
+`hasTrustDialogAccepted` the trust dialog ("No, exit" preselected); without the settings keys the
+bypass-permissions warning ("No, exit" preselected); without `hasCompletedOnboarding` and
+`lastOnboardingVersion`, or with no seed at all, the welcome/onboarding screen. Same keys, same
+dialogs as 2.1.319. Without `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` the CLI also tried
+`raw.githubusercontent.com` (denied); the daemon sets that variable, and a full `make e2e` with
+2.1.322 saw only the known `downloads.claude.ai` and `github.com` denials.
+
 ## Findings (authenticated)
 
 - **The token does not have to enter the container.** With a placeholder token, `ANTHROPIC_BASE_URL`

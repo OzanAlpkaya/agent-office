@@ -92,3 +92,11 @@ Option 1 in each group.
   interrupt ends it instead, so it never keeps its slot.
 - One lead at a time is a simplification; several goals in parallel need lead-scoped addressing,
   which the schema already supports (authority is derived from the goal, not from a global flag).
+
+## Amendment (2026-11-11, Phase 14): per project
+
+"At most one lead runs at a time" holds per project (ADR 0046): each project's engine enforces it,
+together with one architect, QA and assistant, for its own goals; two projects can each have a
+Tech Lead at once. Authority still comes from the socket: an agent's sockets belong to its
+project's engine, so every rule above applies within the agent's project, and ids of another
+project are not found (`TestAgentsCannotReachAnotherProject`).

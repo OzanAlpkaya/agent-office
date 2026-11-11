@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -103,11 +102,11 @@ const (
 
 // Options configures the engine. All paths must be absolute.
 type Options struct {
-	Repo                string        // any path inside the repository
+	Repo                string        // any path inside the repository; set by the hub for its projects
 	WorktreeRoot        string        // e.g. $XDG_DATA_HOME/agent-office/worktrees
 	Store               *store.Store  // required
 	Git                 git.Git       // git CLI wrapper
-	MaxAgents           int           // running agents at once; default 4
+	MaxAgents           int           // this project's running agents at once; default 4 (ADR 0047)
 	Model               string        // optional default model; a role's own model wins (ADR 0029)
 	Roles               *role.Set     // team roles (ADR 0029); nil: the built-in roles
 	QA                  bool          // a goal's report needs a passing QA run (ADR 0033)
@@ -136,6 +135,11 @@ type Options struct {
 	typingQuiet    time.Duration // no user input for this long before typing
 	enterDelay     time.Duration // between typing a message and pressing Enter
 	usageThrottle  time.Duration // at most one live usage update per session this often
+
+	// Set by the hub (ADR 0046); a standalone engine registers Repo itself and
+	// has a pool of its own.
+	project *db.Project
+	slots   *slotPool // the daemon-wide cap
 }
 
 // Status is the daemon-wide state the UI shows next to the board.
@@ -203,6 +207,7 @@ type Update struct {
 	// "agent" | "agent_removed" | "task" | "task_deleted" | "sandbox_event" | "message" | "access_request" |
 	// "pull_request" | "usage" | "inbox" | "spec" | "qa_run" | "memory" | "memory_deleted"
 	Type          string         `json:"type"`
+	ProjectID     string         `json:"project_id"` // set by the engine: every update belongs to one project (ADR 0046)
 	Agent         *AgentInfo     `json:"agent,omitempty"`
 	Task          *Task          `json:"task,omitempty"`
 	ID            string         `json:"id,omitempty"`
@@ -262,6 +267,8 @@ type Engine struct {
 	q       *db.Queries
 	st      *store.Store
 	project Project
+	slots   *slotPool // the daemon-wide agent cap (ADR 0047)
+	hubbed  bool      // opened by a hub, which does the daemon-wide restart work (ADR 0046)
 
 	mu           sync.Mutex
 	agents       map[string]*agentProc
@@ -286,6 +293,9 @@ type Engine struct {
 // New validates opts, registers the repository as a project, reconciles state
 // left by a previous run and loads visible agents.
 func New(ctx context.Context, opts Options) (*Engine, error) {
+	if opts.project != nil {
+		opts.Repo = opts.project.RepoPath
+	}
 	for name, p := range map[string]string{"Repo": opts.Repo, "RuntimeDir": opts.RuntimeDir, "WorktreeRoot": opts.WorktreeRoot} {
 		if !filepath.IsAbs(p) {
 			return nil, fmt.Errorf("engine: %s must be an absolute path, got %q", name, p)
@@ -301,7 +311,6 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		opts.Logger = slog.Default()
 	}
 	ids := &sessionIDs{}
-	opts.Logger = slog.New(newSessionHandler(opts.Logger.Handler(), ids))
 	if opts.StopTimeout <= 0 {
 		opts.StopTimeout = 5 * time.Second
 	}
@@ -342,25 +351,21 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 			return nil, fmt.Errorf("engine: %w", err)
 		}
 	}
-	top, err := opts.Git.TopLevel(ctx, opts.Repo)
-	if err != nil {
-		return nil, fmt.Errorf("engine: %s is not inside a git repository: %w", opts.Repo, err)
+	row := opts.project
+	if row == nil { // standalone: register the repository like `serve --repo` (ADR 0046)
+		r, _, err := registerProject(ctx, opts.Store.Q, opts.Git, opts.Repo, "", "")
+		if err != nil {
+			return nil, fmt.Errorf("engine: %w", err)
+		}
+		row = &r
+	} else if _, err := opts.Git.HeadCommit(ctx, row.RepoPath); err != nil {
+		return nil, fmt.Errorf("engine: %s: %w", row.RepoPath, err)
 	}
-	if _, err := opts.Git.HeadCommit(ctx, top); err != nil {
-		return nil, fmt.Errorf("engine: repository has no commits yet: %w", err)
+	slots := opts.slots
+	if slots == nil {
+		slots = newSlotPool(opts.MaxAgents)
 	}
-	sum := sha256.Sum256([]byte(top))
-	slug := git.Slug(filepath.Base(top), 30)
-	if slug == "" {
-		slug = "repo"
-	}
-	slug += "-" + hex.EncodeToString(sum[:])[:8]
-	row, err := opts.Store.Q.UpsertProject(ctx, db.UpsertProjectParams{
-		ID: randomHex(6), Name: filepath.Base(top), RepoPath: top, Slug: slug, CreatedAt: now(),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("engine: register project: %w", err)
-	}
+	opts.Logger = slog.New(newSessionHandler(opts.Logger.Handler(), ids)).With("project", row.Slug)
 	e := &Engine{
 		opts:         opts,
 		log:          opts.Logger,
@@ -370,6 +375,8 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		q:            opts.Store.Q,
 		st:           opts.Store,
 		project:      Project{ID: row.ID, Name: row.Name, RepoPath: row.RepoPath, Slug: row.Slug},
+		slots:        slots,
+		hubbed:       opts.project != nil,
 		agents:       map[string]*agentProc{},
 		subs:         map[chan Update]struct{}{},
 		assigning:    map[string]bool{},
@@ -414,7 +421,7 @@ func (e *Engine) reconcile(ctx context.Context) error {
 			interrupted = append(interrupted, r.ID)
 		}
 	}
-	n, err := e.q.MarkUnfinishedAgentsExited(ctx, nullTime(now()))
+	n, err := e.q.MarkUnfinishedAgentsExited(ctx, db.MarkUnfinishedAgentsExitedParams{ExitedAt: nullTime(now()), ProjectID: e.project.ID})
 	if err != nil {
 		return fmt.Errorf("engine: reconcile agents: %w", err)
 	}
@@ -522,40 +529,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		return AgentInfo{}, err
 	}
 	role := string(def.Behaviour) // the kind; authority comes from it
-	e.mu.Lock()
-	if e.closing {
-		e.mu.Unlock()
-		return AgentInfo{}, ErrShuttingDown
-	}
-	if e.runningLocked()+e.starting >= e.opts.MaxAgents {
-		e.mu.Unlock()
-		return AgentInfo{}, ErrTooManyAgents
-	}
-	if single(role) {
-		if e.startingKind[role] || e.runningKindLocked(role) != nil {
-			e.mu.Unlock()
-			if role == KindLead {
-				return AgentInfo{}, ErrLeadRunning
-			}
-			return AgentInfo{}, fmt.Errorf("%w: a %s is already running; stop it first", ErrInvalid, def.Name)
-		}
-		e.startingKind[role] = true
-	}
-	e.starting++
-	id := randomHex(6)
-	name := e.nameLocked(id)
-	e.naming[name] = true
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		e.starting--
-		delete(e.naming, name) // registered with the agent by now, or not needed
-		if single(role) {
-			delete(e.startingKind, role)
-		}
-		e.mu.Unlock()
-	}()
-
+	// The task first: an id of another project is not found, whatever the cap (ADR 0046).
 	var task *db.Task
 	if req.TaskID != "" {
 		t, err := e.q.GetTask(ctx, req.TaskID)
@@ -570,6 +544,41 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		}
 		task = &t
 	}
+
+	e.mu.Lock()
+	if e.closing {
+		e.mu.Unlock()
+		return AgentInfo{}, ErrShuttingDown
+	}
+	if single(role) && (e.startingKind[role] || e.runningKindLocked(role) != nil) {
+		e.mu.Unlock()
+		if role == KindLead {
+			return AgentInfo{}, ErrLeadRunning
+		}
+		return AgentInfo{}, fmt.Errorf("%w: a %s is already running; stop it first", ErrInvalid, def.Name)
+	}
+	if err := e.reserveSlotLocked(); err != nil {
+		e.mu.Unlock()
+		return AgentInfo{}, err
+	}
+	if single(role) {
+		e.startingKind[role] = true
+	}
+	e.starting++
+	id := randomHex(6)
+	name := e.nameLocked(id)
+	e.naming[name] = true
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.starting--
+		delete(e.naming, name) // registered with the agent by now, or not needed
+		if single(role) {
+			delete(e.startingKind, role)
+		}
+		e.syncSlotsLocked()
+		e.mu.Unlock()
+	}()
 
 	sid := newUUID()
 	title := ""
@@ -884,6 +893,7 @@ func (e *Engine) watch(a *agentProc) {
 	}
 	a.status = hooks.Status{State: hooks.Exited}
 	a.info.ExitedAt, a.info.ExitCode, a.info.ExitReason = &t, &code, reason
+	e.syncSlotsLocked()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := e.q.MarkAgentExited(ctx, db.MarkAgentExitedParams{ExitedAt: nullTime(t),
@@ -1228,6 +1238,7 @@ func (e *Engine) publishAgentLocked(a *agentProc) {
 }
 
 func (e *Engine) publishLocked(u Update) {
+	u.ProjectID = e.project.ID
 	for ch := range e.subs {
 		select {
 		case ch <- u:
@@ -1291,6 +1302,19 @@ func (e *Engine) runningLocked() int {
 }
 
 // Shutdown stops all running agents and waits for them.
+// closeIdle marks the engine closing when no agent runs or starts, so the hub
+// can shut it down without stopping anyone (ADR 0046). It reports whether the
+// engine is closing now.
+func (e *Engine) closeIdle() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.closing && e.runningLocked()+e.starting > 0 {
+		return false
+	}
+	e.closing = true
+	return true
+}
+
 func (e *Engine) Shutdown() {
 	if e.stopPoll != nil {
 		e.stopPoll() // first, so no reviewer or follow-up starts while agents stop
@@ -1316,6 +1340,14 @@ func (e *Engine) Shutdown() {
 	}
 	wg.Wait()
 	e.wg.Wait()
+	// Subscribers (the UI's events streams) end, so they resync: after a
+	// project's settings change they find its new engine (ADR 0046).
+	e.mu.Lock()
+	for ch := range e.subs {
+		delete(e.subs, ch)
+		close(ch)
+	}
+	e.mu.Unlock()
 }
 
 // sessionLogger is the logger of one agent session: every line about it

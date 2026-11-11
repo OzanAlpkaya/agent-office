@@ -30,8 +30,11 @@ const fakeAgent = "#!/bin/sh\necho fake-agent-ready\nexec cat\n"
 
 type fixture struct {
 	srv   *httptest.Server
-	eng   *engine.Engine
-	ws    string // ws:// base URL
+	hub   *engine.Hub
+	eng   *engine.Engine // the project's
+	pid   string         // its id
+	pp    string         // its routes: /api/projects/<id>
+	ws    string         // ws:// base URL
 	auth  *auth.Manager
 	token string // a paired device's token; do() sends it unless the test sets Authorization
 }
@@ -69,12 +72,20 @@ func newFixtureWith(t *testing.T, change func(*Options)) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	eng, err := engine.New(context.Background(), engine.Options{
-		Repo: repo, WorktreeRoot: filepath.Join(dir, "wt"), Store: st, MaxAgents: 1,
+	hub, err := engine.NewHub(context.Background(), engine.HubOptions{Base: engine.Options{
+		WorktreeRoot: filepath.Join(dir, "wt"), Store: st, MaxAgents: 1,
 		ClaudeBin: bin, HookCommand: "true", RuntimeDir: filepath.Join(dir, "rt"),
 		BaseEnv: []string{"PATH=" + os.Getenv("PATH")}, StopTimeout: time.Second, Logger: log,
 		AgentOfficeBin: bin, HistoryDir: filepath.Join(dir, "terminals"),
-	})
+	}, Defaults: engine.NeutralDefaults()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := hub.Register(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := hub.Engine(p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,12 +109,13 @@ func newFixtureWith(t *testing.T, change func(*Options)) *fixture {
 	if change != nil {
 		change(&opts)
 	}
-	srv := httptest.NewUnstartedServer(New(eng, ui, opts))
+	srv := httptest.NewUnstartedServer(New(hub, ui, opts))
 	srv.Listener.Close()
 	srv.Listener = l
 	srv.Start()
-	t.Cleanup(func() { srv.Close(); eng.Shutdown() })
-	return &fixture{srv: srv, eng: eng, ws: "ws" + strings.TrimPrefix(srv.URL, "http"), auth: am, token: tok}
+	t.Cleanup(func() { srv.Close(); hub.Shutdown() })
+	return &fixture{srv: srv, hub: hub, eng: eng, pid: p.ID, pp: "/api/projects/" + p.ID,
+		ws: "ws" + strings.TrimPrefix(srv.URL, "http"), auth: am, token: tok}
 }
 
 // dialOpts authenticates a WebSocket as the fixture's device.
@@ -145,7 +157,7 @@ func (f *fixture) doBody(t *testing.T, method, path string, hdr map[string]strin
 
 func (f *fixture) start(t *testing.T) engine.AgentInfo {
 	t.Helper()
-	resp := f.do(t, "POST", "/api/agents", nil)
+	resp := f.do(t, "POST", f.pp+"/agents", nil)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("start: %d", resp.StatusCode)
 	}
@@ -170,10 +182,10 @@ func readUntil(t *testing.T, ctx context.Context, c *websocket.Conn, want string
 
 func TestRejectsForeignHost(t *testing.T) {
 	f := newFixture(t)
-	if r := f.do(t, "GET", "/api/agents", map[string]string{"Host": "evil.example:" + mustPort(f)}); r.StatusCode != http.StatusForbidden {
+	if r := f.do(t, "GET", f.pp+"/agents", map[string]string{"Host": "evil.example:" + mustPort(f)}); r.StatusCode != http.StatusForbidden {
 		t.Fatalf("foreign Host: %d", r.StatusCode)
 	}
-	if r := f.do(t, "GET", "/api/agents", map[string]string{"Host": "localhost:" + mustPort(f)}); r.StatusCode != http.StatusOK {
+	if r := f.do(t, "GET", f.pp+"/agents", map[string]string{"Host": "localhost:" + mustPort(f)}); r.StatusCode != http.StatusOK {
 		t.Fatalf("localhost Host: %d", r.StatusCode)
 	}
 }
@@ -182,27 +194,27 @@ func mustPort(f *fixture) string { u, _ := url.Parse(f.srv.URL); return u.Port()
 
 func TestRejectsCrossOriginWrites(t *testing.T) {
 	f := newFixture(t)
-	if r := f.do(t, "POST", "/api/agents", map[string]string{"Origin": "https://evil.example"}); r.StatusCode != http.StatusForbidden {
+	if r := f.do(t, "POST", f.pp+"/agents", map[string]string{"Origin": "https://evil.example"}); r.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin POST: %d", r.StatusCode)
 	}
 	if len(f.eng.List()) != 0 {
 		t.Fatal("cross-origin POST started an agent")
 	}
 	a := f.start(t)
-	if r := f.do(t, "POST", "/api/agents", nil); r.StatusCode != http.StatusConflict {
+	if r := f.do(t, "POST", f.pp+"/agents", nil); r.StatusCode != http.StatusConflict {
 		t.Fatalf("second start: %d", r.StatusCode)
 	}
-	if r := f.do(t, "DELETE", "/api/agents/"+a.ID, nil); r.StatusCode != http.StatusConflict {
+	if r := f.do(t, "DELETE", f.pp+"/agents/"+a.ID, nil); r.StatusCode != http.StatusConflict {
 		t.Fatalf("delete running: %d", r.StatusCode)
 	}
-	if r := f.do(t, "POST", "/api/agents/"+a.ID+"/discard", map[string]string{"Origin": "https://evil.example"}); r.StatusCode != http.StatusForbidden {
+	if r := f.do(t, "POST", f.pp+"/agents/"+a.ID+"/discard", map[string]string{"Origin": "https://evil.example"}); r.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin discard: %d", r.StatusCode)
 	}
 }
 
 func TestStatusAPI(t *testing.T) {
 	f := newFixture(t)
-	r := f.doBody(t, "GET", "/api/status", nil, "")
+	r := f.doBody(t, "GET", f.pp+"/status", nil, "")
 	var st engine.Status
 	if err := json.NewDecoder(r.Body).Decode(&st); err != nil || r.StatusCode != http.StatusOK {
 		t.Fatalf("status %d %v", r.StatusCode, err)
@@ -215,15 +227,15 @@ func TestStatusAPI(t *testing.T) {
 func TestImportRefusesHostAgents(t *testing.T) {
 	f := newFixture(t)
 	ct := map[string]string{"Content-Type": "application/json"}
-	r := f.doBody(t, "POST", "/api/agents", ct, `{}`)
+	r := f.doBody(t, "POST", f.pp+"/agents", ct, `{}`)
 	var a engine.AgentInfo
 	_ = json.NewDecoder(r.Body).Decode(&a)
-	for _, path := range []string{"/api/agents/" + a.ID + "/import", "/api/agents/" + a.ID + "/save-work"} {
+	for _, path := range []string{f.pp + "/agents/" + a.ID + "/import", f.pp + "/agents/" + a.ID + "/save-work"} {
 		if r := f.doBody(t, "POST", path, ct, ``); r.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s on a host agent: %d", path, r.StatusCode)
 		}
 	}
-	if r := f.doBody(t, "POST", "/api/agents/nope/import", ct, ``); r.StatusCode != http.StatusNotFound {
+	if r := f.doBody(t, "POST", f.pp+"/agents/nope/import", ct, ``); r.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown agent: %d", r.StatusCode)
 	}
 }
@@ -231,49 +243,49 @@ func TestImportRefusesHostAgents(t *testing.T) {
 func TestAgentEventsAPI(t *testing.T) {
 	f := newFixture(t)
 	ct := map[string]string{"Content-Type": "application/json"}
-	r := f.doBody(t, "POST", "/api/agents", ct, `{}`)
+	r := f.doBody(t, "POST", f.pp+"/agents", ct, `{}`)
 	var a engine.AgentInfo
 	_ = json.NewDecoder(r.Body).Decode(&a)
-	r = f.doBody(t, "GET", "/api/agents/"+a.ID+"/events", nil, "")
+	r = f.doBody(t, "GET", f.pp+"/agents/"+a.ID+"/events", nil, "")
 	body, _ := io.ReadAll(r.Body)
 	if r.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "[]" {
 		t.Fatalf("events of a host agent: %d %s", r.StatusCode, body)
 	}
-	if r := f.doBody(t, "GET", "/api/agents/nope/events", nil, ""); r.StatusCode != http.StatusNotFound {
+	if r := f.doBody(t, "GET", f.pp+"/agents/nope/events", nil, ""); r.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown agent: %d", r.StatusCode)
 	}
 }
 
 func TestTasksAPI(t *testing.T) {
 	f := newFixture(t)
-	json415 := f.doBody(t, "POST", "/api/tasks", nil, `{"title":"x"}`) // no Content-Type
+	json415 := f.doBody(t, "POST", f.pp+"/tasks", nil, `{"title":"x"}`) // no Content-Type
 	if json415.StatusCode != http.StatusUnsupportedMediaType {
 		t.Fatalf("missing content type: %d", json415.StatusCode)
 	}
 	ct := map[string]string{"Content-Type": "application/json"}
-	if r := f.doBody(t, "POST", "/api/tasks", ct, `{"title":"x","owner":"me"}`); r.StatusCode != http.StatusBadRequest {
+	if r := f.doBody(t, "POST", f.pp+"/tasks", ct, `{"title":"x","owner":"me"}`); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown field: %d", r.StatusCode)
 	}
-	if r := f.doBody(t, "POST", "/api/tasks", ct, `{"title":"   "}`); r.StatusCode != http.StatusBadRequest {
+	if r := f.doBody(t, "POST", f.pp+"/tasks", ct, `{"title":"   "}`); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("empty title: %d", r.StatusCode)
 	}
-	r := f.doBody(t, "POST", "/api/tasks", ct, `{"title":"Sayfalama ekle","description":"limit/offset"}`)
+	r := f.doBody(t, "POST", f.pp+"/tasks", ct, `{"title":"Sayfalama ekle","description":"limit/offset"}`)
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("create: %d", r.StatusCode)
 	}
 	var task engine.Task
 	_ = json.NewDecoder(r.Body).Decode(&task)
 
-	r = f.doBody(t, "PATCH", "/api/tasks/"+task.ID, ct, `{"status":"review"}`)
+	r = f.doBody(t, "PATCH", f.pp+"/tasks/"+task.ID, ct, `{"status":"review"}`)
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("patch: %d", r.StatusCode)
 	}
-	if r := f.doBody(t, "PATCH", "/api/tasks/"+task.ID, ct, `{"status":"doing"}`); r.StatusCode != http.StatusBadRequest {
+	if r := f.doBody(t, "PATCH", f.pp+"/tasks/"+task.ID, ct, `{"status":"doing"}`); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad status: %d", r.StatusCode)
 	}
 
 	// Start an agent for the task; its branch carries the task slug.
-	r = f.doBody(t, "POST", "/api/agents", ct, `{"task_id":"`+task.ID+`"}`)
+	r = f.doBody(t, "POST", f.pp+"/agents", ct, `{"task_id":"`+task.ID+`"}`)
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("start for task: %d", r.StatusCode)
 	}
@@ -282,25 +294,25 @@ func TestTasksAPI(t *testing.T) {
 	if !strings.HasPrefix(a.Branch, "agent-office/sayfalama-ekle-") || a.TaskID != task.ID {
 		t.Fatalf("agent %+v", a)
 	}
-	if r := f.do(t, "POST", "/api/agents", nil); r.StatusCode != http.StatusConflict {
+	if r := f.do(t, "POST", f.pp+"/agents", nil); r.StatusCode != http.StatusConflict {
 		t.Fatalf("max agents: %d", r.StatusCode)
 	}
-	if r := f.doBody(t, "POST", "/api/agents", ct, `{"task_id":"missing"}`); r.StatusCode != http.StatusConflict && r.StatusCode != http.StatusNotFound {
+	if r := f.doBody(t, "POST", f.pp+"/agents", ct, `{"task_id":"missing"}`); r.StatusCode != http.StatusConflict && r.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown task: %d", r.StatusCode)
 	}
 
 	// A dirty worktree is kept on DELETE and only removed by discard.
-	f.do(t, "POST", "/api/agents/"+a.ID+"/stop", nil)
+	f.do(t, "POST", f.pp+"/agents/"+a.ID+"/stop", nil)
 	if err := os.WriteFile(filepath.Join(a.WorktreePath, "wip.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if r := f.do(t, "DELETE", "/api/agents/"+a.ID, nil); r.StatusCode != http.StatusConflict {
+	if r := f.do(t, "DELETE", f.pp+"/agents/"+a.ID, nil); r.StatusCode != http.StatusConflict {
 		t.Fatalf("delete dirty: %d", r.StatusCode)
 	}
-	if r := f.do(t, "POST", "/api/agents/"+a.ID+"/discard", nil); r.StatusCode != http.StatusOK {
+	if r := f.do(t, "POST", f.pp+"/agents/"+a.ID+"/discard", nil); r.StatusCode != http.StatusOK {
 		t.Fatalf("discard: %d", r.StatusCode)
 	}
-	if r := f.do(t, "DELETE", "/api/tasks/"+task.ID, nil); r.StatusCode != http.StatusNoContent {
+	if r := f.do(t, "DELETE", f.pp+"/tasks/"+task.ID, nil); r.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete task: %d", r.StatusCode)
 	}
 }
@@ -311,7 +323,7 @@ func TestTerminalRoundTripAndExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	c, _, err := websocket.Dial(ctx, f.ws+"/api/agents/"+a.ID+"/terminal", f.dialOpts())
+	c, _, err := websocket.Dial(ctx, f.ws+f.pp+"/agents/"+a.ID+"/terminal", f.dialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +332,7 @@ func TestTerminalRoundTripAndExit(t *testing.T) {
 	_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"input","data":"ping-123\r"}`))
 	readUntil(t, ctx, c, "ping-123")
 
-	if r := f.do(t, "POST", "/api/agents/"+a.ID+"/stop", nil); r.StatusCode != http.StatusOK {
+	if r := f.do(t, "POST", f.pp+"/agents/"+a.ID+"/stop", nil); r.StatusCode != http.StatusOK {
 		t.Fatalf("stop: %d", r.StatusCode)
 	}
 	for {
@@ -334,12 +346,12 @@ func TestTerminalRoundTripAndExit(t *testing.T) {
 	}
 
 	// Re-attaching to an exited agent replays its output, then closes.
-	c2, _, err := websocket.Dial(ctx, f.ws+"/api/agents/"+a.ID+"/terminal", f.dialOpts())
+	c2, _, err := websocket.Dial(ctx, f.ws+f.pp+"/agents/"+a.ID+"/terminal", f.dialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
 	readUntil(t, ctx, c2, "ping-123")
-	if r := f.do(t, "DELETE", "/api/agents/"+a.ID, nil); r.StatusCode != http.StatusOK {
+	if r := f.do(t, "DELETE", f.pp+"/agents/"+a.ID, nil); r.StatusCode != http.StatusOK {
 		t.Fatalf("delete exited: %d", r.StatusCode)
 	}
 }
@@ -348,7 +360,7 @@ func TestCrossOriginWebSocketRejected(t *testing.T) {
 	f := newFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, resp, err := websocket.Dial(ctx, f.ws+"/api/events", &websocket.DialOptions{
+	_, resp, err := websocket.Dial(ctx, f.ws+f.pp+"/events", &websocket.DialOptions{
 		HTTPHeader: http.Header{"Origin": []string{"https://evil.example"}, "Authorization": []string{"Bearer " + f.token}},
 	})
 	if err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
@@ -361,7 +373,7 @@ func TestEventsSnapshotAndUpdates(t *testing.T) {
 	a := f.start(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, f.ws+"/api/events", f.dialOpts())
+	c, _, err := websocket.Dial(ctx, f.ws+f.pp+"/events", f.dialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +397,7 @@ func TestEventsSnapshotAndUpdates(t *testing.T) {
 	if m := read(); m.Type != "snapshot" || len(m.Agents) != 1 || m.Agents[0].ID != a.ID || m.Tasks == nil || m.Access == nil || m.PRs == nil {
 		t.Fatalf("snapshot %+v", m)
 	}
-	f.do(t, "POST", "/api/agents/"+a.ID+"/stop", nil)
+	f.do(t, "POST", f.pp+"/agents/"+a.ID+"/stop", nil)
 	for {
 		if m := read(); m.Type == "agent" && m.Agent.State == "exited" {
 			return
@@ -408,26 +420,26 @@ func TestUIFallbackAndHeaders(t *testing.T) {
 func TestStartRoleAPI(t *testing.T) {
 	f := newFixture(t)
 	ct := map[string]string{"Content-Type": "application/json"}
-	if r := f.doBody(t, "POST", "/api/agents", ct, `{"role":"lead"}`); r.StatusCode != http.StatusBadRequest {
+	if r := f.doBody(t, "POST", f.pp+"/agents", ct, `{"role":"lead"}`); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("lead without a goal: %d", r.StatusCode)
 	}
-	if r := f.doBody(t, "POST", "/api/agents", ct, `{"role":"admin"}`); r.StatusCode != http.StatusBadRequest {
+	if r := f.doBody(t, "POST", f.pp+"/agents", ct, `{"role":"admin"}`); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown role: %d", r.StatusCode)
 	}
-	r := f.doBody(t, "POST", "/api/tasks", ct, `{"title":"Goal"}`)
+	r := f.doBody(t, "POST", f.pp+"/tasks", ct, `{"title":"Goal"}`)
 	var task engine.Task
 	_ = json.NewDecoder(r.Body).Decode(&task)
-	r = f.doBody(t, "POST", "/api/agents", ct, `{"task_id":"`+task.ID+`","role":"lead"}`)
+	r = f.doBody(t, "POST", f.pp+"/agents", ct, `{"task_id":"`+task.ID+`","role":"lead"}`)
 	var a engine.AgentInfo
 	if err := json.NewDecoder(r.Body).Decode(&a); err != nil || r.StatusCode != http.StatusCreated || a.Role != engine.RoleTechLead || a.Kind != engine.KindLead {
 		t.Fatalf("start lead: %d %+v %v", r.StatusCode, a, err)
 	}
-	r = f.doBody(t, "GET", "/api/agents/"+a.ID+"/messages", nil, "")
+	r = f.doBody(t, "GET", f.pp+"/agents/"+a.ID+"/messages", nil, "")
 	body, _ := io.ReadAll(r.Body)
 	if r.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "[]" {
 		t.Fatalf("messages: %d %s", r.StatusCode, body)
 	}
-	if r := f.doBody(t, "GET", "/api/agents/nope/messages", nil, ""); r.StatusCode != http.StatusNotFound {
+	if r := f.doBody(t, "GET", f.pp+"/agents/nope/messages", nil, ""); r.StatusCode != http.StatusNotFound {
 		t.Fatalf("messages of an unknown agent: %d", r.StatusCode)
 	}
 }
@@ -436,7 +448,7 @@ func TestStartRoleAPI(t *testing.T) {
 // and unknown or malformed ids are refused.
 func TestAccessRequestsAPI(t *testing.T) {
 	f := newFixture(t)
-	r := f.doBody(t, "GET", "/api/access-requests", nil, "")
+	r := f.doBody(t, "GET", f.pp+"/access-requests", nil, "")
 	body, _ := io.ReadAll(r.Body)
 	if r.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "[]" {
 		t.Fatalf("list: %d %s", r.StatusCode, body)
@@ -446,11 +458,11 @@ func TestAccessRequestsAPI(t *testing.T) {
 		hdr  map[string]string
 		want int
 	}{
-		{"/api/access-requests/1/approve", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
-		{"/api/access-requests/1/deny", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
-		{"/api/access-requests/1/approve", nil, http.StatusNotFound},
-		{"/api/access-requests/abc/approve", nil, http.StatusBadRequest},
-		{"/api/access-requests/0/deny", nil, http.StatusBadRequest},
+		{f.pp + "/access-requests/1/approve", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		{f.pp + "/access-requests/1/deny", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		{f.pp + "/access-requests/1/approve", nil, http.StatusNotFound},
+		{f.pp + "/access-requests/abc/approve", nil, http.StatusBadRequest},
+		{f.pp + "/access-requests/0/deny", nil, http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		if r := f.do(t, "POST", tc.path, tc.hdr); r.StatusCode != tc.want {
@@ -458,7 +470,7 @@ func TestAccessRequestsAPI(t *testing.T) {
 		}
 	}
 	// A GET never reaches the decision handler; it falls through to the UI.
-	if r := f.do(t, "GET", "/api/access-requests/1/approve", nil); strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+	if r := f.do(t, "GET", f.pp+"/access-requests/1/approve", nil); strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		t.Error("GET reached the decision handler")
 	}
 }
@@ -467,32 +479,32 @@ func TestAccessRequestsAPI(t *testing.T) {
 // empty; the origin guard applies to every POST.
 func TestPullRequestsAPIWithoutGitHub(t *testing.T) {
 	f := newFixture(t)
-	resp := f.do(t, "GET", "/api/pull-requests", nil)
+	resp := f.do(t, "GET", f.pp+"/pull-requests", nil)
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 || strings.TrimSpace(string(b)) != "[]" {
 		t.Fatalf("list %d %s", resp.StatusCode, b)
 	}
 	ct := map[string]string{"Content-Type": "application/json"}
-	r := f.doBody(t, "POST", "/api/tasks", ct, `{"title":"Add tags"}`)
+	r := f.doBody(t, "POST", f.pp+"/tasks", ct, `{"title":"Add tags"}`)
 	var task engine.Task
 	_ = json.NewDecoder(r.Body).Decode(&task)
 	for _, c := range []struct {
 		path, body string
 		want       int
 	}{
-		{"/api/tasks/" + task.ID + "/pull-request", "", http.StatusConflict},
-		{"/api/pull-requests/1/review", "", http.StatusConflict},
-		{"/api/pull-requests/1/follow-up", `{"review_id":1}`, http.StatusConflict},
-		{"/api/pull-requests/1/follow-up", `{}`, http.StatusBadRequest},
-		{"/api/pull-requests/1/accept", `{"commits":["abc"]}`, http.StatusConflict},
-		{"/api/pull-requests/x/review", "", http.StatusBadRequest},
-		{"/api/pull-requests/1/accept", `{"commits":["a"],"force":true}`, http.StatusBadRequest},
+		{f.pp + "/tasks/" + task.ID + "/pull-request", "", http.StatusConflict},
+		{f.pp + "/pull-requests/1/review", "", http.StatusConflict},
+		{f.pp + "/pull-requests/1/follow-up", `{"review_id":1}`, http.StatusConflict},
+		{f.pp + "/pull-requests/1/follow-up", `{}`, http.StatusBadRequest},
+		{f.pp + "/pull-requests/1/accept", `{"commits":["abc"]}`, http.StatusConflict},
+		{f.pp + "/pull-requests/x/review", "", http.StatusBadRequest},
+		{f.pp + "/pull-requests/1/accept", `{"commits":["a"],"force":true}`, http.StatusBadRequest},
 	} {
 		if r := f.doBody(t, "POST", c.path, ct, c.body); r.StatusCode != c.want {
 			t.Errorf("POST %s: %d, want %d", c.path, r.StatusCode, c.want)
 		}
 	}
-	if r := f.do(t, "POST", "/api/tasks/"+task.ID+"/pull-request", map[string]string{"Origin": "https://evil.example"}); r.StatusCode != http.StatusForbidden {
+	if r := f.do(t, "POST", f.pp+"/tasks/"+task.ID+"/pull-request", map[string]string{"Origin": "https://evil.example"}); r.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin POST: %d", r.StatusCode)
 	}
 }
@@ -500,7 +512,7 @@ func TestPullRequestsAPIWithoutGitHub(t *testing.T) {
 func TestUsageAPI(t *testing.T) {
 	f := newFixture(t)
 	f.start(t)
-	r := f.doBody(t, "GET", "/api/usage", nil, "")
+	r := f.doBody(t, "GET", f.pp+"/usage", nil, "")
 	if r.StatusCode != http.StatusOK || r.Header.Get("X-Request-Id") == "" {
 		t.Fatalf("usage %d, request id %q", r.StatusCode, r.Header.Get("X-Request-Id"))
 	}
@@ -511,7 +523,7 @@ func TestUsageAPI(t *testing.T) {
 	if len(rep.Sessions) != 1 || rep.Sessions[0].Models == nil || rep.Models == nil || rep.Prices.AsOf == "" {
 		t.Fatalf("report %+v", rep)
 	}
-	if r2 := f.doBody(t, "GET", "/api/usage", nil, ""); r2.Header.Get("X-Request-Id") == r.Header.Get("X-Request-Id") {
+	if r2 := f.doBody(t, "GET", f.pp+"/usage", nil, ""); r2.Header.Get("X-Request-Id") == r.Header.Get("X-Request-Id") {
 		t.Fatal("request ids repeat")
 	}
 }
@@ -528,7 +540,7 @@ func TestTeamWorkflowAPI(t *testing.T) {
 		}
 	}
 	var roles []map[string]any
-	r := f.do(t, "GET", "/api/roles", nil)
+	r := f.do(t, "GET", f.pp+"/roles", nil)
 	decode(r, &roles)
 	names := map[string]string{}
 	for _, x := range roles {
@@ -540,7 +552,7 @@ func TestTeamWorkflowAPI(t *testing.T) {
 	if names["tech-lead"] != "lead" || names["docs"] != "worker" || names["assistant"] != "assistant" {
 		t.Fatalf("roles %v", names)
 	}
-	for _, p := range []string{"/api/inbox", "/api/specs", "/api/qa-runs", "/api/memory"} {
+	for _, p := range []string{f.pp + "/inbox", f.pp + "/specs", f.pp + "/qa-runs", f.pp + "/memory"} {
 		body, _ := io.ReadAll(f.do(t, "GET", p, nil).Body)
 		if strings.TrimSpace(string(body)) != "[]" {
 			t.Errorf("%s: %s", p, body)
@@ -550,63 +562,63 @@ func TestTeamWorkflowAPI(t *testing.T) {
 		method, path, body string
 		want               int
 	}{
-		{"POST", "/api/inbox/x/read", "", http.StatusBadRequest},
-		{"POST", "/api/inbox/9/read", "", http.StatusNotFound},
-		{"POST", "/api/inbox/9/reply", `{"body":"hi"}`, http.StatusNotFound},
-		{"PUT", "/api/specs/9", `{"summary":"s","design":"","sub_tasks":[]}`, http.StatusNotFound},
-		{"POST", "/api/specs/9/approve", "", http.StatusNotFound},
-		{"POST", "/api/memory", `{"kind":"rumour","title":"t","body":"b"}`, http.StatusBadRequest},
-		{"POST", "/api/memory", `{"kind":"lesson","title":"t","body":"b","extra":1}`, http.StatusBadRequest},
-		{"POST", "/api/tasks/nope/resolve-conflict", "", http.StatusNotFound},
-		{"POST", "/api/agents/nope/message", `{"body":"hi"}`, http.StatusNotFound},
+		{"POST", f.pp + "/inbox/x/read", "", http.StatusBadRequest},
+		{"POST", f.pp + "/inbox/9/read", "", http.StatusNotFound},
+		{"POST", f.pp + "/inbox/9/reply", `{"body":"hi"}`, http.StatusNotFound},
+		{"PUT", f.pp + "/specs/9", `{"summary":"s","design":"","sub_tasks":[]}`, http.StatusNotFound},
+		{"POST", f.pp + "/specs/9/approve", "", http.StatusNotFound},
+		{"POST", f.pp + "/memory", `{"kind":"rumour","title":"t","body":"b"}`, http.StatusBadRequest},
+		{"POST", f.pp + "/memory", `{"kind":"lesson","title":"t","body":"b","extra":1}`, http.StatusBadRequest},
+		{"POST", f.pp + "/tasks/nope/resolve-conflict", "", http.StatusNotFound},
+		{"POST", f.pp + "/agents/nope/message", `{"body":"hi"}`, http.StatusNotFound},
 	} {
 		if r := f.doBody(t, c.method, c.path, ct, c.body); r.StatusCode != c.want {
 			t.Errorf("%s %s: %d, want %d", c.method, c.path, r.StatusCode, c.want)
 		}
 	}
 	var m engine.MemoryEntry
-	r = f.doBody(t, "POST", "/api/memory", ct, `{"kind":"decision","title":"SQLite","body":"Only SQLite."}`)
+	r = f.doBody(t, "POST", f.pp+"/memory", ct, `{"kind":"decision","title":"SQLite","body":"Only SQLite."}`)
 	decode(r, &m)
 	if r.StatusCode != http.StatusCreated || m.Status != engine.MemoryAccepted {
 		t.Fatalf("add memory %d %+v", r.StatusCode, m)
 	}
-	r = f.doBody(t, "PATCH", "/api/memory/"+strconv.FormatInt(m.ID, 10), ct, `{"body":"Only SQLite, via modernc."}`)
+	r = f.doBody(t, "PATCH", f.pp+"/memory/"+strconv.FormatInt(m.ID, 10), ct, `{"body":"Only SQLite, via modernc."}`)
 	decode(r, &m)
 	if r.StatusCode != http.StatusOK || m.Body != "Only SQLite, via modernc." {
 		t.Fatalf("edit memory %d %+v", r.StatusCode, m)
 	}
-	r = f.doBody(t, "PATCH", "/api/memory/"+strconv.FormatInt(m.ID, 10), ct, `{"roles":["worker"],"paths":["internal/store/"]}`)
+	r = f.doBody(t, "PATCH", f.pp+"/memory/"+strconv.FormatInt(m.ID, 10), ct, `{"roles":["worker"],"paths":["internal/store/"]}`)
 	decode(r, &m)
 	if r.StatusCode != http.StatusOK || len(m.Roles) != 1 || len(m.Paths) != 1 {
 		t.Fatalf("scope memory %d %+v", r.StatusCode, m)
 	}
-	if r := f.doBody(t, "PATCH", "/api/memory/"+strconv.FormatInt(m.ID, 10), ct, `{"roles":["boss"]}`); r.StatusCode != http.StatusBadRequest {
+	if r := f.doBody(t, "PATCH", f.pp+"/memory/"+strconv.FormatInt(m.ID, 10), ct, `{"roles":["boss"]}`); r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown role in scope: %d", r.StatusCode)
 	}
-	r = f.do(t, "GET", "/api/memory/export", nil)
+	r = f.do(t, "GET", f.pp+"/memory/export", nil)
 	md, _ := io.ReadAll(r.Body)
 	if r.StatusCode != http.StatusOK || !strings.HasPrefix(r.Header.Get("Content-Type"), "text/markdown") ||
 		!strings.Contains(r.Header.Get("Content-Disposition"), "attachment") || !strings.Contains(string(md), "### SQLite") {
 		t.Fatalf("export %d %q", r.StatusCode, md)
 	}
-	if r := f.do(t, "DELETE", "/api/memory/"+strconv.FormatInt(m.ID, 10), nil); r.StatusCode != http.StatusNoContent {
+	if r := f.do(t, "DELETE", f.pp+"/memory/"+strconv.FormatInt(m.ID, 10), nil); r.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete memory %d", r.StatusCode)
 	}
 
 	// The briefing button starts the assistant (no task); the user can write to it.
 	var as engine.AgentInfo
-	r = f.do(t, "POST", "/api/assistant/briefing", nil)
+	r = f.do(t, "POST", f.pp+"/assistant/briefing", nil)
 	decode(r, &as)
 	if r.StatusCode != http.StatusOK || as.Kind != engine.KindAssistant || as.TaskID != "" {
 		t.Fatalf("briefing %d %+v", r.StatusCode, as)
 	}
-	if r := f.doBody(t, "POST", "/api/agents/"+as.ID+"/message", ct, `{"body":"hello"}`); r.StatusCode != http.StatusCreated {
+	if r := f.doBody(t, "POST", f.pp+"/agents/"+as.ID+"/message", ct, `{"body":"hello"}`); r.StatusCode != http.StatusCreated {
 		t.Fatalf("message the assistant: %d", r.StatusCode)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, f.ws+"/api/events", f.dialOpts())
+	c, _, err := websocket.Dial(ctx, f.ws+f.pp+"/events", f.dialOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +646,7 @@ func TestResumeAndSessionsAPI(t *testing.T) {
 	f := newFixture(t)
 	a := f.start(t)
 	ct := map[string]string{"Content-Type": "application/json"}
-	if r := f.doBody(t, "POST", "/api/agents/"+a.ID+"/resume", ct, `{}`); r.StatusCode != http.StatusConflict {
+	if r := f.doBody(t, "POST", f.pp+"/agents/"+a.ID+"/resume", ct, `{}`); r.StatusCode != http.StatusConflict {
 		t.Fatalf("resume a running agent: %d", r.StatusCode)
 	}
 	for i := 0; ; i++ { // output to save
@@ -651,7 +663,7 @@ func TestResumeAndSessionsAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got engine.AgentInfo
-	r := f.doBody(t, "POST", "/api/agents/"+a.ID+"/resume", ct, `{"prompt":"go on"}`)
+	r := f.doBody(t, "POST", f.pp+"/agents/"+a.ID+"/resume", ct, `{"prompt":"go on"}`)
 	decode(r, &got)
 	if r.StatusCode != http.StatusOK || got.ID != a.ID || got.ResumedFrom != a.SessionID || got.SessionID == a.SessionID {
 		t.Fatalf("resume %d %+v", r.StatusCode, got)
@@ -660,22 +672,22 @@ func TestResumeAndSessionsAPI(t *testing.T) {
 		method, path, body string
 		want               int
 	}{
-		{"POST", "/api/agents/nope/resume", `{}`, http.StatusNotFound},
-		{"POST", "/api/agents/" + a.ID + "/resume", `{"prompt":1}`, http.StatusBadRequest},
-		{"GET", "/api/agents/nope/sessions", "", http.StatusNotFound},
-		{"GET", "/api/agents/" + a.ID + "/sessions/00000000-0000-4000-8000-000000000000/terminal", "", http.StatusNotFound},
+		{"POST", f.pp + "/agents/nope/resume", `{}`, http.StatusNotFound},
+		{"POST", f.pp + "/agents/" + a.ID + "/resume", `{"prompt":1}`, http.StatusBadRequest},
+		{"GET", f.pp + "/agents/nope/sessions", "", http.StatusNotFound},
+		{"GET", f.pp + "/agents/" + a.ID + "/sessions/00000000-0000-4000-8000-000000000000/terminal", "", http.StatusNotFound},
 	} {
 		if r := f.doBody(t, c.method, c.path, ct, c.body); r.StatusCode != c.want {
 			t.Errorf("%s %s: %d, want %d", c.method, c.path, r.StatusCode, c.want)
 		}
 	}
 	var ss []engine.SessionInfo
-	r = f.do(t, "GET", "/api/agents/"+a.ID+"/sessions", nil)
+	r = f.do(t, "GET", f.pp+"/agents/"+a.ID+"/sessions", nil)
 	decode(r, &ss)
 	if r.StatusCode != http.StatusOK || len(ss) != 2 || !ss[0].Live || ss[1].ID != a.SessionID || !ss[1].Terminal {
 		t.Fatalf("sessions %d %+v", r.StatusCode, ss)
 	}
-	r = f.do(t, "GET", "/api/agents/"+a.ID+"/sessions/"+a.SessionID+"/terminal", nil)
+	r = f.do(t, "GET", f.pp+"/agents/"+a.ID+"/sessions/"+a.SessionID+"/terminal", nil)
 	body, _ := io.ReadAll(r.Body)
 	if r.StatusCode != http.StatusOK || r.Header.Get("Content-Type") != "application/octet-stream" ||
 		!strings.Contains(string(body), "fake-agent-ready") {

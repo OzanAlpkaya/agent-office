@@ -1,6 +1,6 @@
 # Phase 13 plan: Office v2
 
-- **Status:** Done on `phase-13/office-v2`, waiting for Ozan's review (not merged). Written 2026-11-09 with the recommended option for
+- **Status:** Done on `phase-13/office-v2`; approved by Ozan and merged into `main` (2026-11-09). Written 2026-11-09 with the recommended option for
   every open question and executed straight away, as Ozan asked ("write the Phase 13 plan using your
   recommended options, then execute it immediately without asking me anything"). Every decision is
   listed in the end-of-phase summary; nothing is merged until Ozan has read it.

@@ -124,6 +124,8 @@ type Project struct {
 	RepoPath  string
 	Slug      string
 	CreatedAt time.Time
+	Settings  string
+	RemovedAt sql.NullTime
 }
 
 type PullRequest struct {

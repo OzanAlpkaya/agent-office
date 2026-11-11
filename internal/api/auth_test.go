@@ -44,7 +44,7 @@ func TestEveryRouteNeedsADevice(t *testing.T) {
 			continue
 		}
 		method, p, _ := strings.Cut(rt.pattern, " ")
-		p = strings.NewReplacer("{id}", "x1", "{sid}", "s1").Replace(p)
+		p = strings.NewReplacer("{id}", "x1", "{sid}", "s1", "{project}", f.pid).Replace(p)
 		for name, hdr := range map[string]map[string]string{
 			"none":         noAuth,
 			"wrong bearer": {"Authorization": "Bearer aod_not-a-token"},
@@ -74,7 +74,7 @@ func TestEveryRouteNeedsADevice(t *testing.T) {
 	// Both WebSockets refuse the handshake.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	for _, p := range []string{"/api/events", "/api/agents/x1/terminal"} {
+	for _, p := range []string{"/api/events", f.pp + "/events", f.pp + "/agents/x1/terminal"} {
 		_, resp, err := websocket.Dial(ctx, f.ws+p, nil)
 		if err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("WebSocket %s without a device: err=%v resp=%v", p, err, resp)
@@ -145,7 +145,7 @@ func TestPairingAndSignOut(t *testing.T) {
 	}
 
 	cookie := withHeaders(noAuth, "Cookie", CookieName+"="+c.Value)
-	if r := f.do(t, "GET", "/api/agents", cookie); r.StatusCode != http.StatusOK {
+	if r := f.do(t, "GET", f.pp+"/agents", cookie); r.StatusCode != http.StatusOK {
 		t.Fatalf("API with the cookie: %d", r.StatusCode)
 	}
 	_ = json.NewDecoder(f.do(t, "GET", "/api/health", cookie).Body).Decode(&h)
@@ -167,7 +167,7 @@ func TestPairingAndSignOut(t *testing.T) {
 	if r.StatusCode != http.StatusNoContent || sessionCookie(t, r).MaxAge >= 0 {
 		t.Fatalf("logout %d %v", r.StatusCode, r.Header.Values("Set-Cookie"))
 	}
-	if r := f.do(t, "GET", "/api/agents", cookie); r.StatusCode != http.StatusUnauthorized {
+	if r := f.do(t, "GET", f.pp+"/agents", cookie); r.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("API after sign out: %d", r.StatusCode)
 	}
 	if len(f.auth.Devices()) != 1 {
@@ -201,11 +201,11 @@ func TestRevokeClosesWebSockets(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	opts := &websocket.DialOptions{HTTPHeader: http.Header{"Cookie": []string{CookieName + "=" + c.Value}}}
-	events, _, err := websocket.Dial(ctx, f.ws+"/api/events", opts)
+	events, _, err := websocket.Dial(ctx, f.ws+f.pp+"/events", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	term, _, err := websocket.Dial(ctx, f.ws+"/api/agents/"+a.ID+"/terminal", opts)
+	term, _, err := websocket.Dial(ctx, f.ws+f.pp+"/agents/"+a.ID+"/terminal", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestRemoteHostRules(t *testing.T) {
 		"loopback still works":    {map[string]string{"Host": "localhost:" + mustPort(f)}, http.StatusOK},
 		"remote name, local port": {withHeaders(viaServe, "Host", tailnetHost+":"+mustPort(f)), http.StatusForbidden},
 	} {
-		if r := f.do(t, "GET", "/api/agents", c.hdr); r.StatusCode != c.want {
+		if r := f.do(t, "GET", f.pp+"/agents", c.hdr); r.StatusCode != c.want {
 			t.Errorf("%s: %d, want %d", name, r.StatusCode, c.want)
 		}
 	}
@@ -292,7 +292,7 @@ func TestRemoteHostRules(t *testing.T) {
 		t.Fatalf("remote session %+v", sv)
 	}
 	var st statusView
-	_ = json.NewDecoder(f.do(t, "GET", "/api/status", nil).Body).Decode(&st)
+	_ = json.NewDecoder(f.do(t, "GET", f.pp+"/status", nil).Body).Decode(&st)
 	if len(st.RemoteHosts) != 1 || st.RemoteHosts[0] != tailnetHost {
 		t.Fatalf("status remote hosts %v", st.RemoteHosts)
 	}
@@ -300,7 +300,7 @@ func TestRemoteHostRules(t *testing.T) {
 
 func TestSecurityHeaders(t *testing.T) {
 	f := newFixture(t)
-	for _, p := range []string{"/", "/api/agents", "/api/health", "/missing-page"} {
+	for _, p := range []string{"/", f.pp + "/agents", "/api/health", "/missing-page"} {
 		r := f.do(t, "GET", p, nil)
 		h := r.Header
 		csp := h.Get("Content-Security-Policy")
@@ -325,7 +325,7 @@ func TestSecurityHeaders(t *testing.T) {
 			t.Errorf("%s: Cache-Control %q, want %q", p, h.Get("Cache-Control"), want)
 		}
 	}
-	if r := f.do(t, "GET", "/api/agents", noAuth); r.Header.Get("X-Frame-Options") != "DENY" {
+	if r := f.do(t, "GET", f.pp+"/agents", noAuth); r.Header.Get("X-Frame-Options") != "DENY" {
 		t.Error("a 401 lacks the security headers")
 	}
 }
@@ -371,7 +371,7 @@ func TestBehindTailscaleServe(t *testing.T) {
 		return resp
 	}
 	// A client-supplied identity is replaced by the proxy, like tailscale serve does.
-	if r := do("GET", "/api/agents", "", http.Header{"Tailscale-User-Login": {"someone@else"}}); r.StatusCode != http.StatusUnauthorized {
+	if r := do("GET", f.pp+"/agents", "", http.Header{"Tailscale-User-Login": {"someone@else"}}); r.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unpaired through the proxy: %d", r.StatusCode)
 	}
 	code, _ := f.auth.NewCode("")
@@ -390,7 +390,7 @@ func TestBehindTailscaleServe(t *testing.T) {
 		t.Fatalf("paired via %q (the proxy's login, not the client's)", sv.Device.PairedVia)
 	}
 	cookie := http.Header{"Cookie": {CookieName + "=" + c.Value}}
-	if r := do("GET", "/api/agents", "", cookie); r.StatusCode != http.StatusOK {
+	if r := do("GET", f.pp+"/agents", "", cookie); r.StatusCode != http.StatusOK {
 		t.Fatalf("API through the proxy: %d", r.StatusCode)
 	}
 	a := f.start(t)
@@ -399,14 +399,14 @@ func TestBehindTailscaleServe(t *testing.T) {
 	wsURL := "wss" + strings.TrimPrefix(proxy.URL, "https")
 	opts := &websocket.DialOptions{HTTPClient: client, Host: tailnetHost,
 		HTTPHeader: http.Header{"Cookie": cookie["Cookie"], "Origin": {"https://" + tailnetHost}}}
-	ev, _, err := websocket.Dial(ctx, wsURL+"/api/events", opts)
+	ev, _, err := websocket.Dial(ctx, wsURL+f.pp+"/events", opts)
 	if err != nil {
 		t.Fatalf("events through the proxy: %v", err)
 	}
 	if _, data, err := ev.Read(ctx); err != nil || !strings.Contains(string(data), `"snapshot"`) {
 		t.Fatalf("snapshot: %v %.80s", err, data)
 	}
-	term, _, err := websocket.Dial(ctx, wsURL+"/api/agents/"+a.ID+"/terminal", opts)
+	term, _, err := websocket.Dial(ctx, wsURL+f.pp+"/agents/"+a.ID+"/terminal", opts)
 	if err != nil {
 		t.Fatalf("terminal through the proxy: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestBehindTailscaleServe(t *testing.T) {
 	// A cross-site page cannot open the WebSocket, even with the cookie.
 	bad := *opts
 	bad.HTTPHeader = http.Header{"Cookie": cookie["Cookie"], "Origin": {"https://evil.example"}}
-	if _, resp, err := websocket.Dial(ctx, wsURL+"/api/events", &bad); err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+	if _, resp, err := websocket.Dial(ctx, wsURL+f.pp+"/events", &bad); err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin WebSocket through the proxy: %v %v", err, resp)
 	}
 }
@@ -427,12 +427,12 @@ func TestRemoteUsers(t *testing.T) {
 		o.RemoteUsers = []string{"ozan@github"}
 	})
 	for login, want := range map[string]int{"ozan@github": http.StatusOK, "OZAN@github": http.StatusOK, "guest@github": http.StatusForbidden} {
-		if r := f.do(t, "GET", "/api/agents", map[string]string{"Host": tailnetHost, "Tailscale-User-Login": login}); r.StatusCode != want {
+		if r := f.do(t, "GET", f.pp+"/agents", map[string]string{"Host": tailnetHost, "Tailscale-User-Login": login}); r.StatusCode != want {
 			t.Errorf("%s: %d, want %d", login, r.StatusCode, want)
 		}
 	}
 	// Loopback is not a tailnet request; the device token decides.
-	if r := f.do(t, "GET", "/api/agents", nil); r.StatusCode != http.StatusOK {
+	if r := f.do(t, "GET", f.pp+"/agents", nil); r.StatusCode != http.StatusOK {
 		t.Fatalf("loopback: %d", r.StatusCode)
 	}
 }
@@ -447,10 +447,10 @@ func TestSignOutOtherDevices(t *testing.T) {
 	if r.StatusCode != http.StatusOK || out["signed_out"] != 1 {
 		t.Fatalf("sign out others: %d %v", r.StatusCode, out)
 	}
-	if r := f.do(t, "GET", "/api/agents", withHeaders(noAuth, "Cookie", CookieName+"="+phone.Value)); r.StatusCode != http.StatusUnauthorized {
+	if r := f.do(t, "GET", f.pp+"/agents", withHeaders(noAuth, "Cookie", CookieName+"="+phone.Value)); r.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("phone after sign-out-others: %d", r.StatusCode)
 	}
-	if r := f.do(t, "GET", "/api/agents", nil); r.StatusCode != http.StatusOK {
+	if r := f.do(t, "GET", f.pp+"/agents", nil); r.StatusCode != http.StatusOK {
 		t.Fatalf("the caller was signed out too: %d", r.StatusCode)
 	}
 }

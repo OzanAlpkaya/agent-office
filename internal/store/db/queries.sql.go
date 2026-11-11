@@ -446,6 +446,47 @@ func (q *Queries) CreateDevice(ctx context.Context, arg CreateDeviceParams) erro
 	return err
 }
 
+const createProject = `-- name: CreateProject :one
+
+
+INSERT INTO projects (id, name, repo_path, slug, created_at, settings)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, name, repo_path, slug, created_at, settings, removed_at
+`
+
+type CreateProjectParams struct {
+	ID        string
+	Name      string
+	RepoPath  string
+	Slug      string
+	CreatedAt time.Time
+	Settings  string
+}
+
+// Queries for sqlc (run `make generate` after changing this file).
+// Projects (migration 0013, ADR 0046).
+func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error) {
+	row := q.db.QueryRowContext(ctx, createProject,
+		arg.ID,
+		arg.Name,
+		arg.RepoPath,
+		arg.Slug,
+		arg.CreatedAt,
+		arg.Settings,
+	)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.RepoPath,
+		&i.Slug,
+		&i.CreatedAt,
+		&i.Settings,
+		&i.RemovedAt,
+	)
+	return i, err
+}
+
 const createSession = `-- name: CreateSession :exec
 INSERT INTO sessions (id, agent_id, started_at, resumed_from) VALUES (?, ?, ?, ?)
 `
@@ -608,12 +649,18 @@ func (q *Queries) DeleteDevice(ctx context.Context, id string) (int64, error) {
 
 const deleteEventsBefore = `-- name: DeleteEventsBefore :execrows
 
-DELETE FROM events WHERE at < ?
+DELETE FROM events WHERE at < ? AND agent_id IN (SELECT id FROM agents WHERE project_id = ?)
 `
 
+type DeleteEventsBeforeParams struct {
+	At        time.Time
+	ProjectID string
+}
+
 // Retention (ADR 0028).
-func (q *Queries) DeleteEventsBefore(ctx context.Context, at time.Time) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteEventsBefore, at)
+// One project's events (ADR 0028, 0046): every project engine prunes its own.
+func (q *Queries) DeleteEventsBefore(ctx context.Context, arg DeleteEventsBeforeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteEventsBefore, arg.At, arg.ProjectID)
 	if err != nil {
 		return 0, err
 	}
@@ -857,6 +904,44 @@ func (q *Queries) GetMemory(ctx context.Context, id int64) (Memory, error) {
 		&i.UpdatedAt,
 		&i.Roles,
 		&i.Paths,
+	)
+	return i, err
+}
+
+const getProject = `-- name: GetProject :one
+SELECT id, name, repo_path, slug, created_at, settings, removed_at FROM projects WHERE id = ?
+`
+
+func (q *Queries) GetProject(ctx context.Context, id string) (Project, error) {
+	row := q.db.QueryRowContext(ctx, getProject, id)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.RepoPath,
+		&i.Slug,
+		&i.CreatedAt,
+		&i.Settings,
+		&i.RemovedAt,
+	)
+	return i, err
+}
+
+const getProjectByRepo = `-- name: GetProjectByRepo :one
+SELECT id, name, repo_path, slug, created_at, settings, removed_at FROM projects WHERE repo_path = ?
+`
+
+func (q *Queries) GetProjectByRepo(ctx context.Context, repoPath string) (Project, error) {
+	row := q.db.QueryRowContext(ctx, getProjectByRepo, repoPath)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.RepoPath,
+		&i.Slug,
+		&i.CreatedAt,
+		&i.Settings,
+		&i.RemovedAt,
 	)
 	return i, err
 }
@@ -2219,6 +2304,42 @@ func (q *Queries) ListProjectUsage(ctx context.Context, projectID string) ([]Usa
 	return items, nil
 }
 
+const listProjects = `-- name: ListProjects :many
+SELECT id, name, repo_path, slug, created_at, settings, removed_at FROM projects WHERE removed_at IS NULL ORDER BY created_at, id
+`
+
+// Registered projects, oldest first; removed ones are hidden.
+func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
+	rows, err := q.db.QueryContext(ctx, listProjects)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Project{}
+	for rows.Next() {
+		var i Project
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.RepoPath,
+			&i.Slug,
+			&i.CreatedAt,
+			&i.Settings,
+			&i.RemovedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPullRequests = `-- name: ListPullRequests :many
 SELECT id, project_id, task_id, agent_id, branch, base, number, url, state, head, checks, failed_checks, pending_flagged, accepted_flagged, rounds, error, created_at, updated_at, conflict_rounds FROM pull_requests WHERE project_id = ? ORDER BY id
 `
@@ -2688,12 +2809,17 @@ func (q *Queries) MarkInboxRead(ctx context.Context, arg MarkInboxReadParams) (I
 
 const markUnfinishedAgentsExited = `-- name: MarkUnfinishedAgentsExited :execrows
 UPDATE agents SET resume_state = state, state = 'exited', activity = '', exited_at = ?, exit_reason = 'daemon_restart'
-WHERE state != 'exited'
+WHERE project_id = ? AND state != 'exited'
 `
 
+type MarkUnfinishedAgentsExitedParams struct {
+	ExitedAt  sql.NullTime
+	ProjectID string
+}
+
 // A crash: the last recorded state is what a restore resumes from (ADR 0035).
-func (q *Queries) MarkUnfinishedAgentsExited(ctx context.Context, exitedAt sql.NullTime) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markUnfinishedAgentsExited, exitedAt)
+func (q *Queries) MarkUnfinishedAgentsExited(ctx context.Context, arg MarkUnfinishedAgentsExitedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markUnfinishedAgentsExited, arg.ExitedAt, arg.ProjectID)
 	if err != nil {
 		return 0, err
 	}
@@ -2737,6 +2863,23 @@ func (q *Queries) QARunByAgent(ctx context.Context, agentID sql.NullString) (QaR
 	return i, err
 }
 
+const removeProject = `-- name: RemoveProject :execrows
+UPDATE projects SET removed_at = ? WHERE id = ? AND removed_at IS NULL
+`
+
+type RemoveProjectParams struct {
+	RemovedAt sql.NullTime
+	ID        string
+}
+
+func (q *Queries) RemoveProject(ctx context.Context, arg RemoveProjectParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, removeProject, arg.RemovedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const removeTask = `-- name: RemoveTask :execrows
 DELETE FROM tasks WHERE id = ?
 `
@@ -2759,6 +2902,27 @@ WHERE id = ? AND state = 'exited'
 func (q *Queries) ReopenAgent(ctx context.Context, id string) error {
 	_, err := q.db.ExecContext(ctx, reopenAgent, id)
 	return err
+}
+
+const restoreProject = `-- name: RestoreProject :one
+UPDATE projects SET removed_at = NULL WHERE id = ?
+RETURNING id, name, repo_path, slug, created_at, settings, removed_at
+`
+
+// Brings a removed project back with its history.
+func (q *Queries) RestoreProject(ctx context.Context, id string) (Project, error) {
+	row := q.db.QueryRowContext(ctx, restoreProject, id)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.RepoPath,
+		&i.Slug,
+		&i.CreatedAt,
+		&i.Settings,
+		&i.RemovedAt,
+	)
+	return i, err
 }
 
 const reviewByAgent = `-- name: ReviewByAgent :one
@@ -3317,6 +3481,32 @@ func (q *Queries) UpdateMemory(ctx context.Context, arg UpdateMemoryParams) (Mem
 	return i, err
 }
 
+const updateProject = `-- name: UpdateProject :one
+UPDATE projects SET name = ?, settings = ? WHERE id = ? AND removed_at IS NULL
+RETURNING id, name, repo_path, slug, created_at, settings, removed_at
+`
+
+type UpdateProjectParams struct {
+	Name     string
+	Settings string
+	ID       string
+}
+
+func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (Project, error) {
+	row := q.db.QueryRowContext(ctx, updateProject, arg.Name, arg.Settings, arg.ID)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.RepoPath,
+		&i.Slug,
+		&i.CreatedAt,
+		&i.Settings,
+		&i.RemovedAt,
+	)
+	return i, err
+}
+
 const updatePullRequest = `-- name: UpdatePullRequest :one
 UPDATE pull_requests
 SET base = ?, number = ?, url = ?, state = ?, head = ?, checks = ?, failed_checks = ?, error = ?, updated_at = ?
@@ -3526,42 +3716,6 @@ func (q *Queries) UpdateTaskPlan(ctx context.Context, arg UpdateTaskPlanParams) 
 		&i.SpecKey,
 		&i.Conflicts,
 		&i.ConflictsCheckedAt,
-	)
-	return i, err
-}
-
-const upsertProject = `-- name: UpsertProject :one
-
-INSERT INTO projects (id, name, repo_path, slug, created_at)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (repo_path) DO UPDATE SET name = excluded.name
-RETURNING id, name, repo_path, slug, created_at
-`
-
-type UpsertProjectParams struct {
-	ID        string
-	Name      string
-	RepoPath  string
-	Slug      string
-	CreatedAt time.Time
-}
-
-// Queries for sqlc (run `make generate` after changing this file).
-func (q *Queries) UpsertProject(ctx context.Context, arg UpsertProjectParams) (Project, error) {
-	row := q.db.QueryRowContext(ctx, upsertProject,
-		arg.ID,
-		arg.Name,
-		arg.RepoPath,
-		arg.Slug,
-		arg.CreatedAt,
-	)
-	var i Project
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.RepoPath,
-		&i.Slug,
-		&i.CreatedAt,
 	)
 	return i, err
 }

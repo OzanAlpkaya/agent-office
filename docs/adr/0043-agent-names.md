@@ -68,3 +68,9 @@ The UI's short id is its prefix, so the two still match. Commit trailers, GitHub
 the git identity keep `agent-<id>`: they leave agent-office, and names are not unique over
 time. Tools still take ids, not names. Accepting a name in `send_message` would be possible
 (names are unique in the list), but an id cannot become ambiguous later.
+
+## Amendment (2026-11-11, Phase 14): unique per project
+
+Names are unique among the listed agents of one project (ADR 0046): each project's engine names its
+own agents, so two offices may both have an Ada. Nothing is lost, since names never leave their
+project in the UI or the team tools, and ids stay globally unique.

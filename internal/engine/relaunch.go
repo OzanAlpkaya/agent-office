@@ -60,10 +60,10 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 		err = invalid("agent %s's workspace was removed", id)
 	case (a.info.Sandbox == SandboxPodman) != (e.opts.Sandbox != nil):
 		err = invalid("agent %s ran in %s mode; this daemon runs in the other mode", id, a.info.Sandbox)
-	case e.runningLocked()+e.starting >= e.opts.MaxAgents:
-		err = ErrTooManyAgents
 	case r.resume && single(a.info.Kind) && (e.startingKind[a.info.Kind] || e.runningKindLocked(a.info.Kind) != nil):
 		err = invalid("a %s is already running; stop it first", a.info.Kind)
+	default:
+		err = e.reserveSlotLocked()
 	}
 	if err != nil {
 		e.mu.Unlock()
@@ -83,6 +83,7 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 		if oneAtATime {
 			delete(e.startingKind, a.info.Kind)
 		}
+		e.syncSlotsLocked()
 		e.mu.Unlock()
 	}()
 	if a.term != nil {

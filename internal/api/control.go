@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/OzanAlpkaya/agent-office/internal/auth"
+	"github.com/OzanAlpkaya/agent-office/internal/engine"
 )
 
 // ControlInfo is what `agent-office pair` prints next to a code.
@@ -31,11 +32,18 @@ type ControlToken struct {
 // unix socket only the user can open (0600 in a 0700 directory), so it can
 // hand out the first pairing code and tokens for scripts. Browsers cannot
 // reach it.
-func NewControl(m *auth.Manager, info ControlInfo, log *slog.Logger) http.Handler {
+//
+// It also manages projects for `agent-office project` (ADR 0046), so the CLI
+// changes them through the daemon, the database's one writer. {project} is
+// an id or a unique name. hub may be nil (no project routes).
+func NewControl(m *auth.Manager, hub *engine.Hub, info ControlInfo, log *slog.Logger) http.Handler {
 	if log == nil {
 		log = slog.Default()
 	}
 	mux := http.NewServeMux()
+	if hub != nil {
+		controlProjects(mux, hub, log)
+	}
 	mux.HandleFunc("POST /pairing-codes", func(w http.ResponseWriter, _ *http.Request) {
 		c, err := m.NewCode("")
 		if errors.Is(err, auth.ErrTooManyCodes) {
@@ -69,4 +77,43 @@ func NewControl(m *auth.Manager, info ControlInfo, log *slog.Logger) http.Handle
 		writeJSON(w, http.StatusCreated, ControlToken{Token: tok, Device: d})
 	})
 	return mux
+}
+
+// controlProjects adds the project routes of the control socket.
+func controlProjects(mux *http.ServeMux, hub *engine.Hub, log *slog.Logger) {
+	s := &server{hub: hub, log: log}
+	resolve := func(w http.ResponseWriter, r *http.Request) (string, bool) {
+		p, err := hub.Find(r.PathValue("project"))
+		if err != nil {
+			s.engineError(w, err)
+			return "", false
+		}
+		return p.ID, true
+	}
+	mux.HandleFunc("GET /projects", s.listProjects)
+	mux.HandleFunc("POST /projects", s.addProject)
+	mux.HandleFunc("PATCH /projects/{project}", func(w http.ResponseWriter, r *http.Request) {
+		if id, ok := resolve(w, r); ok {
+			r.SetPathValue("project", id)
+			s.updateProject(w, r)
+		}
+	})
+	mux.HandleFunc("DELETE /projects/{project}", func(w http.ResponseWriter, r *http.Request) {
+		if id, ok := resolve(w, r); ok {
+			r.SetPathValue("project", id)
+			s.removeProject(w, r)
+		}
+	})
+	mux.HandleFunc("POST /projects/{project}/retry", func(w http.ResponseWriter, r *http.Request) {
+		if id, ok := resolve(w, r); ok {
+			r.SetPathValue("project", id)
+			s.retryProject(w, r)
+		}
+	})
+	mux.HandleFunc("GET /projects/{project}", func(w http.ResponseWriter, r *http.Request) {
+		if id, ok := resolve(w, r); ok {
+			r.SetPathValue("project", id)
+			s.getProject(w, r)
+		}
+	})
 }
