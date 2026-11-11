@@ -14,6 +14,9 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
 
+// errBusy: a removal or another relaunch of the agent is under way.
+var errBusy = errors.New("busy")
+
 // relaunchSpec says how an exited agent starts again.
 type relaunchSpec struct {
 	prompt   string         // initial prompt; empty for none
@@ -52,7 +55,7 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 	case a.running() || a.status.State != hooks.Exited:
 		err = fmt.Errorf("agent %s: %w", id, ErrStillRunning)
 	case a.busy:
-		err = invalid("agent %s is being removed or relaunched", id)
+		err = fmt.Errorf("%w: %w: agent %s is being removed or relaunched", ErrInvalid, errBusy, id)
 	case !r.resume && a.info.Kind != KindWorker && a.info.Kind != KindArchitect:
 		err = invalid("only workers and architects are relaunched, not a %s", a.info.Role)
 	case r.resume && !resumable(a.info.Kind):
@@ -177,10 +180,11 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 	if r.resume {
 		// Messages queued for the conversation it continues are its own.
 		l.resumeFrom, l.since = from.ID, from.StartedAt.UTC()
-	} else if info.ExitedAt != nil {
-		// ADR 0051: messages queued while it was exited are for this session;
-		// older ones belonged to the previous one (ADR 0022).
-		l.since = info.ExitedAt.UTC()
+	} else if !a.since.IsZero() {
+		// ADR 0051: what the ended session did not get (queued while it ended
+		// or was exited) is for this one; older sessions' messages stay theirs
+		// (ADR 0022).
+		l.since = a.since
 	}
 	var out AgentInfo
 	if info.Sandbox == SandboxPodman {

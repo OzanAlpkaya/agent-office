@@ -88,7 +88,7 @@ func (e *Engine) leadResume(ctx context.Context, caller string, in mcp.ResumeAge
 	if task.Status == StatusReview || task.Status == StatusTodo {
 		// More work on it: its next report moves it to review again.
 		if _, err := e.setTaskStatus(ctx, task, StatusInProgress); err != nil {
-			return mcp.AgentActionOutput{}, err
+			e.log.Warn("resume_agent: move the sub-task back to in progress", "task_id", task.ID, "err", err) // the worker runs
 		}
 	}
 	e.log.Info("worker resumed by the lead", "agent_id", caller, "worker", info.ID, "task_id", task.ID)

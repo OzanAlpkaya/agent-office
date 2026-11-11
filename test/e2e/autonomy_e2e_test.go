@@ -38,7 +38,7 @@ func oomKill(t *testing.T, agentID string) {
 	t.Helper()
 	script := `for p in /proc/[0-9]*; do [ "$p" = /proc/$$ ] && continue; ` +
 		`case "$(tr '\0' ' ' < $p/cmdline 2>/dev/null)" in *claude*) echo 1000 > $p/oom_score_adj 2>/dev/null;; esac; done; ` +
-		`head -c 16g /dev/zero | tail`
+		`cat /dev/zero | tail`
 	out, err := exec.Command("podman", "exec", sandbox.ContainerName(agentID), "sh", "-c", script).CombinedOutput()
 	t.Logf("memory hog in %s: %v %s", agentID, err, strings.TrimSpace(string(out)))
 }

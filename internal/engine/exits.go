@@ -69,9 +69,10 @@ func (e *Engine) sandboxExit(res *sandboxRes, waitErr error, log *slog.Logger) e
 	if err != nil {
 		log.Warn("worker exit report", "err", err)
 	}
+	seen := res.oomKills.Load() // OOM kills of processes the agent ran, reported while it ran
 	if r != nil {
 		x.code, x.signal, x.oomKills = r.Code, r.Signal, r.OOMKills
-		x.oom = r.Signal == "KILL" && r.OOMKills > 0
+		x.oom = r.Signal == "KILL" && r.OOMKills > seen
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -80,8 +81,8 @@ func (e *Engine) sandboxExit(res *sandboxRes, waitErr error, log *slog.Logger) e
 	} else if err != nil {
 		log.Debug("inspect ended worker", "err", err)
 	}
-	if n := res.oomKills.Load(); n > x.oomKills {
-		x.oomKills = n // the running watch saw more than the report (no report at all, say)
+	if seen > x.oomKills {
+		x.oomKills = seen // the running watch saw more than the report (no report at all, say)
 	}
 	return x
 }
@@ -174,6 +175,14 @@ func (e *Engine) autosave(ctx context.Context, a *agentProc, log *slog.Logger) (
 		}
 		return strings.TrimSpace(out.String()), nil
 	}
+	// The agent may have set git config that runs a command on status or add
+	// (core.fsmonitor, a filter driver); the daemon does not run that unasked.
+	if set, err := e.git.ExecConfig(ctx, info.WorktreePath); err != nil {
+		return "", err
+	} else if len(set) > 0 {
+		return "", fmt.Errorf("not saved: the repository's git config sets %s, which would run a command; the worktree is kept",
+			strings.Join(set, ", "))
+	}
 	dirty, err := e.git.IsDirty(ctx, info.WorktreePath)
 	if err != nil || !dirty {
 		return "", err
@@ -217,20 +226,27 @@ func (e *Engine) afterExit(a *agentProc, x exitInfo, saved string, log *slog.Log
 			e.recoverySteps(ctx, info)), log)
 		return
 	}
-	n, err := e.q.AddAutoResume(ctx, info.ID)
+	n, err := e.q.GetAutoResumes(ctx, info.ID)
 	if err != nil {
-		log.Error("count automatic resume", "err", err)
+		log.Error("read automatic resumes", "err", err)
 		return
 	}
-	if n <= maxAutoResumes {
+	if n < maxAutoResumes {
 		prompt := autoResumePrompt(info.ExitDetail, saved, x.oom)
-		if _, err := e.relaunchWith(ctx, info.ID, relaunchSpec{prompt: prompt, resume: true, followup: fu}); err == nil {
+		_, err := e.relaunchWith(ctx, info.ID, relaunchSpec{prompt: prompt, resume: true, followup: fu})
+		if errors.Is(err, ErrStillRunning) || errors.Is(err, ErrShuttingDown) || errors.Is(err, errBusy) {
+			return // the lead or the user resumed it first, or it is going away: nothing to count or tell
+		}
+		if err == nil {
+			if _, cerr := e.q.AddAutoResume(ctx, info.ID); cerr != nil {
+				log.Error("count automatic resume", "err", cerr)
+			}
 			log.Info("agent resumed automatically", "exit_detail", info.ExitDetail)
 			e.tellAbove(ctx, info, fmt.Sprintf("%s died unexpectedly: %s agent-office resumed its conversation "+
 				"automatically (this happens once per agent)%s. Nothing to do unless it fails again.", who, info.ExitDetail,
 				savedNote(saved)), log)
 			return
-		} else if !errors.Is(err, ErrShuttingDown) {
+		} else {
 			log.Warn("automatic resume failed", "err", err)
 			e.tellAbove(ctx, info, fmt.Sprintf("%s died unexpectedly: %s agent-office could not resume it automatically: %s.%s",
 				who, info.ExitDetail, firstLine(err.Error()), e.recoverySteps(ctx, info)), log)

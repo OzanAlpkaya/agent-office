@@ -188,3 +188,25 @@ func TestUserDecidesByDefault(t *testing.T) {
 		t.Fatalf("the approval does not reach the next session: %v", err)
 	}
 }
+
+// TestLeadProjectScopeNeedsThePolicy: with access_decider lead, the Tech Lead
+// approves for one worker; a project-wide grant (which later QA and
+// reviewers get too) only for hosts the user listed (security review).
+func TestLeadProjectScopeNeedsThePolicy(t *testing.T) {
+	tf := newTeamWith(t, func(o *Options) { o.AccessDecider = DeciderLead })
+	e, tm, ctx := tf.e, tf.team, context.Background()
+	_, w := tf.worker(t, "Fetch modules")
+	fakeSandboxed(t, e, w.ID)
+	r, err := tm.RequestAccess(ctx, w.ID, mcp.RequestAccessInput{Kind: "domain", Value: "docs.example.net", Reason: "docs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tm.DecideAccess(ctx, tf.lead.ID, mcp.DecideAccessInput{RequestID: r.RequestID, Approve: true, Reason: "docs",
+		Scope: ScopeProject}); !isUser(err, ErrForbidden) {
+		t.Fatalf("project-wide approval outside the policy: %v", err)
+	}
+	out, err := tm.DecideAccess(ctx, tf.lead.ID, mcp.DecideAccessInput{RequestID: r.RequestID, Approve: true, Reason: "docs"})
+	if err != nil || out.Scope != ScopeAgent {
+		t.Fatalf("approval for the worker: %+v %v", out, err)
+	}
+}

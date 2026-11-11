@@ -429,8 +429,15 @@ func (e *Engine) leadDecideAccess(ctx context.Context, caller string, in mcp.Dec
 		return mcp.DecideAccessOutput{}, forbidden("%s is outside the hosts this project lets you approve; the user decides "+
 			"it in the UI (you may deny it)", r.Value)
 	}
+	scope := strings.TrimSpace(in.Scope)
+	if in.Approve && scope == ScopeProject && !e.leadHosts.Allows(r.Value) {
+		// A project-wide grant reaches every later agent, QA and reviewers too:
+		// the Tech Lead gives one only for hosts the user listed.
+		return mcp.DecideAccessOutput{}, forbidden("an approval for the whole project is for hosts in the project's lead_access_hosts "+
+			"only; approve %s with scope \"agent\" for this worker", r.Value)
+	}
 	ar, err := e.decideAccess(ctx, in.RequestID, accessDecision{approve: in.Approve, by: DecidedByLead, leadID: lead.info.ID,
-		reason: reason, scope: strings.TrimSpace(in.Scope)})
+		reason: reason, scope: scope})
 	if err != nil {
 		return mcp.DecideAccessOutput{}, err
 	}

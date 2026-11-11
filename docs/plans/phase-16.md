@@ -99,4 +99,22 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
 
 ## Changes during the phase
 
-(appended during the phase)
+- **Podman's `State.OOMKilled` does not work here.** Measured before writing code: rootless Podman
+  6.1.4 with runc and systemd cgroups reports `OOMKilled=false` for real OOM kills, and the cgroup is
+  gone ~6 ms after the kill (a host-side inotify watcher read it once, too early). Decision 1 was
+  shaped by that: `sandbox-init`'s exit report is the primary source; `podman inspect` stays as a
+  second one (workers lost `--rm` for it), and the running watch covers OOM kills of child processes.
+- **The user's messages wait too.** Decision 7 named the team's messages; the user's own
+  (`MessageAgent`, inbox replies) refused exited agents the same way, which is how "instructions to a
+  stopped worker vanished" can also happen. They follow the same rule now.
+- **Requests survive a restart.** Decision 9 kept requests open across an agent's exit; for the same
+  reason (an approval is now a stored grant for the next session) they no longer expire at daemon
+  start either. They expire when the agent is removed or cannot be resumed.
+- **Access approvals in the UI** got "Allow for the project" next to "Allow for this agent", and the
+  approve API takes an optional `{"scope", "reason"}` body; the decision row shows who decided and why.
+- **The lead's stop reason** is recorded in the exit detail ("Stopped by the Tech Lead: <reason>").
+- **No host-mode fallback identity for saved work.** Without a git identity in the repository's
+  config, a host worker's exit commits nothing (logged) and the worktree stays dirty, kept on removal
+  as before; inventing an identity was not an option.
+- **Verified the request #4 test fails without the fix**: with the launch's grant loading taken out,
+  `TestSandboxedGrantSurvivesResume` fails ("the approval did not reach the resumed session").

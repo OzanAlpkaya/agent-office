@@ -963,7 +963,11 @@ func (e *Engine) watch(a *agentProc) {
 	}
 	alog.Info("agent exited", "exit_code", code, "reason", reason, "signal", x.signal, "oom_killed", x.oom)
 	close(a.exited)
-	ictx, icancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	exitWork := 5 * time.Minute
+	if e.shuttingDown() {
+		exitWork = time.Minute // the daemon is stopping: bounded, the next start imports the rest
+	}
+	ictx, icancel := context.WithTimeout(context.Background(), exitWork)
 	// ADR 0051: a worker's uncommitted work is committed before anything else
 	// can happen to its workspace.
 	saved, err := e.autosave(ictx, a, alog)
@@ -1179,6 +1183,9 @@ func (e *Engine) removeAgent(ctx context.Context, id string, force bool) (Remove
 	}()
 	if a.term != nil {
 		<-a.exited // SessionEnd can arrive before the process is gone
+	}
+	if a.afterExit != nil {
+		<-a.afterExit // the exit's saved work and import (ADR 0051) are done before the workspace goes
 	}
 
 	var res RemoveResult

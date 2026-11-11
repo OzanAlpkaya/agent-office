@@ -27,7 +27,7 @@ const maxNudges = 3
 
 // stallState is the watchdog's view of one goal.
 type stallState struct {
-	fingerprint string    // the goal's tasks and agents when nudges was last reset
+	fingerprint string    // the goal's sub-task statuses when nudges was last reset
 	idleSince   time.Time // zero while something moves or waits on the user
 	nudges      int
 	userTold    bool
@@ -187,7 +187,7 @@ func (e *Engine) goalView(ctx context.Context, goalID string, lead *agentProc) (
 }
 
 // goalMoving reports whether anything in the goal is under way, and a
-// fingerprint of its tasks and agents.
+// fingerprint of its sub-tasks' statuses.
 func (e *Engine) goalMoving(ctx context.Context, g goalView) (bool, string) {
 	var fp []string
 	for _, c := range g.children {
@@ -200,7 +200,8 @@ func (e *Engine) goalMoving(ctx context.Context, g goalView) (bool, string) {
 	}
 	var idle []*agentProc
 	for _, a := range g.agents {
-		fp = append(fp, a.info.ID+"@"+a.info.SessionID+"="+fmt.Sprint(a.running()))
+		// Agents coming and going is not progress (a worker resumed and dead
+		// again would reset the nudges forever); only sub-task statuses are.
 		if a.busy {
 			moving = true
 		}
@@ -332,9 +333,18 @@ func (e *Engine) stallSummary(ctx context.Context, g goalView, idle time.Duratio
 		ids = append(ids, a.info.ID)
 	}
 	if msgs, err := e.q.ListUndeliveredMessagesTo(ctx, ids); err == nil && len(msgs) > 0 {
+		since := map[string]time.Time{}
+		e.mu.Lock()
+		for _, a := range g.agents {
+			since[a.info.ID] = a.since
+		}
+		e.mu.Unlock()
 		n := map[string]int{}
 		var order []string
 		for _, m := range msgs {
+			if m.CreatedAt.Before(since[m.ToAgentID]) {
+				continue // an older session's, never delivered now (ADR 0022)
+			}
 			if n[m.ToAgentID] == 0 {
 				order = append(order, m.ToAgentID)
 			}
@@ -343,10 +353,15 @@ func (e *Engine) stallSummary(ctx context.Context, g goalView, idle time.Duratio
 		var parts []string
 		e.mu.Lock()
 		for _, id := range order {
+			if n[id] == 0 {
+				continue
+			}
 			parts = append(parts, fmt.Sprintf("%d to %s (delivered when it is resumed)", n[id], e.labelLocked(id)))
 		}
 		e.mu.Unlock()
-		b.WriteString("\n\nUndelivered messages: " + strings.Join(parts, "; ") + ".")
+		if len(parts) > 0 {
+			b.WriteString("\n\nUndelivered messages: " + strings.Join(parts, "; ") + ".")
+		}
 	}
 	var access []string
 	for _, r := range e.pendingAccess(ctx, g) {

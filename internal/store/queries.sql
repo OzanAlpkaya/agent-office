@@ -84,6 +84,9 @@ WHERE id = ?;
 -- Why the agent exited, in plain words (ADR 0051).
 UPDATE agents SET exit_signal = ?, oom_killed = ?, exit_detail = ? WHERE id = ?;
 
+-- name: GetAutoResumes :one
+SELECT auto_resumes FROM agents WHERE id = ?;
+
 -- name: AddAutoResume :one
 -- Counts an automatic resume (ADR 0051); the caller checks the count it returns.
 UPDATE agents SET auto_resumes = auto_resumes + 1 WHERE id = ? RETURNING auto_resumes;

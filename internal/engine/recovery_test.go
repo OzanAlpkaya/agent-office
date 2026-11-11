@@ -72,7 +72,7 @@ func TestUnexpectedExitResumedOnce(t *testing.T) {
 		t.Fatalf("after the second failure: %+v", got)
 	}
 	var n int
-	if err := tf.f.store.DB.QueryRow(`SELECT auto_resumes FROM agents WHERE id = ?`, w.ID).Scan(&n); err != nil || n != 2 {
+	if err := tf.f.store.DB.QueryRow(`SELECT auto_resumes FROM agents WHERE id = ?`, w.ID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("auto_resumes %d %v", n, err)
 	}
 	_ = ctx
@@ -171,4 +171,57 @@ func TestMessageToStoppedWorkerWaits(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// TestHostAutosaveRefusesAgentGitConfig: git config that runs a command on
+// status or add (here core.fsmonitor) keeps the daemon from running git in the
+// worktree unasked; the work stays uncommitted and is kept (security review).
+func TestHostAutosaveRefusesAgentGitConfig(t *testing.T) {
+	tf := newTeam(t)
+	gitIn(t, tf.f.repo, "config", "user.name", "Ozan Test")
+	gitIn(t, tf.f.repo, "config", "user.email", "ozan@example.com")
+	e := tf.e
+	_, w := tf.worker(t, "Tags API")
+	marker := filepath.Join(t.TempDir(), "ran")
+	gitIn(t, w.WorktreePath, "config", "core.fsmonitor", "touch "+marker+"; false")
+	typeLine(t, e, w.ID, "dirty")
+	eventually(t, "the fake writes its file", func() bool {
+		_, err := os.Stat(filepath.Join(w.WorktreePath, "agent-output.txt"))
+		return err == nil
+	})
+	if err := e.Stop(w.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	done := e.agents[w.ID].afterExit
+	e.mu.Unlock()
+	<-done                                                     // the exit's saved work ran (and refused)
+	gitIn(t, tf.f.repo, "config", "--unset", "core.fsmonitor") // for gitIn below
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the agent's fsmonitor command ran")
+	}
+	if log := gitIn(t, tf.f.repo, "log", "-1", "--format=%s", w.Branch); strings.Contains(log, wipMessage) {
+		t.Fatal("saved despite the agent's git config")
+	}
+}
+
+// TestRelaunchGetsMessagesQueuedWhileEnding: a message sent while the worker
+// was stopped reaches a relaunch (not only a resume) (code review).
+func TestRelaunchGetsMessagesQueuedWhileEnding(t *testing.T) {
+	tf := newTeam(t)
+	e, ctx := tf.e, context.Background()
+	_, w := tf.worker(t, "Tags API")
+	if err := e.Stop(w.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tf.team.SendMessage(ctx, tf.lead.ID, mcp.SendMessageInput{To: w.ID, Body: "check the schema first"}); err != nil {
+		t.Fatal(err)
+	}
+	mark := tf.log.mark()
+	if _, err := e.relaunch(ctx, w.ID, "[agent-office] follow-up", nil); err != nil {
+		t.Fatal(err)
+	}
+	tf.log.waitFrom(t, startWait, mark, agentState(w.ID, hooks.Idle))
+	typeLine(t, e, w.ID, "turn")
+	screen(t, e, w.ID, "check the schema first")
 }

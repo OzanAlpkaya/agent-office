@@ -898,6 +898,17 @@ func (q *Queries) GetAccessRequest(ctx context.Context, id int64) (AccessRequest
 	return i, err
 }
 
+const getAutoResumes = `-- name: GetAutoResumes :one
+SELECT auto_resumes FROM agents WHERE id = ?
+`
+
+func (q *Queries) GetAutoResumes(ctx context.Context, id string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getAutoResumes, id)
+	var auto_resumes int64
+	err := row.Scan(&auto_resumes)
+	return auto_resumes, err
+}
+
 const getInbox = `-- name: GetInbox :one
 SELECT id, project_id, agent_id, task_id, goal_id, role, kind, body, created_at, read_at, answered_at, reply FROM inbox WHERE id = ?
 `

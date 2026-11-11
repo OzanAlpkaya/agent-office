@@ -450,6 +450,11 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	e.registerLocked(a, l)
 	view := a.view() // under the lock: the agent's first hook may already be changing its state
 	e.mu.Unlock()
+	// A decision committed after the first load reached only running agents:
+	// load again now that this one is registered (ADR 0053).
+	if err := e.loadGrants(ctx, id, res.grants); err != nil {
+		log.Warn("reload access grants", "err", err)
+	}
 	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "sandbox", SandboxPodman, "branch", branch,
 		"workspace", wsPath, "container", res.container, "image", s.Image, "pack", packName(s.Pack),
 		"secrets", secretNames(prep.secrets), "model", e.modelOf(l.def), "role_name", l.def.Name, "read_only", l.def.ReadOnly)

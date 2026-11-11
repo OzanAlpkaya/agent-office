@@ -250,6 +250,9 @@ func (e *Engine) SaveWork(ctx context.Context, id string) (ImportInfo, error) {
 	if a.term != nil {
 		<-a.exited
 	}
+	if a.afterExit != nil {
+		<-a.afterExit // the exit saves the work itself (ADR 0051)
+	}
 	a.importMu.Lock()
 	defer a.importMu.Unlock()
 	n, err := e.workspaceDirty(ctx, info)
