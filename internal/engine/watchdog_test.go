@@ -129,3 +129,13 @@ func TestStallWatchdogIgnoresReportedGoals(t *testing.T) {
 		t.Fatalf("nudged a reported goal: %d", n)
 	}
 }
+
+// TestStallSummaryWithoutSubTasks: a lead that has not planned yet is told to.
+func TestStallSummaryWithoutSubTasks(t *testing.T) {
+	tf := newTeamWith(t, withStall(150*time.Millisecond))
+	endFirstTurn(t, tf)
+	eventually(t, "a nudge", func() bool { return len(stallNudges(t, tf.e, tf.lead.ID)) > 0 })
+	if b := stallNudges(t, tf.e, tf.lead.ID)[0].Body; !strings.Contains(b, "no sub-tasks yet") || strings.Contains(b, "Every sub-task is reported") {
+		t.Fatalf("summary %q", b)
+	}
+}

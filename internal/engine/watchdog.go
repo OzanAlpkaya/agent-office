@@ -321,6 +321,8 @@ func (e *Engine) stallSummary(ctx context.Context, g goalView, idle time.Duratio
 	}
 	if len(open) > 0 {
 		b.WriteString("\n\nOpen sub-tasks:\n- " + strings.Join(open, "\n- "))
+	} else if len(g.children) == 0 {
+		b.WriteString("\n\nThe goal has no sub-tasks yet: create them with create_task and start workers with assign_task.")
 	} else {
 		next := "report the goal with report_done"
 		if e.opts.QA {
