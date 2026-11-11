@@ -21,6 +21,8 @@ import (
 const (
 	MaxSubTasks   = 20   // sub-tasks per goal
 	MaxSummaryLen = 2000 // report_done summary
+	// MaxCommitMessageLen bounds the Tech Lead's merge message (ADR 0055).
+	MaxCommitMessageLen = 4000
 )
 
 // TriggerReportDone: report_done imports a sandboxed worker's branch.
@@ -413,11 +415,11 @@ func (t team) ReportNoChange(ctx context.Context, caller string, in mcp.ReportNo
 }
 
 func (t team) ReportDone(ctx context.Context, caller string, in mcp.ReportDoneInput) (mcp.ReportDoneOutput, error) {
-	out, err := t.e.reportDone(ctx, caller, in.Summary)
+	out, err := t.e.reportDone(ctx, caller, in.Summary, in.CommitMessage)
 	return out, userErr(err)
 }
 
-func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.ReportDoneOutput, error) {
+func (e *Engine) reportDone(ctx context.Context, caller, summary, commitMessage string) (mcp.ReportDoneOutput, error) {
 	summary, err := normalizeText(summary, MaxSummaryLen, "summary")
 	if err != nil {
 		return mcp.ReportDoneOutput{}, err
@@ -465,7 +467,7 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 		return mcp.ReportDoneOutput{}, invalid("your task is %s, not in progress", task.Status)
 	}
 	if info.Kind == KindLead {
-		return e.reportGoal(ctx, a, task, summary)
+		return e.reportGoal(ctx, a, task, summary, commitMessage)
 	}
 
 	// The work must be committed: the task's result is its branch (ADR 0017).
@@ -570,7 +572,13 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 // reportGoal is a lead's report: the goal moves to review once no sub-task is
 // still in progress. The lead stays (Phase 12): the user reviews the result and
 // may give it follow-up work; moving the goal to done ends it.
-func (e *Engine) reportGoal(ctx context.Context, a *agentProc, goal db.Task, summary string) (mcp.ReportDoneOutput, error) {
+func (e *Engine) reportGoal(ctx context.Context, a *agentProc, goal db.Task, summary, commitMessage string) (mcp.ReportDoneOutput, error) {
+	if commitMessage != "" {
+		var err error
+		if commitMessage, err = normalizeText(commitMessage, MaxCommitMessageLen, "commit_message"); err != nil {
+			return mcp.ReportDoneOutput{}, err
+		}
+	}
 	children, err := e.q.ListChildTasks(ctx, nullString(goal.ID))
 	if err != nil {
 		return mcp.ReportDoneOutput{}, err
@@ -599,11 +607,17 @@ func (e *Engine) reportGoal(ctx context.Context, a *agentProc, goal db.Task, sum
 		return mcp.ReportDoneOutput{}, invalid("sub-tasks not done yet: %s; assign them, or ask the user (message_user, "+
 			"or the architect) to close the ones that are not needed", strings.Join(unstarted, ", "))
 	}
+	// ADR 0055: the summary and the merge message are kept for the user's
+	// review, the archive and the Merge button.
+	if _, err := e.q.InsertGoalReport(ctx, db.InsertGoalReportParams{GoalID: goal.ID, AgentID: nullString(a.info.ID),
+		Summary: summary, CommitMessage: commitMessage, CreatedAt: now()}); err != nil {
+		return mcp.ReportDoneOutput{}, err
+	}
 	if _, err := e.setTaskStatus(ctx, goal, StatusReview); err != nil {
 		return mcp.ReportDoneOutput{}, err
 	}
 	e.log.Info("goal reported", "agent_id", a.info.ID, "task_id", goal.ID, "sub_tasks", len(children), "summary_chars",
-		utf8.RuneCountInString(summary))
+		utf8.RuneCountInString(summary), "commit_message_chars", utf8.RuneCountInString(commitMessage))
 	return mcp.ReportDoneOutput{TaskID: goal.ID, Status: StatusReview,
 		Next: "Done. End your turn now and stay: the user reviews the goal and may give you follow-up work. " +
 			"Your session ends when the user marks the goal done."}, nil
