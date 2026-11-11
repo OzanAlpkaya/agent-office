@@ -772,8 +772,21 @@ user at their desk; a done goal is merged, closed and cleaned up from the same d
    archive. A one-time clean-up of old merged `agent-office/*` branches of a project.
 
 **Definition of Done**
-- [ ] Before and after screenshots of the main screens (board, card modal, settings, office, archive,
-      phone width) in `docs/screenshots/phase-18/`.
-- [ ] Each item has tests.
-- [ ] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass.
+- [x] Before and after screenshots of the main screens (board, card modal, settings, office, archive,
+      phone width) in `docs/screenshots/phase-18/` (`before/`, `after/`; the Playwright tour `screens.spec.ts`).
+- [x] Each item has tests:
+      1. UI overhaul: Playwright `polish.spec.ts` (Settings tabs, drawers that move nothing, badges on every
+         view, the phone layout without sideways scrolling) and every earlier spec on the new navigation;
+      2. compact cards and the modal: Vitest `cards.test.ts`, Playwright `polish.spec.ts`, `daily.spec.ts`,
+         `team.spec.ts`;
+      3. office layouts: Go `TestParseValid`, `TestParseInvalid`, `TestPresetsAreValid`, `TestDeskCapacity`,
+         `TestHubOfficeLayout`, `TestOfficeLayoutsAPI`; Vitest `custom.test.ts` (every preset walkable from every
+         desk, the queue at the door, deskless agents); Playwright (presets, check, save, fallback warning,
+         deskless agents);
+      4. the user at their desk: `TestPresence`, Playwright (visible, hidden, another device);
+      5. Merge then Done: Playwright `daily.spec.ts`;
+      6. branch clean-up: `TestGoalBranchCleanup`, `TestProjectBranchCleanup`, `TestAgentBranchesAndDeleteBranchAt`,
+         `TestBranchCleanupAPI`, Vitest `branches.test.ts`, Playwright (a goal's and the project's).
+- [x] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass: 328 Vitest tests, 101 Playwright tests; every e2e but the
+      GitHub one (not run, as in Phase 17).
 

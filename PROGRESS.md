@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** none in progress. Phase 17 (Daily use) is merged into `main`.
+**Current phase:** Phase 18 (UI and office polish) is done on `phase-18/ui-polish`, waiting for Ozan's review.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -27,6 +27,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 15: Codex adapter
 - [x] Phase 16: Autonomous team
 - [x] Phase 17: Daily use
+- [x] Phase 18: UI and office polish (waiting for review)
 
 ## Log
 
@@ -380,3 +381,19 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - 2026-11-12: Phase 17 review: all decisions approved. Ozan tested it by hand on the real daemon (a goal on
   the playground, Merge and Push from the goal card, closing the goal, the archive view, removing exited
   agents). Merged into `main` (`--no-ff`).
+- 2026-11-12: Phase 18 "UI and office polish" added to `docs/plan.md` by Ozan and done on `phase-18/ui-polish`
+  with the recommended options (`docs/plans/phase-18.md`). One design system (`theme.css`,
+  `docs/design-system.md`); a top bar with Approvals and Inbox, a left rail with the views and compact agent
+  rows, a bottom tab bar on a phone; an agent's actions in a header above its terminal; Settings as a page
+  with tabs and Inbox as a drawer, so nothing pushes the board down (ADR 0056). Board cards show a title, a
+  status chip, the agent on it and the cost, and open a modal with everything else; a successful Merge
+  offers to mark the goal done. Office layouts per project in YAML (`office_layout`), parsed and validated by
+  `internal/office` with four presets, a live preview in the settings, hot desks for agents beyond the desks,
+  and the default office with a warning for a stored layout that no longer validates (ADR 0057). The user's
+  character sits at their desk while a device has the UI open and visible (ADR 0058). Branch clean-up of a
+  done goal and of a project: merged, squashed or unmerged against the merge target, compare-and-swap
+  deletes, unmerged only when named again, every head recorded (migration 0017, ADR 0059). Before and after
+  screenshots in `docs/screenshots/phase-18/`. No new dependencies. A security review led to 3 fixes and a
+  code review to 3 more. `make check` (328 Vitest tests), `make ui-test` (101), `make sandbox-test` and
+  `make e2e` (host, sandbox, team, workflow, multi-project, Codex team, autonomy) pass; the GitHub e2e was not run.
+
