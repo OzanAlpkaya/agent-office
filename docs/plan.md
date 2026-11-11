@@ -718,5 +718,27 @@ closing it, merging it) take one click, and what looks like a problem is one.
    are refused on a dirty tree, a conflict or a target that moved, with a clear reason.
 
 **Definition of Done**
-- [ ] Each item has tests. Item 7 is covered end to end on a throwaway repo with a local bare remote.
-- [ ] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass.
+- [x] Each item has tests:
+      1. goal view and archive: Vitest `goals.test.ts`, Playwright `daily.spec.ts`, `TestGoalRoutes`;
+      2. closing: `TestReportDone` (sub-tasks done, a working worker ended), `TestRemoveGoalAgents`, Playwright;
+      3. mid-turn resume (fixed, measured with Claude Code 2.1.322): `TestResumeContinuesInterruptedSession`,
+         which fails without the fix (ADR 0035 amended);
+      4. revoking grants: `TestRevokeAccessGrant`, `TestAccessGrantsAPI`, Playwright;
+      5. background requests (prevented with `CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL`, known ones
+         shown quietly): `TestEgressRefusals`, `TestAPIProxyRejectsOtherEndpoints`, the worker env test, Vitest,
+         Playwright (ADR 0016 amended);
+      6. pids per pack and project: `TestLoadValid`/`TestLoadInvalid`, `TestProjectSettingsParseAndValidate`,
+         `TestHubWorkerLimitsPerProject`, `TestSandboxedPidsLimitIsReported` (real Podman);
+      7. Merge and Push: git (`TestSquashMergeIntoCheckedOutBranch`, `TestSquashMergeRefusals`,
+         `TestPushBranchToBareRemote`), engine (`TestMergeGoalIntoCheckedOutMain`: every refusal, the merge, a
+         rejected and a successful push to a local bare remote; `TestMergeGoalIntoBranchNotCheckedOut`), API,
+         Playwright, and end to end in `TestTeamWorkflowEndToEnd`: real haiku agents, the Tech Lead's own commit
+         message, Merge into the throwaway clone's checked-out `main`, Push to a local bare remote, cleanup.
+- [x] `make check` (298 Vitest tests), `make ui-test` (89), `make sandbox-test` and `make e2e` (host, sandbox,
+      team, workflow with merge and push, multi-project, Codex team, autonomy) pass; the GitHub e2e was not run.
+
+**Backlog** (from Phase 17)
+- In host mode an agent can write the main repository's git config and hooks, which the user's Merge or Push
+  then runs (recorded in ADR 0055; host agents already run as the user).
+- A done goal whose closed sub-task's branch moved after QA cannot be merged without a new QA run.
+- Show how many commits a Push sends when the remote is behind by more than the merge.

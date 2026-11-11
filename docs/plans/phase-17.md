@@ -1,6 +1,6 @@
 # Phase 17 plan: Daily use
 
-- **Status:** In progress on `phase-17/daily-use`. Written 2026-11-11 with the recommended option for
+- **Status:** Done on `phase-17/daily-use`, waiting for Ozan's review (not merged). Written 2026-11-11 with the recommended option for
   every choice, as Ozan asked ("run it like the earlier phases ... with the recommended options, no
   check-ins, one summary at the end").
 - **Roadmap:** [docs/plan.md](../plan.md), Phase 17. Progress: [PROGRESS.md](../../PROGRESS.md).
@@ -93,4 +93,51 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
 
 ## Changes during the phase
 
-(appended during the phase)
+- **Mid-turn resume is fixed, not documented away.** Measured first (Claude Code 2.1.322, haiku, print
+  mode, a scratch repository): a fork killed during a tool call, and one killed right after its prompt
+  was recorded and before any answer, both have a transcript and `--resume` continues them (they knew
+  the codewords given in the fork and what they were doing). So decision 6 took its first branch:
+  `sessions.prompted` (set on the main agent's first `UserPromptSubmit`); ADR 0035 amended.
+  `TestResumeContinuesInterruptedSession` fails without the change.
+- **Background traffic is prevented, not only classified.** Measured with a scratch daemon and the
+  egress proxy logging refused CONNECTs' headers: a sandboxed 2.1.322 worker sent
+  `downloads.claude.ai` and a `git` clone of its plugin marketplace from `github.com` at every start,
+  despite `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. The binary has
+  `CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL`; with it, two runs (one with a subagent)
+  refused nothing, and a control run without it brought both back. Workers now get it. No
+  `count_tokens` call was seen; it stays on the known list from Ozan's report. The known list is exact
+  (`downloads.claude.ai:443`, `POST /v1/messages/count_tokens`); `github.com` is not on it, since an
+  agent's own `git` or `curl` must stay a warning (they send the same `User-Agent`). ADR 0016 amended.
+- **Pids:** the watch reads the worker cgroup's `pids.events` (`max`), which works here because
+  systemd delegates the pids controller to the user (`cgroup.subtree_control` lists it);
+  `TestSandboxedPidsLimitIsReported` with real Podman.
+- **Closing a goal asks only about busy agents.** Decision 4 asked "when agents still run"; the
+  Playwright test showed that a reported goal's Tech Lead is always running (idle), so every Done would
+  have asked. The confirmation counts agents that are working, starting or waiting on a permission.
+- **Remove exited agents, Merge and Push are in the archive's record too.** Done goals leave the board
+  (decision 1), so the button decision 5 put "on a done goal's card" could never show; it lives in the
+  record view, which also offers Merge and Push (a goal marked done before it was merged or pushed).
+- **The grants list** sits in the sandbox panel (the "pack" badge), next to the network allowlist.
+- **Found by the Playwright tests:** the goal card counted only its own task's agents (the board
+  passes each card its task's agents), so a goal's workers were missed; fixed before the commit.
+- **Independent reviews.** A security review led to 4 changes: `merge_target` is accepted from this
+  machine only (it chooses what Merge and Push write, like `github_remote`); the confirmation lists the
+  changed paths and flags CI, hook and agent-config files (`.github/`, `.husky/`, `.claude/`,
+  `CLAUDE.md`, ...); Push sends exactly the confirmed merge commit (`<sha>:refs/heads/<target>`), not
+  later local commits; credentials in an http(s) remote URL are not shown. Recorded, not changed: in
+  host mode an agent can write the main repository's git config and hooks, which the user's Merge or
+  Push then runs (host agents already run as the user; refusing `core.hooksPath` would block
+  repositories that use it); `worker_pids`, like `worker_memory`, may be changed from a remote device
+  (a resource limit, not access). A code review led to 5 fixes: `endGoal` read the database under the
+  engine lock and skipped an agent silently on an error; a failed merge record could strand a merge
+  (retried, logged with the commits); the push held the merge lock over the network; a failed grant
+  reload at launch kept the earlier grants (now none); the archive record did not reload after a merge.
+  Recorded: a checkout of the target in the instant between the worktree check and the
+  compare-and-swap is not detected; a done goal whose closed sub-task's branch moved after QA cannot be
+  merged without a new QA run.
+- **Found by the gate runs:** the first full `make e2e` failed once in `TestAutonomousTeamEndToEnd` (Phase 16):
+  its second induced OOM kill, 2 s after the automatic resume, was recorded as a plain SIGKILL. No warning in
+  the log, so sandbox-init's exit report was missing or had no OOM kill; the cause is not known (one
+  hypothesis: the kernel killed sandbox-init in the fresh container). It passed alone right after and in the
+  second full run; this phase did not touch that path. `TestSandboxedTeamWorker` read the lead's messages
+  between the status change and the message once; the test now waits for the message.
