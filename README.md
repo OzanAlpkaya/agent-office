@@ -38,6 +38,11 @@ at once.</sub>
 - **Cost and history.** Token usage and estimated cost per goal, task, agent, session and model.
   Every session's terminal output is kept. Agents resume their conversations after a restart, and
   project memory reaches the agents it applies to ([docs/usage.md](docs/usage.md)).
+- **Claude Code and Codex in one team.** Each role runs on the agent CLI you choose: a Claude Tech
+  Lead with Codex workers, or a Codex reviewer of Claude workers' pull requests. Codex agents are
+  sandboxed like the others, with a placeholder ChatGPT login: your real token is added outside the
+  container and never enters it ([ADR 0049](docs/adr/0049-codex-agents-and-their-credential.md)).
+  Usage is shown per vendor.
 - **Several projects at once.** One daemon runs several repositories, each with its own stack
   pack, models, GitHub settings, budgets, board, inbox, memory and office floor. One agent cap
   holds across all of them, the Approvals badge counts every project, and an agent of one project
@@ -185,7 +190,7 @@ The record of how it was built is in the repository:
 - [docs/plan.md](docs/plan.md): the roadmap, with a Definition of Done per phase.
 - [docs/plans/](docs/plans/): the approved plan of each phase, the answers to its open questions,
   and what changed while it ran.
-- [docs/adr/](docs/adr/README.md): 48 decisions, each with its alternatives.
+- [docs/adr/](docs/adr/README.md): 50 decisions, each with its alternatives.
 - [docs/architecture.md](docs/architecture.md): components, flows and the threat model, row by row
   with the tests that cover each mitigation.
 - [PROGRESS.md](PROGRESS.md): the log of every phase and review.
@@ -202,9 +207,9 @@ Opt-in suites run real rootless Podman (`make sandbox-test`), Playwright against
 - [docs/demo.md](docs/demo.md): recording the demo, and a script for showing it live.
 - [docs/usage.md](docs/usage.md) cost and logs · [docs/roles.md](docs/roles.md) roles ·
   [docs/packs.md](docs/packs.md) stack packs · [docs/remote.md](docs/remote.md) phone access.
-- **Limits:** Linux only. Claude Code is the only agent CLI so far (the adapter layer is built for
-  more; Codex is researched in [docs/research/codex-cli.md](docs/research/codex-cli.md)).
-  Single user, one goal at a time, pre-1.0.
+- **Limits:** Linux only. Codex agents run sandboxed only, with a ChatGPT-plan login
+  ([docs/research/codex-cli.md](docs/research/codex-cli.md)). Single user, one goal at a time per
+  project, pre-1.0.
 - **Stack:** Go (`net/http`, `coder/websocket`, `creack/pty`, MCP Go SDK, SQLite via modernc + sqlc,
   go-github, `log/slog`); React, Vite, TypeScript, xterm.js and PixiJS for the UI.
 

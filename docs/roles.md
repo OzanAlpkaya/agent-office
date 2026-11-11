@@ -53,7 +53,8 @@ schema: 1                     # required; the format version
 name: devops                  # required; equals the directory name; [a-z][a-z0-9-]{0,31}
 description: Owns CI and the release scripts.   # required; one line, <= 300 characters
 behaviour: worker             # required; one of the behaviours above
-model: sonnet                 # optional; an alias or a model id; empty = --model
+model: sonnet                 # optional; an alias or a model id; empty = --model (or --codex-model)
+cli: claude                   # optional; claude | codex: the agent CLI (ADR 0050); default claude
 reports_to: lead              # optional; must be allowed for the behaviour; default: the first one
 workspace: read-write         # optional; read-only | read-write; default: the behaviour's
 tools:
@@ -88,6 +89,23 @@ agent-office serve --repo . --role-model architect=opus,tech-lead=sonnet,worker=
 The built-in roles have no model of their own, so they follow `--model` until you say otherwise.
 With a budget (ADR 0027), a full model id without a price stops the daemon at startup, as for
 `--model`.
+
+## Agent CLI per role
+
+A role runs on Claude Code unless its `cli` says `codex`. Per run, `--role-cli`
+(`AGENT_OFFICE_ROLE_CLIS`) and a project's `role_clis` override it, as for models:
+
+```sh
+agent-office serve --repo . --role-cli worker=codex,reviewer=codex --codex-model gpt-6.1-sol
+agent-office project set webapp --role-cli worker=codex
+```
+
+Codex agents run sandboxed only (`--sandbox podman`): the container gets a placeholder ChatGPT login
+and the daemon adds your real access token outside it (ADR 0049). They need the Codex CLI installed
+(`--codex-bin`) and you signed in with `codex login` (ChatGPT; `--codex-auth` names the login file).
+A Codex role's model is its `model`, else `--codex-model`, else Codex's default; `--model` is for
+Claude Code. A role with `tools.deny` (Claude Code permission rules) cannot run on Codex; a read-only
+Codex role relies on the read-only workspace mount. Usage shows each vendor's share (ADR 0050).
 
 ## Starting agents by role
 

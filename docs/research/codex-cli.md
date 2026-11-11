@@ -11,6 +11,9 @@ network-less worker. Where the Phase 0 notes below differ, the spike wins:
 - Usage: `PostModelRequest.token_usage`, and the same numbers in the Responses stream's
   `response.completed` event.
 - The session id is Codex's (UUIDv7); `codex resume <id> [prompt]` continues under the same id.
+- SessionStart arrives only with the first prompt, fresh or resumed (found in the Phase 15 e2e run);
+  without a prompt Codex sends no hook until SessionEnd.
+- ChatGPT's backend sends the Responses stream without a Content-Type.
 - A custom model provider with `requires_openai_auth = true` plus `chatgpt_base_url` send the
   ChatGPT bearer to agent-office's proxy, which adds the real token: the container holds placeholder
   tokens only (and the account id). The TUI needs HTTPS for the ChatGPT base URL (custom CA via
