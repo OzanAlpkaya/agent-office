@@ -113,6 +113,25 @@ type UsageReport struct {
 	Totals   UsageTotals    `json:"totals"`
 	Sessions []SessionUsage `json:"sessions"`
 	Models   []ModelUsage   `json:"models"`
+	Vendors  []VendorUsage  `json:"vendors"` // by the agents' CLI: anthropic (Claude Code), openai (Codex)
+}
+
+// VendorUsage is the usage of one vendor's models (ADR 0050).
+type VendorUsage struct {
+	Vendor         string       `json:"vendor"`
+	Sessions       int          `json:"sessions"`
+	Messages       int          `json:"messages"`
+	Tokens         usage.Tokens `json:"tokens"`
+	CostMicroUSD   int64        `json:"cost_micro_usd"`
+	UnpricedTokens int64        `json:"unpriced_tokens"`
+}
+
+func vendorsSet(m map[string]*VendorUsage) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
 }
 
 // sessionUsage is a running session's usage, kept in memory for live
@@ -616,7 +635,7 @@ func messageFromUsageRow(r db.UsageMessage) usage.Message {
 func (e *Engine) Usage(ctx context.Context) (UsageReport, error) {
 	p := e.prices()
 	rep := UsageReport{Prices: PriceInfo{AsOf: p.AsOf, Source: p.Source, File: p.File}, Budgets: e.opts.Budgets,
-		Sessions: []SessionUsage{}, Models: []ModelUsage{}}
+		Sessions: []SessionUsage{}, Models: []ModelUsage{}, Vendors: []VendorUsage{}}
 	sessions, err := e.q.ListProjectSessions(ctx, e.project.ID)
 	if err != nil {
 		return rep, fmt.Errorf("engine: list sessions: %w", err)
@@ -637,8 +656,8 @@ func (e *Engine) Usage(ctx context.Context) (UsageReport, error) {
 	models := map[string]bool{}
 	for _, s := range sessions {
 		v := SessionUsage{SessionID: s.ID, AgentID: s.AgentID, TaskID: s.TaskID.String, GoalID: goals[s.TaskID.String],
-			Kind: s.Kind, Role: s.Role, Sandbox: s.Sandbox, Source: SourceTranscript, StartedAt: s.StartedAt.UTC(), Turns: s.Turns,
-			ToolCalls: s.ToolCalls, Models: []string{}}
+			Kind: s.Kind, Role: s.Role, Sandbox: s.Sandbox, CLI: cliOr(s.Cli), Source: SourceTranscript, StartedAt: s.StartedAt.UTC(),
+			Turns: s.Turns, ToolCalls: s.ToolCalls, Models: []string{}}
 		if s.Sandbox == SandboxPodman {
 			v.Source = SourceAPI
 		}
@@ -698,6 +717,24 @@ func (e *Engine) Usage(ctx context.Context) (UsageReport, error) {
 	}
 	rep.Totals.Sessions = len(rep.Sessions)
 	rep.Totals.CostMicroUSD = usage.MicroUSD(totalNano)
+	// Per vendor (ADR 0050): each session's CLI decides whose models it used.
+	vendors := map[string]*VendorUsage{}
+	for _, su := range rep.Sessions {
+		v := Vendor(su.CLI)
+		vu := vendors[v]
+		if vu == nil {
+			vu = &VendorUsage{Vendor: v}
+			vendors[v] = vu
+		}
+		vu.Sessions++
+		vu.Messages += su.Messages
+		vu.Tokens = vu.Tokens.Add(su.Tokens)
+		vu.CostMicroUSD = satAdd(vu.CostMicroUSD, su.CostMicroUSD)
+		vu.UnpricedTokens = satAdd(vu.UnpricedTokens, su.UnpricedTokens)
+	}
+	for _, name := range sortedKeys(vendorsSet(vendors)) {
+		rep.Vendors = append(rep.Vendors, *vendors[name])
+	}
 	for _, name := range sortedKeys(models) {
 		mu := byModel[name]
 		mu.CostMicroUSD = usage.MicroUSD(mu.nano)

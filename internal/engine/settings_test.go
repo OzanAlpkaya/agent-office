@@ -78,3 +78,23 @@ func (s ProjectSettings) ReviewerOrEmpty() string {
 	}
 	return *s.Reviewer
 }
+
+func TestProjectSettingsCLIs(t *testing.T) {
+	if _, err := ParseProjectSettings([]byte(`{"role_clis": {"worker": "codex"}, "codex_model": "gpt-6.1-sol"}`)); err != nil {
+		t.Fatal(err)
+	}
+	for in, want := range map[string]string{
+		`{"role_clis": {"worker": "gemini"}}`: `role_clis: "gemini" is not an agent CLI`,
+		`{"codex_model": "has space"}`:        "codex_model",
+	} {
+		if _, err := ParseProjectSettings([]byte(in)); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", in, err)
+		}
+	}
+	d := NeutralDefaults()
+	d.RoleCLIs = map[string]string{"reviewer": "codex"}
+	eff := d.Merge(ProjectSettings{RoleCLIs: map[string]string{"worker": "codex"}, CodexModel: Ptr("gpt-6.1-sol")})
+	if eff.RoleCLIs["reviewer"] != "codex" || eff.RoleCLIs["worker"] != "codex" || *eff.CodexModel != "gpt-6.1-sol" {
+		t.Fatalf("merged %+v", eff)
+	}
+}

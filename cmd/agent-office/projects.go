@@ -245,6 +245,7 @@ type settingsFlags struct {
 	github                                                   *bool
 	budgetSession, budgetGoal                                *float64
 	inherit                                                  *string
+	roleCLIs, codexModel                                     *string
 }
 
 func addSettingsFlags(fs *flag.FlagSet, set bool) *settingsFlags {
@@ -254,6 +255,8 @@ func addSettingsFlags(fs *flag.FlagSet, set bool) *settingsFlags {
 	f.egress = fs.String("egress-allow", "", "extra host names its sandboxed agents may reach, comma-separated")
 	f.model = fs.String("model", "", "default model for its agents, e.g. haiku")
 	f.roleModels = fs.String("role-model", "", "models per role, e.g. architect=opus,worker=sonnet")
+	f.roleCLIs = fs.String("role-cli", "", "agent CLI per role, e.g. worker=codex (Codex agents run sandboxed)")
+	f.codexModel = fs.String("codex-model", "", "default model of its Codex agents, e.g. gpt-6.1-sol")
 	f.maxAgents = fs.Int("max-agents", 0, "its agents at the same time (at most the daemon's --max-agents)")
 	f.github = fs.Bool("github", false, "push finished work and open pull requests (sandboxed agents only)")
 	f.remote = fs.String("github-remote", "", "remote to push to")
@@ -263,7 +266,7 @@ func addSettingsFlags(fs *flag.FlagSet, set bool) *settingsFlags {
 	f.budgetGoal = fs.Float64("budget-goal-usd", 0, "refuse API requests once a goal's estimated cost reaches this; 0 = off")
 	if set {
 		f.inherit = fs.String("inherit", "", "settings to take from the daemon again, comma-separated, e.g. pack,model "+
-			"(names as in the API: pack, secrets_dir, egress_allow, model, role_models, max_agents, github, github_remote, "+
+			"(names as in the API: pack, secrets_dir, egress_allow, model, role_models, role_clis, codex_model, max_agents, github, github_remote, "+
 			"reviewer, review_rounds, budget_session_micro_usd, budget_goal_micro_usd)")
 	}
 	return f
@@ -298,6 +301,10 @@ func (f *settingsFlags) settings(cur engine.ProjectSettings) (engine.ProjectSett
 			s.RoleModels, err = role.ParseModels(*f.roleModels)
 		case "max-agents":
 			s.MaxAgents = engine.Ptr(*f.maxAgents)
+		case "role-cli":
+			s.RoleCLIs, err = role.ParseCLIs(*f.roleCLIs)
+		case "codex-model":
+			s.CodexModel = engine.Ptr(*f.codexModel)
 		case "github":
 			s.GitHub = engine.Ptr(*f.github)
 		case "github-remote":
@@ -321,7 +328,8 @@ func (f *settingsFlags) settings(cur engine.ProjectSettings) (engine.ProjectSett
 		for _, n := range strings.Split(*f.inherit, ",") {
 			n = strings.TrimSpace(n)
 			flagName := strings.TrimSuffix(strings.TrimSuffix(n, "_micro_usd"), "_usd")
-			if given[flagName] || given[flagName+"_usd"] || (n == "role_models" && given["role_model"]) {
+			if given[flagName] || given[flagName+"_usd"] || (n == "role_models" && given["role_model"]) ||
+				(n == "role_clis" && given["role_cli"]) {
 				return s, fmt.Errorf("--inherit %s and a flag that sets it: give one of them", n)
 			}
 			switch n {
@@ -336,6 +344,10 @@ func (f *settingsFlags) settings(cur engine.ProjectSettings) (engine.ProjectSett
 				s.Model = nil
 			case "role_models":
 				s.RoleModels = nil
+			case "role_clis":
+				s.RoleCLIs = nil
+			case "codex_model":
+				s.CodexModel = nil
 			case "max_agents":
 				s.MaxAgents = nil
 			case "github":
