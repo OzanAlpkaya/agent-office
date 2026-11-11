@@ -226,7 +226,12 @@ func Parse(src string) (Layout, error) {
 				desks = *fr.Desks
 			}
 		}
-		if r.X < 0 || r.Y < 0 || r.X+r.W > MaxColumns || r.Y+r.H > MaxRows {
+		// Each value on its own first, so the sums below cannot overflow (security review).
+		if r.X < 0 || r.Y < 0 || r.W < 1 || r.H < 1 || r.X > MaxColumns || r.Y > MaxRows || r.W > MaxColumns || r.H > MaxRows {
+			add("%s: x, y, w and h must be whole tiles inside a grid of %d × %d (x and y from 0)", at, MaxColumns, MaxRows)
+			continue
+		}
+		if r.X+r.W > MaxColumns || r.Y+r.H > MaxRows {
 			add("%s: it must lie inside a grid of %d × %d tiles (x and y from 0)", at, MaxColumns, MaxRows)
 		}
 		if r.W < info.MinW || r.H < info.MinH {

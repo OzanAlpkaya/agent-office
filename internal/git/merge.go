@@ -143,14 +143,16 @@ type Branch struct {
 
 // AgentBranches lists the local branches under BranchPrefix (Phase 18).
 func (g Git) AgentBranches(ctx context.Context, repo string) ([]Branch, error) {
-	out, err := g.run(ctx, repo, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/"+BranchPrefix)
+	// The full ref, trimmed here: the short form is ambiguous when a tag has the same name.
+	out, err := g.run(ctx, repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"+BranchPrefix)
 	if err != nil {
 		return nil, err
 	}
 	var list []Branch
 	for _, line := range strings.Split(out, "\n") {
-		name, head, ok := strings.Cut(strings.TrimSpace(line), " ")
-		if ok && strings.HasPrefix(name, BranchPrefix) && shaRe.MatchString(head) {
+		ref, head, ok := strings.Cut(strings.TrimSpace(line), " ")
+		name := strings.TrimPrefix(ref, "refs/heads/")
+		if ok && name != ref && strings.HasPrefix(name, BranchPrefix) && shaRe.MatchString(head) {
 			list = append(list, Branch{Name: name, Head: head})
 		}
 	}

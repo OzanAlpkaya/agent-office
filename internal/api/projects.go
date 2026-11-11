@@ -176,12 +176,20 @@ func (s *server) hubEventsWS(w http.ResponseWriter, r *http.Request) {
 	defer unsubscribe()
 	dev, _ := s.device(r)
 	pageID := randomID()
-	defer s.hub.DropPage(pageID)
 	// Not the request's context, as in terminalWS: a revoked device gets StatusSignedOut.
 	ctx, stop := context.WithCancel(context.WithoutCancel(r.Context()))
-	defer stop()
+	readDone := make(chan struct{})
+	defer func() {
+		// The reader ends before the page is dropped, so a message handled
+		// at the moment of disconnect cannot bring it back (security review).
+		stop()
+		c.CloseNow()
+		<-readDone
+		s.hub.DropPage(pageID)
+	}()
 	c.SetReadLimit(maxPresenceMessage)
 	go func() {
+		defer close(readDone)
 		defer stop() // the page closed the stream or sent something else
 		for {
 			_, b, err := c.Read(ctx)

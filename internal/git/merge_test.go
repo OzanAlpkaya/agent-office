@@ -181,6 +181,7 @@ func TestAgentBranchesAndDeleteBranchAt(t *testing.T) {
 	g := Git{}
 	gitT(t, repo, "branch", "agent-office/other", main)
 	gitT(t, repo, "branch", "release", main)
+	gitT(t, repo, "tag", "agent-office/other", main) // a tag of the same name does not hide the branch
 	list, err := g.AgentBranches(ctx, repo)
 	if err != nil {
 		t.Fatal(err)
