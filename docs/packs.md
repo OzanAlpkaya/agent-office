@@ -56,6 +56,10 @@ env:                              # secrets, by name only; values live in files 
 skills:                           # directories under skills/, each with a SKILL.md
   - myapp-conventions
 
+resources:                        # optional
+  memory: 4g                      # each worker's memory limit, 256m to 256g (default: --sandbox-memory, 2g);
+                                  # a project's worker_memory setting wins over it (ADR 0051)
+
 mcp_servers:
   docs:                           # an HTTP server, reached through the egress proxy
     url: https://docs.example.com/mcp
@@ -99,7 +103,17 @@ temporary filesystem (`/tmp/home`), so caches belong under `$HOME`.
 
 With a pack, the allowlist is the pack's `egress.allow` (the default registries are not added),
 plus `AGENT_OFFICE_EGRESS_ALLOW`. Names are lower case, without scheme, port, IP address or `*`.
-Access requests (ADR 0019) still grant extra hosts to one running agent, after your approval.
+Access requests (ADR 0019, 0053) grant extra hosts after a decision: yours, or the Tech Lead's when the
+project's `access_decider` lets it. An approval covers the asking agent (in its later sessions too) or
+the whole project, and is stored, so it holds after a resume or a restart.
+
+### Resources
+
+`resources.memory` sets each worker's memory limit (`512m`, `4g`; 256m to 256g). When a worker
+reaches it, the kernel's out-of-memory killer ends a process in it: if that is the agent, the agent's
+card and its Tech Lead say "Out of memory" with the limit; if it is a command the agent ran, the agent
+is told why its command was killed (ADR 0051). Toolchains that compile in parallel (Go, Rust) need
+more than the 2g default for larger projects.
 
 ### Secrets
 
@@ -151,7 +165,7 @@ Code's built-in names are reserved). Exactly one of:
 
 | Pack | Toolchain | Hosts | Skill |
 |---|---|---|---|
-| `go` | Go 1.27.3 (checksum-verified) with gcc and libc headers, `CGO_ENABLED=1`, so `go test -race` works | `proxy.golang.org`, `sum.golang.org` | `go-sandbox` |
+| `go` | Go 1.27.3 (checksum-verified) with gcc, libc headers and make, `CGO_ENABLED=1`, so `go test -race` works | `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` (the proxy serves some module zips from there) | `go-sandbox` |
 | `node` | Debian's `nodejs` and `npm` | `registry.npmjs.org` | `node-sandbox` |
 
 The images are about 650 MB (go) and 450 MB (node); the base image is about 190 MB.

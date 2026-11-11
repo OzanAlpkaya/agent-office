@@ -1,6 +1,6 @@
 # 0019. Access requests: human-approved, per-agent egress grants
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by ADR 0053 (the Tech Lead may decide per project; approvals are stored grants for the agent or the project; pending requests stay open while their agent can be resumed)
 - **Date:** 2026-11-07
 
 ## Context

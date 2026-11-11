@@ -33,6 +33,13 @@ at once.</sub>
   assigned, and `git merge-tree` conflict checks run when work is reported. QA gates the goal,
   budgets are refused at the API socket, and pushes are flagged until you accept them. Merging is
   always yours.
+- **A team that keeps going without you.** When an agent dies, agent-office says why (out of
+  memory with its limit, a signal, an exit code), commits its unsaved work and resumes it once; after
+  that its Tech Lead decides, with tools to resume, stop and reassign its workers. Messages to a
+  stopped agent wait for it, a watchdog wakes the Tech Lead when the whole team sits idle, and a
+  project can let the Tech Lead decide network access within a host list you write. You are asked
+  for merges, pushes, secrets and setting changes
+  ([ADR 0051](docs/adr/0051-exit-reasons-and-self-recovery.md)–[0053](docs/adr/0053-access-decisions-by-the-lead.md)).
 - **GitHub loop.** Finished work becomes a pull request. A reviewer agent (or CodeRabbit) reviews
   it, and the original worker is relaunched to address the feedback.
 - **Cost and history.** Token usage and estimated cost per goal, task, agent, session and model.

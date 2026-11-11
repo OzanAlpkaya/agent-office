@@ -58,6 +58,9 @@ order they were made; grouped here by topic. New ones start from [0000-template.
 | [0018](0018-message-delivery.md) | Messages claimed once in SQLite, delivered on Stop or typed when idle |
 | [0029](0029-roles-as-data.md) | Roles as YAML over six engine behaviours; a model per role |
 | [0050](0050-agent-cli-per-role.md) | The agent CLI (Claude Code or Codex) per role, overridable like the model; usage per vendor |
+| [0051](0051-exit-reasons-and-self-recovery.md) | Exit reasons in plain words (OOM from sandbox-init's report), one automatic resume, saved work on exit, the lead resumes, stops and reclaims its workers, messages wait for a resume |
+| [0052](0052-stall-watchdog.md) | A stall watchdog in the daemon wakes the Tech Lead of a goal that does not move |
+| [0053](0053-access-decisions-by-the-lead.md) | Access decisions by the Tech Lead per project (optionally within a host policy); grants scoped to the agent or project that outlive a session |
 | [0030](0030-escalation-and-messages-to-the-user.md) | Escalation chain worker → Tech Lead → Architect → user |
 | [0031](0031-architect-and-specs.md) | The architect's plan: approved by the user, committed as a spec |
 | [0032](0032-dependencies-and-conflicts.md) | Dependencies, file ownership, `merge-tree` conflict checks |
