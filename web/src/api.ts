@@ -3,6 +3,7 @@
 // InboxItem, Spec, QARun, MemoryEntry, RoleInfo, ApproveResult), internal/mcp (Plan),
 // internal/sandbox (Event), internal/usage (Tokens) and the API in internal/api.
 // Written by hand for now (ADR 0005); keep them in sync.
+import { type Presence, isPresence } from "./presence";
 
 export type AgentState = "starting" | "idle" | "working" | "waiting_permission" | "exited";
 export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "blocked";
@@ -707,7 +708,8 @@ export function isDaemonUsage(v: unknown): v is DaemonUsage {
 export type ProjectsMessage =
   | { type: "projects"; projects: Project[] }
   | { type: "project"; project: Project }
-  | { type: "project_removed"; id: string };
+  | { type: "project_removed"; id: string }
+  | { type: "presence"; presence: Presence }; // the user's devices with a visible page (Phase 18)
 
 export function parseProjectsMessage(raw: string): ProjectsMessage | undefined {
   let m: unknown;
@@ -724,6 +726,8 @@ export function parseProjectsMessage(raw: string): ProjectsMessage | undefined {
       return isProject(m.project) ? { type: "project", project: m.project } : undefined;
     case "project_removed":
       return typeof m.id === "string" ? { type: "project_removed", id: m.id } : undefined;
+    case "presence":
+      return isPresence(m.presence) ? { type: "presence", presence: m.presence } : undefined;
     default:
       return undefined;
   }

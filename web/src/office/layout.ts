@@ -1,6 +1,7 @@
 // Desk assignment and office geometry (ADR 0024). Pure: the scene and the
 // HTML nameplates both place things from these numbers, in world pixels.
-import type { Agent } from "../api";
+import type { Agent, OfficeLayout } from "../api";
+import { customPlan } from "./custom";
 import { type FloorPlan, type Point, type StationKind, cell, floorPlan, margin, stationKinds } from "./floor";
 
 // Assignment says who sits where: the Tech Lead at the lead desk, the
@@ -29,11 +30,16 @@ const byStart = (x: Agent, y: Agent): number =>
 // running agent of that kind, or else to the one already there; one that has
 // exited moves to a regular desk when a new one starts. Applying it twice
 // gives the same result.
-export function assignDesks(prev: Assignment, agents: readonly Agent[]): Assignment {
+//
+// A custom layout (Phase 18, ADR 0057) may lack the rooms of some places
+// (places lists the ones it has: the others' agents take desks) and has
+// capacity desks: agents beyond them have none, and a desk that frees up goes
+// to the one that has waited longest (the lowest index beyond capacity).
+export function assignDesks(prev: Assignment, agents: readonly Agent[], places: readonly OwnPlace[] = ownPlaces, capacity?: number): Assignment {
   const present = new Set(agents.map((a) => a.id));
   const desks = prev.desks.map((id) => (id !== undefined && present.has(id) ? id : undefined));
   const own: Partial<Record<OwnPlace, string>> = {};
-  for (const place of ownPlaces) {
+  for (const place of places) {
     let holder = prev[place] !== undefined && present.has(prev[place] as string) ? prev[place] : undefined;
     const ofKind = agents.filter((a) => a.kind === place).slice().sort(byStart);
     const running = ofKind.find((a) => a.state !== "exited");
@@ -56,8 +62,25 @@ export function assignDesks(prev: Assignment, agents: readonly Agent[]): Assignm
     if (free === -1) desks.push(a.id);
     else desks[free] = a.id;
   }
+  if (capacity !== undefined) {
+    // Agents beyond the desks move to a desk that freed up, longest waiting first.
+    for (let i = capacity; i < desks.length; i++) {
+      const id = desks[i];
+      if (id === undefined) continue;
+      const free = desks.indexOf(undefined);
+      if (free === -1 || free >= capacity) break;
+      desks[free] = id;
+      desks[i] = undefined;
+    }
+  }
   while (desks.length > 0 && desks[desks.length - 1] === undefined) desks.pop();
   return { ...own, desks };
+}
+
+// placesOf lists the own places a floor plan has: the lead desk, and the
+// stations whose rooms it has.
+export function placesOf(plan: FloorPlan): OwnPlace[] {
+  return ownPlaces.filter((p) => p === "lead" || plan.stations[p] !== undefined);
 }
 
 // ---------------------------------------------------------------- geometry
@@ -79,6 +102,7 @@ export const maxScale = 4;
 export interface Grid {
   readonly columns: number;
   readonly rows: number;
+  readonly layout?: OfficeLayout; // a project's own layout: a fixed plan (Phase 18)
 }
 
 export function gridFor(desks: number, columns: number): Grid {
@@ -86,8 +110,11 @@ export function gridFor(desks: number, columns: number): Grid {
 }
 
 export function planOf(g: Grid): FloorPlan {
-  return floorPlan(g.columns, g.rows);
+  return g.layout ? customPlan(g.layout) : floorPlan(g.columns, g.rows);
 }
+
+// sameGrid says whether two grids give the same plan.
+export const sameGrid = (a: Grid, b: Grid): boolean => a.columns === b.columns && a.rows === b.rows && a.layout === b.layout;
 
 export function worldSize(g: Grid): { w: number; h: number } {
   const p = planOf(g);
@@ -98,8 +125,16 @@ export function worldSize(g: Grid): { w: number; h: number } {
 // pixel for a pane of w×h CSS pixels at device pixel ratio dpr. It never goes
 // below 2 CSS pixels per world pixel while the width allows it; the pane then
 // scrolls vertically.
-export function fitGrid(w: number, h: number, dpr: number, desks: number): { grid: Grid; k: number } {
+export function fitGrid(w: number, h: number, dpr: number, desks: number, layout?: OfficeLayout): { grid: Grid; k: number } {
   const cap = Math.max(1, Math.floor(maxScale * dpr));
+  if (layout) {
+    // A fixed plan: only the scale is chosen; too small to read fills the width.
+    const p = customPlan(layout);
+    const grid: Grid = { columns: p.columns, rows: p.rows, layout };
+    const k = Math.min(cap, Math.floor(Math.min((w * dpr) / p.w, (h * dpr) / p.h)));
+    if (k >= 2 * dpr) return { grid, k };
+    return { grid, k: Math.max(1, k, Math.min(Math.ceil(2 * dpr), Math.floor((w * dpr) / p.w))) };
+  }
   let best: { grid: Grid; k: number } | undefined;
   const better = (c: { grid: Grid; k: number }): boolean =>
     !best || c.k > best.k ||
@@ -123,15 +158,20 @@ export function fitGrid(w: number, h: number, dpr: number, desks: number): { gri
   return wide.k > fit.k ? wide : { ...fit, k: Math.max(1, fit.k) };
 }
 
-export type Slot = { kind: "lead" } | { kind: "desk"; index: number } | { kind: "station"; station: StationKind };
+// "user" is the user's own desk (Phase 18): their character sits there while
+// a device has the UI open.
+export type Slot = { kind: "lead" } | { kind: "desk"; index: number } | { kind: "station"; station: StationKind } | { kind: "user" };
 
 // slotOrigin is the top-left corner of a desk slot's cell. A station has no
 // cell; its origin is chosen so that the nameplate lands under its furniture.
 export function slotOrigin(slot: Slot, g: Grid): Point {
   const p = planOf(g);
   if (slot.kind === "lead") return p.lead;
+  if (slot.kind === "user") return p.userDesk;
   if (slot.kind === "station") {
-    const n = p.stations[slot.station].nameplate;
+    const st = p.stations[slot.station];
+    if (!st) return p.lead; // not assigned: the plan has no such room
+    const n = st.nameplate;
     return { x: n.x - inCell.nameplate.x, y: n.y - inCell.nameplate.y };
   }
   return p.desks[slot.index] ?? {

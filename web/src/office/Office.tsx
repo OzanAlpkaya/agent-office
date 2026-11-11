@@ -3,7 +3,7 @@
 // one action: open an agent.
 import { type JSX, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Agent, Message, OfficeInfo, Task, TaskStatus } from "../api";
-import type { Presence } from "../presence";
+import { type Presence, present, presenceText } from "../presence";
 import type { Waiting } from "../waiting";
 import { type Assignment, emptyAssignment, inCell, planOf, slotOrigin, whiteboardAt } from "./layout";
 import { buildOffice, freshMessages } from "./model";
@@ -58,7 +58,13 @@ function reducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-export default function Office({ agents, tasks, messages, waiting, onOpenAgent, floors = [], onFloor }: OfficeProps): JSX.Element {
+export default function Office({
+  agents, tasks, messages, waiting, onOpenAgent, floors = [], onFloor, layout, presence, onLayoutSettings,
+}: OfficeProps): JSX.Element {
+  // The project's own layout when it validated; else the default plan (ADR 0057).
+  const custom = layout?.source === "custom" ? layout.layout : undefined;
+  const problems = layout?.problems ?? [];
+  const userHere = present(presence);
   const floorId = floors.find((f) => f.current)?.id ?? "";
   const pane = useRef<HTMLDivElement>(null);
   const canvasHost = useRef<HTMLDivElement>(null);
@@ -74,10 +80,10 @@ export default function Office({ agents, tasks, messages, waiting, onOpenAgent, 
   // assignDesks is idempotent, so recomputing with the stored assignment
   // (e.g. in StrictMode) gives the same seats.
   const model = useMemo(() => {
-    const m = buildOffice(keptAssignments.get(floorId) ?? emptyAssignment, agents, tasks, waiting);
+    const m = buildOffice(keptAssignments.get(floorId) ?? emptyAssignment, agents, tasks, waiting, { layout: custom });
     keptAssignments.set(floorId, m.assignment);
     return m;
-  }, [agents, tasks, waiting, floorId]);
+  }, [agents, tasks, waiting, floorId, custom]);
 
   // Latest callback for the scene, which is created once.
   const open = useRef(onOpenAgent);
@@ -120,6 +126,11 @@ export default function Office({ agents, tasks, messages, waiting, onOpenAgent, 
     if (t) setXf(t);
   }, [scene, model]);
 
+  // The user at their desk while a device has the UI open (Phase 18).
+  useEffect(() => {
+    scene?.setPresence(userHere);
+  }, [scene, userHere]);
+
   useLayoutEffect(() => {
     const el = pane.current;
     if (!scene || !el) return;
@@ -149,7 +160,8 @@ export default function Office({ agents, tasks, messages, waiting, onOpenAgent, 
 
   return (
     <div className="office" ref={root} data-renderer={scene?.renderer ?? ""} data-scale={xf?.scale ?? ""}
-      data-plan={xf ? (planOf(xf.grid).stacked ? "stacked" : "wide") : ""}>
+      data-plan={xf ? (planOf(xf.grid).custom ? "custom" : planOf(xf.grid).stacked ? "stacked" : "wide") : ""}
+      data-user-present={userHere ? "true" : "false"}>
       {floors.length > 1 && (
         <nav className="elevator" aria-label="Floors">
           {floors.map((f, i) => (
@@ -177,7 +189,23 @@ export default function Office({ agents, tasks, messages, waiting, onOpenAgent, 
             · {model.exited} left the office
           </span>
         )}
+        {model.deskless.length > 0 && (
+          <span className="office-deskless hint" data-testid="deskless"
+            title="This office layout has fewer desks than agents at work; add desks to its workroom in the project settings">
+            · {model.deskless.length} without a desk:
+            {model.deskless.map((a) => (
+              <button key={a.id} className="link sm" data-agent={a.id} onClick={() => onOpenAgent(a.id)}>{a.name || a.id.slice(0, 6)}</button>
+            ))}
+          </span>
+        )}
       </div>
+      {problems.length > 0 && (
+        <div className="callout warn office-warning" role="alert" data-testid="layout-warning">
+          The project's office layout is not valid, so the default office is shown.{" "}
+          {onLayoutSettings && <button className="link" onClick={onLayoutSettings}>Fix it in the project settings</button>}
+          <ul>{problems.map((p) => <li key={p}>{p}</li>)}</ul>
+        </div>
+      )}
       <div className="office-pane" ref={pane}>
         <div className="office-canvas" ref={canvasHost} />
         {failure && (
@@ -217,6 +245,16 @@ export default function Office({ agents, tasks, messages, waiting, onOpenAgent, 
             </button>
           );
         })}
+        {xf && userHere && (() => {
+          const u = planOf(xf.grid).userDesk;
+          return (
+            <div className="nameplate user-plate" data-testid="user-plate" title={presenceText(presence)}
+              style={{ left: xf.x + (u.x + inCell.nameplate.x) * xf.scale, top: xf.y + (u.y + inCell.nameplate.y) * xf.scale }}>
+              <span className="dot" style={{ color: "var(--accent)" }} />
+              <span className="nameplate-text"><span className="nameplate-name">You</span></span>
+            </div>
+          );
+        })()}
         {xf && planOf(xf.grid).rooms.map((r) => (
           <div key={r.id} className={`room-label room-${r.id}`} data-room={r.id} title={r.purpose}
             style={{ left: xf.x + r.label.x * xf.scale, top: xf.y + r.label.y * xf.scale }}>

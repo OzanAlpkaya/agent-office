@@ -1,25 +1,14 @@
 import { describe, expect, it } from "vitest";
 import * as art from "./art";
-import { type FloorPlan, type Point, type Rect, cell, deskExit, floorPlan, roomAt, stationKinds } from "./floor";
+import { type Point, type Rect, cell, floorPlan, roomAt, stationKinds } from "./floor";
 import { columnChoices } from "./layout";
 import { clear, isFree, length, route, walkGrid, along } from "./paths";
+import { exitOf, targets } from "./testkit";
 
 const plans: [number, number][] = columnChoices.flatMap((c) => [2, 4].map((r): [number, number] => [c, r]));
 
 const inside = (p: Point, r: Rect): boolean => p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
-const exitOf = (o: Point): Point => ({ x: o.x + deskExit.x, y: o.y + deskExit.y });
 
-function targets(p: FloorPlan): [string, Point][] {
-  return [
-    ["entrance", p.entrance],
-    ...p.spots.whiteboard.map((s, i): [string, Point] => [`whiteboard ${i}`, s]),
-    ...p.spots.coffee.map((s, i): [string, Point] => [`coffee ${i}`, s]),
-    ...p.spots.review.map((s, i): [string, Point] => [`review ${i}`, s]),
-    ...p.spots.queue.filter((_, i) => i % 3 === 0).map((s, i): [string, Point] => [`queue ${i * 3}`, s]),
-    ...stationKinds.map((k): [string, Point] => [`${k} station`, p.stations[k].seat]),
-    ["lead desk", exitOf(p.lead)],
-  ];
-}
 
 describe.each(plans)("floor plan with %i columns and %i rows", (columns, rows) => {
   const p = floorPlan(columns, rows);

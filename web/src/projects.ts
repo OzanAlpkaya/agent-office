@@ -53,6 +53,8 @@ export function applyProjects(list: readonly Project[], m: ProjectsMessage): Pro
       return upsertBy(list, m.project, (p) => p.id);
     case "project_removed":
       return list.filter((p) => p.id !== m.id);
+    case "presence":
+      return list as Project[];
   }
 }
 
