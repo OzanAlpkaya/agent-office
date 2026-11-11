@@ -5,7 +5,7 @@ approved plan and ends with an updated `PROGRESS.md` and a plain-language summar
 intentionally coarser; their DoD is refined at the start of the phase.
 
 **Order** (decided 2026-11-08): phases run 0–8, then 12, 9, 10, 11, 13, then 14 and 15
-(added 2026-11-11). Numbers are kept, so references in ADRs and plans stay valid.
+(added 2026-11-11), then 16. Numbers are kept, so references in ADRs and plans stay valid.
 
 ---
 
@@ -611,3 +611,64 @@ stays sandboxed with the credential outside its container.
 - Several goals at once in one project, when real use shows the need. Today a project runs one
   goal at a time (one Tech Lead, architect and QA, ADR 0017); the Board says so on the other goals'
   cards. Two goals can already run in parallel as two projects (Phase 14).
+
+---
+
+## Phase 16: Autonomous team
+
+Added by Ozan after Phase 15 was merged (2026-11-11), from running a real sprint (PulseGo Sprint 3)
+where he had to step in about ten times; each time the Tech Lead could have decided itself if it had
+seen what he saw and had the tools to act.
+
+**Goal:** A goal runs from start to "ready for my review" without the user relaying anything.
+
+**Scope** (see `docs/plans/phase-16.md`)
+- Exit reasons: why an agent exited (out of memory, signal, exit code) in plain words, for the lead
+  and the UI.
+- Self-recovery: an agent that dies unexpectedly is resumed once automatically; a second failure
+  goes to the lead with the reason.
+- Lead powers: resume or stop its own workers; take back an in_progress sub-task from an exited
+  worker and assign it again.
+- No lost messages: a message to an agent that is not running is queued and delivered when it
+  resumes.
+- A stall watchdog (daemon code): a goal whose agents are all idle, with nothing waiting on the user,
+  wakes its lead with a status summary.
+- An exiting worker's uncommitted work is saved automatically.
+- Access decisions by the lead, per project (`user`, `lead`, `lead within a host policy`); approvals
+  scoped to the agent or the project, surviving a resume.
+- The lead decides everything reversible itself and asks the user only for merges and pushes,
+  secrets, pack changes and irreversible steps (its role prompt).
+- A worker memory limit per pack or project, with a clear message when a worker hits it.
+- Inbox: grouped by goal and agent, answered items collapsed, briefings apart.
+- Smaller findings: `storage.googleapis.com` and `make` in the go pack; memory proposals must not
+  describe effects they do not have.
+
+**Definition of Done**
+- [ ] An OOM-killed sandboxed worker shows "out of memory" (with its limit) in the UI and in a
+      message to its lead, from a real kernel OOM kill in a sandbox test; host agents show the signal
+      or exit code.
+- [ ] An unexpected exit is resumed once with a message saying what happened; a second one reaches
+      the lead with the reason and is not resumed (tests).
+- [ ] The lead can resume and stop its workers and take back a sub-task from an exited worker; the
+      next worker continues from the previous worker's branch (tests, including authorization).
+- [ ] A message to a stopped agent is delivered when it resumes (test).
+- [ ] The stall watchdog wakes the lead with who is idle, the open tasks and the undelivered
+      messages, and does not fire while something waits on the user (tests).
+- [ ] A worker's uncommitted work is committed and imported when it exits, sandboxed and on the
+      host (tests).
+- [ ] A project can let its lead decide access requests, optionally within a host policy; the
+      lead's decisions carry a recorded reason; approvals scoped to the agent or the project survive
+      a resume, and the request #4 bug (an approval lost in the resumed session) is fixed with a
+      test that failed before.
+- [ ] The Tech Lead's prompt has the rule on what it decides and what it asks; the assistant's
+      memory proposals cannot claim effects (prompt and tool description).
+- [ ] `resources.memory` in pack.yaml and `worker_memory` in project settings set the worker
+      limit; a worker that hits it gets a clear message.
+- [ ] The inbox groups by goal and agent, collapses answered items and keeps briefings apart
+      (Vitest and Playwright).
+- [ ] The go pack allows `storage.googleapis.com` and has `make`.
+- [ ] `TestAutonomousTeamEndToEnd` reproduces the incidents (two real OOM kills of a working worker,
+      a stopped worker with a queued message, a stall, an access request the lead decides) and the
+      goal is reported without a human step.
+- [ ] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass.
+
