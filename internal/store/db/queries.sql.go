@@ -380,8 +380,8 @@ func (q *Queries) CountUnreadInboxFrom(ctx context.Context, agentID sql.NullStri
 }
 
 const createAgent = `-- name: CreateAgent :exec
-INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, kind, role, name)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO agents (id, project_id, task_id, model, inherit_user_settings, state, started_at, sandbox, kind, role, name, cli)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateAgentParams struct {
@@ -396,6 +396,7 @@ type CreateAgentParams struct {
 	Kind                string
 	Role                string
 	Name                string
+	Cli                 string
 }
 
 func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error {
@@ -411,6 +412,7 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) error 
 		arg.Kind,
 		arg.Role,
 		arg.Name,
+		arg.Cli,
 	)
 	return err
 }
@@ -488,14 +490,15 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 }
 
 const createSession = `-- name: CreateSession :exec
-INSERT INTO sessions (id, agent_id, started_at, resumed_from) VALUES (?, ?, ?, ?)
+INSERT INTO sessions (id, agent_id, started_at, resumed_from, cli_session_id) VALUES (?, ?, ?, ?, ?)
 `
 
 type CreateSessionParams struct {
-	ID          string
-	AgentID     string
-	StartedAt   time.Time
-	ResumedFrom string
+	ID           string
+	AgentID      string
+	StartedAt    time.Time
+	ResumedFrom  string
+	CliSessionID string
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) error {
@@ -504,6 +507,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) er
 		arg.AgentID,
 		arg.StartedAt,
 		arg.ResumedFrom,
+		arg.CliSessionID,
 	)
 	return err
 }
@@ -1032,7 +1036,7 @@ func (q *Queries) GetReview(ctx context.Context, id int64) (Review, error) {
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from FROM sessions WHERE id = ?
+SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from, cli_session_id FROM sessions WHERE id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
@@ -1047,6 +1051,7 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 		&i.ToolCalls,
 		&i.CliCostMicroUsd,
 		&i.ResumedFrom,
+		&i.CliSessionID,
 	)
 	return i, err
 }
@@ -1591,7 +1596,7 @@ func (q *Queries) LatestQARun(ctx context.Context, goalID string) (QaRun, error)
 }
 
 const latestSession = `-- name: LatestSession :one
-SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1
+SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from, cli_session_id FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1
 `
 
 func (q *Queries) LatestSession(ctx context.Context, agentID string) (Session, error) {
@@ -1606,6 +1611,7 @@ func (q *Queries) LatestSession(ctx context.Context, agentID string) (Session, e
 		&i.ToolCalls,
 		&i.CliCostMicroUsd,
 		&i.ResumedFrom,
+		&i.CliSessionID,
 	)
 	return i, err
 }
@@ -1738,7 +1744,7 @@ func (q *Queries) ListAgentMessages(ctx context.Context, arg ListAgentMessagesPa
 }
 
 const listAgentSessions = `-- name: ListAgentSessions :many
-SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC
+SELECT id, agent_id, started_at, ended_at, turns, tool_calls, cli_cost_micro_usd, resumed_from, cli_session_id FROM sessions WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC
 `
 
 func (q *Queries) ListAgentSessions(ctx context.Context, agentID string) ([]Session, error) {
@@ -1759,6 +1765,7 @@ func (q *Queries) ListAgentSessions(ctx context.Context, agentID string) ([]Sess
 			&i.ToolCalls,
 			&i.CliCostMicroUsd,
 			&i.ResumedFrom,
+			&i.CliSessionID,
 		); err != nil {
 			return nil, err
 		}
@@ -2159,7 +2166,7 @@ func (q *Queries) ListProjectQARuns(ctx context.Context, arg ListProjectQARunsPa
 
 const listProjectSessions = `-- name: ListProjectSessions :many
 SELECT s.id, s.agent_id, s.started_at, s.ended_at, s.turns, s.tool_calls, s.cli_cost_micro_usd,
-       a.kind, a.role, a.sandbox, a.task_id, a.model, a.removed_at
+       a.kind, a.role, a.sandbox, a.task_id, a.model, a.removed_at, a.cli
 FROM sessions s JOIN agents a ON a.id = s.agent_id
 WHERE a.project_id = ? ORDER BY s.started_at
 `
@@ -2178,6 +2185,7 @@ type ListProjectSessionsRow struct {
 	TaskID          sql.NullString
 	Model           string
 	RemovedAt       sql.NullTime
+	Cli             string
 }
 
 func (q *Queries) ListProjectSessions(ctx context.Context, projectID string) ([]ListProjectSessionsRow, error) {
@@ -2203,6 +2211,7 @@ func (q *Queries) ListProjectSessions(ctx context.Context, projectID string) ([]
 			&i.TaskID,
 			&i.Model,
 			&i.RemovedAt,
+			&i.Cli,
 		); err != nil {
 			return nil, err
 		}
@@ -2623,7 +2632,7 @@ func (q *Queries) ListTasks(ctx context.Context, projectID string) ([]Task, erro
 }
 
 const listVisibleAgents = `-- name: ListVisibleAgents :many
-SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, agents.sandbox, agents.kind, agents.role, agents.resume_state, agents.name, worktrees.path AS worktree_path, worktrees.branch AS branch,
+SELECT agents.id, agents.project_id, agents.task_id, agents.model, agents.inherit_user_settings, agents.state, agents.activity, agents.started_at, agents.exited_at, agents.exit_code, agents.exit_reason, agents.removed_at, agents.sandbox, agents.kind, agents.role, agents.resume_state, agents.name, agents.cli, worktrees.path AS worktree_path, worktrees.branch AS branch,
        worktrees.status AS worktree_status, worktrees.kind AS worktree_kind
 FROM agents JOIN worktrees ON worktrees.agent_id = agents.id
 WHERE agents.project_id = ? AND agents.removed_at IS NULL
@@ -2648,6 +2657,7 @@ type ListVisibleAgentsRow struct {
 	Role                string
 	ResumeState         string
 	Name                string
+	Cli                 string
 	WorktreePath        string
 	Branch              string
 	WorktreeStatus      string
@@ -2681,6 +2691,7 @@ func (q *Queries) ListVisibleAgents(ctx context.Context, projectID string) ([]Li
 			&i.Role,
 			&i.ResumeState,
 			&i.Name,
+			&i.Cli,
 			&i.WorktreePath,
 			&i.Branch,
 			&i.WorktreeStatus,
@@ -3195,6 +3206,21 @@ type SetSessionCLICostParams struct {
 
 func (q *Queries) SetSessionCLICost(ctx context.Context, arg SetSessionCLICostParams) error {
 	_, err := q.db.ExecContext(ctx, setSessionCLICost, arg.CliCostMicroUsd, arg.ID)
+	return err
+}
+
+const setSessionCLIID = `-- name: SetSessionCLIID :exec
+UPDATE sessions SET cli_session_id = ? WHERE id = ? AND cli_session_id = ''
+`
+
+type SetSessionCLIIDParams struct {
+	CliSessionID string
+	ID           string
+}
+
+// A Codex session's own id, from its first hook (migration 0014, ADR 0049); set once.
+func (q *Queries) SetSessionCLIID(ctx context.Context, arg SetSessionCLIIDParams) error {
+	_, err := q.db.ExecContext(ctx, setSessionCLIID, arg.CliSessionID, arg.ID)
 	return err
 }
 

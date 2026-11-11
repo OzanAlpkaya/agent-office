@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
+	"github.com/OzanAlpkaya/agent-office/internal/role"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/usage"
 )
@@ -58,6 +59,7 @@ type SessionUsage struct {
 	Kind      string       `json:"kind"`              // the agent's behaviour (ADR 0029)
 	Role      string       `json:"role"`              // the role's name
 	Sandbox   string       `json:"sandbox"`
+	CLI       string       `json:"cli"`    // the agent CLI; its vendor is the usage's (ADR 0050)
 	Source    string       `json:"source"` // SourceAPI | SourceTranscript
 	StartedAt time.Time    `json:"started_at"`
 	EndedAt   *time.Time   `json:"ended_at,omitempty"`
@@ -155,7 +157,7 @@ func (e *Engine) newSessionUsage(l launchInfo, sandboxMode string) *sessionUsage
 	}
 	su := &sessionUsage{msgs: map[string]usage.Message{}, dirty: map[string]usage.Message{}, view: SessionUsage{
 		SessionID: l.sid, AgentID: l.id, TaskID: l.taskID, Kind: l.role, Role: l.roleName(), Sandbox: sandboxMode, Source: source,
-		StartedAt: l.started}}
+		StartedAt: l.started, CLI: cliOr(l.cli)}}
 	if l.resumeFrom != "" && source == SourceTranscript {
 		e.forkedTranscript(su, l)
 	}
@@ -170,6 +172,22 @@ func (e *Engine) newSessionUsage(l launchInfo, sandboxMode string) *sessionUsage
 		}
 	}
 	return su
+}
+
+// cliOr is the agent CLI, Claude Code for agents recorded before Phase 15.
+func cliOr(cli string) string {
+	if cli == "" {
+		return role.CLIClaude
+	}
+	return cli
+}
+
+// Vendor is who runs an agent CLI's models (usage per vendor, ADR 0050).
+func Vendor(cli string) string {
+	if cli == role.CLICodex {
+		return "openai"
+	}
+	return "anthropic"
 }
 
 // maxResumeChain bounds the walk over the sessions a resumed one continues.

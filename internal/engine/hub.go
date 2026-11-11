@@ -225,7 +225,17 @@ func (h *Hub) options(ctx context.Context, row db.Project, s ProjectSettings) (O
 		return o, invalid("secrets_dir %s: must be %s or a directory inside it, e.g. %s", *eff.SecretsDir, d,
 			filepath.Join(d, row.Slug))
 	}
-	o.Model = *eff.Model
+	o.Model, o.CodexModel = *eff.Model, *eff.CodexModel
+	if len(eff.RoleCLIs) > 0 {
+		if o.Roles == nil {
+			o.Roles = role.MustBuiltins()
+		}
+		roles, err := o.Roles.WithCLIs(eff.RoleCLIs)
+		if err != nil {
+			return o, fmt.Errorf("%w: role_clis: %v", ErrInvalid, err)
+		}
+		o.Roles = roles
+	}
 	o.MaxAgents = min(*eff.MaxAgents, h.opts.Base.MaxAgents)
 	o.Budgets = Budgets{SessionMicroUSD: *eff.BudgetSessionMicroUSD, GoalMicroUSD: *eff.BudgetGoalMicroUSD}
 	if len(eff.RoleModels) > 0 {

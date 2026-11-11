@@ -10,6 +10,7 @@ import (
 
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
+	"github.com/OzanAlpkaya/agent-office/internal/role"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
 
@@ -111,6 +112,17 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 			}
 		}
 	}
+	if err := e.checkCLI(info.CLI); err != nil {
+		return AgentInfo{}, err
+	}
+	cliResume := ""
+	if r.resume && info.CLI == role.CLICodex {
+		// Codex continues its own session id (ADR 0049); one that never sent a
+		// hook has no conversation to load.
+		if cliResume = from.CliSessionID; cliResume == "" {
+			return AgentInfo{}, invalid("agent %s has no Codex conversation to resume", id)
+		}
+	}
 	var prep sandboxPrep
 	if info.Sandbox == SandboxPodman {
 		if prep, err = e.prepareSandboxStart(ctx, agentName(id), info.Kind); err != nil {
@@ -126,7 +138,7 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 			return err
 		}
 		if err := q.CreateSession(ctx, db.CreateSessionParams{ID: sid, AgentID: id, StartedAt: started,
-			ResumedFrom: from.ID}); err != nil {
+			ResumedFrom: from.ID, CliSessionID: cliResume}); err != nil {
 			return err
 		}
 		if info.TaskID == "" || r.resume {
@@ -160,7 +172,8 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 	}
 	l := launchInfo{id: id, sid: sid, role: info.Kind, def: e.roleOf(info.Role, info.Kind), branch: info.Branch,
 		path: info.WorktreePath, base: a.baseCommit,
-		taskID: info.TaskID, started: started, prompt: prompt, prev: a, followup: r.followup}
+		taskID: info.TaskID, started: started, prompt: prompt, prev: a, followup: r.followup, cli: cliOr(info.CLI),
+		cliResume: cliResume}
 	if r.resume {
 		// Messages queued for the conversation it continues are its own.
 		l.resumeFrom, l.since = from.ID, from.StartedAt.UTC()

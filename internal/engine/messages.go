@@ -14,6 +14,7 @@ import (
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/role"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
 
@@ -129,7 +130,9 @@ func (e *Engine) onHookLocked(ctx context.Context, a *agentProc, ev agent.Event,
 	if mainStop {
 		a.turns++
 	}
-	if mainStop && ev.Hook == "Stop" && !ev.StopHookActive && !a.stopAfterTurn {
+	// The Stop hook's reply delivers messages to Claude Code only; Codex agents
+	// get theirs typed in once idle (ADR 0018, 0049).
+	if mainStop && ev.Hook == "Stop" && !ev.StopHookActive && !a.stopAfterTurn && a.info.CLI != role.CLICodex {
 		if msgs := e.claimLocked(ctx, a, DeliveryStopHook, log); len(msgs) > 0 {
 			reply, err := json.Marshal(map[string]string{"decision": "block", "reason": formatMessages(msgs, e.namesLocked())})
 			if err == nil {

@@ -28,7 +28,13 @@ const (
 	SettingsFile    = "/opt/agent-office/settings.json"
 	GitHooksDir     = "/opt/agent-office/git-hooks"
 	ClaudeBin       = "/opt/claude/claude"
-	EgressAddr      = "127.0.0.1:3128" // sandbox-init bridges these to the sockets
+	CodexDir        = "/opt/codex" // codex and codex-code-mode-host (ADR 0049)
+	CodexBin        = CodexDir + "/codex"
+	CodexConfigFile = ConfigDir + "/config.toml"          // CODEX_HOME is the agent's config dir
+	CodexAuthFile   = ConfigDir + "/auth.json"            // the placeholder login
+	CodexCAFile     = "/opt/agent-office/loopback-ca.pem" // CODEX_CA_CERTIFICATE
+	CodexOrigin     = "https://" + APIAddr                // the API socket's loopback bridge, over TLS
+	EgressAddr      = "127.0.0.1:3128"                    // sandbox-init bridges these to the sockets
 	APIAddr         = "127.0.0.1:8080"
 	LabelAgent      = "io.agent-office.agent"
 	LabelRole       = "io.agent-office.role"
@@ -74,6 +80,29 @@ type WorkerSpec struct {
 	Memory            string // e.g. "2g"; empty: DefaultMemory
 	Pids              int    // 0: DefaultPids
 	Command           []string
+
+	// Codex agents (ADR 0049): CLI is "codex", Codex the host dir with its
+	// binaries, and these daemon-written files are mounted read-only into the
+	// config dir (CODEX_HOME): config.toml, the placeholder login, and the
+	// loopback CA. Claude, Settings and MCPConfig are then unused.
+	CLI         string
+	Codex       string
+	CodexConfig string
+	CodexAuth   string
+	CodexCA     string
+}
+
+// claudeEnv is a Claude Code worker's own environment (ADR 0016).
+var claudeEnv = []string{
+	// Claude Code's default temp dir is /tmp/claude-<uid>; a same-path mount (the
+	// objects dir) under /tmp/claude-1000 would create it root-owned and Claude
+	// Code refuses to start. Its own tmpfs dir avoids that.
+	"CLAUDE_CODE_TMPDIR=" + TmpDir,
+	"CLAUDE_CONFIG_DIR=" + ConfigDir,
+	"DISABLE_AUTOUPDATER=1",
+	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+	"ANTHROPIC_BASE_URL=http://" + APIAddr,
+	"CLAUDE_CODE_OAUTH_TOKEN=" + Placeholder,
 }
 
 // HelperSpec describes a short-lived git helper container (status, bundle,
@@ -106,7 +135,7 @@ var builtinEnv = map[string]bool{
 	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": true, "HTTPS_PROXY": true, "https_proxy": true,
 	"HTTP_PROXY": true, "http_proxy": true, "NO_PROXY": true, "no_proxy": true, "ANTHROPIC_BASE_URL": true,
 	"CLAUDE_CODE_OAUTH_TOKEN": true, "AGENT_OFFICE_SOCKET": true, "AGENT_OFFICE_MCP_SOCKET": true, "TERM": true, "COLORTERM": true,
-	"CLAUDE_CODE_TMPDIR":         true,
+	"CLAUDE_CODE_TMPDIR": true, "CODEX_HOME": true, "CODEX_CA_CERTIFICATE": true,
 	"AGENT_OFFICE_EGRESS_SOCKET": true, "AGENT_OFFICE_API_SOCKET": true, secretsSocketEnv: true,
 	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
 	"AGENT_OFFICE_CO_AUTHOR": true, "GIT_CONFIG_COUNT": true, "GIT_CONFIG_KEY_0": true, "GIT_CONFIG_VALUE_0": true,
@@ -116,7 +145,8 @@ var builtinEnv = map[string]bool{
 // credentialEnv are names that carry credentials; they never enter a
 // container's environment (and would be visible in podman inspect).
 var credentialEnv = map[string]bool{
-	"ANTHROPIC_API_KEY": true, "ANTHROPIC_AUTH_TOKEN": true, "GH_TOKEN": true, "GITHUB_TOKEN": true,
+	"ANTHROPIC_API_KEY": true, "ANTHROPIC_AUTH_TOKEN": true, "GH_TOKEN": true, "GITHUB_TOKEN": true, "OPENAI_API_KEY": true,
+	"CODEX_API_KEY": true,
 	"SSH_AUTH_SOCK": true, "GIT_ASKPASS": true, "SSH_ASKPASS": true, "AWS_SECRET_ACCESS_KEY": true,
 }
 
@@ -174,10 +204,15 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 	if err := checkObjectsPath(s.ObjectsDir); err != nil {
 		return nil, err
 	}
-	mounts := []struct {
+	codex := s.CLI == "codex"
+	if codex && (s.Codex == "" || s.CodexConfig == "" || s.CodexAuth == "" || s.CodexCA == "") {
+		return nil, fmt.Errorf("sandbox: a Codex worker needs its binaries, config, placeholder login and CA")
+	}
+	type mount struct {
 		src, dst string
 		ro       bool
-	}{
+	}
+	mounts := []mount{
 		{s.Workspace, WorkspaceDir, s.ReadOnlyWorkspace},
 		{s.ObjectsDir, s.ObjectsDir, true},
 		{s.ConfigDir, ConfigDir, false},
@@ -186,22 +221,20 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 		{s.EgressSocket, EgressSocket, false},
 		{s.APISocket, APISocket, false},
 		{s.AgentOffice, AgentOfficeBin, true},
-		{s.Claude, ClaudeBin, true},
-		{s.Settings, SettingsFile, true},
-		{s.MCPConfig, MCPConfigFile, true},
-		{s.GitHooks, GitHooksDir, true},
 	}
+	if codex {
+		mounts = append(mounts, mount{s.Codex, CodexDir, true}, mount{s.CodexConfig, CodexConfigFile, true},
+			mount{s.CodexAuth, CodexAuthFile, true}, mount{s.CodexCA, CodexCAFile, true})
+	} else {
+		mounts = append(mounts, mount{s.Claude, ClaudeBin, true}, mount{s.Settings, SettingsFile, true},
+			mount{s.MCPConfig, MCPConfigFile, true})
+	}
+	mounts = append(mounts, mount{s.GitHooks, GitHooksDir, true})
 	if s.SecretsSocket != "" {
-		mounts = append(mounts, struct {
-			src, dst string
-			ro       bool
-		}{s.SecretsSocket, SecretsSocket, false})
+		mounts = append(mounts, mount{s.SecretsSocket, SecretsSocket, false})
 	}
 	if s.Skills != "" {
-		mounts = append(mounts, struct {
-			src, dst string
-			ro       bool
-		}{s.Skills, SkillsDir, true})
+		mounts = append(mounts, mount{s.Skills, SkillsDir, true})
 	}
 	args := append(baseArgs(s.Instance, s.AgentID, "worker", mem, pids),
 		"--name", ContainerName(s.AgentID),
@@ -216,17 +249,8 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 	}
 	env := []string{
 		"HOME=" + HomeDir,
-		// Claude Code's default temp dir is /tmp/claude-<uid>; a same-path mount (the
-		// objects dir) under /tmp/claude-1000 would create it root-owned and Claude
-		// Code refuses to start. Its own tmpfs dir avoids that.
-		"CLAUDE_CODE_TMPDIR=" + TmpDir,
-		"CLAUDE_CONFIG_DIR=" + ConfigDir,
-		"DISABLE_AUTOUPDATER=1",
-		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		"HTTPS_PROXY=http://" + EgressAddr, "https_proxy=http://" + EgressAddr,
 		"NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost",
-		"ANTHROPIC_BASE_URL=http://" + APIAddr,
-		"CLAUDE_CODE_OAUTH_TOKEN=" + Placeholder,
 		"AGENT_OFFICE_SOCKET=" + HookSocket,
 		"AGENT_OFFICE_MCP_SOCKET=" + MCPSocket,
 		"AGENT_OFFICE_EGRESS_SOCKET=" + EgressSocket,
@@ -235,6 +259,12 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 		// Command-scope config outranks the repository's: the hooks are the
 		// mounted, read-only ones (ADR 0014).
 		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=" + GitHooksDir,
+	}
+	if codex {
+		// The placeholder login and the loopback CA; no credential (ADR 0049).
+		env = append(env, "CODEX_HOME="+ConfigDir, "CODEX_CA_CERTIFICATE="+CodexCAFile)
+	} else {
+		env = append(env, claudeEnv...)
 	}
 	if s.Git.CoAuthor == "" {
 		return nil, fmt.Errorf("sandbox: worker needs a co-author trailer")
@@ -315,7 +345,7 @@ func baseArgs(instance, agentID, role, mem string, pids int) []string {
 
 // containerPaths are used inside every container; the objects dir, mounted at
 // its host path, must not overlap them.
-var containerPaths = []string{WorkspaceDir, ConfigDir, HomeDir, runDir, "/opt/agent-office", "/opt/claude",
+var containerPaths = []string{WorkspaceDir, ConfigDir, HomeDir, runDir, "/opt/agent-office", "/opt/claude", CodexDir,
 	"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/proc", "/sys", "/dev"}
 
 func checkObjectsPath(p string) error {

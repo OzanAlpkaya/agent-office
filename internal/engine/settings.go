@@ -43,6 +43,8 @@ type ProjectSettings struct {
 	EgressAllow           []string          `json:"egress_allow,omitempty"`             // added to the pack's names and --egress-allow
 	Model                 *string           `json:"model,omitempty"`                    // "": the CLI default (--model)
 	RoleModels            map[string]string `json:"role_models,omitempty"`              // merged over --role-model
+	RoleCLIs              map[string]string `json:"role_clis,omitempty"`                // merged over --role-cli (ADR 0050)
+	CodexModel            *string           `json:"codex_model,omitempty"`              // Codex agents' default model; "": Codex's (--codex-model)
 	MaxAgents             *int              `json:"max_agents,omitempty"`               // at most the daemon's --max-agents
 	GitHub                *bool             `json:"github,omitempty"`                   // --github
 	GitHubRemote          *string           `json:"github_remote,omitempty"`            // --github-remote
@@ -110,6 +112,14 @@ func (s ProjectSettings) Validate() error {
 			add("role_models: %q is not a model name for role %s", s.RoleModels[n], n)
 		}
 	}
+	for _, n := range slices.Sorted(maps.Keys(s.RoleCLIs)) {
+		if c := s.RoleCLIs[n]; c != role.CLIClaude && c != role.CLICodex {
+			add("role_clis: %q is not an agent CLI for role %s; use %s or %s", c, n, role.CLIClaude, role.CLICodex)
+		}
+	}
+	if m := s.CodexModel; m != nil && *m != "" && !role.ValidModel(*m) {
+		add("codex_model %q: a model name, e.g. gpt-6.1-sol", *m)
+	}
 	if n := s.MaxAgents; n != nil && (*n < 1 || *n > MaxProjectAgents) {
 		add("max_agents %d: between 1 and %d", *n, MaxProjectAgents)
 	}
@@ -145,6 +155,7 @@ func (d ProjectSettings) Merge(o ProjectSettings) ProjectSettings {
 		}
 	}
 	pick(&out.Pack, o.Pack)
+	pick(&out.CodexModel, o.CodexModel)
 	pick(&out.SecretsDir, o.SecretsDir)
 	pick(&out.Model, o.Model)
 	pick(&out.GitHubRemote, o.GitHubRemote)
@@ -170,6 +181,11 @@ func (d ProjectSettings) Merge(o ProjectSettings) ProjectSettings {
 		out.RoleModels = map[string]string{}
 	}
 	maps.Copy(out.RoleModels, o.RoleModels)
+	out.RoleCLIs = maps.Clone(d.RoleCLIs)
+	if out.RoleCLIs == nil {
+		out.RoleCLIs = map[string]string{}
+	}
+	maps.Copy(out.RoleCLIs, o.RoleCLIs)
 	return out
 }
 
@@ -177,7 +193,8 @@ func (d ProjectSettings) Merge(o ProjectSettings) ProjectSettings {
 func (d ProjectSettings) complete() error {
 	var missing []string
 	for name, set := range map[string]bool{"pack": d.Pack != nil, "secrets_dir": d.SecretsDir != nil, "model": d.Model != nil,
-		"max_agents": d.MaxAgents != nil, "github": d.GitHub != nil, "github_remote": d.GitHubRemote != nil,
+		"codex_model": d.CodexModel != nil,
+		"max_agents":  d.MaxAgents != nil, "github": d.GitHub != nil, "github_remote": d.GitHubRemote != nil,
 		"reviewer": d.Reviewer != nil, "review_rounds": d.ReviewRounds != nil,
 		"budget_session_micro_usd": d.BudgetSessionMicroUSD != nil, "budget_goal_micro_usd": d.BudgetGoalMicroUSD != nil} {
 		if !set {
@@ -207,6 +224,7 @@ func Ptr[T any](v T) *T { return &v }
 // start from them; `serve` builds its defaults from its flags.
 func NeutralDefaults() ProjectSettings {
 	return ProjectSettings{Pack: Ptr(PackNone), SecretsDir: Ptr("/"), Model: Ptr(""), RoleModels: map[string]string{},
+		RoleCLIs: map[string]string{}, CodexModel: Ptr(""),
 		MaxAgents: Ptr(MaxProjectAgents), GitHub: Ptr(false), GitHubRemote: Ptr("origin"), Reviewer: Ptr(review.NameInternal),
 		ReviewRounds: Ptr(2), BudgetSessionMicroUSD: Ptr(int64(0)), BudgetGoalMicroUSD: Ptr(int64(0))}
 }
