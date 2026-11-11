@@ -266,10 +266,15 @@ type serveConfig struct {
 	logFormat           string  // text | json
 	rolesDir            string  // user roles (ADR 0029)
 	roleModels          map[string]string
-	qa                  bool     // a goal's report needs a passing QA run (ADR 0033)
-	restoreAgents       bool     // resume the agents the previous run's stop interrupted (ADR 0035)
-	remoteHosts         []string // tailnet names tailscale serve forwards here (ADR 0038)
-	remoteUsers         []string // Tailscale logins allowed through them; empty = every tailnet user
+	qa                  bool              // a goal's report needs a passing QA run (ADR 0033)
+	restoreAgents       bool              // resume the agents the previous run's stop interrupted (ADR 0035)
+	remoteHosts         []string          // tailnet names tailscale serve forwards here (ADR 0038)
+	remoteUsers         []string          // Tailscale logins allowed through them; empty = every tailnet user
+	roleCLIs            map[string]string // agent CLI per role (ADR 0050)
+	codexModel          string            // Codex agents' default model; "": Codex's
+	codexBin            string            // the Codex CLI (ADR 0049)
+	codexBinSet         bool              // named explicitly: not finding it is an error
+	codexAuth           string            // the user's Codex login (auth.json)
 }
 
 func parseServe(args []string) (serveConfig, error) {
@@ -360,6 +365,18 @@ func parseServe(args []string) (serveConfig, error) {
 	}
 	fs.StringVar(&c.rolesDir, "roles-dir", rolesDir, "your team roles, one directory each; one named like a built-in replaces it ["+
 		role.DirEnv+"]")
+	roleCLIs := fs.String("role-cli", os.Getenv("AGENT_OFFICE_ROLE_CLIS"),
+		"agent CLI per role, e.g. worker=codex,reviewer=codex; others use the role's cli (default claude) [AGENT_OFFICE_ROLE_CLIS]")
+	fs.StringVar(&c.codexModel, "codex-model", os.Getenv("AGENT_OFFICE_CODEX_MODEL"),
+		"model for Codex agents whose role names none, e.g. gpt-6.1-sol; empty = Codex's default [AGENT_OFFICE_CODEX_MODEL]")
+	fs.StringVar(&c.codexBin, "codex-bin", envOr("AGENT_OFFICE_CODEX_BIN", "codex"),
+		"Codex CLI for Codex agents (sandboxed only) [AGENT_OFFICE_CODEX_BIN]")
+	codexAuth, err := sandbox.DefaultCodexAuthFile()
+	if err != nil {
+		return c, err
+	}
+	fs.StringVar(&c.codexAuth, "codex-auth", envOr("AGENT_OFFICE_CODEX_AUTH", codexAuth),
+		"your Codex login (`codex login`, ChatGPT); agent-office reads its access token, never its refresh token [AGENT_OFFICE_CODEX_AUTH]")
 	roleModels := fs.String("role-model", os.Getenv("AGENT_OFFICE_ROLE_MODELS"),
 		"models per role, e.g. architect=opus,worker=sonnet; others use the role's model or --model [AGENT_OFFICE_ROLE_MODELS]")
 	qa, err := envBool("AGENT_OFFICE_QA", true)
@@ -388,9 +405,13 @@ func parseServe(args []string) (serveConfig, error) {
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
+	c.codexBinSet = os.Getenv("AGENT_OFFICE_CODEX_BIN") != ""
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "prices" {
+		switch f.Name {
+		case "prices":
 			c.pricesRequired = true
+		case "codex-bin":
+			c.codexBinSet = true
 		}
 	})
 	if c.remoteHosts, err = parseRemoteHosts(*remoteHosts); err != nil {
@@ -403,6 +424,16 @@ func parseServe(args []string) (serveConfig, error) {
 		return c, errors.New("--remote-users needs --remote-host")
 	}
 	if c.roleModels, err = role.ParseModels(*roleModels); err != nil {
+		return c, err
+	}
+	if c.roleCLIs, err = role.ParseCLIs(*roleCLIs); err != nil {
+		return c, err
+	}
+	if usesCodex(c.roleCLIs) && c.sandbox == modeHost {
+		return c, errors.New("--role-cli codex needs sandboxed agents (--sandbox podman): a Codex agent's credential is " +
+			"injected outside its container (ADR 0049)")
+	}
+	if c.codexAuth, err = filepath.Abs(c.codexAuth); err != nil {
 		return c, err
 	}
 	if c.rolesDir, err = filepath.Abs(c.rolesDir); err != nil {
@@ -513,6 +544,9 @@ func serve(args []string) error {
 	if _, err := roles.WithModels(cfg.roleModels); err != nil {
 		return err
 	}
+	if _, err := roles.WithCLIs(cfg.roleCLIs); err != nil {
+		return err
+	}
 	defaults := daemonDefaults(cfg)
 	if err := defaults.Validate(); err != nil {
 		return err
@@ -540,16 +574,26 @@ func serve(args []string) error {
 
 	var sb *engine.SandboxOptions
 	var containers *engine.SandboxInstance
+	var codexWarn []string
 	if cfg.sandbox == modePodman {
 		if sb, err = sandboxOptions(context.Background(), cfg, self, ci, log); err != nil {
 			return err
 		}
 		containers = &engine.SandboxInstance{Podman: sb.Podman, Instance: sb.Instance}
+		needed := usesCodex(cfg.roleCLIs)
+		for _, r := range roles.List() {
+			needed = needed || r.CLI == role.CLICodex
+		}
+		var codexWarnings []string
+		if sb.Codex, codexWarnings, err = codexOptions(cfg, needed, log); err != nil {
+			return err
+		}
+		codexWarn = codexWarnings
 	} else {
 		log.Warn("host mode: agents run unsandboxed on this machine, with permission prompts on; they run as you, so " +
 			"they can read every project's files (ADR 0046)")
 	}
-	warnings := versionWarnings(ci, cfg.sandbox)
+	warnings := append(versionWarnings(ci, cfg.sandbox), codexWarn...)
 	for _, w := range warnings {
 		log.Warn(w)
 	}

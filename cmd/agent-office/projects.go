@@ -28,14 +28,18 @@ func daemonDefaults(cfg serveConfig) engine.ProjectSettings {
 	if p == "" {
 		p = engine.PackNone
 	}
-	models := cfg.roleModels
+	models, clis := cfg.roleModels, cfg.roleCLIs
 	if models == nil {
 		models = map[string]string{}
 	}
+	if clis == nil {
+		clis = map[string]string{}
+	}
 	return engine.ProjectSettings{
 		Pack: engine.Ptr(p), SecretsDir: engine.Ptr(cfg.secretsDir), EgressAllow: slices.Clone(cfg.egressAllow),
-		Model: engine.Ptr(cfg.model), RoleModels: models, MaxAgents: engine.Ptr(cfg.maxAgents),
-		GitHub: engine.Ptr(cfg.github), GitHubRemote: engine.Ptr(cfg.githubRemote), Reviewer: engine.Ptr(cfg.reviewer),
+		Model: engine.Ptr(cfg.model), RoleModels: models, RoleCLIs: clis, CodexModel: engine.Ptr(cfg.codexModel),
+		MaxAgents: engine.Ptr(cfg.maxAgents),
+		GitHub:    engine.Ptr(cfg.github), GitHubRemote: engine.Ptr(cfg.githubRemote), Reviewer: engine.Ptr(cfg.reviewer),
 		ReviewRounds:          engine.Ptr(cfg.reviewRounds),
 		BudgetSessionMicroUSD: engine.Ptr(int64(math.Round(cfg.budgetSessionUSD * 1e6))),
 		BudgetGoalMicroUSD:    engine.Ptr(int64(math.Round(cfg.budgetGoalUSD * 1e6))),
