@@ -6,7 +6,7 @@ import type { Agent, InboxItem, MemoryDraft, MemoryEntry, Plan, QARun, RoleInfo,
 import { AgentName } from "./AgentName";
 import { parseScope, scopeLabel } from "./memory";
 import {
-  type PlanForm, type SubTaskForm, fromForm, needsAnswer, newSubTask, proposedSpec, toForm, waitsFor,
+  type PlanForm, type SubTaskForm, fromForm, groupInbox, needsAnswer, newSubTask, proposedSpec, toForm, waitsFor,
 } from "./workflow";
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
@@ -94,21 +94,56 @@ export function InboxPanel(p: {
   onApprovePlan: (spec: Spec, item: InboxItem) => void;
 }): JSX.Element {
   const title = (id?: string): string | undefined => p.tasks.find((t) => t.id === id)?.title;
+  const view = groupInbox(p.items);
+  const entry = (i: InboxItem): JSX.Element => (
+    <InboxEntry key={i.id} item={i} taskTitle={i.task_id !== i.goal_id ? title(i.task_id) : undefined} onRead={p.onRead}
+      onReply={p.onReply} onOpenAgent={p.onOpenAgent} onReviewPlan={p.onReviewPlan} onApprovePlan={p.onApprovePlan}
+      plan={i.kind === "plan" && i.goal_id ? proposedSpec(p.specs, i.goal_id) : undefined} />
+  );
+  // earlier is a group's answered and read items, collapsed (Phase 16).
+  const earlier = (items: InboxItem[]): JSX.Element | null => items.length === 0 ? null : (
+    <details className="inbox-earlier">
+      <summary>{items.length} earlier</summary>
+      <ul>{items.map(entry)}</ul>
+    </details>
+  );
   return (
     <section className="side-panel inbox" aria-label="Inbox">
       <h2>Inbox</h2>
       <p className="small muted">
-        Messages to you from the architect, the assistant, a Tech Lead without an architect, and workers without a lead.
-        Their text is the agents&apos; own. Your answers reach the agent as your words.
+        Messages to you from the architect, the assistant, a Tech Lead without an architect, and workers without a lead,
+        grouped by goal and agent; answered and read items are folded away. Their text is the agents&apos; own. Your
+        answers reach the agent as your words.
       </p>
       {p.items.length === 0 && <p className="muted">Nothing yet.</p>}
-      <ul>
-        {p.items.map((i) => (
-          <InboxEntry key={i.id} item={i} taskTitle={title(i.task_id)} onRead={p.onRead} onReply={p.onReply}
-            onOpenAgent={p.onOpenAgent} onReviewPlan={p.onReviewPlan} onApprovePlan={p.onApprovePlan}
-            plan={i.kind === "plan" && i.goal_id ? proposedSpec(p.specs, i.goal_id) : undefined} />
-        ))}
-      </ul>
+      {view.groups.map((g) => (
+        <div key={g.goalId || "none"} className="inbox-group" data-goal={g.goalId}>
+          <h3>
+            {g.goalId ? <>Goal “{title(g.goalId) ?? g.goalId}”</> : "Not about a goal"}
+            {g.open > 0 && <span className="badge small">{g.open}</span>}
+          </h3>
+          {g.agents.map((a) => (
+            <div key={a.agentId || "agent-office"} className="inbox-agent" data-agent={a.agentId}>
+              <h4>
+                {a.agentId
+                  ? <button className="link" onClick={() => p.onOpenAgent(a.agentId)}>
+                    {(a.open[0] ?? a.earlier[0])?.role ?? "agent"} <AgentName id={a.agentId} />
+                  </button>
+                  : "agent-office"}
+              </h4>
+              {a.open.length > 0 && <ul>{a.open.map(entry)}</ul>}
+              {earlier(a.earlier)}
+            </div>
+          ))}
+        </div>
+      ))}
+      {view.briefings.length > 0 && (
+        <div className="inbox-briefings" aria-label="Briefings">
+          <h3>Briefings</h3>
+          <ul>{view.briefings.slice(0, 1).map(entry)}</ul>
+          {earlier(view.briefings.slice(1))}
+        </div>
+      )}
     </section>
   );
 }

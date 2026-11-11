@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { InboxItem, Plan, QARun, Spec, Task } from "./api";
 import {
-  currentSpec, fromForm, goalBusy, inboxFor, latestQA, needsAnswer, newSubTask, proposedSpec, specsOf, splitList, toForm, unread,
+  currentSpec, fromForm, goalBusy, groupInbox, inboxFor, isOpen, latestQA, needsAnswer, newSubTask, proposedSpec, specsOf, splitList, toForm, unread,
   waitsFor,
 } from "./workflow";
 import { agent } from "./office/testutil";
@@ -100,5 +100,38 @@ describe("goalBusy", () => {
     expect(goalBusy(b, [arch], [a, b])?.text).toContain("the architect of “Add tags”");
     expect(goalBusy(b, [{ ...arch, state: "exited" }], [a, b])).toBeUndefined();
     expect(goalBusy({ ...b, parent_task_id: "g1" }, [arch], [a, b])).toBeUndefined();
+  });
+});
+
+describe("inbox groups (Phase 16)", () => {
+  const t = (m: number): string => `2026-11-08T10:${String(m).padStart(2, "0")}:00Z`;
+  const items: InboxItem[] = [
+    item(1, { goal_id: "g1", agent_id: "lead", created_at: t(1), read_at: t(2), answered_at: t(3), reply: "yes" }),
+    item(2, { goal_id: "g1", agent_id: "lead", created_at: t(4) }), // open question
+    item(3, { goal_id: "g1", agent_id: "", kind: "info", created_at: t(5), read_at: t(6) }), // agent-office, read
+    item(4, { goal_id: "g2", agent_id: "arch", kind: "info", created_at: t(9), read_at: t(9) }),
+    item(5, { agent_id: "asst", kind: "briefing", created_at: t(7) }),
+    item(6, { agent_id: "asst", kind: "briefing", created_at: t(8), read_at: t(8) }),
+    item(7, { kind: "info", agent_id: "", created_at: t(2) }), // a restart notice: no goal
+  ];
+
+  it("groups by goal, then agent, open groups first, answered and read items folded", () => {
+    const v = groupInbox(items);
+    expect(v.groups.map((g) => [g.goalId, g.open])).toEqual([["g1", 1], ["", 1], ["g2", 0]]);
+    const g1 = v.groups[0];
+    expect(g1.agents.map((a) => [a.agentId, a.open.map((i) => i.id), a.earlier.map((i) => i.id)]))
+      .toEqual([["lead", [2], [1]], ["", [], [3]]]);
+  });
+
+  it("keeps briefings apart, newest first", () => {
+    expect(groupInbox(items).briefings.map((i) => i.id)).toEqual([6, 5]);
+    expect(groupInbox(items).groups.flatMap((g) => g.agents.flatMap((a) => [...a.open, ...a.earlier])).some((i) => i.kind === "briefing"))
+      .toBe(false);
+  });
+
+  it("counts unread and unanswered items as open", () => {
+    expect(isOpen(item(1, { read_at: at }))).toBe(true); // a question without an answer
+    expect(isOpen(item(1, { kind: "info", read_at: at }))).toBe(false);
+    expect(isOpen(item(1, { kind: "info" }))).toBe(true);
   });
 });

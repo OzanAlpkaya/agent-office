@@ -173,6 +173,7 @@ function LiveTerminal({ agent, onResume }: Props): JSX.Element {
           {status.exited ? (
             <span>
               The agent process has exited.{" "}
+              {agent.exit_detail && <strong className="exit-detail" data-testid="terminal-exit-detail">{agent.exit_detail} </strong>}
               <ResumeNote agent={agent} />{" "}
               {agent.resumable && <button onClick={onResume}>Resume</button>}
             </span>

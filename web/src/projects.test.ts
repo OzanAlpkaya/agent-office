@@ -60,7 +60,7 @@ describe("projects", () => {
 describe("project settings form", () => {
   it("turns empty fields into inherited settings and dollars into micro-USD", () => {
     const s = settingsOf({ pack: " node ", model: "", maxAgents: "2", github: "off", budgetSessionUSD: "0.25",
-      budgetGoalUSD: "", egress: "registry.npmjs.org, , example.com" });
+      budgetGoalUSD: "", egress: "registry.npmjs.org, , example.com", workerMemory: "", accessDecider: "", leadHosts: "" });
     expect(s).toEqual({ pack: "node", max_agents: 2, github: false, budget_session_micro_usd: 250000,
       egress_allow: ["registry.npmjs.org", "example.com"] });
   });
@@ -74,6 +74,14 @@ describe("project settings form", () => {
   it("round-trips a project's settings through the form", () => {
     const base = { pack: "go", model: "haiku", max_agents: 3, github: true, budget_goal_micro_usd: 1_500_000, egress_allow: ["a.example"] };
     expect(settingsOf(draftOf(base), base)).toEqual(base);
+  });
+
+  it("sets the worker memory and who decides access requests (Phase 16)", () => {
+    const base = { worker_memory: "4g", access_decider: "lead_policy" as const, lead_access_hosts: ["storage.googleapis.com", ".example.org"] };
+    expect(draftOf(base)).toMatchObject({ workerMemory: "4g", accessDecider: "lead_policy", leadHosts: "storage.googleapis.com, .example.org" });
+    expect(settingsOf(draftOf(base), base)).toEqual(base);
+    expect(settingsOf({ ...draftOf(base), accessDecider: "", leadHosts: "", workerMemory: "" }, base)).toEqual({});
+    expect(() => settingsOf({ ...draftOf({}), workerMemory: "4 GB" })).toThrow("Worker memory");
   });
 
   it("refuses what is not a number", () => {
