@@ -1,6 +1,6 @@
 # Phase 14 plan: Multi-project office
 
-- **Status:** In progress on `phase-14/multi-project`. Written 2026-11-11 with the recommended option
+- **Status:** Done on `phase-14/multi-project`, waiting for Ozan's review (not merged). Written 2026-11-11 with the recommended option
   for every open question and executed straight away, as Ozan asked ("run it like the earlier
   phases: plan with the recommended options, no check-ins, one summary at the end"). Every decision
   is listed in the end-of-phase summary; nothing is merged until Ozan has read it.
@@ -219,4 +219,30 @@ All taken with the recommended option, as asked; listed again in the end-of-phas
 
 ## Changes during the phase
 
-(appended as the phase runs)
+- **Task lookup before the cap.** `Start` now looks up the task before reserving a slot, so a task
+  id of another project is "not found" whatever the cap (found by `TestProjectRoutesAreIsolated`).
+- **Retention per project.** Event retention became a per-project query run by each engine
+  instead of a hub loop: simpler, and a removed project's data stays as removal promises.
+- **No shared world reducer.** The full world (`useWorld`) kept its own state; the light watchers
+  have a small pure reducer of their own (`reduceLight`) over the same parsed messages, and both
+  feed the one `waitingOnUser`. Extracting the full reducer would have touched every update path of
+  the main view for no behaviour change.
+- **The title** keeps "(n) agent-office" with one project and adds the project's name with several,
+  so single-project use looks exactly as before.
+- **e2e:** the single-project runs reach their project through the daemon's default project
+  (`projectPath`); the first full run's `TestEndToEnd` failed its cleanup check because the
+  playground repository held five stale worktree entries from an earlier session (2026-11-07),
+  which the daemon's start-up `git worktree prune` (unchanged behaviour) removed; the rerun passed.
+- **Independent code review** (5 fixes): an engine's shutdown now ends its event subscriptions (the
+  UI froze on a project's old engine after a settings change); new settings are checked before the
+  project stops and a failed reopen restores the old ones; a failed removal no longer leaves a
+  closed engine registered; open agent tabs are kept per project; the UI opens the daemon's default
+  project first. Plus: `project set --inherit` takes the API names and refuses a flag for the same
+  setting; a light watcher stops on sign-out.
+- **Independent security review** (no cross-project reach found for sandboxed agents; 4 fixes):
+  adding a repository and changing pack, `secrets_dir`, `egress_allow` or GitHub settings need this
+  machine (remote devices can still rename, change models, caps and budgets, retry and remove);
+  `secrets_dir` must be the daemon's secrets dir or inside it; agents' workspaces and linked
+  worktrees cannot be registered; settings are logged on every add and change; host mode warns that
+  isolation between projects holds for sandboxed agents only. Backlog: purge, project checks in the
+  queries themselves, a GitHub token per project, host paths in errors to remote devices.

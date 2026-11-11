@@ -540,10 +540,30 @@ Added by Ozan after Phase 13 was merged (2026-11-11).
 - Restart and restore work per project. Usage shows totals per project and overall.
 
 **Definition of Done**
-- [ ] Two projects with different packs (go and node) run sandboxed teams at the same time, end to
-      end.
-- [ ] Isolation tests: an agent in project A cannot reach project B's tasks, messages, worktrees or
-      memory through any socket or MCP tool.
-- [ ] The daemon-wide agent cap holds across projects.
-- [ ] After a daemon SIGKILL, both projects come back with their agents restored.
-- [ ] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass.
+- [x] Two projects with different packs (go and node) run sandboxed teams at the same time, end to
+      end: `TestMultiProjectEndToEnd` (a daemon without `--repo`, both projects added with
+      `agent-office project add`; a Tech Lead and a worker in each at once; the go worker wrote
+      `go version go1.27.3`, the node worker `v20.19.2`; no branch crosses repositories; 35 s,
+      about $0.013 with haiku).
+- [x] Isolation tests: an agent in project A cannot reach project B's tasks, messages, worktrees or
+      memory through any socket or MCP tool: `TestAgentsCannotReachAnotherProject` (every team
+      tool over the real MCP socket with B's ids and names; B's session on A's hook socket),
+      `TestProjectRoutesAreIsolated`, `TestProjectEventsCarryOnlyTheirProject`,
+      `TestSandboxedProjectsAreIsolated` (mounts and visible paths in a real Podman worker).
+      Host-mode agents run as the user; for them isolation is the API and MCP level (ADR 0046).
+- [x] The daemon-wide agent cap holds across projects: `TestHubCapAcrossProjects`,
+      `TestHubCapHoldsUnderConcurrentStarts`, `TestHubCapCountsResumes`, `TestHubProjectCap`; live
+      in `TestMultiProjectEndToEnd` (a fifth start refused in both projects, a slot freed in one
+      used by the other).
+- [x] After a daemon SIGKILL, both projects come back with their agents restored:
+      `TestMultiProjectEndToEnd` (both Tech Leads resumed their conversations, each project's
+      inbox names only its own), `TestHubRestoresEveryProject`.
+- [x] `make check`, `make ui-test` (74), `make sandbox-test` and `make e2e` (host, sandbox, team,
+      workflow, multi-project) pass; the GitHub e2e was not run.
+
+**Backlog** (from Phase 14)
+- Purge a removed project's history, branches and worktrees (removal keeps them today).
+- Enforce the project in the by-id queries themselves (`AND project_id = ?`), as defence in depth
+  behind the engine's checks.
+- A GitHub token file per project (one fine-grained token covers every project's repository today).
+- Error messages to remote devices name host paths (the repository, git's stderr).

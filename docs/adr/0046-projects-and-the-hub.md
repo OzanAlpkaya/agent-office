@@ -97,4 +97,14 @@ Option 2 for both.
   daemon.
 - The memory export's header uses the project's name from when its engine opened; a rename shows
   there after the next reopen.
-- Purging a removed project's data is not offered yet (backlog).
+- **What a remote device may do** (from the Phase 14 security review): adding a repository and
+  changing a project's `pack`, `secrets_dir`, `egress_allow`, `github` or `github_remote` widen
+  what its agents can reach, so they are accepted from this machine only (the UI on loopback, or
+  the CLI over the control socket); a device through `tailscale serve` may rename, change models,
+  caps and budgets, retry and remove. `secrets_dir` must be the daemon's `--secrets-dir` or a
+  directory inside it (e.g. one per project). Agents' worktrees and sandbox clones (anything under
+  the data dir) and linked worktrees cannot be registered. Every add and change logs the settings.
+- One GitHub token file and one Claude token serve every project: the GitHub token should be a
+  fine-grained token for exactly the repositories of the projects that push.
+- Backlog: purging a removed project's data; the project in the by-id queries themselves as
+  defence in depth; a GitHub token per project; host paths in error messages to remote devices.
