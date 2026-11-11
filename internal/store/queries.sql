@@ -80,6 +80,17 @@ UPDATE agents SET state = ?, activity = ? WHERE id = ?;
 UPDATE agents SET state = 'exited', activity = '', exited_at = ?, exit_code = ?, exit_reason = ?
 WHERE id = ?;
 
+-- name: SetAgentExitDetail :exec
+-- Why the agent exited, in plain words (ADR 0051).
+UPDATE agents SET exit_signal = ?, oom_killed = ?, exit_detail = ? WHERE id = ?;
+
+-- name: GetAutoResumes :one
+SELECT auto_resumes FROM agents WHERE id = ?;
+
+-- name: AddAutoResume :one
+-- Counts an automatic resume (ADR 0051); the caller checks the count it returns.
+UPDATE agents SET auto_resumes = auto_resumes + 1 WHERE id = ? RETURNING auto_resumes;
+
 -- name: MarkAgentRemoved :exec
 UPDATE agents SET removed_at = ?, resume_state = '' WHERE id = ?;
 
@@ -159,6 +170,10 @@ RETURNING *;
 -- name: CountPendingMessages :one
 SELECT count(*) FROM messages WHERE to_agent_id = ? AND delivered_at IS NULL AND created_at >= ?;
 
+-- name: ListUndeliveredMessagesTo :many
+-- The stall watchdog's summary (ADR 0052): messages still waiting for these agents.
+SELECT * FROM messages WHERE delivered_at IS NULL AND to_agent_id IN (sqlc.slice(agent_ids)) ORDER BY id LIMIT 50;
+
 -- name: CountMessagesSentSince :one
 SELECT count(*) FROM messages WHERE from_agent_id = ? AND created_at >= ?;
 
@@ -182,10 +197,27 @@ ORDER BY id LIMIT 1;
 SELECT count(*) FROM access_requests WHERE agent_id = ? AND status = 'pending';
 
 -- name: DecideAccessRequest :one
--- Compare-and-swap from pending, so a request is decided once (ADR 0019).
-UPDATE access_requests SET status = ?, decided_at = ?, decided_by = ?
+-- Compare-and-swap from pending, so a request is decided once (ADR 0019). The lead's decisions
+-- carry its agent id and reason (ADR 0053).
+UPDATE access_requests SET status = ?, decided_at = ?, decided_by = ?, decider_agent_id = ?, decision_reason = ?,
+    scope = ?
 WHERE id = ? AND status = 'pending'
 RETURNING *;
+
+-- name: InsertAccessGrant :exec
+INSERT INTO access_grants (project_id, agent_id, host, request_id, created_at) VALUES (?, ?, ?, ?, ?);
+
+-- name: ListAccessGrants :many
+-- The hosts an agent's launch is granted (ADR 0053): its project's, its own, and those of earlier
+-- workers on its task (a sub-task taken back and assigned again continues their work).
+SELECT g.* FROM access_grants g
+WHERE g.project_id = sqlc.arg(project_id) AND (g.agent_id IS NULL OR g.agent_id = sqlc.arg(agent_id)
+    OR g.agent_id IN (SELECT a.id FROM agents a WHERE a.project_id = sqlc.arg(project_id) AND a.task_id IS NOT NULL
+        AND a.task_id = (SELECT b.task_id FROM agents b WHERE b.id = sqlc.arg(agent_id))))
+ORDER BY g.id;
+
+-- name: ListPendingAccessForAgents :many
+SELECT * FROM access_requests WHERE status = 'pending' AND agent_id IN (sqlc.slice(agent_ids)) ORDER BY id;
 
 -- name: ExpireAccessRequests :many
 UPDATE access_requests SET status = 'expired', decided_at = ?, decided_by = 'agent-office'
@@ -213,7 +245,7 @@ SELECT count(*) FROM messages WHERE to_agent_id = ? AND from_agent_id = ? AND de
 -- name: ReopenAgent :exec
 -- A follow-up relaunches an exited agent in its workspace (ADR 0022).
 UPDATE agents SET state = 'starting', activity = '', exited_at = NULL, exit_code = NULL, exit_reason = '',
-    resume_state = ''
+    resume_state = '', exit_signal = '', oom_killed = 0, exit_detail = ''
 WHERE id = ? AND state = 'exited';
 
 -- name: UpsertPullRequest :one

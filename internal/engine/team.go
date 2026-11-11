@@ -288,7 +288,11 @@ func (t team) SendMessage(ctx context.Context, caller string, in mcp.SendMessage
 	if err != nil {
 		return mcp.SendMessageOutput{}, userErr(err)
 	}
-	return mcp.SendMessageOutput{MessageID: m.ID, To: to, Status: "queued"}, nil
+	out := mcp.SendMessageOutput{MessageID: m.ID, To: to, Status: "queued"}
+	if w := e.waitingFor(to); w != "" {
+		out.Status, out.Note = "waiting_for_resume", w
+	}
+	return out, nil
 }
 
 // resolveRecipient applies the addressing rules: a worker reaches only the
@@ -529,6 +533,7 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 	if team {
 		// A lead-managed worker frees its slot for the next sub-task.
 		a.stopAfterTurn = true
+		a.heldSince = now()
 	}
 	e.mu.Unlock()
 	if lead != nil {
@@ -616,15 +621,6 @@ func (e *Engine) setTaskStatus(ctx context.Context, t db.Task, status string) (T
 	return v, nil
 }
 
-func (t team) RequestAccess(ctx context.Context, caller string, in mcp.RequestAccessInput) (mcp.RequestAccessOutput, error) {
-	r, err := t.e.requestAccess(ctx, caller, in.Kind, in.Value, in.Reason)
-	if err != nil {
-		return mcp.RequestAccessOutput{}, userErr(err)
-	}
-	return mcp.RequestAccessOutput{RequestID: r.ID, Status: r.Status,
-		Next: "A human decides in the agent-office UI; you get a message with the decision. Continue with other work or end your turn."}, nil
-}
-
 // normalizeText trims s, removes control characters other than newline and
 // tab, and checks its length (1 to max characters).
 func normalizeText(s string, max int, field string) (string, error) {
@@ -666,7 +662,8 @@ func (e *Engine) workerRules(task *db.Task) string {
 	}
 	if e.opts.Sandbox != nil {
 		p += " Network access is limited to an allowlist; if the task needs another host, use request_access" +
-			" (a human decides)."
+			" (your Tech Lead or a human decides). If a command is killed (\"Killed\", signal 9), it ran out of memory:" +
+			" use less memory instead of retrying it as it is."
 	}
 	return p
 }

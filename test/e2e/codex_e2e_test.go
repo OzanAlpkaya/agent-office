@@ -88,6 +88,9 @@ func TestCodexTeamEndToEnd(t *testing.T) {
 	if worker.ID == "" {
 		t.Fatal("no worker ran")
 	}
+	// The lead can report the goal on the worker's report before the worker's
+	// own turn has ended (seen in a run): its session ends right after.
+	worker = waitAgent(t, listAgents, worker.ID, time.Minute, func(a teamAgent) bool { return a.State == "exited" })
 	if worker.State != "exited" || worker.ExitReason != "reported_done" || worker.LastImport == nil || worker.LastImport.Commits < 1 {
 		t.Fatalf("Codex worker %+v", worker)
 	}

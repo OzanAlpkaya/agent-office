@@ -44,6 +44,9 @@ type agentInfo struct {
 	HasTerminal    bool   `json:"has_terminal"`
 	ExitReason     string `json:"exit_reason"`
 	ResumedFrom    string `json:"resumed_from"`
+	ExitDetail     string `json:"exit_detail"` // Phase 16 (ADR 0051)
+	ExitSignal     string `json:"exit_signal"`
+	OOMKilled      bool   `json:"oom_killed"`
 }
 
 type taskInfo struct {

@@ -223,6 +223,54 @@ func (g Git) IsDirty(ctx context.Context, path string) (bool, error) {
 	return out != "", nil
 }
 
+// ExecConfig lists the repository-level config (local and worktree scope,
+// includes followed) under path that makes git status or add run a command:
+// core.fsmonitor and filter drivers. An agent with access to a host-mode
+// worktree can set them; the daemon then must not run git there unprompted
+// (ADR 0051). The user's global config is the user's own and not listed.
+func (g Git) ExecConfig(ctx context.Context, path string) ([]string, error) {
+	var out []string
+	for _, scope := range []string{"--local", "--worktree"} {
+		res, err := g.run(ctx, path, "config", scope, "--includes", "--name-only", "--get-regexp", `^(core\.fsmonitor|filter\..*)$`)
+		var ge *Error
+		if errors.As(err, &ge) {
+			var ee *exec.ExitError
+			if errors.As(ge.Err, &ee) && (ee.ExitCode() == 1 || (scope == "--worktree" && ee.ExitCode() == 128)) {
+				continue // nothing set, or no worktree config
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, l := range strings.Split(res, "\n") {
+			if l = strings.TrimSpace(l); l != "" {
+				out = append(out, l)
+			}
+		}
+	}
+	return out, nil
+}
+
+// CommitAll commits everything uncommitted in the worktree at path as one
+// commit by name <email> with trailer (ADR 0051: an exiting worker's work is
+// saved). The worktree's hooks and fsmonitor do not run: the agent wrote them.
+// It returns the new commit.
+func (g Git) CommitAll(ctx context.Context, path, name, email, message, trailer string) (string, error) {
+	ident := []string{"-c", "user.name=" + name, "-c", "user.email=" + email, "-c", "core.hooksPath=/dev/null",
+		"-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false"}
+	if _, err := g.run(ctx, path, append(ident, "add", "--all")...); err != nil {
+		return "", err
+	}
+	args := append(ident, "commit", "--quiet", "--no-verify", "-m", message)
+	if trailer != "" {
+		args = append(args, "--trailer", trailer)
+	}
+	if _, err := g.run(ctx, path, args...); err != nil {
+		return "", err
+	}
+	return g.run(ctx, path, "rev-parse", "HEAD")
+}
+
 // CommitsAhead counts commits on branch that are not reachable from base.
 func (g Git) CommitsAhead(ctx context.Context, repo, base, branch string) (int, error) {
 	out, err := g.run(ctx, repo, "rev-list", "--count", base+".."+branch, "--")

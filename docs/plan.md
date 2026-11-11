@@ -5,7 +5,7 @@ approved plan and ends with an updated `PROGRESS.md` and a plain-language summar
 intentionally coarser; their DoD is refined at the start of the phase.
 
 **Order** (decided 2026-11-08): phases run 0–8, then 12, 9, 10, 11, 13, then 14 and 15
-(added 2026-11-11). Numbers are kept, so references in ADRs and plans stay valid.
+(added 2026-11-11), then 16. Numbers are kept, so references in ADRs and plans stay valid.
 
 ---
 
@@ -611,3 +611,79 @@ stays sandboxed with the credential outside its container.
 - Several goals at once in one project, when real use shows the need. Today a project runs one
   goal at a time (one Tech Lead, architect and QA, ADR 0017); the Board says so on the other goals'
   cards. Two goals can already run in parallel as two projects (Phase 14).
+
+---
+
+## Phase 16: Autonomous team
+
+Added by Ozan after Phase 15 was merged (2026-11-11), from running a real sprint (PulseGo Sprint 3)
+where he had to step in about ten times; each time the Tech Lead could have decided itself if it had
+seen what he saw and had the tools to act.
+
+**Goal:** A goal runs from start to "ready for my review" without the user relaying anything.
+
+**Scope** (see `docs/plans/phase-16.md`)
+- Exit reasons: why an agent exited (out of memory, signal, exit code) in plain words, for the lead
+  and the UI.
+- Self-recovery: an agent that dies unexpectedly is resumed once automatically; a second failure
+  goes to the lead with the reason.
+- Lead powers: resume or stop its own workers; take back an in_progress sub-task from an exited
+  worker and assign it again.
+- No lost messages: a message to an agent that is not running is queued and delivered when it
+  resumes.
+- A stall watchdog (daemon code): a goal whose agents are all idle, with nothing waiting on the user,
+  wakes its lead with a status summary.
+- An exiting worker's uncommitted work is saved automatically.
+- Access decisions by the lead, per project (`user`, `lead`, `lead within a host policy`); approvals
+  scoped to the agent or the project, surviving a resume.
+- The lead decides everything reversible itself and asks the user only for merges and pushes,
+  secrets, pack changes and irreversible steps (its role prompt).
+- A worker memory limit per pack or project, with a clear message when a worker hits it.
+- Inbox: grouped by goal and agent, answered items collapsed, briefings apart.
+- Smaller findings: `storage.googleapis.com` and `make` in the go pack; memory proposals must not
+  describe effects they do not have.
+
+**Definition of Done**
+- [x] An OOM-killed sandboxed worker shows "out of memory" (with its limit) in the UI and in a message to
+      its lead, from a real kernel OOM kill: `TestSandboxedOOMKillIsExplained` (and the running watch,
+      `TestSandboxedChildOOMIsReported`), live in `TestAutonomousTeamEndToEnd`; host agents show the
+      signal or exit code (`TestUnexpectedExitResumedOnce`). Podman's `State.OOMKilled` stays false here
+      (measured), so sandbox-init's exit report is the source (ADR 0051).
+- [x] An unexpected exit is resumed once with a message saying what happened; a second one reaches the
+      lead with the reason and is not resumed: `TestUnexpectedExitResumedOnce`, live with two OOM kills.
+- [x] The lead resumes and stops its workers and takes back a sub-task from an exited worker; the next
+      worker continues from the previous branch (and keeps its approvals): `TestLeadResumesAndStopsItsWorkers`,
+      `TestReclaimTaskContinuesFromTheBranch`; live, the lead took both paths in different runs.
+- [x] A message to a stopped agent is delivered when it resumes: `TestMessageToStoppedWorkerWaits`,
+      `TestRelaunchGetsMessagesQueuedWhileEnding`, live (into the resumed session).
+- [x] The stall watchdog wakes the lead with who is idle, the open tasks and the undelivered messages,
+      and stays quiet while something waits on the user: `TestStallWatchdogWakesTheLead`,
+      `TestStallWatchdogWaitsForTheUser`, `TestStallWatchdogIgnoresReportedGoals`, live after 35 s.
+- [x] A worker's uncommitted work is committed and imported when it exits, sandboxed and on the host:
+      `TestSandboxedRemoveKeepsDirtyAndSavesWork`, `TestExitSavesUncommittedWork` (and not when the
+      repository's git config would run a command, `TestHostAutosaveRefusesAgentGitConfig`).
+- [x] A project can let its lead decide access requests, optionally within a host policy, with a recorded
+      reason; approvals for the agent or the project survive a resume; request #4 fixed with a test that
+      fails without the fix: `TestLeadDecidesAccess`, `TestLeadProjectScopeNeedsThePolicy`,
+      `TestUserDecidesByDefault`, `TestSandboxedGrantSurvivesResume`; live, `example.com` reachable from the
+      resumed session.
+- [x] The Tech Lead's prompt has the rule on what it decides and what it asks; the assistant's memory
+      proposals cannot claim effects: `TestBuiltinPromptRules`.
+- [x] `resources.memory` and `worker_memory` set the worker limit; a worker that hits it gets a clear
+      message: `TestLoadValid`/`TestLoadInvalid`, `TestProjectSettingsParseAndValidate`,
+      `TestSandboxedChildOOMIsReported`.
+- [x] The inbox groups by goal and agent, collapses answered items and keeps briefings apart: Vitest
+      (`inbox groups`) and Playwright (`autonomy.spec.ts`).
+- [x] The go pack allows `storage.googleapis.com` and has `make` (4.4.1-2, pinned); image rebuilt.
+- [x] `TestAutonomousTeamEndToEnd` reproduces the incidents with real haiku agents (two real OOM kills,
+      a lead-decided access request, a stopped worker with a waiting message, an interrupted worker while
+      the lead waits) and the goal reaches review with no question to the user (about 150 s per run).
+- [x] `make check` (288 Vitest tests), `make ui-test` (83), `make sandbox-test` (plus `TestWorkerEgress`
+      with `AO_SANDBOX_NET=1`) and `make e2e` (host, sandbox, team, workflow, multi-project, Codex team,
+      autonomy) pass; the GitHub e2e was not run.
+
+**Backlog** (from Phase 16)
+- A resume continues the latest session that finished a turn (ADR 0035): a session killed mid-turn after
+  it got a prompt is skipped, so its partial conversation is not continued (its git work is kept).
+- Revoking project-wide access grants from the UI.
+- Per-sub-task memory limits for one heavy job.

@@ -130,3 +130,66 @@ export function goalBusy(goal: Task, agents: readonly Agent[], tasks: readonly T
       `goal done or stop its ${who}; or add this repository as another project to run both at once.`,
   };
 }
+
+// InboxAgentGroup is one sender's items in a goal: what still needs the user,
+// and the rest (answered or read), shown collapsed.
+export interface InboxAgentGroup {
+  agentId: string; // "" for agent-office itself
+  open: InboxItem[];
+  earlier: InboxItem[];
+}
+
+// InboxGoalGroup is a goal's items ("" for items of no goal).
+export interface InboxGoalGroup {
+  goalId: string;
+  agents: InboxAgentGroup[];
+  open: number;
+  latest: string; // the newest item's created_at (UTC ISO)
+}
+
+export interface InboxView {
+  groups: InboxGoalGroup[];
+  briefings: InboxItem[]; // the assistant's briefings, newest first, kept apart
+}
+
+// isOpen reports whether an item still needs the user: unread, or a
+// question or blocked message without an answer.
+export function isOpen(i: InboxItem): boolean {
+  return needsAnswer(i) || !i.read_at;
+}
+
+// groupInbox groups the inbox by goal, then by agent (Phase 16): groups with
+// open items first, then the most recent; within a group, items newest first.
+// Briefings are kept apart.
+export function groupInbox(items: readonly InboxItem[]): InboxView {
+  const newestFirst = [...items].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id);
+  const briefings = newestFirst.filter((i) => i.kind === "briefing");
+  const goals = new Map<string, InboxGoalGroup>();
+  for (const i of newestFirst) {
+    if (i.kind === "briefing") continue;
+    const gid = i.goal_id ?? "";
+    let g = goals.get(gid);
+    if (!g) {
+      g = { goalId: gid, agents: [], open: 0, latest: i.created_at };
+      goals.set(gid, g);
+    }
+    const aid = i.agent_id ?? "";
+    let a = g.agents.find((x) => x.agentId === aid);
+    if (!a) {
+      a = { agentId: aid, open: [], earlier: [] };
+      g.agents.push(a);
+    }
+    if (isOpen(i)) {
+      a.open.push(i);
+      g.open++;
+    } else {
+      a.earlier.push(i);
+    }
+  }
+  const groups = [...goals.values()];
+  for (const g of groups) {
+    g.agents.sort((x, y) => Number(y.open.length > 0) - Number(x.open.length > 0));
+  }
+  groups.sort((x, y) => Number(y.open > 0) - Number(x.open > 0) || y.latest.localeCompare(x.latest));
+  return { groups, briefings };
+}

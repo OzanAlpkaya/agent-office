@@ -47,6 +47,9 @@ export interface Agent {
   exited_at?: string;
   exit_code?: number;
   exit_reason?: string;
+  exit_signal?: string; // the signal that ended it, e.g. KILL (ADR 0051)
+  oom_killed?: boolean; // the out-of-memory killer ended it
+  exit_detail?: string; // why it ended, in plain words (agent-office's text)
   last_import?: ImportInfo; // sandboxed agents
   resumable: boolean; // exited and can continue its conversation (ADR 0035)
   resumed_from?: string; // the session this one continues
@@ -89,6 +92,7 @@ export interface Status {
   sandbox: SandboxMode;
   image?: string;
   egress?: string[]; // sandboxed agents' allowlist
+  worker_memory?: string; // sandboxed workers' memory limit (ADR 0051)
   pack?: PackStatus;
   warnings: string[];
   github?: { repo: string; base: string; remote: string; reviewer: string; rounds: number };
@@ -407,7 +411,7 @@ export interface Message {
   body: string;
   created_at: string;
   delivered_at?: string;
-  delivery?: "stop_hook" | "pty";
+  delivery?: "stop_hook" | "pty" | "prompt";
 }
 
 // AccessRequest is an agent asking for more access (ADR 0019). The reason is
@@ -421,8 +425,19 @@ export interface AccessRequest {
   status: "pending" | "approved" | "denied" | "expired";
   created_at: string;
   decided_at?: string;
-  decided_by?: string;
+  decided_by?: string; // user | lead | agent-office
+  decider_agent_id?: string; // the Tech Lead that decided (ADR 0053)
+  decision_reason?: string; // the decider's words: render as text only
+  scope?: AccessScope; // an approval's scope
+  decider?: "user" | "lead"; // a pending request: who is asked; the user can always decide first
 }
+
+// AccessScope is who an approval covers (ADR 0053): the asking agent in every
+// later session, or every agent of the project.
+export type AccessScope = "agent" | "project";
+
+// Who decides a project's access requests (ADR 0053).
+export type AccessDecider = "user" | "lead" | "lead_policy";
 
 // A project's overrides of the daemon's flags (ADR 0046); a missing field
 // inherits. Money is integer micro-USD (ADR 0026).
@@ -439,6 +454,9 @@ export interface ProjectSettings {
   review_rounds?: number;
   budget_session_micro_usd?: number;
   budget_goal_micro_usd?: number;
+  access_decider?: AccessDecider; // default user (ADR 0053)
+  lead_access_hosts?: string[]; // lead_policy: hosts the Tech Lead may approve
+  worker_memory?: string; // sandboxed workers' memory limit, e.g. 4g (ADR 0051)
 }
 
 // A registered project (ADR 0046): one repository with its own team.
@@ -836,7 +854,8 @@ export function projectApi(projectId: string) {
       const msgs: unknown = await request("GET", `${base}/agents/${id}/messages`);
       return Array.isArray(msgs) ? msgs.filter(isMessage) : [];
     },
-    approveAccess: (id: number): Promise<AccessRequest> => request("POST", `${base}/access-requests/${id}/approve`),
+    approveAccess: (id: number, scope?: AccessScope): Promise<AccessRequest> =>
+      request("POST", `${base}/access-requests/${id}/approve`, scope ? { scope } : undefined),
     denyAccess: (id: number): Promise<AccessRequest> => request("POST", `${base}/access-requests/${id}/deny`),
     createTask: (title: string, description: string): Promise<Task> =>
       request("POST", `${base}/tasks`, { title, description }),

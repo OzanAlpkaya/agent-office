@@ -2,7 +2,7 @@
 // settings, retry or remove it. Settings left empty inherit the daemon's
 // flags, shown as placeholders.
 import { type JSX, useState } from "react";
-import { type DaemonStatus, type Project, type ProjectSettings, api } from "./api";
+import { type AccessDecider, type DaemonStatus, type Project, type ProjectSettings, api } from "./api";
 import { formatMoney } from "./usage";
 
 // Failure is the last action's error, shown where that action was asked for.
@@ -20,6 +20,9 @@ export interface SettingsDraft {
   budgetSessionUSD: string;
   budgetGoalUSD: string;
   egress: string;
+  workerMemory: string; // e.g. 4g (ADR 0051)
+  accessDecider: "" | AccessDecider; // ADR 0053
+  leadHosts: string; // comma-separated
 }
 
 const usd = (micro: number | undefined): string => (micro === undefined ? "" : String(micro / 1e6));
@@ -30,6 +33,8 @@ export function draftOf(s: ProjectSettings): SettingsDraft {
     github: s.github === undefined ? "" : s.github ? "on" : "off",
     budgetSessionUSD: usd(s.budget_session_micro_usd), budgetGoalUSD: usd(s.budget_goal_micro_usd),
     egress: (s.egress_allow ?? []).join(", "),
+    workerMemory: s.worker_memory ?? "", accessDecider: s.access_decider ?? "",
+    leadHosts: (s.lead_access_hosts ?? []).join(", "),
   };
 }
 
@@ -60,6 +65,12 @@ export function settingsOf(d: SettingsDraft, base: ProjectSettings = {}): Projec
   set("budget_goal_micro_usd", microUSD("Goal budget", d.budgetGoalUSD));
   const egress = d.egress.split(",").map((h) => h.trim()).filter((h) => h !== "");
   set("egress_allow", egress.length > 0 ? egress : undefined);
+  const mem = d.workerMemory.trim();
+  if (mem !== "" && !/^[1-9][0-9]{0,5}[mg]$/.test(mem)) throw new Error("Worker memory: a size such as 512m or 4g");
+  set("worker_memory", mem || undefined);
+  set("access_decider", d.accessDecider || undefined);
+  const hosts = d.leadHosts.split(",").map((h) => h.trim()).filter((h) => h !== "");
+  set("lead_access_hosts", hosts.length > 0 ? hosts : undefined);
   return s;
 }
 
@@ -69,6 +80,8 @@ function inherited(d: ProjectSettings | undefined): Record<keyof SettingsDraft, 
     pack: d?.pack ?? "", model: d?.model || "CLI default", maxAgents: String(d?.max_agents ?? ""),
     github: d?.github ? "on" : "off", budgetSessionUSD: money(d?.budget_session_micro_usd),
     budgetGoalUSD: money(d?.budget_goal_micro_usd), egress: (d?.egress_allow ?? []).join(", ") || "none",
+    workerMemory: d?.worker_memory || "pack's or --sandbox-memory", accessDecider: d?.access_decider ?? "user",
+    leadHosts: (d?.lead_access_hosts ?? []).join(", ") || "none",
   };
 }
 
@@ -76,7 +89,7 @@ function SettingsFields({ draft, onChange, defaults, sandboxed }: {
   draft: SettingsDraft; onChange: (d: SettingsDraft) => void; defaults?: ProjectSettings; sandboxed: boolean;
 }): JSX.Element {
   const inh = inherited(defaults);
-  const field = (k: Exclude<keyof SettingsDraft, "github">, label: string, help: string): JSX.Element => (
+  const field = (k: Exclude<keyof SettingsDraft, "github" | "accessDecider">, label: string, help: string): JSX.Element => (
     <label className="setting">
       <span>{label}</span>
       <input value={draft[k]} placeholder={`daemon: ${inh[k] || "none"}`} title={help} aria-label={label}
@@ -99,11 +112,29 @@ function SettingsFields({ draft, onChange, defaults, sandboxed }: {
       {field("budgetSessionUSD", "Session budget ($)", "refuse API requests once a session's estimated cost reaches this; 0 = off")}
       {field("budgetGoalUSD", "Goal budget ($)", "refuse API requests once a goal's estimated cost reaches this; 0 = off")}
       {sandboxed && field("egress", "Extra egress", "host names its sandboxed agents may reach, comma-separated")}
+      {sandboxed && field("workerMemory", "Worker memory", "each sandboxed worker's memory limit, e.g. 4g")}
+      {sandboxed && (
+        <label className="setting">
+          <span>Access decisions</span>
+          <select value={draft.accessDecider} aria-label="Access decisions" title="who decides the agents' network access requests"
+            onChange={(e) => onChange({ ...draft, accessDecider: e.target.value as SettingsDraft["accessDecider"] })}>
+            <option value="">daemon: {inh.accessDecider}</option>
+            <option value="user">you</option>
+            <option value="lead">the Tech Lead, with a recorded reason</option>
+            <option value="lead_policy">the Tech Lead, for the hosts below; you for the rest</option>
+          </select>
+        </label>
+      )}
+      {sandboxed && draft.accessDecider === "lead_policy" &&
+        field("leadHosts", "Tech Lead may approve", "hosts the Tech Lead may approve, comma-separated; .example.com for subdomains")}
     </div>
   );
 }
 
-const emptyDraft: SettingsDraft = { pack: "", model: "", maxAgents: "", github: "", budgetSessionUSD: "", budgetGoalUSD: "", egress: "" };
+const emptyDraft: SettingsDraft = {
+  pack: "", model: "", maxAgents: "", github: "", budgetSessionUSD: "", budgetGoalUSD: "", egress: "", workerMemory: "",
+  accessDecider: "", leadHosts: "",
+};
 
 export function ProjectsPanel({ projects, current, status, running, onSelect }: {
   projects: Project[]; current?: string; status?: DaemonStatus;

@@ -12,7 +12,7 @@ only narrow it. The workflow around the behaviours is described in the architect
 | Behaviour | What it does | Team tools at most | Workspace | Reports to |
 |---|---|---|---|---|
 | `architect` | agrees the goal's plan with you before work starts; ends when you approve it | `list_tasks`, `send_message`, `message_user`, `submit_plan`, `list_memory` | read-only | `user` |
-| `lead` | the Tech Lead: executes the plan, assigns sub-tasks, starts QA, stays until the goal is done | `create_task`, `assign_task`, `list_tasks`, `send_message`, `message_user`, `start_qa`, `report_done`, `request_access`, `list_memory` | read-only | `architect`, `user` |
+| `lead` | the Tech Lead: executes the plan, assigns sub-tasks, starts QA, stays until the goal is done | `create_task`, `assign_task`, `list_tasks`, `send_message`, `message_user`, `start_qa`, `report_done`, `request_access`, `list_memory`, `resume_agent`, `stop_agent`, `reclaim_task`, `decide_access` (ADR 0051, 0053) | read-only | `architect`, `user` |
 | `worker` | builds one sub-task on its own branch | `list_tasks`, `send_message`, `message_user`, `report_done`, `report_no_change`, `request_access`, `list_memory` | read-write | `lead` |
 | `qa` | merges the reported branches, tests them, reports bugs | `list_tasks`, `send_message`, `report_qa`, `request_access`, `list_memory` | read-write | `lead` |
 | `reviewer` | reviews one pull request | `list_tasks`, `submit_review` | read-write | none |

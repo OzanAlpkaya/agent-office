@@ -54,10 +54,14 @@ func TestWorkerArgsIsolation(t *testing.T) {
 			t.Errorf("missing %s %s", want[0], want[1])
 		}
 	}
-	for _, flag := range []string{"--read-only", "--cap-drop=all", "--rm", "--init", "--pull=never", "-it", "--userns=host", "--detach-keys="} {
+	for _, flag := range []string{"--read-only", "--cap-drop=all", "--init", "--pull=never", "-it", "--userns=host", "--detach-keys="} {
 		if !slices.Contains(opts, flag) {
 			t.Errorf("missing %s", flag)
 		}
+	}
+	// ADR 0051: the daemon inspects the ended worker, then removes it.
+	if slices.Contains(opts, "--rm") {
+		t.Error("a worker must not run with --rm")
 	}
 	joined := strings.Join(opts, " ")
 	for _, bad := range []string{"keep-id", "--privileged", "--network host", "--net=host", "--cap-add", "--secret", ".ssh", "docker.sock"} {

@@ -1,6 +1,6 @@
 import { type JSX, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
-  type AccessRequest, type Agent, type AgentState, ApiError, type ApproveResult, type AuthSession, type ImportInfo, type Kind, type Message,
+  type AccessRequest, type AccessScope, type Agent, type AgentState, ApiError, type ApproveResult, type AuthSession, type ImportInfo, type Kind, type Message,
   type DaemonStatus, type Project, type Role, type RoleInfo, type SandboxEvent, type Spec, type Status, type Task, type TaskStatus,
   api as daemonApi, projectApi,
 } from "./api";
@@ -45,6 +45,7 @@ const exitLabel: Record<string, string> = {
   goal_done: "goal marked done",
   plan_approved: "plan approved",
   resume_failed: "resume failed: the agent CLI could not load the previous conversation",
+  stopped_by_lead: "stopped by the Tech Lead",
 };
 
 // What each kind of agent does (ADR 0029); the role name is shown next to it.
@@ -85,6 +86,7 @@ const eventLabel: Record<string, string> = {
   import_failed: "Import failed",
   api_budget: "Budget spent",
   api_meter: "Usage not readable",
+  oom_kill: "Out of memory",
 };
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
@@ -415,7 +417,7 @@ export function App({
                 setApprovalsOpen(false);
                 reviewPlan(goalId);
               }}
-              onApprove={(r) => void run(() => api.approveAccess(r.id))}
+              onApprove={(r, scope) => void run(() => api.approveAccess(r.id, scope))}
               onDeny={(r) => void run(() => api.denyAccess(r.id))}
             />
             <OtherProjects elsewhere={elsewhere} run={run} onSwitch={(id, agentId) => {
@@ -670,7 +672,11 @@ function AgentCard({
         <div className="small muted">
           {exitLabel[a.exit_reason ?? ""] ?? a.exit_reason ?? "exited"}
           {a.exit_code !== undefined && ` · exit code ${a.exit_code}`}
+          {a.exit_signal && ` · signal ${a.exit_signal}`}
         </div>
+      )}
+      {a.state === "exited" && a.exit_detail && (
+        <div className={`small exit-detail ${a.oom_killed ? "oom" : ""}`} data-testid="exit-detail">{a.exit_detail}</div>
       )}
       {a.last_import && <ImportLine imp={a.last_import} branch={a.branch} />}
       {a.worktree_status === "kept" && (
@@ -825,6 +831,7 @@ function OtherProjects({ elsewhere, run, onSwitch }: {
                       <div className="small muted">Agent&apos;s reason: <span className="quote">{r.reason}</span></div>
                       <div className="row">
                         <button onClick={() => void run(() => papi.approveAccess(r.id))}>Allow for this agent</button>
+                        <button onClick={() => void run(() => papi.approveAccess(r.id, "project"))}>Allow for the project</button>
                         <button className="danger" onClick={() => void run(() => papi.denyAccess(r.id))}>Deny</button>
                       </div>
                     </div>
@@ -847,7 +854,7 @@ function Approvals({ waiting, elsewhere = 0, taskTitle, onOpenAgent, onOpenInbox
   onOpenAgent: (id: string) => void;
   onOpenInbox: () => void;
   onReviewPlan: (goalId: string) => void;
-  onApprove: (r: AccessRequest) => void;
+  onApprove: (r: AccessRequest, scope?: AccessScope) => void; // no scope: the asking agent (ADR 0053)
   onDeny: (r: AccessRequest) => void;
 }): JSX.Element {
   if (waiting.length === 0 && elsewhere > 0) return <p className="muted approvals-empty">Nothing waits in this project.</p>;
@@ -904,12 +911,18 @@ function Approvals({ waiting, elsewhere = 0, taskTitle, onOpenAgent, onOpenInbox
                   {r.kind === "domain" ? <>network access to <span className="mono strong">{r.value}</span></> : `${r.kind} ${r.value}`}
                 </div>
                 <div className="small muted">Agent&apos;s reason: <span className="quote">{r.reason}</span></div>
+                {r.decider === "lead" && (
+                  <div className="small hint">Its Tech Lead decides this one (the project lets it); you can decide first.</div>
+                )}
                 <div className="row">
-                  <button onClick={() => onApprove(r)} title="Adds the host to this agent's allowlist until it exits">
+                  <button onClick={() => onApprove(r, undefined)} title="Adds the host to this agent's allowlist, in later sessions too">
                     Allow for this agent
                   </button>
+                  <button onClick={() => onApprove(r, "project")} title="Adds the host for every agent of this project">
+                    Allow for the project
+                  </button>
                   <button className="danger" onClick={() => onDeny(r)}>Deny</button>
-                  <span className="small muted">Requested {timeOf(r.created_at)} · applies to this agent only</span>
+                  <span className="small muted">Requested {timeOf(r.created_at)}</span>
                 </div>
               </div>
             ))}
@@ -920,7 +933,7 @@ function Approvals({ waiting, elsewhere = 0, taskTitle, onOpenAgent, onOpenInbox
   );
 }
 
-const deliveryLabel: Record<string, string> = { stop_hook: "at end of turn", pty: "typed while idle" };
+const deliveryLabel: Record<string, string> = { stop_hook: "at end of turn", pty: "typed while idle", prompt: "with its resume" };
 
 // MessageList shows messages an agent sent or received, newest first. Bodies
 // are agent-written text.

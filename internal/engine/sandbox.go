@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
@@ -133,6 +134,9 @@ type sandboxRes struct {
 	api       *http.Server
 	secrets   net.Listener    // one-shot pack secrets socket (ADR 0023); nil without secrets
 	grants    *sandbox.Grants // hosts approved at run time (ADR 0019)
+	memory    string          // the worker's memory limit, e.g. "2g" (ADR 0051)
+	oomKills  atomic.Int64    // the worker cgroup's oom_kill count when the running watch last read it
+	oomTold   atomic.Int64    // OOM kills the watch told the agent about: processes it ran, not itself
 }
 
 // eventLimit is the per-agent rate limit for sandbox events.
@@ -252,7 +256,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	su := e.newSessionUsage(l, SandboxPodman)
 
 	res := &sandboxRes{dir: filepath.Join(e.opts.RuntimeDir, "agents", id), container: sandbox.ContainerName(id),
-		grants: &sandbox.Grants{}}
+		grants: &sandbox.Grants{}, memory: e.workerMemory()}
 	cfgDir := filepath.Join(s.AgentsRoot, id, "config")
 	var ln *hooks.Listener
 	var mln *mcp.Listener
@@ -267,6 +271,9 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		return AgentInfo{}, err
 	}
 	if err := os.MkdirAll(res.dir, 0o700); err != nil {
+		return fail(err)
+	}
+	if err := e.loadGrants(ctx, id, res.grants); err != nil { // approvals of earlier sessions (ADR 0053)
 		return fail(err)
 	}
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
@@ -369,7 +376,16 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	res.api = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = res.api.Serve(apiLn) }()
 
-	socks := []string{ln.Path(), mcpPath, egressPath, apiPath}
+	exitReport := filepath.Join(res.dir, exitReportName) // sandbox-init's report (ADR 0051)
+	// A daemon that was killed leaves the previous launch's report behind,
+	// owned by the sandbox user: replace it rather than write into it.
+	if err := os.Remove(exitReport); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fail(err)
+	}
+	if err := os.WriteFile(exitReport, nil, 0o644); err != nil {
+		return fail(err)
+	}
+	socks := []string{ln.Path(), mcpPath, egressPath, apiPath, exitReport}
 	var secretsPath string
 	if len(prep.secrets) > 0 {
 		secretsPath = filepath.Join(res.dir, "secrets.sock")
@@ -405,8 +421,8 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	args, err := sandbox.WorkerArgs(sandbox.WorkerSpec{
 		Instance: s.Instance, AgentID: id, Image: s.Image, Workspace: wsPath, ObjectsDir: prep.objects, ConfigDir: cfgDir,
 		HookSocket: ln.Path(), MCPSocket: mcpPath, MCPConfig: mcpConfig, EgressSocket: egressPath, APISocket: apiPath,
-		SecretsSocket: secretsPath, Skills: skillsPath, AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
-		Git: prep.ident, Memory: s.Memory, Pids: s.Pids, Command: command, ReadOnlyWorkspace: l.def.ReadOnly,
+		SecretsSocket: secretsPath, ExitReport: exitReport, Skills: skillsPath, AgentOffice: s.AgentOffice, Claude: s.Claude, Settings: settingsPath, GitHooks: s.GitHooks,
+		Git: prep.ident, Memory: res.memory, Pids: s.Pids, Command: command, ReadOnlyWorkspace: l.def.ReadOnly,
 		CLI: cliOr(l.cli), Codex: cx.dir, CodexConfig: cx.config, CodexAuth: cx.login, CodexCA: cx.ca,
 	})
 	if err != nil {
@@ -440,6 +456,11 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	e.registerLocked(a, l)
 	view := a.view() // under the lock: the agent's first hook may already be changing its state
 	e.mu.Unlock()
+	// A decision committed after the first load reached only running agents:
+	// load again now that this one is registered (ADR 0053).
+	if err := e.loadGrants(ctx, id, res.grants); err != nil {
+		log.Warn("reload access grants", "err", err)
+	}
 	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "sandbox", SandboxPodman, "branch", branch,
 		"workspace", wsPath, "container", res.container, "image", s.Image, "pack", packName(s.Pack),
 		"secrets", secretNames(prep.secrets), "model", e.modelOf(l.def), "role_name", l.def.Name, "read_only", l.def.ReadOnly)
@@ -447,9 +468,18 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	if codex && l.prompt == "" {
 		e.codexReadyWithoutPrompt(a, log)
 	}
-	e.wg.Add(1)
+	e.wg.Add(2)
 	go e.watch(a)
+	go e.watchMemory(a, res)
 	return view, nil
+}
+
+// workerMemory is a worker's memory limit (ADR 0051).
+func (e *Engine) workerMemory() string {
+	if m := e.opts.Sandbox.Memory; m != "" {
+		return m
+	}
+	return sandbox.DefaultMemory
 }
 
 // codexSettle is how long a Codex TUI takes to come up (Spike G: about a

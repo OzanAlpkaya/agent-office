@@ -70,6 +70,7 @@ type WorkerSpec struct {
 	EgressSocket      string
 	APISocket         string
 	SecretsSocket     string // optional: stack pack secrets, served once to sandbox-init (ADR 0023)
+	ExitReport        string // optional: a file sandbox-init writes its exit report to (ADR 0051)
 	Skills            string // optional: stack pack skills, mounted read-only at ConfigDir/skills (ADR 0023)
 	AgentOffice       string // static agent-office binary
 	Claude            string // the resolved, versioned claude binary
@@ -116,6 +117,22 @@ type HelperSpec struct {
 	Git        GitIdentity // needed by helpers that commit ("save uncommitted work")
 	Env        []string
 	Command    []string
+}
+
+// memoryLimitRe is a configurable worker memory limit (ADR 0051).
+var memoryLimitRe = regexp.MustCompile(`^[1-9][0-9]{0,5}[mg]$`)
+
+// ValidMemory reports whether m is a worker memory limit packs and projects
+// may set: 256m to 256g, as podman takes it (512m, 4g).
+func ValidMemory(m string) bool {
+	if !memoryLimitRe.MatchString(m) {
+		return false
+	}
+	n, _ := strconv.Atoi(m[:len(m)-1])
+	if m[len(m)-1] == 'g' {
+		n *= 1024
+	}
+	return n >= 256 && n <= 256*1024
 }
 
 // ContainerName is the worker container's name for agentID.
@@ -233,10 +250,15 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 	if s.SecretsSocket != "" {
 		mounts = append(mounts, mount{s.SecretsSocket, SecretsSocket, false})
 	}
+	if s.ExitReport != "" {
+		mounts = append(mounts, mount{s.ExitReport, ExitReportFile, false})
+	}
 	if s.Skills != "" {
 		mounts = append(mounts, mount{s.Skills, SkillsDir, true})
 	}
-	args := append(baseArgs(s.Instance, s.AgentID, "worker", mem, pids),
+	// No --rm: the daemon reads the ended container's state (podman inspect,
+	// ADR 0051) and removes it itself.
+	args := append(baseArgs(s.Instance, s.AgentID, "worker", mem, pids, false),
 		"--name", ContainerName(s.AgentID),
 		"-it", "--detach-keys=", // detach keys would swallow Ctrl-P/Ctrl-Q typed into the agent
 		"--stop-timeout", "5")
@@ -281,6 +303,9 @@ func WorkerArgs(s WorkerSpec) ([]string, error) {
 	if s.SecretsSocket != "" {
 		env = append(env, secretsSocketEnv+"="+SecretsSocket)
 	}
+	if s.ExitReport != "" {
+		env = append(env, exitReportEnv+"="+ExitReportFile)
+	}
 	for _, kv := range append(env, extra...) {
 		args = append(args, "-e", kv)
 	}
@@ -302,7 +327,7 @@ func HelperArgs(s HelperSpec) (name string, args []string, err error) {
 		return "", nil, err
 	}
 	name = helperName(s.AgentID)
-	args = append(baseArgs(s.Instance, s.AgentID, "helper", helperMemory, helperPids), "--name", name)
+	args = append(baseArgs(s.Instance, s.AgentID, "helper", helperMemory, helperPids, true), "--name", name)
 	for _, m := range []struct {
 		src, dst string
 		ro       bool
@@ -329,10 +354,14 @@ func HelperArgs(s HelperSpec) (name string, args []string, err error) {
 }
 
 // baseArgs are the isolation flags every agent-office container gets.
-func baseArgs(instance, agentID, role, mem string, pids int) []string {
-	return []string{"run", "--rm", "--init", "--pull=never",
-		"--label", LabelInstance + "=" + instance,
-		"--label", LabelAgent + "=" + agentID, "--label", LabelRole + "=" + role,
+func baseArgs(instance, agentID, role, mem string, pids int, rm bool) []string {
+	args := []string{"run"}
+	if rm {
+		args = append(args, "--rm")
+	}
+	return append(args, "--init", "--pull=never",
+		"--label", LabelInstance+"="+instance,
+		"--label", LabelAgent+"="+agentID, "--label", LabelRole+"="+role,
 		"--network", "none",
 		"--userns=host", // explicit: a containers.conf default of keep-id would undo ADR 0014
 		"--user", ContainerUser,
@@ -340,7 +369,7 @@ func baseArgs(instance, agentID, role, mem string, pids int) []string {
 		"--pids-limit", strconv.Itoa(pids), "--memory", mem, "--memory-swap", mem,
 		"--log-driver", "none", // terminal output and git output are never stored by podman
 		"-w", WorkspaceDir,
-	}
+	)
 }
 
 // containerPaths are used inside every container; the objects dir, mounted at

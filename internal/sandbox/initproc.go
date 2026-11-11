@@ -24,6 +24,11 @@ type InitConfig struct {
 	Env                      []string // the child's environment
 	Stdin                    io.Reader
 	Stdout, Stderr           io.Writer
+
+	// ExitReport is where the report on the child's end is written (ADR
+	// 0051); "" for none. MemoryEvents and MemoryMax are the worker's cgroup
+	// files; empty: the cgroup v2 files at /sys/fs/cgroup.
+	ExitReport, MemoryEvents, MemoryMax string
 }
 
 // InitFromEnv builds the in-container config from the worker environment.
@@ -40,7 +45,7 @@ func InitFromEnv(command []string) InitConfig {
 		EgressAddr: EgressAddr, EgressSocket: os.Getenv("AGENT_OFFICE_EGRESS_SOCKET"),
 		APIAddr: APIAddr, APISocket: os.Getenv("AGENT_OFFICE_API_SOCKET"), SecretsSocket: os.Getenv(secretsSocketEnv),
 		Dirs: nonEmpty(os.Getenv("HOME"), os.Getenv("CLAUDE_CODE_TMPDIR")), Command: command, Env: env,
-		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
+		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, ExitReport: os.Getenv(exitReportEnv),
 	}
 }
 
@@ -101,19 +106,43 @@ func RunInit(ctx context.Context, cfg InitConfig) (int, error) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+	var werr error
 	select {
-	case err := <-done:
-		return exitCode(err)
+	case werr = <-done:
 	case <-ctx.Done():
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		select {
-		case err := <-done:
-			return exitCode(err)
+		case werr = <-done:
 		case <-time.After(10 * time.Second):
 			_ = cmd.Process.Kill()
-			return exitCode(<-done)
+			werr = <-done
 		}
 	}
+	code, err := exitCode(werr)
+	if err == nil {
+		cfg.report(code, signalOf(werr))
+	}
+	return code, err
+}
+
+// report writes the exit report: how the child ended and what the worker's
+// cgroup saw (ADR 0051).
+func (cfg InitConfig) report(code int, signal string) {
+	if cfg.ExitReport == "" {
+		return
+	}
+	events, max := cfg.MemoryEvents, cfg.MemoryMax
+	if events == "" {
+		events = cgroupMemEvents
+	}
+	if max == "" {
+		max = cgroupMemMax
+	}
+	r := ExitReport{Code: code, Signal: signal, MemoryMax: memoryMax(max)}
+	if n, err := OOMKills(events); err == nil {
+		r.OOMKills = n
+	}
+	writeExitReport(cfg.ExitReport, r)
 }
 
 func nonEmpty(s ...string) []string {
@@ -138,6 +167,17 @@ func exitCode(err error) (int, error) {
 		return ee.ExitCode(), nil
 	}
 	return 0, err
+}
+
+// signalOf is the name of the signal that ended a child ("KILL"), or "".
+func signalOf(err error) string {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			return SignalName(int(ws.Signal()))
+		}
+	}
+	return ""
 }
 
 // Bridge accepts TCP connections on l and pipes each to the unix socket sock.

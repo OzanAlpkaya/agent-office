@@ -71,6 +71,7 @@ type Pack struct {
 	Env           []EnvVar
 	Skills        []string
 	MCPServers    map[string]MCPServer
+	Memory        string // the workers' memory limit, e.g. 4g (resources.memory, ADR 0051); "": the daemon's
 
 	fsys   fs.FS             // the pack directory
 	skills map[string][]byte // skill files read and checked at load, by path under skills/
@@ -157,6 +158,9 @@ type file struct {
 		Args    []string `yaml:"args"`
 		URL     string   `yaml:"url"`
 	} `yaml:"mcp_servers"`
+	Resources *struct {
+		Memory string `yaml:"memory"`
+	} `yaml:"resources"`
 }
 
 // load reads and validates the pack in fsys (the pack directory). dir is the
@@ -205,6 +209,14 @@ func load(fsys fs.FS, dir, source, label string) (*Pack, error) {
 		e.add("description", "%s", msg)
 	}
 
+	if r := f.Resources; r != nil {
+		p.Memory = strings.TrimSpace(r.Memory)
+		if p.Memory == "" {
+			e.add("resources.memory", "missing; give the workers' memory limit such as 4g, or remove `resources`")
+		} else if !sandbox.ValidMemory(p.Memory) {
+			e.add("resources.memory", "%q must be a size between 256m and 256g such as 512m or 4g", p.Memory)
+		}
+	}
 	if f.Toolchain != nil {
 		p.Containerfile = f.Toolchain.Containerfile
 		if p.Containerfile == "" {

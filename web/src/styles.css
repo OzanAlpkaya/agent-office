@@ -395,3 +395,16 @@ button.approval-link { align-self: flex-start; padding: 0.1rem 0.5rem; font-size
 /* Agent CLI (ADR 0050) */
 .badge.cli-codex { color: #7bd88f; border-color: #7bd88f55; }
 .goal-busy { margin: 0.35rem 0 0; border-left: 2px solid #ffb454; padding-left: 0.5rem; }
+
+/* Why an agent exited (ADR 0051). */
+.exit-detail { color: #ffb454; }
+.exit-detail.oom { color: #ff7b72; font-weight: 600; }
+
+/* Inbox groups (Phase 16): by goal, then agent; answered items collapsed. */
+.inbox-group { margin: 0.6rem 0; }
+.inbox-group > h3 { font-size: 0.9rem; margin: 0.2rem 0; }
+.inbox-agent { margin: 0.3rem 0 0.3rem 0.4rem; }
+.inbox-agent > h4 { font-size: 0.8rem; margin: 0.2rem 0; font-weight: 600; }
+.inbox-earlier > summary { cursor: pointer; font-size: 0.8rem; }
+.inbox-briefings { border-top: 1px solid #333; margin-top: 0.8rem; padding-top: 0.4rem; }
+.inbox-group > h3 .badge { margin-left: 0.4rem; }

@@ -519,7 +519,7 @@ func (e *Engine) Briefing(ctx context.Context) (mcp.Briefing, error) {
 	}
 	if reqs, err := e.AccessRequests(ctx); err == nil {
 		for _, r := range reqs {
-			if r.Status == "pending" {
+			if r.Status == "pending" && r.Decider != DecidedByLead { // the lead's to decide (ADR 0053)
 				b.WaitingOnYou = append(b.WaitingOnYou, fmt.Sprintf("Decide the access request of %s for %s %s.",
 					e.labelOf(r.AgentID), r.Kind, r.Value))
 			}

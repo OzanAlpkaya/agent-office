@@ -21,6 +21,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/pack"
 	"github.com/OzanAlpkaya/agent-office/internal/role"
+	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -129,6 +130,9 @@ type Options struct {
 	EventRetention      time.Duration   // reduced events older than this are deleted (ADR 0028); 0: kept
 	RestoreAgents       bool            // resume the agents the previous run's stop interrupted (ADR 0035)
 	HistoryDir          string          // saved terminals of every session (ADR 0036); "": not saved
+	AccessDecider       string          // who decides access requests (ADR 0053): DeciderUser (default), DeciderLead, DeciderLeadPolicy
+	LeadAccessHosts     []string        // DeciderLeadPolicy: the hosts the lead may approve (allowlist entries)
+	StallAfter          time.Duration   // the stall watchdog's wait (ADR 0052); 0: the default, negative: off
 
 	// Message delivery timing (ADR 0018); zero values get the defaults. Tests
 	// shorten them.
@@ -147,8 +151,9 @@ type Options struct {
 type Status struct {
 	Sandbox  string        `json:"sandbox"` // SandboxHost | SandboxPodman
 	Image    string        `json:"image,omitempty"`
-	Egress   []string      `json:"egress,omitempty"` // sandboxed agents' allowlist
-	Pack     *PackStatus   `json:"pack,omitempty"`   // stack pack (ADR 0023)
+	Egress   []string      `json:"egress,omitempty"`        // sandboxed agents' allowlist
+	Memory   string        `json:"worker_memory,omitempty"` // sandboxed workers' memory limit (ADR 0051)
+	Pack     *PackStatus   `json:"pack,omitempty"`          // stack pack (ADR 0023)
 	Warnings []string      `json:"warnings"`
 	GitHub   *GitHubStatus `json:"github,omitempty"`
 	Prices   PriceInfo     `json:"prices"`  // cost estimates (ADR 0026)
@@ -199,6 +204,9 @@ type AgentInfo struct {
 	ExitedAt            *time.Time  `json:"exited_at,omitempty"`
 	ExitCode            *int        `json:"exit_code,omitempty"`
 	ExitReason          string      `json:"exit_reason,omitempty"`
+	ExitSignal          string      `json:"exit_signal,omitempty"`  // the signal that ended it, e.g. KILL (ADR 0051)
+	OOMKilled           bool        `json:"oom_killed,omitempty"`   // the out-of-memory killer ended it
+	ExitDetail          string      `json:"exit_detail,omitempty"`  // why it ended, in plain words
 	LastImport          *ImportInfo `json:"last_import,omitempty"`  // sandboxed agents (ADR 0014)
 	Resumable           bool        `json:"resumable"`              // exited and can continue its conversation (ADR 0035)
 	ResumedFrom         string      `json:"resumed_from,omitempty"` // the session this one continues
@@ -243,6 +251,7 @@ type agentProc struct {
 	reviewID   int64          // reviewers: the review they were started for (ADR 0021)
 	followup   *followupRound // workers relaunched for a review, until they report (ADR 0022); guarded by Engine.mu
 	since      time.Time      // this session's start: older messages are not delivered to it (ADR 0022)
+	heldSince  time.Time      // when it stopped taking messages (its report, or its exit): later ones wait for its next session (ADR 0051); guarded by Engine.mu
 	usage      *sessionUsage  // this session's token usage (ADR 0026); nil for agents of a previous run
 	log        *slog.Logger   // this session's logger: agent, session and task ids (ADR 0028)
 	resumeFrom string         // the session this one continues (ADR 0035); "" for a fresh one
@@ -289,8 +298,10 @@ type Engine struct {
 	ids      *sessionIDs        // running agents' sessions, for log lines (ADR 0028)
 	closing  bool               // Shutdown began: no agent starts any more; guarded by mu
 
-	restartImports sync.WaitGroup    // sandbox imports after a restart; a restore waits for them
-	noRestore      map[string]string // agent id -> why a restore leaves it exited (set before the restore runs)
+	leadHosts      sandbox.Allowlist      // Options.LeadAccessHosts, parsed (ADR 0053)
+	stalls         map[string]*stallState // the stall watchdog's goals (ADR 0052); guarded by mu
+	restartImports sync.WaitGroup         // sandbox imports after a restart; a restore waits for them
+	noRestore      map[string]string      // agent id -> why a restore leaves it exited (set before the restore runs)
 }
 
 // New validates opts, registers the repository as a project, reconciles state
@@ -349,6 +360,15 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 			return nil, err
 		}
 	}
+	switch opts.AccessDecider {
+	case "", DeciderUser, DeciderLead, DeciderLeadPolicy:
+	default:
+		return nil, fmt.Errorf("engine: AccessDecider %q", opts.AccessDecider)
+	}
+	leadHosts, err := sandbox.ParseAllowlist(opts.LeadAccessHosts)
+	if err != nil {
+		return nil, fmt.Errorf("engine: LeadAccessHosts: %w", err)
+	}
 	for _, d := range []string{opts.RuntimeDir, opts.WorktreeRoot} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, fmt.Errorf("engine: %w", err)
@@ -386,6 +406,8 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		startingKind: map[string]bool{},
 		naming:       map[string]bool{},
 		noRestore:    map[string]string{},
+		leadHosts:    leadHosts,
+		stalls:       map[string]*stallState{},
 	}
 	if opts.Sandbox != nil {
 		if err := e.prepareSandbox(); err != nil {
@@ -404,6 +426,8 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	e.stopBG = cancel
 	e.wg.Add(1)
 	go e.retentionLoop(bg)
+	e.wg.Add(1)
+	go e.watchdogLoop(bg)
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
@@ -427,13 +451,6 @@ func (e *Engine) reconcile(ctx context.Context) error {
 	n, err := e.q.MarkUnfinishedAgentsExited(ctx, db.MarkUnfinishedAgentsExitedParams{ExitedAt: nullTime(now()), ProjectID: e.project.ID})
 	if err != nil {
 		return fmt.Errorf("engine: reconcile agents: %w", err)
-	}
-	// Every agent of the previous run is gone, so none of its requests can be
-	// granted any more (ADR 0019).
-	if x, err := e.q.ExpireAllAccessRequests(ctx, db.ExpireAllAccessRequestsParams{DecidedAt: nullTime(now()), ProjectID: e.project.ID}); err != nil {
-		return fmt.Errorf("engine: expire access requests: %w", err)
-	} else if x > 0 {
-		e.log.Info("access requests from the previous run expired", "count", x)
 	}
 	if err := e.git.Prune(ctx, e.project.RepoPath); err != nil {
 		e.log.Warn("git worktree prune failed", "err", err)
@@ -462,6 +479,13 @@ func (e *Engine) reconcile(ctx context.Context) error {
 		close(a.exited)
 		e.agents[r.ID] = a
 		e.order = append(e.order, r.ID)
+	}
+	// ADR 0053: requests of agents that can be resumed stay open (an approval
+	// applies to their next session); the others' expire.
+	for _, id := range e.order {
+		if a := e.agents[id]; !holdsMessages(a) {
+			e.expireAccessLocked(ctx, id)
+		}
 	}
 	// Agents recorded before names existed get one now, in start order (ADR 0043).
 	for _, id := range e.order {
@@ -492,6 +516,7 @@ func (e *Engine) Status() Status {
 	st := Status{Sandbox: SandboxHost, Warnings: append([]string{}, e.opts.Warnings...)}
 	if sb := e.opts.Sandbox; sb != nil {
 		st.Sandbox, st.Image, st.Egress = SandboxPodman, sb.Image, append([]string{}, sb.AllowNames...)
+		st.Memory = e.workerMemory()
 		if p := sb.Pack; p != nil {
 			st.Pack = &PackStatus{Name: p.Name, Description: p.Description, Source: p.Source,
 				Egress: append([]string{}, p.Egress...), Secrets: p.SecretStatus(sb.SecretsDir),
@@ -600,8 +625,11 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 	}
 	if req.base == "" && role == KindWorker && task != nil && task.ParentTaskID.Valid {
 		// A sub-task starts from its goal's work: its dependencies, or the
-		// approved spec (ADR 0031, 0032).
-		if req.base, err = e.subTaskBase(ctx, *task); err != nil {
+		// approved spec (ADR 0031, 0032); a sub-task taken back from an exited
+		// worker, from that worker's branch (ADR 0051).
+		if _, head, ok := e.previousWork(ctx, task.ID); ok {
+			req.base = head
+		} else if req.base, err = e.subTaskBase(ctx, *task); err != nil {
 			return AgentInfo{}, err
 		}
 	}
@@ -859,13 +887,6 @@ func (e *Engine) launch(l launchInfo) (AgentInfo, error) {
 func (e *Engine) watch(a *agentProc) {
 	defer e.wg.Done()
 	<-a.term.Done()
-	code := 0
-	var exitErr *exec.ExitError
-	if err := a.term.ExitErr(); errors.As(err, &exitErr) {
-		code = exitErr.ExitCode()
-	} else if err != nil {
-		code = -1
-	}
 	_ = a.listener.Close()
 	e.mu.Lock()
 	mln := a.mcp
@@ -882,7 +903,9 @@ func (e *Engine) watch(a *agentProc) {
 		_ = os.Remove(a.mcpConfig)
 	}
 	alog := a.logger(e)
+	x := hostExit(a.term.ExitErr())
 	if a.sandbox != nil {
+		x = e.sandboxExit(a.sandbox, a.term.ExitErr(), alog) // before the container and its files are removed
 		e.closeSandbox(a.sandbox, alog)
 		e.mu.Lock()
 		a.sandbox = nil
@@ -901,7 +924,11 @@ func (e *Engine) watch(a *agentProc) {
 		}
 	}
 	a.status = hooks.Status{State: hooks.Exited}
+	code := x.code
 	a.info.ExitedAt, a.info.ExitCode, a.info.ExitReason = &t, &code, reason
+	if a.heldSince.IsZero() {
+		a.heldSince = t
+	}
 	e.syncSlotsLocked()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -909,6 +936,7 @@ func (e *Engine) watch(a *agentProc) {
 		ExitCode: sql.NullInt64{Int64: int64(code), Valid: true}, ExitReason: reason, ID: a.info.ID}); err != nil {
 		alog.Error("persist agent exit", "err", err)
 	}
+	e.recordExitDetailLocked(ctx, a, x, alog)
 	_ = e.q.EndSessions(ctx, db.EndSessionsParams{EndedAt: nullTime(t), AgentID: a.info.ID})
 	if reason == ExitResumeFailed {
 		// It never ran: a later resume continues the session before it (ADR 0035).
@@ -917,7 +945,11 @@ func (e *Engine) watch(a *agentProc) {
 		}
 	}
 	e.publishAgentLocked(a)
-	e.expireAccessLocked(ctx, a.info.ID)
+	if !holdsMessages(a) {
+		// ADR 0053: an agent that can be resumed keeps its requests open; an
+		// approval applies to its next session.
+		e.expireAccessLocked(ctx, a.info.ID)
+	}
 	e.mu.Unlock()
 	if su := a.usage; su != nil {
 		e.mu.Lock()
@@ -933,15 +965,27 @@ func (e *Engine) watch(a *agentProc) {
 	if reason == ExitResumeFailed {
 		e.removeSessionHistory(a)
 	}
-	alog.Info("agent exited", "exit_code", code, "reason", reason)
+	alog.Info("agent exited", "exit_code", code, "reason", reason, "signal", x.signal, "oom_killed", x.oom)
 	close(a.exited)
+	exitWork := 5 * time.Minute
+	if e.shuttingDown() {
+		exitWork = time.Minute // the daemon is stopping: bounded, the next start imports the rest
+	}
+	ictx, icancel := context.WithTimeout(context.Background(), exitWork)
+	// ADR 0051: a worker's uncommitted work is committed before anything else
+	// can happen to its workspace.
+	saved, err := e.autosave(ictx, a, alog)
+	if err != nil {
+		alog.Warn("save uncommitted work on exit", "err", err)
+	} else if saved != "" {
+		alog.Info("uncommitted work saved on exit", "commit", short(saved))
+	}
 	if a.info.Sandbox == SandboxPodman && imports(a.info.Kind) {
 		// ADR 0014: the work reaches the main repository on exit, before a
 		// relaunch (ADR 0022) may start a new session in the workspace.
-		ictx, icancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		_, _ = e.importAgent(ictx, a.info.ID, TriggerExit)
-		icancel()
 	}
+	icancel()
 	close(a.afterExit)
 	if a.reviewID != 0 {
 		e.reviewerExited(a.reviewID, a.info.ID)
@@ -949,6 +993,7 @@ func (e *Engine) watch(a *agentProc) {
 	if a.info.Kind == KindQA {
 		e.qaExited(a.info.ID)
 	}
+	e.afterExit(a, x, saved, alog)
 }
 
 // parseHook reads a hook payload in the format of the agent's CLI.
@@ -1143,6 +1188,9 @@ func (e *Engine) removeAgent(ctx context.Context, id string, force bool) (Remove
 	if a.term != nil {
 		<-a.exited // SessionEnd can arrive before the process is gone
 	}
+	if a.afterExit != nil {
+		<-a.afterExit // the exit's saved work and import (ADR 0051) are done before the workspace goes
+	}
 
 	var res RemoveResult
 	var err error
@@ -1173,6 +1221,7 @@ func (e *Engine) removeAgent(ctx context.Context, id string, force bool) (Remove
 	delete(e.agents, id)
 	e.order = slices.DeleteFunc(e.order, func(s string) bool { return s == id })
 	e.publishLocked(Update{Type: "agent_removed", ID: id})
+	e.expireAccessLocked(ctx, id)
 	e.mu.Unlock()
 	if a.historyDone != nil {
 		<-a.historyDone // the exit's last save, which would create the directory again
@@ -1438,6 +1487,7 @@ func infoFromRow(r db.ListVisibleAgentsRow) AgentInfo {
 		Role: r.Role, Branch: r.Branch,
 		WorktreePath:  r.WorktreePath,
 		WorkspaceKind: r.WorktreeKind, WorktreeStatus: r.WorktreeStatus, StartedAt: r.StartedAt, ExitReason: r.ExitReason,
+		ExitSignal: r.ExitSignal, OOMKilled: r.OomKilled, ExitDetail: r.ExitDetail,
 	}
 	if r.ExitedAt.Valid {
 		t := r.ExitedAt.Time

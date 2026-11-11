@@ -59,7 +59,7 @@ func TestPackOptions(t *testing.T) {
 	cfg.name = "go"
 	sp, warnings, err = packOptions(cfg)
 	if err != nil || sp.pack == nil || !strings.HasPrefix(sp.image, "localhost/agent-office-pack-go:") ||
-		strings.Join(sp.hosts, ",") != "proxy.golang.org,sum.golang.org,extra.example.com" || len(warnings) != 0 {
+		strings.Join(sp.hosts, ",") != "proxy.golang.org,sum.golang.org,storage.googleapis.com,extra.example.com" || len(warnings) != 0 {
 		t.Fatalf("%+v %v %v", sp, warnings, err)
 	}
 

@@ -606,7 +606,15 @@ func (s *server) decideAccess(approve bool) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid access request id")
 			return
 		}
-		ar, err := eng(r).DecideAccess(r.Context(), id, approve)
+		// Optional (ADR 0053): an approval's scope (agent or project) and a reason.
+		var req struct {
+			Scope  string `json:"scope"`
+			Reason string `json:"reason"`
+		}
+		if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
+			return
+		}
+		ar, err := eng(r).DecideAccessAs(r.Context(), id, approve, req.Scope, req.Reason)
 		if err != nil {
 			s.engineError(w, err)
 			return

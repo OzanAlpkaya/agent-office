@@ -43,6 +43,7 @@ func daemonDefaults(cfg serveConfig) engine.ProjectSettings {
 		ReviewRounds:          engine.Ptr(cfg.reviewRounds),
 		BudgetSessionMicroUSD: engine.Ptr(int64(math.Round(cfg.budgetSessionUSD * 1e6))),
 		BudgetGoalMicroUSD:    engine.Ptr(int64(math.Round(cfg.budgetGoalUSD * 1e6))),
+		AccessDecider:         engine.Ptr(engine.DeciderUser), WorkerMemory: engine.Ptr(""),
 	}
 }
 
@@ -246,6 +247,7 @@ type settingsFlags struct {
 	budgetSession, budgetGoal                                *float64
 	inherit                                                  *string
 	roleCLIs, codexModel                                     *string
+	accessDecider, leadHosts, workerMemory                   *string
 }
 
 func addSettingsFlags(fs *flag.FlagSet, set bool) *settingsFlags {
@@ -264,10 +266,15 @@ func addSettingsFlags(fs *flag.FlagSet, set bool) *settingsFlags {
 	f.rounds = fs.Int("review-rounds", 0, "review feedback rounds sent to the worker automatically per pull request")
 	f.budgetSession = fs.Float64("budget-session-usd", 0, "refuse API requests once a session's estimated cost reaches this; 0 = off")
 	f.budgetGoal = fs.Float64("budget-goal-usd", 0, "refuse API requests once a goal's estimated cost reaches this; 0 = off")
+	f.accessDecider = fs.String("access-decider", "", "who decides access requests: user, lead, or lead_policy (the "+
+		"Tech Lead within --lead-access-hosts)")
+	f.leadHosts = fs.String("lead-access-hosts", "", "with lead_policy: hosts the Tech Lead may approve, comma-separated "+
+		"(.example.com for subdomains)")
+	f.workerMemory = fs.String("worker-memory", "", "sandboxed workers' memory limit, e.g. 4g (default: the pack's, else --sandbox-memory)")
 	if set {
 		f.inherit = fs.String("inherit", "", "settings to take from the daemon again, comma-separated, e.g. pack,model "+
 			"(names as in the API: pack, secrets_dir, egress_allow, model, role_models, role_clis, codex_model, max_agents, github, github_remote, "+
-			"reviewer, review_rounds, budget_session_micro_usd, budget_goal_micro_usd)")
+			"reviewer, review_rounds, budget_session_micro_usd, budget_goal_micro_usd, access_decider, lead_access_hosts, worker_memory)")
 	}
 	return f
 }
@@ -317,6 +324,17 @@ func (f *settingsFlags) settings(cur engine.ProjectSettings) (engine.ProjectSett
 			s.BudgetSessionMicroUSD, err = microUSD("--budget-session-usd", *f.budgetSession)
 		case "budget-goal-usd":
 			s.BudgetGoalMicroUSD, err = microUSD("--budget-goal-usd", *f.budgetGoal)
+		case "access-decider":
+			s.AccessDecider = engine.Ptr(*f.accessDecider)
+		case "lead-access-hosts":
+			s.LeadAccessHosts = []string{}
+			for _, h := range strings.Split(*f.leadHosts, ",") {
+				if h = strings.TrimSpace(h); h != "" {
+					s.LeadAccessHosts = append(s.LeadAccessHosts, h)
+				}
+			}
+		case "worker-memory":
+			s.WorkerMemory = engine.Ptr(*f.workerMemory)
 		}
 	})
 	if err != nil {
@@ -362,6 +380,12 @@ func (f *settingsFlags) settings(cur engine.ProjectSettings) (engine.ProjectSett
 				s.BudgetSessionMicroUSD = nil
 			case "budget_goal_micro_usd", "budget_goal_usd":
 				s.BudgetGoalMicroUSD = nil
+			case "access_decider":
+				s.AccessDecider = nil
+			case "lead_access_hosts":
+				s.LeadAccessHosts = nil
+			case "worker_memory":
+				s.WorkerMemory = nil
 			default:
 				return s, fmt.Errorf("--inherit: unknown setting %q", n)
 			}

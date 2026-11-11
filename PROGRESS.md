@@ -1,6 +1,7 @@
 # Progress
 
-**Current phase:** none in progress. Phase 15 (Codex adapter) was merged into `main` on 2026-11-11.
+**Current phase:** Phase 16 (Autonomous team) done on `phase-16/autonomous-team`, waiting for Ozan's review;
+not merged.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -25,6 +26,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 13: Office v2
 - [x] Phase 14: Multi-project office
 - [x] Phase 15: Codex adapter
+- [x] Phase 16: Autonomous team (on its branch, review pending)
 
 ## Log
 
@@ -340,3 +342,23 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   Playwright). The Codex terminal's one warning is Codex's notice that `--dangerously-bypass-hook-trust`
   is on, which agent-office passes on purpose; harmless. Backlog: several goals at once in one
   project. `make check` and `make ui-test` (80) pass. Merged into `main` (`--no-ff`).
+- 2026-11-11: Phase 16 "Autonomous team" added to `docs/plan.md` by Ozan, from his PulseGo Sprint 3 run, and
+  done on `phase-16/autonomous-team`; plan written with the recommended options and executed without a
+  separate approval, as he asked (`docs/plans/phase-16.md`). Measured first: rootless Podman 6.1.4 here
+  reports `State.OOMKilled=false` for real OOM kills and removes the cgroup within milliseconds, so
+  `sandbox-init` writes an exit report from its own cgroup's `memory.events` (Podman's flag is read
+  too). ADRs 0051 (exit reasons in plain words, one automatic resume, saved work on exit, the Tech
+  Lead's `resume_agent` / `stop_agent` / `reclaim_task`, messages that wait for a resume and go into its
+  first prompt), 0052 (a stall watchdog in the daemon wakes the lead of a goal that does not move,
+  bounded nudges, then the user), 0053 (access decisions by the Tech Lead per project, optionally within
+  a host policy; approvals stored as grants for the agent, its sub-task's later workers, or the project;
+  fixes request #4); ADR 0019 amended. Migration 0015; no new dependencies. Worker memory per pack
+  (`resources.memory`) and project (`worker_memory`), a running OOM watch, the Tech Lead's rule on what
+  it decides and what it asks, the assistant's memory rule, the go pack with `make` and
+  `storage.googleapis.com`, a grouped inbox. An independent code review led to 10 fixes and a security
+  review to 2. `TestAutonomousTeamEndToEnd` reproduces the incidents with real haiku agents and real
+  kernel OOM kills; its runs found 3 more bugs (an OOM death read as a plain kill, a waiting message lost
+  when a resumed worker reported in its first turn, an approval not reaching the reassigned worker), and
+  the full `make e2e` found a restore regression of the phase (a leftover exit report); all fixed with
+  tests.
+

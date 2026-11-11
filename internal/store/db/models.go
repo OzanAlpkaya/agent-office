@@ -9,16 +9,28 @@ import (
 	"time"
 )
 
-type AccessRequest struct {
+type AccessGrant struct {
 	ID        int64
-	AgentID   string
-	Kind      string
-	Value     string
-	Reason    string
-	Status    string
+	ProjectID string
+	AgentID   sql.NullString
+	Host      string
+	RequestID int64
 	CreatedAt time.Time
-	DecidedAt sql.NullTime
-	DecidedBy string
+}
+
+type AccessRequest struct {
+	ID             int64
+	AgentID        string
+	Kind           string
+	Value          string
+	Reason         string
+	Status         string
+	CreatedAt      time.Time
+	DecidedAt      sql.NullTime
+	DecidedBy      string
+	DeciderAgentID string
+	DecisionReason string
+	Scope          string
 }
 
 type Agent struct {
@@ -40,6 +52,10 @@ type Agent struct {
 	ResumeState         string
 	Name                string
 	Cli                 string
+	ExitSignal          string
+	OomKilled           bool
+	ExitDetail          string
+	AutoResumes         int64
 }
 
 type Device struct {

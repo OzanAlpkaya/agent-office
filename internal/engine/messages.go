@@ -76,12 +76,13 @@ func (e *Engine) queueMessage(ctx context.Context, from, to, body string, limite
 	e.mu.Lock()
 	r, ok := e.agents[to]
 	switch {
-	case !ok || !r.running():
+	case !ok:
 		e.mu.Unlock()
 		return Message{}, invalid("agent %s is not running", to)
-	case r.stopAfterTurn:
+	case (!r.running() || r.stopAfterTurn) && !holdsMessages(r):
+		// ADR 0051: an agent that can be resumed keeps its messages until then.
 		e.mu.Unlock()
-		return Message{}, invalid("agent %s has reported done and is ending its session", to)
+		return Message{}, invalid("agent %s is not running and cannot be resumed, so it cannot get messages", to)
 	}
 	e.mu.Unlock()
 	if limited {
@@ -116,11 +117,45 @@ func (e *Engine) queueMessage(ctx context.Context, from, to, body string, limite
 	e.log.Info("message queued", "message_id", m.ID, "from", from, "from_user", fromUser, "to", to, "chars", len([]rune(body)))
 	e.mu.Lock()
 	e.publishLocked(Update{Type: "message", Message: &m})
-	if r.status.State == hooks.Idle {
-		e.scheduleDeliveryLocked(ctx, r)
+	if cur := e.agents[to]; cur != nil && cur.status.State == hooks.Idle {
+		e.scheduleDeliveryLocked(ctx, cur) // the current session: a resume may have replaced r
 	}
 	e.mu.Unlock()
 	return m, nil
+}
+
+// holdsMessages reports whether an agent that is not running (or is ending
+// after its report) can still get messages: once it is resumed or relaunched
+// in its workspace, they are delivered (ADR 0051).
+func holdsMessages(a *agentProc) bool {
+	return resumable(a.info.Kind) && a.info.WorktreeStatus != WorktreeRemoved
+}
+
+// waitingFor describes a recipient that gets a message only once it is
+// resumed, or "" for a running one; for the sender.
+func (e *Engine) waitingFor(id string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	a, ok := e.agents[id]
+	if !ok || (a.running() && !a.stopAfterTurn) {
+		return ""
+	}
+	why := "has reported and is ending its session"
+	if !a.running() {
+		why = "is not running (" + exitWords(a.info) + ")"
+	}
+	return fmt.Sprintf("agent %s %s: the message waits and is delivered when it is resumed (resume_agent)", teamLabel(a.info.Name, id), why)
+}
+
+// exitWords is a short reason for an exited agent.
+func exitWords(info AgentInfo) string {
+	if info.ExitDetail != "" {
+		return "exited: " + strings.TrimSuffix(info.ExitDetail, ".")
+	}
+	if info.ExitReason != "" {
+		return "exited: " + strings.ReplaceAll(info.ExitReason, "_", " ")
+	}
+	return "exited"
 }
 
 // onHookLocked runs the state machine for one hook event and returns the
@@ -274,6 +309,49 @@ func (e *Engine) deliverIdle(id string) {
 			m.DeliveredAt, m.Delivery = nil, ""
 			e.publishLocked(Update{Type: "message", Message: &m})
 		}
+	}
+}
+
+// DeliveryPrompt: messages that waited for an agent, put into the first
+// prompt of the session that resumes or relaunches it (ADR 0051).
+const DeliveryPrompt = "prompt"
+
+// withHeldMessages claims agent id's undelivered messages queued since
+// since and appends them to prompt, framed like any delivery (ADR 0018).
+func (e *Engine) withHeldMessages(ctx context.Context, id string, since time.Time, prompt string) (string, []Message) {
+	rows, err := e.q.ClaimMessages(ctx, db.ClaimMessagesParams{DeliveredAt: nullTime(now()), Delivery: DeliveryPrompt,
+		ToAgentID: id, Since: since})
+	if err != nil {
+		e.log.Error("claim messages for a first prompt", "agent_id", id, "err", err)
+		return prompt, nil
+	}
+	if len(rows) == 0 {
+		return prompt, nil
+	}
+	slices.SortFunc(rows, func(a, b db.Message) int { return cmp.Compare(a.ID, b.ID) })
+	msgs := make([]Message, 0, len(rows))
+	e.mu.Lock()
+	for _, r := range rows {
+		m := messageFromRow(r)
+		msgs = append(msgs, m)
+		e.log.Info("message delivered", "agent_id", id, "message_id", m.ID, "delivery", DeliveryPrompt)
+		e.publishLocked(Update{Type: "message", Message: &m})
+	}
+	names := e.namesLocked()
+	e.mu.Unlock()
+	return prompt + "\n\n" + formatMessages(msgs, names), msgs
+}
+
+// unclaim puts messages back in the queue: the session they were given to
+// did not start.
+func (e *Engine) unclaim(ctx context.Context, msgs []Message) {
+	for _, m := range msgs {
+		if err := e.q.UnclaimMessage(ctx, m.ID); err != nil {
+			e.log.Error("unclaim message", "message_id", m.ID, "err", err)
+			continue
+		}
+		m.DeliveredAt, m.Delivery = nil, ""
+		e.publish(Update{Type: "message", Message: &m})
 	}
 }
 

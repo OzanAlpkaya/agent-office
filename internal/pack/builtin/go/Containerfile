@@ -1,11 +1,12 @@
 # Built-in "go" stack pack (ADR 0023): Go plus gcc and libc headers, so cgo and the race detector
-# work inside workers. Built FROM agent-office's base image.
+# work inside workers, and make, which most Go projects' build and test targets use. Built FROM
+# agent-office's base image.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 # Versions pinned in the base image's Debian snapshot (ADR 0041).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends gcc=4:14.2.0-1 libc6-dev=2.41-12+deb13u4 \
+ && apt-get install -y --no-install-recommends gcc=4:14.2.0-1 libc6-dev=2.41-12+deb13u4 make=4.4.1-2 \
  && rm -rf /var/lib/apt/lists/*
 
 # Go from go.dev, checked against the official SHA-256 (go.dev/dl/?mode=json).
