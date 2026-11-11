@@ -155,8 +155,12 @@ func TestAPIProxyRejectsOtherEndpoints(t *testing.T) {
 		t.Fatalf("events %+v", ev)
 	}
 	for i, c := range cases {
-		if ev[i].Kind != APIRejected || ev[i].Detail != c.detail {
-			t.Errorf("event %d = %+v, want %q", i, ev[i], c.detail)
+		want := APIRejected
+		if c.detail == "POST /v1/messages/count_tokens" {
+			want = APIBackground // Claude Code's own (Phase 17): refused, recorded as expected
+		}
+		if ev[i].Kind != want || ev[i].Detail != c.detail {
+			t.Errorf("event %d = %+v, want %s %q", i, ev[i], want, c.detail)
 		}
 	}
 	if seen.hits != 0 {

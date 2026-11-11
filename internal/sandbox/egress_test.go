@@ -166,6 +166,9 @@ func TestEgressRefusals(t *testing.T) {
 	sock, rec, dialed := startEgress(t, DefaultEgressAllow...)
 	cases := []struct{ req, status, detail string }{
 		{"CONNECT github.com:443 HTTP/1.1\r\nHost: github.com:443\r\n\r\n", "403", "github.com:443"},
+		// Claude Code's own host (Phase 17): refused too, recorded as expected.
+		{"CONNECT downloads.claude.ai:443 HTTP/1.1\r\nHost: downloads.claude.ai:443\r\n\r\n", "403", "downloads.claude.ai:443"},
+		{"CONNECT downloads.claude.ai:80 HTTP/1.1\r\nHost: downloads.claude.ai:80\r\n\r\n", "403", "downloads.claude.ai:80"},
 		{"CONNECT github.com:22 HTTP/1.1\r\nHost: github.com:22\r\n\r\n", "403", "github.com:22"},
 		{"CONNECT proxy.golang.org:80 HTTP/1.1\r\nHost: proxy.golang.org:80\r\n\r\n", "403", "proxy.golang.org:80"},
 		{"CONNECT 140.82.121.4:443 HTTP/1.1\r\nHost: 140.82.121.4:443\r\n\r\n", "403", "140.82.121.4:443"},
@@ -183,8 +186,12 @@ func TestEgressRefusals(t *testing.T) {
 		t.Fatalf("events %+v", ev)
 	}
 	for i, tc := range cases {
-		if ev[i].Kind != EgressDenied || ev[i].Detail != tc.detail {
-			t.Errorf("event %d = %+v, want %s %q", i, ev[i], EgressDenied, tc.detail)
+		want := EgressDenied
+		if tc.detail == "downloads.claude.ai:443" {
+			want = EgressBackground
+		}
+		if ev[i].Kind != want || ev[i].Detail != tc.detail {
+			t.Errorf("event %d = %+v, want %s %q", i, ev[i], want, tc.detail)
 		}
 	}
 	if len(*dialed) != 0 {

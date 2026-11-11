@@ -247,6 +247,11 @@ func (p *EgressProxy) handle(c net.Conn) {
 	}
 	host, port, err := net.SplitHostPort(req.Host)
 	if err != nil || port != "443" || !(p.Allow.Allows(host) || p.Grants.Allows(host)) {
+		if BackgroundEgress(req.Host) {
+			p.quiet(EgressBackground, req.Host)
+			reply(c, http.StatusForbidden)
+			return
+		}
 		p.event(EgressDenied, req.Host)
 		reply(c, http.StatusForbidden)
 		return
@@ -279,6 +284,15 @@ func (p *EgressProxy) handle(c net.Conn) {
 		}
 	}
 	splice(c, up)
+}
+
+// quiet records an expected refusal: debug log, no warning.
+func (p *EgressProxy) quiet(kind EventKind, detail string) {
+	detail = sanitize(detail)
+	p.Log.Debug("egress refused (expected background request)", "kind", kind, "target", detail)
+	if p.OnEvent != nil {
+		p.OnEvent(Event{Kind: kind, Detail: detail, At: time.Now().UTC()})
+	}
 }
 
 func (p *EgressProxy) event(kind EventKind, detail string) {

@@ -137,7 +137,11 @@ func (p *APIProxy) Handler() http.Handler {
 				"status", sw.status, "duration_ms", time.Since(start).Milliseconds(), "request_id", info.requestID)
 		}()
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
-			p.event(APIRejected, r.Method+" "+r.URL.Path)
+			if BackgroundAPI(r.Method, r.URL.Path) {
+				p.quiet(APIBackground, r.Method+" "+r.URL.Path)
+			} else {
+				p.event(APIRejected, r.Method+" "+r.URL.Path)
+			}
 			apiError(sw, http.StatusForbidden, "permission_error",
 				fmt.Sprintf("agent-office allows only POST /v1/messages, not %s %s", sanitize(r.Method), sanitize(r.URL.Path)))
 			return
@@ -163,6 +167,15 @@ func (p *APIProxy) Handler() http.Handler {
 		r.Body = http.MaxBytesReader(sw, r.Body, maxBody) // undeclared (chunked) bodies
 		rp.ServeHTTP(sw, r)
 	})
+}
+
+// quiet records an expected refusal: debug log, no warning.
+func (p *APIProxy) quiet(kind EventKind, detail string) {
+	detail = sanitize(detail)
+	p.Log.Debug("api request refused (expected background request)", "kind", kind, "target", detail)
+	if p.OnEvent != nil {
+		p.OnEvent(Event{Kind: kind, Detail: detail, At: time.Now().UTC()})
+	}
 }
 
 func (p *APIProxy) event(kind EventKind, detail string) {
