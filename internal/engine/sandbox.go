@@ -461,7 +461,8 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	// A decision committed after the first load reached only running agents:
 	// load again now that this one is registered (ADR 0053).
 	if err := e.loadGrants(ctx, id, res.grants); err != nil {
-		log.Warn("reload access grants", "err", err)
+		_ = res.grants.Set(nil) // fail closed: a grant revoked meanwhile must not stay (review finding, Phase 17)
+		log.Warn("reload access grants; the session starts without any", "err", err)
 	}
 	log.Info("agent started", "role", l.role, "relaunch", l.prev != nil, "sandbox", SandboxPodman, "branch", branch,
 		"workspace", wsPath, "container", res.container, "image", s.Image, "pack", packName(s.Pack),

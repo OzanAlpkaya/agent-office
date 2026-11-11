@@ -252,13 +252,20 @@ func (e *Engine) UpdateTask(ctx context.Context, id string, p TaskPatch) (Task, 
 // work is committed on its exit (ADR 0051), so nothing is lost. Reviewers of
 // its pull requests are left to finish.
 func (e *Engine) endGoal(goalID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	kids, err := e.q.ListChildTasks(ctx, nullString(goalID))
+	cancel()
+	if err != nil {
+		e.log.Error("goal done: its sub-tasks could not be read; only the goal's own agents end", "task_id", goalID, "err", err)
+	}
+	tasks := map[string]bool{goalID: true}
+	for _, k := range kids {
+		tasks[k.ID] = true
+	}
 	e.mu.Lock()
 	var ids []string
 	for _, a := range e.agents {
-		if !a.running() || a.info.Kind == KindReviewer || a.info.TaskID == "" {
-			continue
-		}
-		if a.info.TaskID == goalID || e.parentOfLocked(a.info.TaskID) == goalID {
+		if a.running() && a.info.Kind != KindReviewer && tasks[a.info.TaskID] {
 			ids = append(ids, a.info.ID)
 		}
 	}
@@ -268,18 +275,6 @@ func (e *Engine) endGoal(goalID string) {
 		e.wg.Add(1)
 		go func() { defer e.wg.Done(); _ = e.stop(id, ExitGoalDone) }()
 	}
-}
-
-// parentOfLocked is the goal of a sub-task, from the database; "" for a
-// goal. The caller holds e.mu (a read only, no engine state).
-func (e *Engine) parentOfLocked(taskID string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	t, err := e.q.GetTask(ctx, taskID)
-	if err != nil {
-		return ""
-	}
-	return t.ParentTaskID.String
 }
 
 // DeleteTask deletes a task. Agents that worked on it keep running history but
