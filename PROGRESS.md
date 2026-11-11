@@ -1,7 +1,7 @@
 # Progress
 
-**Current phase:** Phase 14 (Multi-project office) done on `phase-14/multi-project`, waiting for
-Ozan's review. Phase 13 (Office v2) was merged into `main` on 2026-11-09.
+**Current phase:** none in progress. Phase 14 (Multi-project office) was merged into `main` on
+2026-11-11.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -24,7 +24,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 11: Portfolio polish
 - [x] Phase 12: Team workflow and roles
 - [x] Phase 13: Office v2
-- [x] Phase 14: Multi-project office (waiting for review)
+- [x] Phase 14: Multi-project office
 
 ## Log
 
@@ -306,3 +306,10 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   `make ui-test` (74), `make sandbox-test` (plus `TestWorkerEgress` with `AO_SANDBOX_NET=1`) and
   `make e2e` (host, sandbox, team, workflow, and the new two-project run: go and node packs at once,
   the cap across projects, both Tech Leads restored after a SIGKILL) pass; the GitHub e2e was not run.
+- 2026-11-11: Phase 14 review: all 11 decisions approved. Ozan tested it by hand in a real browser on
+  the real daemon (two packs, a team in each at once, approvals across projects, a refused settings
+  change, SIGKILL and restore; not the phone). Fixed before the merge, each with a Playwright test:
+  switching floors left the Office for the Board, a refused Save showed in the sidebar, and the
+  Projects panel's running count was stale. The sandbox seed was re-checked with Claude Code 2.1.322
+  (unchanged keys and dialogs); the tested version is now 2.1.322. `make check` and `make ui-test`
+  (77) pass. Merged into `main` (`--no-ff`).

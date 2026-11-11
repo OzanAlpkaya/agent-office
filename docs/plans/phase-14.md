@@ -1,6 +1,6 @@
 # Phase 14 plan: Multi-project office
 
-- **Status:** Done on `phase-14/multi-project`, waiting for Ozan's review (not merged). Written 2026-11-11 with the recommended option
+- **Status:** Done on `phase-14/multi-project`; approved by Ozan and merged into `main` (2026-11-11). Written 2026-11-11 with the recommended option
   for every open question and executed straight away, as Ozan asked ("run it like the earlier
   phases: plan with the recommended options, no check-ins, one summary at the end"). Every decision
   is listed in the end-of-phase summary; nothing is merged until Ozan has read it.
@@ -246,3 +246,14 @@ All taken with the recommended option, as asked; listed again in the end-of-phas
   worktrees cannot be registered; settings are logged on every add and change; host mode warns that
   isolation between projects holds for sandboxed agents only. Backlog: purge, project checks in the
   queries themselves, a GitHub token per project, host paths in errors to remote devices.
+- **Ozan's review (2026-11-11)**: all 11 decisions approved; tested by hand in a real browser on the
+  real daemon (the playground with the go pack and a Node repository with the node pack, a Tech
+  Lead team in each at once, approvals across projects, a settings change refused while agents
+  ran, SIGKILL and restore; the phone was not tested). Fixed before the merge, each with a
+  Playwright test: choosing another floor jumped from the Office back to the Board (the tab is now
+  kept across every project switch); the Projects panel showed a refused Save in the sidebar (now
+  next to the control that asked); its "agents run across all projects" count came from the status
+  fetched at page load (now from the live worlds of every project). The pre-seeded sandbox config
+  was re-checked against Claude Code 2.1.322 with Spike F's interactive harness: no dialog with the
+  seed, and each key left out brings back exactly its dialog, as with 2.1.319; the tested version
+  is now 2.1.322.
