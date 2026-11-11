@@ -44,7 +44,7 @@ const exitLabel: Record<string, string> = {
   follow_up: "ended for a follow-up",
   goal_done: "goal marked done",
   plan_approved: "plan approved",
-  resume_failed: "resume failed: Claude Code could not load the previous conversation",
+  resume_failed: "resume failed: the agent CLI could not load the previous conversation",
 };
 
 // What each kind of agent does (ADR 0029); the role name is shown next to it.

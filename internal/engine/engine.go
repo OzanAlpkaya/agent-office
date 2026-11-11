@@ -651,7 +651,7 @@ func (e *Engine) Start(ctx context.Context, req StartRequest) (AgentInfo, error)
 		if err := q.CreateAgent(ctx, db.CreateAgentParams{
 			ID: id, ProjectID: e.project.ID, TaskID: nullString(req.TaskID), Model: e.modelOf(def),
 			InheritUserSettings: inherit, State: string(hooks.Starting), StartedAt: started,
-			Sandbox: mode, Kind: role, Role: def.Name, Name: name, Cli: def.CLI,
+			Sandbox: mode, Kind: role, Role: def.Name, Name: name, Cli: cliOr(def.CLI),
 		}); err != nil {
 			return err
 		}
@@ -972,13 +972,16 @@ func (e *Engine) checkSessionLocked(ctx context.Context, a *agentProc, ev *agent
 		return nil
 	}
 	if a.cliSession == "" {
-		if ev.Kind != agent.SessionStarted || ev.Subagent {
+		if ev.Kind != agent.SessionStarted || (ev.Detail != "startup" && ev.Detail != "resume") {
 			return ErrSession
 		}
-		a.cliSession = ev.SessionID
+		// Recorded before it is used, so a resume and a restore can always find
+		// it; a failed write refuses the hook and the next SessionStart retries.
 		if err := e.q.SetSessionCLIID(ctx, db.SetSessionCLIIDParams{CliSessionID: ev.SessionID, ID: a.info.SessionID}); err != nil {
 			log.Error("record the Codex session id", "err", err)
+			return err
 		}
+		a.cliSession = ev.SessionID
 	}
 	if ev.SessionID != a.cliSession {
 		return ErrSession

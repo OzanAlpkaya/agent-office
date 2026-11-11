@@ -472,6 +472,8 @@ func (e *Engine) codexReadyWithoutPrompt(a *agentProc, log *slog.Logger) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		// Up for codexSettle with its conversation: not a failed resume (ADR 0035).
+		a.sessionStarted = true
 		e.applyLocked(ctx, a, agent.Event{Kind: agent.Idle, SessionID: a.info.SessionID, Hook: "codex_ready"}, log)
 		e.scheduleDeliveryLocked(ctx, a) // what was queued for it is typed in once it settles
 	})

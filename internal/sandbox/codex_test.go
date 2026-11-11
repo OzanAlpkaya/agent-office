@@ -86,6 +86,12 @@ func TestCodexProxy(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Set-Cookie", "session=upstream-cookie")
+		if r.URL.Path == "/backend-api/wham/accounts/check" {
+			_, _ = io.WriteString(w, `{"accounts":[{"id":"acct-1","name":"Ozan A","plan_type":"plus","profile_picture_url":"https://x/p.png",`+
+				`"workspace_backend_origin":"NO_CONSTRAINT"}],"user":{"email":"someone@example.com"}}`)
+			return
+		}
 		_, _ = io.WriteString(w, `{}`)
 	}))
 	t.Cleanup(up.Close)
@@ -144,9 +150,24 @@ func TestCodexProxy(t *testing.T) {
 		resp.Body.Close()
 		return resp
 	}
-	if r := do("GET", "/backend-api/codex/models", "placeholder-bearer", "acct-1"); r.StatusCode != 200 {
-		t.Fatalf("models: %d", r.StatusCode)
+	if r := do("GET", "/backend-api/codex/models", "placeholder-bearer", "acct-1"); r.StatusCode != 200 || r.Header.Get("Set-Cookie") != "" {
+		t.Fatalf("models: %d, cookie %q", r.StatusCode, r.Header.Get("Set-Cookie"))
 	}
+	// The account routes reach the agent without the user's personal details.
+	req, _ := http.NewRequest("GET", "https://127.0.0.1:8080/backend-api/wham/accounts/check", nil)
+	req.Header.Set("Authorization", "Bearer placeholder-bearer")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || strings.Contains(string(body), "Ozan") || strings.Contains(string(body), "someone@") ||
+		strings.Contains(string(body), "p.png") || !strings.Contains(string(body), `"workspace_backend_origin":"NO_CONSTRAINT"`) ||
+		!strings.Contains(string(body), `"plan_type":"plus"`) {
+		t.Fatalf("accounts check reached the agent as %d %s", resp.StatusCode, body)
+	}
+	got = got[:1]
 	if r := do("POST", "/backend-api/codex/responses", "placeholder-bearer", "acct-1"); r.StatusCode != 200 {
 		t.Fatalf("responses: %d", r.StatusCode)
 	}
@@ -166,6 +187,7 @@ func TestCodexProxy(t *testing.T) {
 		"real token sent": {"GET", "/backend-api/codex/models", real, "acct-1", 401, APIAuth},
 		"no token":        {"GET", "/backend-api/codex/models", "", "", 401, APIAuth},
 		"other account":   {"GET", "/backend-api/codex/models", "placeholder-bearer", "acct-2", 401, APIAuth},
+		"encoded path":    {"GET", "/backend-api/codex%2Fmodels", "placeholder-bearer", "acct-1", 403, APIRejected},
 	} {
 		events = nil
 		if r := do(c.method, c.path, c.bearer, c.account); r.StatusCode != c.want || len(events) != 1 || events[0].Kind != c.kind {

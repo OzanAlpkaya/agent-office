@@ -162,7 +162,7 @@ func ReservedEnv(name string) bool {
 	// Prefixes: agent-office's own, Claude Code's (several without a CLAUDE
 	// prefix), git, SSH, the dynamic loader, Bun (the claude binary's runtime),
 	// shells, npm config, locale and XDG paths.
-	for _, p := range []string{"AGENT_OFFICE_", "CLAUDE", "ANTHROPIC_", "MCP_", "OTEL_", "DISABLE_", "GIT_", "SSH_",
+	for _, p := range []string{"AGENT_OFFICE_", "CLAUDE", "ANTHROPIC_", "CODEX_", "OPENAI_", "MCP_", "OTEL_", "DISABLE_", "GIT_", "SSH_",
 		"LD_", "BUN_", "BASH_", "CGO_", "NPM_CONFIG_", "npm_config_", "LC_", "XDG_"} {
 		if strings.HasPrefix(name, p) {
 			return true

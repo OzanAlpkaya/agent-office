@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
@@ -86,19 +87,19 @@ func codexOptions(cfg serveConfig, needed bool, log *slog.Logger) (*engine.Codex
 		log.Info("Codex agents are not available", "reason", err)
 		return nil, nil, nil
 	}
-	login, err := sandbox.ReadCodexLogin(cfg.codexAuth)
-	if err != nil {
+	login, loginErr := sandbox.ReadCodexLogin(cfg.codexAuth)
+	if loginErr != nil {
 		if needed {
-			return nil, nil, err
+			return nil, nil, loginErr
 		}
-		log.Info("Codex agents are not available until you sign in", "reason", err)
+		log.Info("Codex agents are not available until you sign in", "reason", loginErr)
 	}
 	var warnings []string
 	if ci.version != agent.TestedCodexVersion {
 		warnings = append(warnings, fmt.Sprintf("Codex CLI %s is installed, but agent-office's Codex config was tested with %s. "+
 			"If Codex agents stay in \"starting\", look at their terminal.", ci.version, agent.TestedCodexVersion))
 	}
-	if err == nil && !login.Expires.IsZero() && time.Until(login.Expires) < 48*time.Hour {
+	if loginErr == nil && !login.Expires.IsZero() && time.Until(login.Expires) < 48*time.Hour {
 		warnings = append(warnings, fmt.Sprintf("Your Codex login expires %s; run codex once (or `codex login`) to refresh it, "+
 			"agent-office never refreshes it itself.", login.Expires.Local().Format("2006-01-02 15:04")))
 	}
@@ -106,10 +107,31 @@ func codexOptions(cfg serveConfig, needed bool, log *slog.Logger) (*engine.Codex
 	if err != nil {
 		return nil, nil, err
 	}
-	path := cfg.codexAuth
-	log.Info("Codex ready", "codex", ci.dir, "version", ci.version, "login_file", path, "login_ok", err == nil)
-	return &engine.CodexOptions{Dir: ci.dir, Version: ci.version, CA: ca,
-		Login: func() (sandbox.CodexLogin, error) { return sandbox.ReadCodexLogin(path) }}, warnings, nil
+	log.Info("Codex ready", "codex", ci.dir, "version", ci.version, "login_file", cfg.codexAuth, "login_ok", loginErr == nil)
+	return &engine.CodexOptions{Dir: ci.dir, Version: ci.version, CA: ca, Login: loginReader(cfg.codexAuth)}, warnings, nil
+}
+
+// loginReader reads the login at every request. A read that fails while the
+// login was readable a moment ago (the user's own Codex rewriting the file
+// during a refresh) uses the last good one for up to a minute: its token is
+// still valid, and an expired one is refused upstream anyway.
+func loginReader(path string) func() (sandbox.CodexLogin, error) {
+	var mu sync.Mutex
+	var last sandbox.CodexLogin
+	var lastAt time.Time
+	return func() (sandbox.CodexLogin, error) {
+		l, err := sandbox.ReadCodexLogin(path)
+		mu.Lock()
+		defer mu.Unlock()
+		if err == nil {
+			last, lastAt = l, time.Now()
+			return l, nil
+		}
+		if !lastAt.IsZero() && time.Since(lastAt) < time.Minute {
+			return last, nil
+		}
+		return sandbox.CodexLogin{}, err
+	}
 }
 
 // usesCodex reports whether the daemon's defaults run a role on Codex.

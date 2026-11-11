@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -13,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"net"
@@ -22,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -245,8 +248,13 @@ func (p *CodexProxy) Handler() http.Handler {
 			r.Out.Header.Set("Authorization", "Bearer "+login.Token.Reveal())
 			r.Out.Header.Set("ChatGPT-Account-Id", login.Account)
 			r.Out.Header.Del("Accept-Encoding")
+			r.Out.Header.Del("Cookie")
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Del("Set-Cookie")
+			if resp.Request.Method == http.MethodGet && resp.StatusCode == http.StatusOK {
+				return redactAccount(resp)
+			}
 			if resp.StatusCode == http.StatusUnauthorized {
 				p.event(APIAuth, "the ChatGPT backend refused the Codex login: run `codex login` (or codex once) to refresh it")
 			}
@@ -288,6 +296,11 @@ func (p *CodexProxy) Handler() http.Handler {
 				"duration_ms", time.Since(start).Milliseconds())
 		}()
 		route := r.Method + " " + r.URL.Path
+		if r.URL.RawPath != "" || r.Header.Get("Upgrade") != "" || strings.EqualFold(r.Header.Get("Connection"), "upgrade") {
+			p.event(APIRejected, route+": encoded path or protocol upgrade")
+			codexError(sw, http.StatusForbidden, "agent-office does not allow encoded paths or protocol upgrades")
+			return
+		}
 		if !codexRoutes[route] {
 			p.event(APIRejected, route)
 			codexError(sw, http.StatusForbidden, "agent-office does not allow "+sanitize(route))
@@ -331,6 +344,55 @@ func (p *CodexProxy) event(kind EventKind, detail string) {
 	p.Log.Info("api request refused", "kind", kind, "target", detail)
 	if p.OnEvent != nil {
 		p.OnEvent(Event{Kind: kind, Detail: detail, At: time.Now().UTC()})
+	}
+}
+
+// maxRedactedBody bounds the JSON bodies of the account routes that are
+// redacted; larger ones are refused rather than passed unread.
+const maxRedactedBody = 4 << 20
+
+// personalFields are account details the TUI shows but the agent does not
+// need: the user's name, email, picture and SSO connection are blanked in the
+// account routes' answers before they reach the container (found in the
+// Phase 15 security review).
+var personalFields = map[string]bool{"name": true, "email": true, "profile_picture_url": true, "picture": true,
+	"sso_connection_name": true, "phone_number": true}
+
+func redactAccount(resp *http.Response) error {
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxRedactedBody+1))
+	resp.Body.Close()
+	if err != nil || len(b) > maxRedactedBody {
+		return fmt.Errorf("account response too large or unreadable")
+	}
+	var v any
+	if json.Unmarshal(b, &v) == nil {
+		redact(v)
+		if nb, err := json.Marshal(v); err == nil {
+			b = nb
+		}
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(b))
+	resp.ContentLength = int64(len(b))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(b)))
+	return nil
+}
+
+func redact(v any) {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, vv := range x {
+			if personalFields[k] {
+				if _, isString := vv.(string); isString {
+					x[k] = nil
+				}
+				continue
+			}
+			redact(vv)
+		}
+	case []any:
+		for _, vv := range x {
+			redact(vv)
+		}
 	}
 }
 

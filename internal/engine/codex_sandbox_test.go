@@ -237,7 +237,12 @@ func TestSandboxedCodexWorker(t *testing.T) {
 	if strings.Contains(string(inside), "real-chatgpt-access-token") {
 		t.Fatal("the real Codex token is inside the container")
 	}
+	// Resumed without a prompt, it sent no hook before exiting: still not a
+	// failed resume, since its TUI came up (found in the Phase 15 review).
 	exitAgent(t, e, log, w)
+	if got, _ := e.Get(w); got.ExitReason == ExitResumeFailed {
+		t.Fatalf("a Codex resume that came up ended as %s", got.ExitReason)
+	}
 }
 
 // TestSandboxedCodexReviewer: a Codex reviewer reviews a Claude Code

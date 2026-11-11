@@ -148,7 +148,10 @@ func CodexConfig(s CodexConfigSpec) ([]byte, error) {
 		return nil, errors.New("agent: CodexConfig needs an https origin, a hook command and absolute paths")
 	}
 	var b strings.Builder
-	q := func(v string) string { j, _ := json.Marshal(v); return string(j) } // a JSON string is a TOML basic string
+	q := func(v string) string { // a JSON string is a TOML basic string, once DEL is escaped too
+		j, _ := json.Marshal(v)
+		return strings.ReplaceAll(string(j), "\x7f", `\u007f`)
+	}
 	fmt.Fprintf(&b, "# Written by agent-office for one sandboxed agent (ADR 0049).\n")
 	fmt.Fprintf(&b, "model_provider = %s\n", q("agent-office"))
 	fmt.Fprintf(&b, "chatgpt_base_url = %s\n", q(s.BackendOrigin+"/backend-api/"))

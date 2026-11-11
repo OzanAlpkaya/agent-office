@@ -98,6 +98,11 @@ func TestCodexConfig(t *testing.T) {
 			t.Errorf("config misses %q:\n%s", want, s)
 		}
 	}
+	del := codexSpec()
+	del.Extra = map[string]MCPServer{"docs": {Command: "/usr/bin/docs-mcp", Args: []string{"a\x7fb"}}}
+	if b, _ := CodexConfig(del); strings.ContainsRune(string(b), 0x7f) || !strings.Contains(string(b), `"a\u007fb"`) {
+		t.Fatalf("DEL is not escaped:\n%s", b)
+	}
 	bad := codexSpec()
 	bad.BackendOrigin = "http://127.0.0.1:8080"
 	if _, err := CodexConfig(bad); err == nil {
