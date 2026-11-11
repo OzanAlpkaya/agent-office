@@ -644,31 +644,46 @@ seen what he saw and had the tools to act.
   describe effects they do not have.
 
 **Definition of Done**
-- [ ] An OOM-killed sandboxed worker shows "out of memory" (with its limit) in the UI and in a
-      message to its lead, from a real kernel OOM kill in a sandbox test; host agents show the signal
-      or exit code.
-- [ ] An unexpected exit is resumed once with a message saying what happened; a second one reaches
-      the lead with the reason and is not resumed (tests).
-- [ ] The lead can resume and stop its workers and take back a sub-task from an exited worker; the
-      next worker continues from the previous worker's branch (tests, including authorization).
-- [ ] A message to a stopped agent is delivered when it resumes (test).
-- [ ] The stall watchdog wakes the lead with who is idle, the open tasks and the undelivered
-      messages, and does not fire while something waits on the user (tests).
-- [ ] A worker's uncommitted work is committed and imported when it exits, sandboxed and on the
-      host (tests).
-- [ ] A project can let its lead decide access requests, optionally within a host policy; the
-      lead's decisions carry a recorded reason; approvals scoped to the agent or the project survive
-      a resume, and the request #4 bug (an approval lost in the resumed session) is fixed with a
-      test that failed before.
-- [ ] The Tech Lead's prompt has the rule on what it decides and what it asks; the assistant's
-      memory proposals cannot claim effects (prompt and tool description).
-- [ ] `resources.memory` in pack.yaml and `worker_memory` in project settings set the worker
-      limit; a worker that hits it gets a clear message.
-- [ ] The inbox groups by goal and agent, collapses answered items and keeps briefings apart
-      (Vitest and Playwright).
-- [ ] The go pack allows `storage.googleapis.com` and has `make`.
-- [ ] `TestAutonomousTeamEndToEnd` reproduces the incidents (two real OOM kills of a working worker,
-      a stopped worker with a queued message, a stall, an access request the lead decides) and the
-      goal is reported without a human step.
-- [ ] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass.
+- [x] An OOM-killed sandboxed worker shows "out of memory" (with its limit) in the UI and in a message to
+      its lead, from a real kernel OOM kill: `TestSandboxedOOMKillIsExplained` (and the running watch,
+      `TestSandboxedChildOOMIsReported`), live in `TestAutonomousTeamEndToEnd`; host agents show the
+      signal or exit code (`TestUnexpectedExitResumedOnce`). Podman's `State.OOMKilled` stays false here
+      (measured), so sandbox-init's exit report is the source (ADR 0051).
+- [x] An unexpected exit is resumed once with a message saying what happened; a second one reaches the
+      lead with the reason and is not resumed: `TestUnexpectedExitResumedOnce`, live with two OOM kills.
+- [x] The lead resumes and stops its workers and takes back a sub-task from an exited worker; the next
+      worker continues from the previous branch (and keeps its approvals): `TestLeadResumesAndStopsItsWorkers`,
+      `TestReclaimTaskContinuesFromTheBranch`; live, the lead took both paths in different runs.
+- [x] A message to a stopped agent is delivered when it resumes: `TestMessageToStoppedWorkerWaits`,
+      `TestRelaunchGetsMessagesQueuedWhileEnding`, live (into the resumed session).
+- [x] The stall watchdog wakes the lead with who is idle, the open tasks and the undelivered messages,
+      and stays quiet while something waits on the user: `TestStallWatchdogWakesTheLead`,
+      `TestStallWatchdogWaitsForTheUser`, `TestStallWatchdogIgnoresReportedGoals`, live after 35 s.
+- [x] A worker's uncommitted work is committed and imported when it exits, sandboxed and on the host:
+      `TestSandboxedRemoveKeepsDirtyAndSavesWork`, `TestExitSavesUncommittedWork` (and not when the
+      repository's git config would run a command, `TestHostAutosaveRefusesAgentGitConfig`).
+- [x] A project can let its lead decide access requests, optionally within a host policy, with a recorded
+      reason; approvals for the agent or the project survive a resume; request #4 fixed with a test that
+      fails without the fix: `TestLeadDecidesAccess`, `TestLeadProjectScopeNeedsThePolicy`,
+      `TestUserDecidesByDefault`, `TestSandboxedGrantSurvivesResume`; live, `example.com` reachable from the
+      resumed session.
+- [x] The Tech Lead's prompt has the rule on what it decides and what it asks; the assistant's memory
+      proposals cannot claim effects: `TestBuiltinPromptRules`.
+- [x] `resources.memory` and `worker_memory` set the worker limit; a worker that hits it gets a clear
+      message: `TestLoadValid`/`TestLoadInvalid`, `TestProjectSettingsParseAndValidate`,
+      `TestSandboxedChildOOMIsReported`.
+- [x] The inbox groups by goal and agent, collapses answered items and keeps briefings apart: Vitest
+      (`inbox groups`) and Playwright (`autonomy.spec.ts`).
+- [x] The go pack allows `storage.googleapis.com` and has `make` (4.4.1-2, pinned); image rebuilt.
+- [x] `TestAutonomousTeamEndToEnd` reproduces the incidents with real haiku agents (two real OOM kills,
+      a lead-decided access request, a stopped worker with a waiting message, an interrupted worker while
+      the lead waits) and the goal reaches review with no question to the user (about 150 s per run).
+- [x] `make check` (288 Vitest tests), `make ui-test` (83), `make sandbox-test` (plus `TestWorkerEgress`
+      with `AO_SANDBOX_NET=1`) and `make e2e` (host, sandbox, team, workflow, multi-project, Codex team,
+      autonomy) pass; the GitHub e2e was not run.
 
+**Backlog** (from Phase 16)
+- A resume continues the latest session that finished a turn (ADR 0035): a session killed mid-turn after
+  it got a prompt is skipped, so its partial conversation is not continued (its git work is kept).
+- Revoking project-wide access grants from the UI.
+- Per-sub-task memory limits for one heavy job.
