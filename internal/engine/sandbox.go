@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -443,9 +444,37 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 		"workspace", wsPath, "container", res.container, "image", s.Image, "pack", packName(s.Pack),
 		"secrets", secretNames(prep.secrets), "model", e.modelOf(l.def), "role_name", l.def.Name, "read_only", l.def.ReadOnly)
 	e.keepHistory(a)
+	if codex && l.prompt == "" {
+		e.codexReadyWithoutPrompt(a, log)
+	}
 	e.wg.Add(1)
 	go e.watch(a)
 	return view, nil
+}
+
+// codexSettle is how long a Codex TUI takes to come up (Spike G: about a
+// second); tests shorten it.
+var codexSettle = 3 * time.Second
+
+// codexReadyWithoutPrompt marks a Codex agent idle that started without a
+// prompt (a restore or Resume of an idle conversation, a worker without a
+// task): Codex sends SessionStart only with the first prompt (checked with
+// 0.167.1, fresh and resumed), so no hook would end "starting". Its session
+// id is learned from that first prompt's SessionStart (ADR 0049).
+func (e *Engine) codexReadyWithoutPrompt(a *agentProc, log *slog.Logger) {
+	e.wg.Add(1)
+	time.AfterFunc(codexSettle, func() {
+		defer e.wg.Done()
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if !a.running() || a.status.State != hooks.Starting {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		e.applyLocked(ctx, a, agent.Event{Kind: agent.Idle, SessionID: a.info.SessionID, Hook: "codex_ready"}, log)
+		e.scheduleDeliveryLocked(ctx, a) // what was queued for it is typed in once it settles
+	})
 }
 
 // closeSandbox stops the proxies, removes the container if it is still there

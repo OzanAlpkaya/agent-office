@@ -3,9 +3,11 @@
 package e2e
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -127,4 +129,34 @@ func TestCodexTeamEndToEnd(t *testing.T) {
 		}
 	}
 	d.json("PATCH", "/api/tasks/"+goal.ID, map[string]string{"status": "done"}, 200, nil)
+
+	// Restart: a Codex worker idle after a turn comes back after a SIGKILL,
+	// continuing its own Codex session (ADR 0035, 0049).
+	var solo taskInfo
+	d.json("POST", "/api/tasks", map[string]string{"title": "E2E Codex restore",
+		"description": "Remember the codeword PLUM73. Reply with the single word OK and do nothing else."}, 201, &solo)
+	var w teamAgent
+	d.json("POST", "/api/agents", map[string]string{"task_id": solo.ID, "role": "worker"}, 201, &w)
+	idle := waitAgent(t, listAgents, w.ID, 5*time.Minute, func(a teamAgent) bool { return a.State == "idle" })
+	d.signal(syscall.SIGKILL)
+	d.start()
+	back := waitAgent(t, listAgents, w.ID, 3*time.Minute, func(a teamAgent) bool {
+		return a.HasTerminal && a.SessionID != idle.SessionID && a.ResumedFrom != ""
+	})
+	waitAgent(t, listAgents, w.ID, 3*time.Minute, func(a teamAgent) bool { return a.State == "idle" })
+	t.Logf("Codex worker %s restored: session %s resumed from %s", w.ID, back.SessionID, back.ResumedFrom)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	tm := attach(t, ctx, d.base, w.ID)
+	time.Sleep(2 * time.Second)
+	tm.typeLine(ctx, "What was the codeword? Reply with it only.")
+	deadline = time.Now().Add(3 * time.Minute)
+	for !strings.Contains(tm.text(), "PLUM73") {
+		if time.Now().After(deadline) {
+			t.Fatalf("the restored Codex worker does not recall its conversation:\n%s", tail(tm.text(), 40))
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Log("the restored Codex worker recalled the codeword")
+	d.do("POST", "/api/agents/"+w.ID+"/stop", nil)
 }

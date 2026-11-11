@@ -25,7 +25,8 @@ import (
 
 // fakeCodexScript stands in for the Codex CLI inside the worker, the way
 // Spike G saw it: it picks its own session id (or keeps the one it resumes),
-// sends hooks in Codex's shape through the real forwarder, talks to the API
+// sends hooks in Codex's shape through the real forwarder (SessionStart only
+// with the first prompt, as Codex does), talks to the API
 // socket over TLS with its placeholder login, and runs a turn for every line
 // typed into it.
 const fakeCodexScript = `#!/bin/sh
@@ -39,7 +40,8 @@ done
 send() { printf '{"hook_event_name":"%s","session_id":"%s","source":"%s","model":"gpt-6.1-sol"}' "$1" "${2:-$sid}" "$src" | /opt/agent-office/agent-office hook >/dev/null 2>&1; }
 bearer=$(sed -n 's/.*"access_token": "\([^"]*\)".*/\1/p' "$CODEX_HOME/auth.json")
 api() { curl -s -o /dev/null -w '%{http_code}' --cacert "$CODEX_CA_CERTIFICATE" -H "Authorization: Bearer $bearer" "$@"; }
-turn() { send UserPromptSubmit; echo "responses=$(api -X POST -H 'content-type: application/json' -d '{}' https://127.0.0.1:8080/backend-api/codex/responses)"; send Stop; }
+started=
+turn() { [ -z "$started" ] && send SessionStart && started=1; send UserPromptSubmit; echo "responses=$(api -X POST -H 'content-type: application/json' -d '{}' https://127.0.0.1:8080/backend-api/codex/responses)"; send Stop; }
 echo "args=$*"
 grep -q 'requires_openai_auth = true' "$CODEX_HOME/config.toml" && echo config=ok
 grep -q 'not-a-credential' "$CODEX_HOME/auth.json" && echo login=placeholder
@@ -47,7 +49,7 @@ echo "token=$OPENAI_API_KEY$CODEX_API_KEY$CLAUDE_CODE_OAUTH_TOKEN"
 echo "models=$(api https://127.0.0.1:8080/backend-api/codex/models)"
 echo "plugins=$(api https://127.0.0.1:8080/backend-api/ps/plugins/list)"
 echo "session=$sid source=$src"
-send SessionStart
+# Like Codex 0.167.1: SessionStart comes with the first prompt, not at start.
 [ -n "$prompt" ] && turn
 while IFS= read -r line; do
   case "$line" in
@@ -311,6 +313,11 @@ func TestSandboxedCodexRestore(t *testing.T) {
 	if !strings.Contains(out, "args=resume "+codexSID+" ") {
 		t.Fatalf("restore command:\n%s", out)
 	}
+	// Its first prompt's hooks carry the resumed Codex session: accepted.
 	log2 := record(t, e2)
+	from := log2.mark()
+	typeLine(t, e2, w.ID, "go on")
+	log2.waitFrom(t, 30*time.Second, from, agentState(w.ID, hooks.Working))
+	log2.waitFrom(t, 30*time.Second, from, agentState(w.ID, hooks.Idle))
 	exitAgent(t, e2, log2, w.ID)
 }
