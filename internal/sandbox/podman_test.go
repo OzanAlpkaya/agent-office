@@ -90,7 +90,7 @@ func TestWorkerArgsIsolation(t *testing.T) {
 	env := flagValues(opts, "-e")
 	for _, want := range []string{"CLAUDE_CODE_OAUTH_TOKEN=" + Placeholder, "ANTHROPIC_BASE_URL=http://" + APIAddr,
 		"HTTPS_PROXY=http://" + EgressAddr, "NO_PROXY=127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-		"DISABLE_AUTOUPDATER=1", "CLAUDE_CONFIG_DIR=" + ConfigDir, "AGENT_OFFICE_SOCKET=" + HookSocket,
+		"CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1", "DISABLE_AUTOUPDATER=1", "CLAUDE_CONFIG_DIR=" + ConfigDir, "AGENT_OFFICE_SOCKET=" + HookSocket,
 		"AGENT_OFFICE_MCP_SOCKET=" + MCPSocket, "CLAUDE_CODE_TMPDIR=" + TmpDir,
 		"GIT_AUTHOR_NAME=Ozan", "GIT_COMMITTER_EMAIL=ozan@example.com", "GOFLAGS=-mod=mod",
 		"AGENT_OFFICE_CO_AUTHOR=worker-1 (agent-office) <noreply@agent-office.invalid>",

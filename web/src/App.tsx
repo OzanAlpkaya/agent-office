@@ -11,6 +11,8 @@ import { AgentName, AgentsContext } from "./AgentName";
 import { AgentSwitcher } from "./AgentSwitcher";
 import { type Tabs, closeTab, keepTabs, labelOf, moveTab, neighbourTab, openTab, parseTabs } from "./agents";
 import { Board } from "./Board";
+import { GrantsPanel } from "./Grants";
+import { backgroundLine, splitEvents } from "./sandboxEvents";
 import { Drawer } from "./Drawer";
 import { DevicesPanel } from "./Devices";
 import { narrowQuery, useMedia } from "./useMedia";
@@ -87,6 +89,9 @@ const eventLabel: Record<string, string> = {
   api_budget: "Budget spent",
   api_meter: "Usage not readable",
   oom_kill: "Out of memory",
+  pids_limit: "Process limit reached",
+  egress_background: "Claude Code background request (expected)",
+  api_background: "Claude Code background API call (expected)",
 };
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
@@ -148,7 +153,7 @@ export function App({
   // The project's routes, plus the daemon's (health, devices, projects) under one name.
   const papi = useMemo(() => projectApi(project.id), [project.id]);
   const api = useMemo(() => ({ ...daemonApi, ...papi }), [papi]);
-  const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, connection } =
+  const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, merges, connection } =
     useWorld(papi);
   const [roles, setRoles] = useState<RoleInfo[]>([]);
   const [panel, setPanel] = useState<Panel>();
@@ -374,7 +379,12 @@ export function App({
             using tools. Restart the daemon with <span className="mono">--sandbox podman</span> to isolate them.
           </div>
         )}
-        {showPack && status?.sandbox === "podman" && <PackPanel status={status} />}
+        {showPack && status?.sandbox === "podman" && (
+          <>
+            <PackPanel status={status} />
+            <div className="pack-panel"><GrantsPanel api={api} requests={accessRequests} /></div>
+          </>
+        )}
         {panel === "inbox" && (
           <InboxPanel items={inbox} tasks={tasks} specs={specs} onOpenAgent={openAgent}
             onRead={(i) => void run(() => api.readInbox(i.id))}
@@ -567,6 +577,7 @@ export function App({
                 onSendToWorker={(pr, r) => void run(() => api.sendToWorker(pr.id, r.id))}
                 onAcceptFlagged={(pr) => void run(() => api.acceptFlagged(pr.id, pr.flagged.map((f) => f.commit)))}
                 roles={roles} specs={specs} qaRuns={qaRuns} inbox={inbox} architectRunning={architectRunning}
+                merges={merges} projectId={project.id} key={project.id}
                 onStartRole={(t, role) => void startAgent(t.id, role)}
                 onSaveSpec={(s, plan) => ok(() => api.editSpec(s.id, plan))}
                 onApproveSpec={(s) => void run(() => approveSpec(s))}
@@ -745,23 +756,35 @@ function ImportLine({ imp, branch }: { imp: ImportInfo; branch: string }): JSX.E
 }
 
 // EventList shows an agent's sandbox events, newest first. A refusal here
-// means the agent tried something the sandbox does not allow.
+// means the agent tried something the sandbox does not allow; Claude Code's
+// own background requests are refused too, but shown apart and quietly
+// (Phase 17): they are expected, not something to act on.
 function EventList({ events }: { events: SandboxEvent[] }): JSX.Element {
+  const { problems, background } = splitEvents(events);
+  const item = (e: SandboxEvent): JSX.Element => (
+    <li key={`${e.at}|${e.kind}|${e.detail}`}>
+      <span className="muted">{timeOf(e.at)}</span> {eventLabel[e.kind] ?? e.kind}
+      {e.detail && <>: <span className="mono">{e.detail}</span></>}
+    </li>
+  );
   return (
-    <details className="events small" onClick={(e) => e.stopPropagation()}>
-      <summary className="hint">
-        {events.length === 1 ? "1 sandbox event" : `${events.length} sandbox events`}
-        {` · latest: ${eventLabel[events[0].kind] ?? events[0].kind}`}
-      </summary>
-      <ul>
-        {events.map((e) => (
-          <li key={`${e.at}|${e.kind}|${e.detail}`}>
-            <span className="muted">{timeOf(e.at)}</span> {eventLabel[e.kind] ?? e.kind}
-            {e.detail && <>: <span className="mono">{e.detail}</span></>}
-          </li>
-        ))}
-      </ul>
-    </details>
+    <>
+      {problems.length > 0 && (
+        <details className="events small" onClick={(e) => e.stopPropagation()}>
+          <summary className="hint">
+            {problems.length === 1 ? "1 sandbox event" : `${problems.length} sandbox events`}
+            {` · latest: ${eventLabel[problems[0].kind] ?? problems[0].kind}`}
+          </summary>
+          <ul>{problems.map(item)}</ul>
+        </details>
+      )}
+      {background.length > 0 && (
+        <details className="events small background-events" onClick={(e) => e.stopPropagation()}>
+          <summary className="muted" data-testid="background-events">{backgroundLine(background.length)}</summary>
+          <ul>{background.map(item)}</ul>
+        </details>
+      )}
+    </>
   );
 }
 
@@ -990,6 +1013,8 @@ function PackPanel({ status }: { status: Status }) {
         <dd className="mono">{status.image}</dd>
         <dt>Network</dt>
         <dd className="mono">{list(status.egress)}</dd>
+        <dt>Worker limits</dt>
+        <dd className="mono">{status.worker_memory ?? "default"} memory · {status.worker_pids ?? "default"} processes</dd>
         {p && (
           <>
             <dt>Secrets</dt>

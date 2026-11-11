@@ -123,6 +123,9 @@ func applyPack(ctx context.Context, sb *engine.SandboxOptions, spec packSpec) ([
 	if sp.pack != nil && sp.pack.Memory != "" {
 		sb.Memory = sp.pack.Memory // over --sandbox-memory; a project's worker_memory wins over both (ADR 0051)
 	}
+	if sp.pack != nil && sp.pack.Pids != 0 {
+		sb.Pids = sp.pack.Pids // over --sandbox-pids; a project's worker_pids wins over both (Phase 17)
+	}
 	return warnings, nil
 }
 

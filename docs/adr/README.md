@@ -61,6 +61,8 @@ order they were made; grouped here by topic. New ones start from [0000-template.
 | [0051](0051-exit-reasons-and-self-recovery.md) | Exit reasons in plain words (OOM from sandbox-init's report), one automatic resume, saved work on exit, the lead resumes, stops and reclaims its workers, messages wait for a resume |
 | [0052](0052-stall-watchdog.md) | A stall watchdog in the daemon wakes the Tech Lead of a goal that does not move |
 | [0053](0053-access-decisions-by-the-lead.md) | Access decisions by the Tech Lead per project (optionally within a host policy); grants scoped to the agent or project that outlive a session |
+| [0054](0054-goal-archive-and-closing.md) | The board shows active goals; marking a goal done closes its sub-tasks and agents; done goals go to an archive with their record |
+| [0055](0055-merge-and-push-from-the-goal.md) | Merge and Push on the goal card: the user's confirmed squash merge of QA-passed work, and its push |
 | [0030](0030-escalation-and-messages-to-the-user.md) | Escalation chain worker → Tech Lead → Architect → user |
 | [0031](0031-architect-and-specs.md) | The architect's plan: approved by the user, committed as a spec |
 | [0032](0032-dependencies-and-conflicts.md) | Dependencies, file ownership, `merge-tree` conflict checks |

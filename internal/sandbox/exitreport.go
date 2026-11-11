@@ -79,7 +79,18 @@ func ReadExitReport(path string) (*ExitReport, error) {
 
 // OOMKills reads the oom_kill count of a cgroup v2 memory.events file.
 func OOMKills(memoryEvents string) (int64, error) {
-	f, err := os.Open(memoryEvents)
+	return cgroupEvent(memoryEvents, "oom_kill")
+}
+
+// PidsLimitHits reads the "max" count of a cgroup v2 pids.events file: how
+// often a fork or clone failed because the cgroup reached pids.max (Phase 17).
+func PidsLimitHits(pidsEvents string) (int64, error) {
+	return cgroupEvent(pidsEvents, "max")
+}
+
+// cgroupEvent reads one "key count" line of a cgroup v2 events file.
+func cgroupEvent(path, key string) (int64, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return 0, err
 	}
@@ -87,14 +98,14 @@ func OOMKills(memoryEvents string) (int64, error) {
 	sc := bufio.NewScanner(io.LimitReader(f, maxMemoryEvents))
 	for sc.Scan() {
 		k, v, ok := strings.Cut(strings.TrimSpace(sc.Text()), " ")
-		if ok && k == "oom_kill" {
+		if ok && k == key {
 			return strconv.ParseInt(strings.TrimSpace(v), 10, 64)
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return 0, err
 	}
-	return 0, errors.New("sandbox: no oom_kill in " + memoryEvents)
+	return 0, errors.New("sandbox: no " + key + " in " + path)
 }
 
 // memoryMax reads a cgroup v2 memory.max file; 0 for "max" or an error.

@@ -55,6 +55,8 @@ type ProjectSettings struct {
 	AccessDecider         *string           `json:"access_decider,omitempty"`           // who decides access requests (ADR 0053); default user
 	LeadAccessHosts       []string          `json:"lead_access_hosts,omitempty"`        // lead_policy: the hosts the lead may approve
 	WorkerMemory          *string           `json:"worker_memory,omitempty"`            // sandboxed workers' memory limit, e.g. 4g (ADR 0051); "": the pack's or --sandbox-memory
+	WorkerPids            *int              `json:"worker_pids,omitempty"`              // sandboxed workers' process limit (Phase 17); 0: the pack's or --sandbox-pids
+	MergeTarget           *string           `json:"merge_target,omitempty"`             // the branch a goal's Merge button squash-merges into (ADR 0055)
 }
 
 // Who decides access requests (ADR 0053).
@@ -63,6 +65,26 @@ const (
 	DeciderLead       = "lead"        // the goal's Tech Lead, with a recorded reason; the user can decide first
 	DeciderLeadPolicy = "lead_policy" // the Tech Lead, for hosts in lead_access_hosts only; the user for the rest
 )
+
+// DefaultMergeTarget is the branch a goal is merged into unless the project
+// sets merge_target (ADR 0055).
+const DefaultMergeTarget = "main"
+
+// validBranchName accepts a plain local branch name: what git check-ref-format
+// --branch takes, minus anything that could read as an option or a range.
+func validBranchName(b string) bool {
+	if b == "" || len(b) > 255 || strings.HasPrefix(b, "-") || strings.HasPrefix(b, "/") || strings.HasSuffix(b, "/") ||
+		strings.HasSuffix(b, ".lock") || strings.HasSuffix(b, ".") || strings.Contains(b, "..") ||
+		strings.Contains(b, "//") || strings.Contains(b, "@{") || b == "@" || b == "HEAD" {
+		return false
+	}
+	for _, r := range b {
+		if r <= ' ' || r == 0x7f || strings.ContainsRune("~^:?*[\\", r) {
+			return false
+		}
+	}
+	return true
+}
 
 // ValidWorkerMemory reports whether m is a worker memory limit between 256m
 // and 256g, written as podman takes it (512m, 4g).
@@ -157,6 +179,12 @@ func (s ProjectSettings) Validate() error {
 	if m := s.WorkerMemory; m != nil && *m != "" && !ValidWorkerMemory(*m) {
 		add("worker_memory %q: a size between 256m and 256g, e.g. 4g", *m)
 	}
+	if n := s.WorkerPids; n != nil && *n != 0 && (*n < sandbox.MinPids || *n > sandbox.MaxPids) {
+		add("worker_pids %d: between %d and %d (0: the pack's or the daemon's)", *n, sandbox.MinPids, sandbox.MaxPids)
+	}
+	if b := s.MergeTarget; b != nil && !validBranchName(*b) {
+		add("merge_target %q: a branch name such as main", *b)
+	}
 	for name, v := range map[string]*int64{"budget_session_micro_usd": s.BudgetSessionMicroUSD, "budget_goal_micro_usd": s.BudgetGoalMicroUSD} {
 		if v != nil && (*v < 0 || *v > maxBudgetMicroUSD) {
 			add("%s %d: between 0 (off) and %d", name, *v, int64(maxBudgetMicroUSD))
@@ -187,6 +215,10 @@ func (d ProjectSettings) Merge(o ProjectSettings) ProjectSettings {
 	pick(&out.Reviewer, o.Reviewer)
 	pick(&out.AccessDecider, o.AccessDecider)
 	pick(&out.WorkerMemory, o.WorkerMemory)
+	pick(&out.MergeTarget, o.MergeTarget)
+	if o.WorkerPids != nil {
+		out.WorkerPids = o.WorkerPids
+	}
 	if o.LeadAccessHosts != nil {
 		out.LeadAccessHosts = slices.Clone(o.LeadAccessHosts) // a policy, not a list to add to
 	}
@@ -227,7 +259,8 @@ func (d ProjectSettings) complete() error {
 		"max_agents":  d.MaxAgents != nil, "github": d.GitHub != nil, "github_remote": d.GitHubRemote != nil,
 		"reviewer": d.Reviewer != nil, "review_rounds": d.ReviewRounds != nil,
 		"budget_session_micro_usd": d.BudgetSessionMicroUSD != nil, "budget_goal_micro_usd": d.BudgetGoalMicroUSD != nil,
-		"access_decider": d.AccessDecider != nil, "worker_memory": d.WorkerMemory != nil} {
+		"access_decider": d.AccessDecider != nil, "worker_memory": d.WorkerMemory != nil,
+		"worker_pids": d.WorkerPids != nil, "merge_target": d.MergeTarget != nil} {
 		if !set {
 			missing = append(missing, name)
 		}
@@ -258,11 +291,12 @@ func NeutralDefaults() ProjectSettings {
 		RoleCLIs: map[string]string{}, CodexModel: Ptr(""),
 		MaxAgents: Ptr(MaxProjectAgents), GitHub: Ptr(false), GitHubRemote: Ptr("origin"), Reviewer: Ptr(review.NameInternal),
 		ReviewRounds: Ptr(2), BudgetSessionMicroUSD: Ptr(int64(0)), BudgetGoalMicroUSD: Ptr(int64(0)),
-		AccessDecider: Ptr(DeciderUser), WorkerMemory: Ptr("")}
+		AccessDecider: Ptr(DeciderUser), WorkerMemory: Ptr(""), WorkerPids: Ptr(0), MergeTarget: Ptr(DefaultMergeTarget)}
 }
 
 // SandboxChanges names the settings that change what a project's agents can
-// reach (pack, secrets, network, pushes) between s and t. The API accepts
+// reach (pack, secrets, network, pushes, the branch their work is merged into
+// and pushed to) between s and t. The API accepts
 // them from this machine only (ADR 0046).
 func (s ProjectSettings) SandboxChanges(t ProjectSettings) []string {
 	var out []string
@@ -276,7 +310,8 @@ func (s ProjectSettings) SandboxChanges(t ProjectSettings) []string {
 		a, b any
 	}{{"pack", s.Pack, t.Pack}, {"secrets_dir", s.SecretsDir, t.SecretsDir}, {"egress_allow", s.EgressAllow, t.EgressAllow},
 		{"github", s.GitHub, t.GitHub}, {"github_remote", s.GitHubRemote, t.GitHubRemote},
-		{"access_decider", s.AccessDecider, t.AccessDecider}, {"lead_access_hosts", s.LeadAccessHosts, t.LeadAccessHosts}} {
+		{"access_decider", s.AccessDecider, t.AccessDecider}, {"lead_access_hosts", s.LeadAccessHosts, t.LeadAccessHosts},
+		{"merge_target", s.MergeTarget, t.MergeTarget}} {
 		if !same(f.a, f.b) {
 			out = append(out, f.name)
 		}

@@ -1,7 +1,6 @@
 # Progress
 
-**Current phase:** Phase 16 (Autonomous team) done on `phase-16/autonomous-team`, waiting for Ozan's review;
-not merged.
+**Current phase:** none in progress. Phase 17 (Daily use) is merged into `main`.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -26,7 +25,8 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 13: Office v2
 - [x] Phase 14: Multi-project office
 - [x] Phase 15: Codex adapter
-- [x] Phase 16: Autonomous team (on its branch, review pending)
+- [x] Phase 16: Autonomous team
+- [x] Phase 17: Daily use
 
 ## Log
 
@@ -361,4 +361,22 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   when a resumed worker reported in its first turn, an approval not reaching the reassigned worker), and
   the full `make e2e` found a restore regression of the phase (a leftover exit report); all fixed with
   tests.
-
+- 2026-11-11: Phase 16 merged into `main` (`--no-ff`).
+- 2026-11-12: Phase 17 "Daily use" added to `docs/plan.md` by Ozan, from PulseGo Sprints 3–6, and done on
+  `phase-17/daily-use` with the recommended options (`docs/plans/phase-17.md`). The board shows active goals
+  (or one, picked); done goals go to an archive with their record (sub-tasks, agents including removed ones,
+  cost, QA, the Tech Lead's report, merges). Marking a goal done closes its sub-tasks and ends its agents;
+  its exited agents are removed in one action (ADR 0054). Merge squash-merges a goal's QA-passed head into
+  `merge_target` with the Tech Lead's `commit_message` after a confirmation, refused on tracked changes,
+  conflicts or moved heads; Push sends that commit, never forced (ADR 0055). A resume continues a session
+  that got a prompt even if it was cut off mid-turn (measured with Claude Code 2.1.322; ADR 0035 amended).
+  Stored access grants can be revoked (ADR 0053 amended). Claude Code's startup requests are prevented with
+  `CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL` (measured) and known background requests are shown
+  quietly (ADR 0016 amended). Worker pids per pack (`resources.pids`) and project (`worker_pids`), with a
+  `pids.events` watch. Migration 0016; no new dependencies. A security review led to 4 changes and a code
+  review to 5 fixes. `make check`, `make ui-test` (89), `make sandbox-test` and `make e2e` (the workflow run
+  now merges and pushes a real goal to a local bare remote) pass; one Phase 16 autonomy e2e failure in the
+  first full run is recorded, not explained.
+- 2026-11-12: Phase 17 review: all decisions approved. Ozan tested it by hand on the real daemon (a goal on
+  the playground, Merge and Push from the goal card, closing the goal, the archive view, removing exited
+  agents). Merged into `main` (`--no-ff`).

@@ -45,6 +45,11 @@ func TestProjectSettingsParseAndValidate(t *testing.T) {
 		`{"lead_access_hosts": ["*.x.com"]}`:     "lead_access_hosts",
 		`{"worker_memory": "100m"}`:              `worker_memory "100m"`,
 		`{"worker_memory": "4 GB"}`:              "worker_memory",
+		`{"worker_pids": 32}`:                    "worker_pids 32: between 64 and 65536",
+		`{"worker_pids": 70000}`:                 "worker_pids 70000",
+		`{"merge_target": "-main"}`:              `merge_target "-main"`,
+		`{"merge_target": "a..b"}`:               "merge_target",
+		`{"merge_target": "x y"}`:                "merge_target",
 		`{} {}`:                                  "one JSON object",
 		`{"max_agents": 0, "reviewer": "gpt"}`:   "between 1 and 32; reviewer \"gpt\"", // every problem at once
 		`{"pack": "none", "model": ""}` + "\x00": "invalid",
@@ -59,16 +64,19 @@ func TestProjectSettingsParseAndValidate(t *testing.T) {
 	}
 	// ADR 0053, 0051.
 	s, err = ParseProjectSettings([]byte(`{"access_decider": "lead_policy", "lead_access_hosts": ["storage.googleapis.com", ".example.org"],
-		"worker_memory": "4g"}`))
-	if err != nil || *s.AccessDecider != DeciderLeadPolicy || len(s.LeadAccessHosts) != 2 || *s.WorkerMemory != "4g" {
+		"worker_memory": "4g", "worker_pids": 2048, "merge_target": "release/1.x"}`))
+	if err != nil || *s.AccessDecider != DeciderLeadPolicy || len(s.LeadAccessHosts) != 2 || *s.WorkerMemory != "4g" ||
+		*s.WorkerPids != 2048 || *s.MergeTarget != "release/1.x" {
 		t.Fatalf("access and memory settings: %+v %v", s, err)
 	}
 	eff := NeutralDefaults().Merge(s)
-	if *eff.AccessDecider != DeciderLeadPolicy || *eff.WorkerMemory != "4g" || len(eff.LeadAccessHosts) != 2 {
+	if *eff.AccessDecider != DeciderLeadPolicy || *eff.WorkerMemory != "4g" || len(eff.LeadAccessHosts) != 2 ||
+		*eff.WorkerPids != 2048 || *eff.MergeTarget != "release/1.x" {
 		t.Fatalf("merged %+v", eff)
 	}
 	// Letting the lead decide widens the sandbox: from this machine only (ADR 0046).
-	if ch := NeutralDefaults().SandboxChanges(eff); !slices.Contains(ch, "access_decider") || !slices.Contains(ch, "lead_access_hosts") {
+	if ch := NeutralDefaults().SandboxChanges(eff); !slices.Contains(ch, "access_decider") || !slices.Contains(ch, "lead_access_hosts") ||
+		!slices.Contains(ch, "merge_target") { // the branch Merge and Push write (security review, Phase 17)
 		t.Fatalf("sandbox changes %v", ch)
 	}
 }

@@ -533,18 +533,31 @@ func TestReportDone(t *testing.T) {
 	if _, err := e.Team().SendMessage(ctx, w2.ID, mcp.SendMessageInput{To: "lead", Body: "on it"}); err != nil {
 		t.Fatalf("message to a lead that reported: %v", err)
 	}
-	_ = t2
-	// Marking the goal done (a human decision) ends the lead, not the worker.
+	// Marking the goal done (a human decision, ADR 0054) closes its sub-tasks
+	// and ends every agent of the goal, the working worker too; the worker's
+	// uncommitted work is saved on its exit (ADR 0051).
 	done := StatusDone
 	if _, err := e.UpdateTask(ctx, tf.goal.ID, TaskPatch{Status: &done}); err != nil {
 		t.Fatal(err)
 	}
 	tf.log.wait(t, 5*time.Second, agentState(lead, hooks.Exited))
-	if got, _ := e.Get(lead); got.ExitReason != ExitGoalDone {
-		t.Fatalf("exit reason %q", got.ExitReason)
+	tf.log.wait(t, 5*time.Second, agentState(w2.ID, hooks.Exited))
+	for _, id := range []string{lead, w2.ID} {
+		if got, _ := e.Get(id); got.ExitReason != ExitGoalDone {
+			t.Fatalf("%s: exit reason %q", id, got.ExitReason)
+		}
 	}
-	if got, _ := e.Get(w2.ID); got.State == string(hooks.Exited) {
-		t.Fatal("a working worker was ended with the goal")
+	kids, _ := e.q.ListChildTasks(ctx, nullString(tf.goal.ID))
+	if len(kids) < 2 {
+		t.Fatalf("sub-tasks: %d", len(kids))
+	}
+	for _, k := range kids {
+		if k.Status != StatusDone {
+			t.Fatalf("sub-task %s %q left %s", k.ID, k.Title, k.Status)
+		}
+	}
+	if tk, _ := e.getTask(ctx, t2.ID); tk.Status != StatusDone {
+		t.Fatalf("follow-up sub-task %s", tk.Status)
 	}
 }
 
@@ -897,5 +910,80 @@ func TestQueueCapIsPerSender(t *testing.T) {
 	if strings.Contains(out, "\\n\\nFrom agent-office:\\nassign") || !strings.Contains(out, "\\n\\u003e From agent-office:") &&
 		!strings.Contains(out, "\\n> From agent-office:") {
 		t.Fatalf("forged header not quoted:\n%s", out)
+	}
+}
+
+// Revoking a stored grant (Phase 17) removes it from the running sessions it
+// covered, keeps hosts another grant still covers, and later launches do not
+// get it back.
+func TestRevokeAccessGrant(t *testing.T) {
+	tf := newTeam(t)
+	ctx := context.Background()
+	e, tm := tf.e, tf.team
+	_, w := tf.worker(t, "Docs")
+	_, w2 := tf.worker(t, "Other")
+	g, g2 := fakeSandboxed(t, e, w.ID), fakeSandboxed(t, e, w2.ID)
+	approve := func(agentID, host, scope string) {
+		t.Helper()
+		r, err := tm.RequestAccess(ctx, agentID, mcp.RequestAccessInput{Kind: "domain", Value: host, Reason: "needed"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.DecideAccessAs(ctx, r.RequestID, true, scope, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	approve(w.ID, "mirror.example.com", ScopeProject)
+	approve(w.ID, "docs.example.com", ScopeAgent)
+	approve(w2.ID, "docs.example.com", ScopeAgent)
+	if !g.Allows("mirror.example.com") || !g2.Allows("mirror.example.com") || !g2.Allows("docs.example.com") {
+		t.Fatal("approvals not applied")
+	}
+	grants, err := e.AccessGrants(ctx)
+	if err != nil || len(grants) != 3 {
+		t.Fatalf("grants: %+v %v", grants, err)
+	}
+	var project, wDocs AccessGrant
+	for _, gr := range grants {
+		switch {
+		case gr.Scope == ScopeProject:
+			project = gr
+		case gr.AgentID == w.ID:
+			wDocs = gr
+		}
+	}
+	if project.Host != "mirror.example.com" || project.AgentID != "" || project.DecidedBy != DecidedByUser ||
+		wDocs.Host != "docs.example.com" || wDocs.Scope != ScopeAgent {
+		t.Fatalf("grant views: %+v %+v", project, wDocs)
+	}
+
+	mark := tf.log.mark()
+	if _, err := e.RevokeAccessGrant(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	tf.log.waitFrom(t, time.Second, mark, func(u Update) bool { return u.Type == "access_grants" })
+	if g.Allows("mirror.example.com") || g2.Allows("mirror.example.com") {
+		t.Fatal("a revoked project grant still allowed in a running session")
+	}
+	if !g.Allows("docs.example.com") || !g2.Allows("docs.example.com") {
+		t.Fatal("revoking one grant removed hosts other grants cover")
+	}
+	if _, err := e.RevokeAccessGrant(ctx, wDocs.ID); err != nil {
+		t.Fatal(err)
+	}
+	if g.Allows("docs.example.com") || !g2.Allows("docs.example.com") {
+		t.Fatal("an agent grant's revocation reached the wrong agent")
+	}
+	if _, err := e.RevokeAccessGrant(ctx, wDocs.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked twice: %v", err)
+	}
+	// A later launch of w loads what is left: nothing.
+	fresh := &sandbox.Grants{}
+	_ = fresh.Add("mirror.example.com")
+	if err := e.loadGrants(ctx, w.ID, fresh); err != nil || fresh.Allows("mirror.example.com") {
+		t.Fatalf("a launch got a revoked grant back: %v", err)
+	}
+	if left, _ := e.AccessGrants(ctx); len(left) != 1 || left[0].AgentID != w2.ID {
+		t.Fatalf("grants left: %+v", left)
 	}
 }

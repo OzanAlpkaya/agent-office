@@ -133,6 +133,8 @@ type Options struct {
 	AccessDecider       string          // who decides access requests (ADR 0053): DeciderUser (default), DeciderLead, DeciderLeadPolicy
 	LeadAccessHosts     []string        // DeciderLeadPolicy: the hosts the lead may approve (allowlist entries)
 	StallAfter          time.Duration   // the stall watchdog's wait (ADR 0052); 0: the default, negative: off
+	MergeTarget         string          // the branch a goal's Merge squash-merges into (ADR 0055); "": main
+	PushRemote          string          // the remote its Push pushes to (the project's github_remote); "": origin
 
 	// Message delivery timing (ADR 0018); zero values get the defaults. Tests
 	// shorten them.
@@ -153,6 +155,7 @@ type Status struct {
 	Image    string        `json:"image,omitempty"`
 	Egress   []string      `json:"egress,omitempty"`        // sandboxed agents' allowlist
 	Memory   string        `json:"worker_memory,omitempty"` // sandboxed workers' memory limit (ADR 0051)
+	Pids     int           `json:"worker_pids,omitempty"`   // sandboxed workers' process limit (Phase 17)
 	Pack     *PackStatus   `json:"pack,omitempty"`          // stack pack (ADR 0023)
 	Warnings []string      `json:"warnings"`
 	GitHub   *GitHubStatus `json:"github,omitempty"`
@@ -225,11 +228,12 @@ type Update struct {
 	Message       *Message       `json:"message,omitempty"`
 	AccessRequest *AccessRequest `json:"access_request,omitempty"`
 	PullRequest   *PullRequest   `json:"pull_request,omitempty"`
-	Usage         *SessionUsage  `json:"usage,omitempty"`  // a running session's usage (ADR 0026)
-	Inbox         *InboxItem     `json:"inbox,omitempty"`  // a message to the user (ADR 0030)
-	Spec          *Spec          `json:"spec,omitempty"`   // a version of a goal's plan (ADR 0031)
-	QARun         *QARun         `json:"qa_run,omitempty"` // a QA run (ADR 0033)
-	Memory        *MemoryEntry   `json:"memory,omitempty"` // a project memory entry (ADR 0034)
+	Usage         *SessionUsage  `json:"usage,omitempty"`      // a running session's usage (ADR 0026)
+	Inbox         *InboxItem     `json:"inbox,omitempty"`      // a message to the user (ADR 0030)
+	Spec          *Spec          `json:"spec,omitempty"`       // a version of a goal's plan (ADR 0031)
+	QARun         *QARun         `json:"qa_run,omitempty"`     // a QA run (ADR 0033)
+	GoalMerge     *GoalMerge     `json:"goal_merge,omitempty"` // a goal's merge or push (ADR 0055)
+	Memory        *MemoryEntry   `json:"memory,omitempty"`     // a project memory entry (ADR 0034)
 }
 
 type agentProc struct {
@@ -258,6 +262,7 @@ type agentProc struct {
 	cliSession string         // Codex: its own session id, learned from the first hook (ADR 0049); guarded by Engine.mu
 
 	sessionStarted bool          // the main agent's SessionStart arrived; guarded by Engine.mu
+	prompted       bool          // the session got a prompt (sessions.prompted, ADR 0035); guarded by Engine.mu
 	historyDone    chan struct{} // closed after the session's terminal was saved for the last time (ADR 0036); nil for agents of a previous run
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
@@ -281,6 +286,9 @@ type Engine struct {
 	project Project
 	slots   *slotPool // the daemon-wide agent cap (ADR 0047)
 	hubbed  bool      // opened by a hub, which does the daemon-wide restart work (ADR 0046)
+
+	grantsMu sync.Mutex // orders stored access grants with the running sessions' copies (ADR 0053, Phase 17)
+	mergeMu  sync.Mutex // one goal merge or push at a time (ADR 0055)
 
 	mu           sync.Mutex
 	agents       map[string]*agentProc
@@ -516,7 +524,7 @@ func (e *Engine) Status() Status {
 	st := Status{Sandbox: SandboxHost, Warnings: append([]string{}, e.opts.Warnings...)}
 	if sb := e.opts.Sandbox; sb != nil {
 		st.Sandbox, st.Image, st.Egress = SandboxPodman, sb.Image, append([]string{}, sb.AllowNames...)
-		st.Memory = e.workerMemory()
+		st.Memory, st.Pids = e.workerMemory(), e.workerPids()
 		if p := sb.Pack; p != nil {
 			st.Pack = &PackStatus{Name: p.Name, Description: p.Description, Source: p.Source,
 				Egress: append([]string{}, p.Egress...), Secrets: p.SecretStatus(sb.SecretsDir),
@@ -1058,6 +1066,14 @@ func (e *Engine) hookHandler(id string, log *slog.Logger) hooks.Handler {
 		}
 		if ev.Kind == agent.SessionStarted && !ev.Subagent {
 			a.sessionStarted = true
+		}
+		if ev.Kind == agent.TurnStarted && !ev.Subagent && !a.prompted {
+			// The CLI keeps a conversation once it gets a prompt, finished turn or
+			// not: a resume continues this session (ADR 0035).
+			a.prompted = true
+			if err := e.q.MarkSessionPrompted(ctx, a.info.SessionID); err != nil {
+				log.Warn("record the session's prompt", "err", err)
+			}
 		}
 		e.countLocked(ctx, a, ev, log)
 		e.transcriptHookLocked(a, ev, log)

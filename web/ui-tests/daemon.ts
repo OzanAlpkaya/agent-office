@@ -2,10 +2,10 @@
 // request is answered here, and /api/events plays a snapshot followed by
 // whatever updates a test pushes. Fixtures are typed with the UI's own API
 // types, so a change to them shows up here.
-import type { Page, WebSocketRoute } from "@playwright/test";
+import type { Page, Route, WebSocketRoute } from "@playwright/test";
 import type {
-  AccessRequest, Agent, AgentState, DaemonStatus, DaemonUsage, Device, InboxItem, Kind, MemoryEntry, Message, ModelUsage, Project,
-  ProjectSettings, QARun, RoleInfo, SessionUsage, Spec, Status, Task, TaskStatus, Tokens, UsageReport,
+  AccessGrant, AccessRequest, Agent, AgentState, GoalMerge, GoalRecord, MergePreview, DaemonStatus, DaemonUsage, Device, InboxItem, Kind, MemoryEntry, Message, ModelUsage, Project,
+  ProjectSettings, QARun, RoleInfo, SandboxEvent, SessionUsage, Spec, Status, Task, TaskStatus, Tokens, UsageReport,
 } from "../src/api";
 import { defaultRole } from "../src/api";
 
@@ -46,6 +46,12 @@ export interface World {
   specs?: Spec[];
   qaRuns?: QARun[];
   memory?: MemoryEntry[];
+  // Phase 17.
+  merges?: GoalMerge[];
+  grants?: AccessGrant[];
+  records?: Record<string, GoalRecord>; // by goal id
+  previews?: Record<string, MergePreview>; // by goal id
+  events?: Record<string, SandboxEvent[]>; // recorded sandbox events by agent id
 }
 
 const role = (name: string, behaviour: Kind, read_only = false): RoleInfo => ({
@@ -365,10 +371,33 @@ export class MockDaemon {
           const a = w.agents.find((x) => x.id === resume[1]);
           return route.fulfill(json({ ...a, state: "starting", resumable: false, session_id: "11111111-0000-4000-8000-000000000001" }));
         }
+        const patchTask = /^\/api\/tasks\/([^/]+)$/.exec(p);
+        if (patchTask && method === "PATCH") {
+          const i = w.tasks.findIndex((x) => x.id === patchTask[1]);
+          if (i === -1) return route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' });
+          w.tasks[i] = { ...w.tasks[i], ...(route.request().postDataJSON() as Partial<Task>), updated_at: iso(50) };
+          if (w === this.world) this.send({ type: "task", task: w.tasks[i] });
+          return route.fulfill(json(w.tasks[i]));
+        }
+        const goalOp = /^\/api\/tasks\/([^/]+)\/(merge|push|remove-agents)$/.exec(p);
+        if (goalOp) return this.goalOp(route, w, goalOp[1], goalOp[2]);
+        const grant = /^\/api\/access-grants\/(\d+)$/.exec(p);
+        if (grant && method === "DELETE") {
+          const g = (w.grants ?? []).find((x) => x.id === Number(grant[1]));
+          w.grants = (w.grants ?? []).filter((x) => x.id !== Number(grant[1]));
+          return g ? route.fulfill(json(g)) : route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' });
+        }
         if (/^\/api\/memory\/\d+\/accept$/.test(p)) {
           const id = Number(p.split("/")[3]);
           return route.fulfill(json({ ...(w.memory ?? []).find((m) => m.id === id), status: "accepted" }));
         }
+      }
+      if (p === "/api/goal-merges") return route.fulfill(json(w.merges ?? []));
+      if (p === "/api/access-grants") return route.fulfill(json(w.grants ?? []));
+      const rec = /^\/api\/tasks\/([^/]+)\/(record|merge)$/.exec(p);
+      if (rec) {
+        const v = rec[2] === "record" ? w.records?.[rec[1]] : w.previews?.[rec[1]];
+        return v ? route.fulfill(json(v)) : route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' });
       }
       const ss = /^\/api\/agents\/([^/]+)\/sessions$/.exec(p);
       if (ss) {
@@ -387,7 +416,7 @@ export class MockDaemon {
       }
       const m = /^\/api\/agents\/([^/]+)\/(events|messages)$/.exec(p);
       if (m) {
-        return route.fulfill(json(m[2] === "messages" ? w.messages.filter((x) => x.to === m[1] || x.from === m[1]) : []));
+        return route.fulfill(json(m[2] === "messages" ? w.messages.filter((x) => x.to === m[1] || x.from === m[1]) : w.events?.[m[1]] ?? []));
       }
       return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `mock: no route for ${p}` }) });
     });
@@ -487,6 +516,40 @@ export class MockDaemon {
   memoryEntry(m: MemoryEntry): void {
     this.world.memory = [m, ...(this.world.memory ?? []).filter((x) => x.id !== m.id)];
     this.send({ type: "memory", memory: m });
+  }
+
+  // mergeRefusal, when set, is the daemon's refusal of the next merge (409).
+  mergeRefusal = "";
+
+  // goalOp serves Merge, Push and the removal of a goal's exited agents (ADR 0054, 0055).
+  private goalOp(route: Route, w: World, goalId: string, op: string): Promise<void> {
+    const json = (body: unknown) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    if (op === "merge") {
+      if (this.mergeRefusal) {
+        return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: this.mergeRefusal }) });
+      }
+      const pv = w.previews?.[goalId];
+      const body = route.request().postDataJSON() as { message: string; target_head: string; source_head: string };
+      const m: GoalMerge = { id: (w.merges?.length ?? 0) + 1, goal_id: goalId, target: pv?.target ?? "main",
+        source_head: body.source_head, target_before: body.target_head, commit: "abcdef0123456789abcdef0123456789abcdef01",
+        message: body.message, created_at: iso(40) };
+      w.merges = [m, ...(w.merges ?? [])];
+      if (pv) w.previews = { ...w.previews, [goalId]: { ...pv, ready: false, reason: "already merged into main as abcdef01", merged: m } };
+      this.send({ type: "goal_merge", goal_merge: m });
+      return route.fulfill(json(m));
+    }
+    if (op === "push") {
+      const m = (w.merges ?? []).find((x) => x.goal_id === goalId);
+      if (!m) return route.fulfill({ status: 409, contentType: "application/json", body: '{"error":"merge refused: merge it first"}' });
+      const pushed = { ...m, pushed_at: iso(41), push_remote: "origin" };
+      w.merges = (w.merges ?? []).map((x) => (x.id === m.id ? pushed : x));
+      this.send({ type: "goal_merge", goal_merge: pushed });
+      return route.fulfill(json(pushed));
+    }
+    const ids = new Set([goalId, ...w.tasks.filter((t) => t.parent_task_id === goalId).map((t) => t.id)]);
+    const gone = w.agents.filter((a) => a.state === "exited" && a.task_id !== undefined && ids.has(a.task_id));
+    for (const a of gone) this.removeAgent(a.id);
+    return route.fulfill(json({ removed: gone.map((a) => ({ agent_id: a.id, name: a.name, branch: "kept" })), kept: [] }));
   }
 
   message(id: number, from: string | undefined, to: string): void {

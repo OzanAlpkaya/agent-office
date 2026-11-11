@@ -1,6 +1,7 @@
 # 0035. Resuming conversations and restoring agents after a restart
 
-- **Status:** Accepted; which session a resume continues amended in Phase 10 (2026-11-08)
+- **Status:** Accepted; which session a resume continues amended in Phase 10 (2026-11-08) and Phase 17
+  (2026-11-11)
 - **Date:** 2026-11-08
 - **Amends:** ADR 0011 (restart semantics), ADR 0022 (relaunch path, message delivery to a new
   session), ADR 0026 (host usage of resumed sessions)
@@ -82,6 +83,17 @@ Option 2, option 2 and option 2.
     sessions are never skipped, so a first turn cut off by a crash still resumes its own session.
     The engine tests' fake CLI models Claude Code's behaviour (`AO_FAKE_CONV_DIR`);
     `TestRestoreTwice` and the host e2e (step 7d) restore an agent twice.
+  - **Interrupted forks** (amended in Phase 17, Ozan's backlog): the Phase 10 rule skipped every
+    resumed session in which no turn finished, so a fork that got a prompt (a restore's "continue"
+    prompt, a Resume with a message, a delivered message) and was killed before its turn ended was
+    skipped too, and its partial conversation lost. Checked with Claude Code 2.1.322 (haiku, print
+    mode): a fork killed during a tool call, and one killed right after its prompt was recorded
+    before any answer, both have a transcript with the prompt (and the partial turn), and
+    `--resume` of each continues it (it knew the codewords given in the fork and what it was doing).
+    So sessions record whether they got a prompt (`sessions.prompted`, migration 0016, set on the
+    main agent's first `UserPromptSubmit`), and the skip applies only to resumed sessions that
+    neither got a prompt nor finished a turn. `TestResumeContinuesInterruptedSession` fails without
+    the change.
 - **Restore:** `agents.resume_state` records what an agent was doing when the daemon stopped it:
   the live state on a clean shutdown, the row's last state after a crash (set by startup
   reconciliation). With `--restore-agents` (`AGENT_OFFICE_RESTORE_AGENTS`, default true) the next

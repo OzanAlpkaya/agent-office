@@ -731,6 +731,9 @@ func TestSandboxedTeamWorker(t *testing.T) {
 	if got := gitIn(t, f.repo, "log", "-1", "--format=%s", imp.Branch); got != "feat: agent work 1" {
 		t.Fatalf("imported branch head %q", got)
 	}
+	// The lead is told after the status change and the conflict check (team.go
+	// reportDone): wait for it (found flaky in the Phase 17 sandbox run).
+	waitFor("the lead's message", func() bool { msgs, _ := e.Messages(ctx, lead.ID); return len(msgs) > 0 })
 	msgs, _ := e.Messages(ctx, lead.ID)
 	if len(msgs) != 1 || !strings.Contains(msgs[0].Body, "done in the sandbox") {
 		t.Fatalf("lead messages %+v", msgs)

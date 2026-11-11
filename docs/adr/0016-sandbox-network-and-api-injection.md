@@ -1,6 +1,6 @@
 # 0016. Sandbox network: no network, per-agent egress and API sockets, credential injection
 
-- **Status:** Accepted
+- **Status:** Accepted; Claude Code's background requests amended in Phase 17 (2026-11-11)
 - **Date:** 2026-11-07
 - **Amends:** ADR 0007 (internal network + shared proxy container); **supersedes the delivery part
   of ADR 0015** (the token file and its checks stay; socket delivery is kept as a fallback)
@@ -124,8 +124,26 @@ option, with the exfiltration risk stated in the UI.
     paths from their origin, so data can leave encoded in a module path. The allowlist narrows
     exfiltration but cannot close it.
 - Denials of `downloads.claude.ai` and `github.com` (the official plugin marketplace auto-install)
-  are expected and harmless. The UI shows them like any other denial. In the Phase 3 runs (Claude
+  are expected and harmless. ~~The UI shows them like any other denial.~~ In the Phase 3 runs (Claude
   Code 2.1.319) these were the only denied hosts.
+- **Amended in Phase 17** (Ozan: they looked like problems on every worker's card). Measured with
+  Claude Code 2.1.322, a sandboxed haiku worker in a scratch daemon, the egress proxy logging each
+  refused CONNECT's headers: at start, before the first tool call, Claude Code sent
+  `CONNECT downloads.claude.ai:443` (no User-Agent) and `CONNECT github.com:443` from `git`
+  (`User-Agent: git/2.47.3`; `plugins/marketplaces` appears in its config dir), in every run and with
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `DISABLE_AUTOUPDATER=1` set. The 2.1.322 binary
+  has `CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL`; with it set, two runs (one with a
+  subagent) refused nothing at all, and a control run without it brought both requests back. No
+  `count_tokens` call was seen in these runs. So:
+  - Workers get `CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` (and callers cannot override
+    it): the requests are no longer made. Workers get their tools from the stack pack.
+  - What Claude Code may still send on its own is listed in `internal/sandbox/background.go`:
+    `downloads.claude.ai:443` (its own download and version host) and `POST /v1/messages/count_tokens`
+    (reported by Ozan). These are still refused exactly as before, but recorded as
+    `egress_background` / `api_background`, logged at debug level, and shown on the agent's card as a
+    quiet "n background requests of Claude Code refused (expected)" line apart from the sandbox events.
+    Anything not on the list (`github.com` from an agent's own `git`, `curl` or `go get` included)
+    stays a warning. The list is exact names and routes, never patterns.
 - Events are stored per agent (rate-limited) and listed by `GET /api/agents/{id}/events`, so the
   UI still shows them after a reload; live ones arrive as `sandbox_event` updates.
 - If Claude Code changes how it authenticates or which endpoints it calls, sessions fail with a

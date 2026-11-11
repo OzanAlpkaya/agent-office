@@ -41,6 +41,8 @@ const (
 	LabelInstance   = "io.agent-office.instance" // which daemon (data dir) owns the container
 	DefaultMemory   = "2g"
 	DefaultPids     = 256
+	MinPids         = 64    // the smallest per-worker pids limit a pack or project may set (Phase 17)
+	MaxPids         = 65536 // the largest
 	helperMemory    = "512m"
 	helperPids      = 64
 	containerPrefix = "ao-"
@@ -102,6 +104,10 @@ var claudeEnv = []string{
 	"CLAUDE_CONFIG_DIR=" + ConfigDir,
 	"DISABLE_AUTOUPDATER=1",
 	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+	// Claude Code clones its official plugin marketplace from github.com at
+	// start (measured with 2.1.322, Phase 17); a worker gets its tools from the
+	// stack pack instead.
+	"CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1",
 	"ANTHROPIC_BASE_URL=http://" + APIAddr,
 	"CLAUDE_CODE_OAUTH_TOKEN=" + Placeholder,
 }
@@ -149,7 +155,8 @@ func helperName(agentID string) string {
 // builtinEnv are names the builder sets itself; callers cannot override them.
 var builtinEnv = map[string]bool{
 	"HOME": true, "CLAUDE_CONFIG_DIR": true, "DISABLE_AUTOUPDATER": true,
-	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": true, "HTTPS_PROXY": true, "https_proxy": true,
+	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": true, "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": true,
+	"HTTPS_PROXY": true, "https_proxy": true,
 	"HTTP_PROXY": true, "http_proxy": true, "NO_PROXY": true, "no_proxy": true, "ANTHROPIC_BASE_URL": true,
 	"CLAUDE_CODE_OAUTH_TOKEN": true, "AGENT_OFFICE_SOCKET": true, "AGENT_OFFICE_MCP_SOCKET": true, "TERM": true, "COLORTERM": true,
 	"CLAUDE_CODE_TMPDIR": true, "CODEX_HOME": true, "CODEX_CA_CERTIFICATE": true,

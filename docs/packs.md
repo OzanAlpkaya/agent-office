@@ -59,6 +59,8 @@ skills:                           # directories under skills/, each with a SKILL
 resources:                        # optional
   memory: 4g                      # each worker's memory limit, 256m to 256g (default: --sandbox-memory, 2g);
                                   # a project's worker_memory setting wins over it (ADR 0051)
+  pids: 1024                      # each worker's process and thread limit, 64 to 65536 (default:
+                                  # --sandbox-pids, 256); a project's worker_pids wins over it (Phase 17)
 
 mcp_servers:
   docs:                           # an HTTP server, reached through the egress proxy
@@ -114,6 +116,12 @@ reaches it, the kernel's out-of-memory killer ends a process in it: if that is t
 card and its Tech Lead say "Out of memory" with the limit; if it is a command the agent ran, the agent
 is told why its command was killed (ADR 0051). Toolchains that compile in parallel (Go, Rust) need
 more than the 2g default for larger projects.
+
+`resources.pids` sets each worker's process and thread limit (64 to 65536; default `--sandbox-pids`,
+256). Test suites that start databases, browsers or many parallel packages reach 256 quickly (PulseGo's
+integration suite did; one headless Chromium alone uses about 130). A process start refused at the
+limit shows as "Process limit reached" on the agent's card, and the agent is told the limit and where to
+raise it. A project's `worker_pids` setting wins over the pack's value, as `worker_memory` does.
 
 ### Secrets
 

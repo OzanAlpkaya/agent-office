@@ -118,9 +118,17 @@ func (s *server) routes() []route {
 		{pattern: "POST /api/projects/{project}/tasks", handler: s.createTask, project: true},
 		{pattern: "PATCH /api/projects/{project}/tasks/{id}", handler: s.updateTask, project: true},
 		{pattern: "DELETE /api/projects/{project}/tasks/{id}", handler: s.deleteTask, project: true},
+		{pattern: "GET /api/projects/{project}/tasks/{id}/record", handler: s.goalRecord, project: true},
+		{pattern: "POST /api/projects/{project}/tasks/{id}/remove-agents", handler: s.removeGoalAgents, project: true},
+		{pattern: "GET /api/projects/{project}/tasks/{id}/merge", handler: s.mergePreview, project: true},
+		{pattern: "POST /api/projects/{project}/tasks/{id}/merge", handler: s.mergeGoal, project: true},
+		{pattern: "POST /api/projects/{project}/tasks/{id}/push", handler: s.pushGoal, project: true},
+		{pattern: "GET /api/projects/{project}/goal-merges", handler: s.listGoalMerges, project: true},
 		{pattern: "GET /api/projects/{project}/access-requests", handler: s.listAccess, project: true},
 		{pattern: "POST /api/projects/{project}/access-requests/{id}/approve", handler: s.decideAccess(true), project: true},
 		{pattern: "POST /api/projects/{project}/access-requests/{id}/deny", handler: s.decideAccess(false), project: true},
+		{pattern: "GET /api/projects/{project}/access-grants", handler: s.listGrants, project: true},
+		{pattern: "DELETE /api/projects/{project}/access-grants/{id}", handler: s.revokeGrant, project: true},
 		{pattern: "GET /api/projects/{project}/pull-requests", handler: s.listPullRequests, project: true},
 		{pattern: "POST /api/projects/{project}/tasks/{id}/pull-request", handler: s.openPullRequest, project: true},
 		{pattern: "POST /api/projects/{project}/tasks/{id}/resolve-conflict", handler: s.resolveConflict, project: true},
@@ -623,6 +631,98 @@ func (s *server) decideAccess(approve bool) http.HandlerFunc {
 	}
 }
 
+// goalRecord is a goal with everything the archive shows (ADR 0054).
+func (s *server) goalRecord(w http.ResponseWriter, r *http.Request) {
+	rec, err := eng(r).GoalRecord(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+// removeGoalAgents removes a done goal's exited agents in one action.
+func (s *server) removeGoalAgents(w http.ResponseWriter, r *http.Request) {
+	res, err := eng(r).RemoveGoalAgents(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// mergePreview is what the Merge confirmation shows (ADR 0055); it changes
+// nothing.
+func (s *server) mergePreview(w http.ResponseWriter, r *http.Request) {
+	p, err := eng(r).MergePreview(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// mergeGoal squash-merges a goal's QA-passed work after the user confirmed
+// the heads and the message the preview showed (ADR 0055).
+func (s *server) mergeGoal(w http.ResponseWriter, r *http.Request) {
+	var req engine.MergeRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	m, err := eng(r).MergeGoal(r.Context(), r.PathValue("id"), req)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+// pushGoal pushes the branch a goal was merged into (ADR 0055).
+func (s *server) pushGoal(w http.ResponseWriter, r *http.Request) {
+	m, err := eng(r).PushGoal(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+// listGoalMerges lists the project's goal merges, newest first.
+func (s *server) listGoalMerges(w http.ResponseWriter, r *http.Request) {
+	list, err := eng(r).GoalMerges(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// listGrants lists the project's stored access grants (ADR 0053).
+func (s *server) listGrants(w http.ResponseWriter, r *http.Request) {
+	list, err := eng(r).AccessGrants(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// revokeGrant deletes a stored access grant (Phase 17). Revoking narrows the
+// sandbox, so any paired device may; the origin guard applies to DELETE.
+func (s *server) revokeGrant(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		writeError(w, http.StatusBadRequest, "invalid access grant id")
+		return
+	}
+	g, err := eng(r).RevokeAccessGrant(r.Context(), id)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
+}
+
 // listPullRequests lists the project's pull requests with their reviews
 // (ADR 0020, 0021). Review text comes from agents, bots or people: the UI
 // renders it as text.
@@ -858,7 +958,8 @@ func (s *server) engineError(w http.ResponseWriter, err error) {
 	case errors.Is(err, engine.ErrStillRunning), errors.Is(err, engine.ErrTooManyAgents),
 		errors.Is(err, engine.ErrWorktreeDirty), errors.Is(err, engine.ErrTaskHasRunning),
 		errors.Is(err, engine.ErrLeadRunning), errors.Is(err, engine.ErrDecided),
-		errors.Is(err, git.ErrBranchCheckedOut), errors.Is(err, engine.ErrFlagged), errors.Is(err, engine.ErrNoGitHub):
+		errors.Is(err, git.ErrBranchCheckedOut), errors.Is(err, engine.ErrFlagged), errors.Is(err, engine.ErrNoGitHub),
+		errors.Is(err, engine.ErrMergeRefused):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, engine.ErrUpstream):
 		writeError(w, http.StatusBadGateway, err.Error())

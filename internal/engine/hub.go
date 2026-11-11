@@ -249,6 +249,7 @@ func (h *Hub) options(ctx context.Context, row db.Project, s ProjectSettings) (O
 		o.Roles = roles
 	}
 	o.AccessDecider, o.LeadAccessHosts = *eff.AccessDecider, slices.Clone(eff.LeadAccessHosts)
+	o.MergeTarget, o.PushRemote = *eff.MergeTarget, *eff.GitHubRemote // ADR 0055
 	if h.opts.Configure != nil {
 		p := Project{ID: row.ID, Name: row.Name, RepoPath: row.RepoPath, Slug: row.Slug}
 		if err := h.opts.Configure(ctx, p, eff, &o); err != nil {
@@ -257,6 +258,9 @@ func (h *Hub) options(ctx context.Context, row db.Project, s ProjectSettings) (O
 	}
 	if m := eff.WorkerMemory; m != nil && *m != "" && o.Sandbox != nil {
 		o.Sandbox.Memory = *m // the project's own copy (above); over the pack's and --sandbox-memory (ADR 0051)
+	}
+	if n := eff.WorkerPids; n != nil && *n != 0 && o.Sandbox != nil {
+		o.Sandbox.Pids = *n // over the pack's and --sandbox-pids, like memory (Phase 17)
 	}
 	return o, nil
 }

@@ -218,27 +218,54 @@ func (e *Engine) UpdateTask(ctx context.Context, id string, p TaskPatch) (Task, 
 		}
 		params.Status = *p.Status
 	}
-	row, err := e.q.UpdateTask(ctx, params)
+	closing := params.Status == StatusDone && cur.Status != StatusDone && !cur.ParentTaskID.Valid
+	var row db.Task
+	var closed []db.Task
+	err = e.st.Tx(ctx, func(q *db.Queries) error {
+		var err error
+		if row, err = q.UpdateTask(ctx, params); err != nil || !closing {
+			return err
+		}
+		// ADR 0054: a goal marked done closes its sub-tasks with it.
+		closed, err = q.CloseChildTasks(ctx, db.CloseChildTasksParams{UpdatedAt: params.UpdatedAt,
+			ParentTaskID: nullString(row.ID)})
+		return err
+	})
 	if err != nil {
 		return Task{}, err
 	}
 	v := taskFromRow(row)
 	e.publish(Update{Type: "task", Task: &v})
-	if row.Status == StatusDone && cur.Status != StatusDone && !row.ParentTaskID.Valid {
+	for _, c := range closed {
+		cv := taskFromRow(c)
+		e.publish(Update{Type: "task", Task: &cv})
+	}
+	if closing {
+		e.log.Info("goal done", "task_id", row.ID, "sub_tasks_closed", len(closed))
 		e.endGoal(row.ID)
 	}
 	return v, nil
 }
 
-// endGoal ends the agents that coordinate a goal the user marked done: its
-// Tech Lead, architect and QA (exit reason goal_done). Workers are left alone:
-// they end when they report, and one still working may hold work.
+// endGoal ends every running agent of a goal the user marked done, its
+// workers included (exit reason goal_done, ADR 0054): a worker's uncommitted
+// work is committed on its exit (ADR 0051), so nothing is lost. Reviewers of
+// its pull requests are left to finish.
 func (e *Engine) endGoal(goalID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	kids, err := e.q.ListChildTasks(ctx, nullString(goalID))
+	cancel()
+	if err != nil {
+		e.log.Error("goal done: its sub-tasks could not be read; only the goal's own agents end", "task_id", goalID, "err", err)
+	}
+	tasks := map[string]bool{goalID: true}
+	for _, k := range kids {
+		tasks[k.ID] = true
+	}
 	e.mu.Lock()
 	var ids []string
 	for _, a := range e.agents {
-		if a.info.TaskID == goalID && a.running() &&
-			(a.info.Kind == KindLead || a.info.Kind == KindArchitect || a.info.Kind == KindQA) {
+		if a.running() && a.info.Kind != KindReviewer && tasks[a.info.TaskID] {
 			ids = append(ids, a.info.ID)
 		}
 	}

@@ -20,6 +20,11 @@ const (
 	APIBudget    EventKind = "api_budget"    // refused: a budget is spent (ADR 0027)
 	APIMeter     EventKind = "api_meter"     // a response's usage could not be read (ADR 0026)
 
+	// Claude Code's own background requests, refused as expected (Phase 17):
+	// shown quietly, not as problems.
+	EgressBackground EventKind = "egress_background"
+	APIBackground    EventKind = "api_background"
+
 	// Import of the agent's branch into the main repository (ADR 0014).
 	ImportDiverged EventKind = "import_diverged" // rewritten history went to a new -rewrite-N branch
 	CommitFlagged  EventKind = "commit_flagged"  // an imported commit lacks the expected author or trailer
@@ -27,6 +32,8 @@ const (
 
 	// The worker's memory limit (ADR 0051).
 	OOMKill EventKind = "oom_kill" // the out-of-memory killer ended a process in the worker
+	// The worker's process limit (Phase 17).
+	PidsLimit EventKind = "pids_limit" // a process could not start: the worker reached its pids limit
 )
 
 // Event is one refusal or failure. Detail holds only the target (host:port or

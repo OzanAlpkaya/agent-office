@@ -348,6 +348,8 @@ type SendMessageOutput struct {
 // ReportDoneInput is report_done's input.
 type ReportDoneInput struct {
 	Summary string `json:"summary" jsonschema:"What you did and anything the reader must know (1-2000 characters)."`
+	// The Tech Lead's squash-merge message for the goal (ADR 0055).
+	CommitMessage string `json:"commit_message,omitempty" jsonschema:"Tech Lead only: the commit message for squash-merging the goal's tested work into the target branch, in the repository's style (a subject line, a blank line, a short body; up to 4000 characters). The user reviews it before merging. Workers leave it out."`
 }
 
 // ReportDoneOutput is report_done's result.
@@ -471,8 +473,8 @@ func NewServer(team Team, caller string, tools []string, version string, log *sl
 		})
 	add(s, t, &sdk.Tool{Name: ToolReportDone, Description: "Report that your task is finished. Workers: commit " +
 		"all your changes first; agent-office checks the branch, moves the task to review, sends your summary " +
-		"to the lead and ends your session after this turn. Lead: call it when every sub-task is reported; it " +
-		"moves the goal to review."},
+		"to the lead and ends your session after this turn. Lead: call it when every sub-task is reported and QA passed, with the commit message for " +
+		"squash-merging the goal; it moves the goal to review."},
 		func(ctx context.Context, in ReportDoneInput) (ReportDoneOutput, error) {
 			return team.ReportDone(ctx, caller, in)
 		})

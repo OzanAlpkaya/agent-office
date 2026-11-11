@@ -43,7 +43,8 @@ func daemonDefaults(cfg serveConfig) engine.ProjectSettings {
 		ReviewRounds:          engine.Ptr(cfg.reviewRounds),
 		BudgetSessionMicroUSD: engine.Ptr(int64(math.Round(cfg.budgetSessionUSD * 1e6))),
 		BudgetGoalMicroUSD:    engine.Ptr(int64(math.Round(cfg.budgetGoalUSD * 1e6))),
-		AccessDecider:         engine.Ptr(engine.DeciderUser), WorkerMemory: engine.Ptr(""),
+		AccessDecider:         engine.Ptr(engine.DeciderUser), WorkerMemory: engine.Ptr(""), WorkerPids: engine.Ptr(0),
+		MergeTarget: engine.Ptr(engine.DefaultMergeTarget),
 	}
 }
 
@@ -247,7 +248,8 @@ type settingsFlags struct {
 	budgetSession, budgetGoal                                *float64
 	inherit                                                  *string
 	roleCLIs, codexModel                                     *string
-	accessDecider, leadHosts, workerMemory                   *string
+	accessDecider, leadHosts, workerMemory, mergeTarget      *string
+	workerPids                                               *int
 }
 
 func addSettingsFlags(fs *flag.FlagSet, set bool) *settingsFlags {
@@ -271,10 +273,12 @@ func addSettingsFlags(fs *flag.FlagSet, set bool) *settingsFlags {
 	f.leadHosts = fs.String("lead-access-hosts", "", "with lead_policy: hosts the Tech Lead may approve, comma-separated "+
 		"(.example.com for subdomains)")
 	f.workerMemory = fs.String("worker-memory", "", "sandboxed workers' memory limit, e.g. 4g (default: the pack's, else --sandbox-memory)")
+	f.workerPids = fs.Int("worker-pids", 0, "sandboxed workers' process limit, e.g. 1024 (default: the pack's, else --sandbox-pids)")
+	f.mergeTarget = fs.String("merge-target", "", "the branch a goal's Merge button squash-merges into (default main)")
 	if set {
 		f.inherit = fs.String("inherit", "", "settings to take from the daemon again, comma-separated, e.g. pack,model "+
 			"(names as in the API: pack, secrets_dir, egress_allow, model, role_models, role_clis, codex_model, max_agents, github, github_remote, "+
-			"reviewer, review_rounds, budget_session_micro_usd, budget_goal_micro_usd, access_decider, lead_access_hosts, worker_memory)")
+			"reviewer, review_rounds, budget_session_micro_usd, budget_goal_micro_usd, access_decider, lead_access_hosts, worker_memory, worker_pids, merge_target)")
 	}
 	return f
 }
@@ -335,6 +339,10 @@ func (f *settingsFlags) settings(cur engine.ProjectSettings) (engine.ProjectSett
 			}
 		case "worker-memory":
 			s.WorkerMemory = engine.Ptr(*f.workerMemory)
+		case "worker-pids":
+			s.WorkerPids = engine.Ptr(*f.workerPids)
+		case "merge-target":
+			s.MergeTarget = engine.Ptr(*f.mergeTarget)
 		}
 	})
 	if err != nil {
@@ -386,6 +394,10 @@ func (f *settingsFlags) settings(cur engine.ProjectSettings) (engine.ProjectSett
 				s.LeadAccessHosts = nil
 			case "worker_memory":
 				s.WorkerMemory = nil
+			case "worker_pids":
+				s.WorkerPids = nil
+			case "merge_target":
+				s.MergeTarget = nil
 			default:
 				return s, fmt.Errorf("--inherit: unknown setting %q", n)
 			}

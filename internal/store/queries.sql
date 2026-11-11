@@ -545,3 +545,61 @@ UPDATE devices SET last_seen_at = ? WHERE id = ?;
 
 -- name: DeleteDevice :execrows
 DELETE FROM devices WHERE id = ?;
+
+-- Phase 17 (migration 0016).
+
+-- name: MarkSessionPrompted :exec
+-- The session got a prompt, so its transcript exists even if no turn finished (ADR 0035).
+UPDATE sessions SET prompted = 1 WHERE id = ? AND prompted = 0;
+
+-- name: CloseChildTasks :many
+-- A goal marked done closes its sub-tasks (ADR 0054).
+UPDATE tasks SET status = 'done', updated_at = ? WHERE parent_task_id = ? AND status != 'done'
+RETURNING *;
+
+-- name: ListGoalAgents :many
+-- Every agent that worked on a goal or one of its sub-tasks, removed ones included (ADR 0054).
+SELECT agents.*, worktrees.branch AS branch, worktrees.status AS worktree_status
+FROM agents JOIN worktrees ON worktrees.agent_id = agents.id
+WHERE agents.project_id = sqlc.arg(project_id) AND (agents.task_id = sqlc.arg(goal_id)
+    OR agents.task_id IN (SELECT t.id FROM tasks t WHERE t.parent_task_id = sqlc.arg(goal_id)))
+ORDER BY agents.started_at, agents.id;
+
+-- name: ListGoalQARuns :many
+SELECT * FROM qa_runs WHERE goal_id = ? ORDER BY id DESC;
+
+-- name: InsertGoalReport :one
+INSERT INTO goal_reports (goal_id, agent_id, summary, commit_message, created_at) VALUES (?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: LatestGoalReport :one
+SELECT * FROM goal_reports WHERE goal_id = ? ORDER BY id DESC LIMIT 1;
+
+-- name: InsertGoalMerge :one
+INSERT INTO goal_merges (goal_id, qa_run_id, target, source_head, target_before, commit_sha, message, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: ListProjectGoalMerges :many
+SELECT m.* FROM goal_merges m JOIN tasks t ON t.id = m.goal_id WHERE t.project_id = ? ORDER BY m.id DESC LIMIT ?;
+
+-- name: LatestGoalMerge :one
+SELECT * FROM goal_merges WHERE goal_id = ? ORDER BY id DESC LIMIT 1;
+
+-- name: MarkGoalMergePushed :one
+-- Compare-and-swap: a merge is recorded as pushed once.
+UPDATE goal_merges SET pushed_at = ?, push_remote = ? WHERE id = ? AND pushed_at IS NULL
+RETURNING *;
+
+-- name: ListProjectAccessGrants :many
+-- The project's stored grants with the decision that made them (ADR 0053, 0054).
+SELECT g.id, g.project_id, g.agent_id, g.host, g.request_id, g.created_at,
+       COALESCE(r.decided_by, '') AS decided_by, COALESCE(r.decider_agent_id, '') AS decider_agent_id,
+       COALESCE(r.decision_reason, '') AS decision_reason
+FROM access_grants g LEFT JOIN access_requests r ON r.id = g.request_id
+WHERE g.project_id = ?
+ORDER BY g.id;
+
+-- name: DeleteAccessGrant :one
+DELETE FROM access_grants WHERE id = ? AND project_id = ?
+RETURNING *;

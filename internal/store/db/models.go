@@ -81,6 +81,29 @@ type Event struct {
 	At        time.Time
 }
 
+type GoalMerge struct {
+	ID           int64
+	GoalID       string
+	QaRunID      sql.NullInt64
+	Target       string
+	SourceHead   string
+	TargetBefore string
+	CommitSha    string
+	Message      string
+	CreatedAt    time.Time
+	PushedAt     sql.NullTime
+	PushRemote   string
+}
+
+type GoalReport struct {
+	ID            int64
+	GoalID        string
+	AgentID       sql.NullString
+	Summary       string
+	CommitMessage string
+	CreatedAt     time.Time
+}
+
 type Import struct {
 	ID       int64
 	AgentID  string
@@ -213,6 +236,7 @@ type Session struct {
 	CliCostMicroUsd sql.NullInt64
 	ResumedFrom     string
 	CliSessionID    string
+	Prompted        bool
 }
 
 type Spec struct {

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
+	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
 
 // testDefaults are daemon flags as project settings, every field set.
@@ -529,5 +531,31 @@ func TestHubCodexRoleNeedsTheSandbox(t *testing.T) {
 	}
 	if _, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{RoleCLIs: map[string]string{"nobody": "codex"}}}); err == nil {
 		t.Fatal("an unknown role in role_clis accepted")
+	}
+}
+
+// A project's worker_pids and worker_memory win over the daemon's (and the
+// pack's, already in Base.Sandbox); 0 and "" keep them (Phase 17, ADR 0051).
+func TestHubWorkerLimitsPerProject(t *testing.T) {
+	h := &Hub{opts: HubOptions{Base: Options{Sandbox: &SandboxOptions{Memory: "2g", Pids: 512}}, Defaults: testDefaults()}}
+	ctx := context.Background()
+	row := db.Project{ID: "p1", Name: "p", RepoPath: "/r", Slug: "p"}
+	o, err := h.options(ctx, row, ProjectSettings{WorkerPids: Ptr(4096), WorkerMemory: Ptr("8g")})
+	if err != nil || o.Sandbox.Pids != 4096 || o.Sandbox.Memory != "8g" {
+		t.Fatalf("project limits: %+v %v", o.Sandbox, err)
+	}
+	if h.opts.Base.Sandbox.Pids != 512 {
+		t.Fatal("a project's limit changed the daemon's options")
+	}
+	o, err = h.options(ctx, row, ProjectSettings{WorkerPids: Ptr(0)})
+	if err != nil || o.Sandbox.Pids != 512 || o.Sandbox.Memory != "2g" {
+		t.Fatalf("0 keeps the pack's or daemon's limit: %+v %v", o.Sandbox, err)
+	}
+	e := &Engine{opts: o}
+	if e.workerPids() != 512 {
+		t.Fatalf("worker pids %d", e.workerPids())
+	}
+	if (&Engine{opts: Options{Sandbox: &SandboxOptions{}}}).workerPids() != sandbox.DefaultPids {
+		t.Fatal("no limit set: the sandbox default")
 	}
 }
