@@ -53,6 +53,28 @@ func oomKill(t *testing.T, agentID string) {
 // lead. The goal must reach review without a human answering anything.
 func TestAutonomousTeamEndToEnd(t *testing.T) {
 	d, repo, listAgents := teamDaemon(t, "--max-agents", "3", "--qa=false", "--stall-after", "30s")
+	t.Cleanup(func() { // what the team did, when something went wrong (before the daemon stops)
+		if !t.Failed() {
+			return
+		}
+		for _, a := range listAgents() {
+			t.Logf("agent %s %s %s exit=%s %q session=%s from=%s", a.ID, a.Role, a.State, a.ExitReason, a.ExitDetail, a.SessionID, a.ResumedFrom)
+			var msgs []userMessage
+			d.json("GET", "/api/agents/"+a.ID+"/messages", nil, http.StatusOK, &msgs)
+			for _, m := range msgs {
+				t.Logf("  message %d %s->%s user=%v delivered=%q: %.160s", m.ID, m.From, m.To, m.FromUser, m.DeliveredAt, m.Body)
+			}
+		}
+		logData, _ := os.ReadFile(d.logPath)
+		var keep []string
+		for _, line := range strings.Split(string(logData), "\n") {
+			if (strings.Contains(line, "level=INFO") || strings.Contains(line, "level=WARN") || strings.Contains(line, "level=ERROR")) &&
+				!strings.Contains(line, "http request") {
+				keep = append(keep, line)
+			}
+		}
+		t.Logf("daemon log, INFO and up:\n%s", strings.Join(keep[max(0, len(keep)-200):], "\n"))
+	})
 	var projects []struct {
 		ID      string `json:"id"`
 		Default bool   `json:"default"`

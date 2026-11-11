@@ -137,10 +137,11 @@ func TestExitSavesUncommittedWork(t *testing.T) {
 	if gitIn(t, tf.f.repo, "log", "-1", "--format=%an", w.Branch) != "Ozan Test" {
 		t.Fatal("saved as someone else")
 	}
-	// The notice was queued while it was exited and is delivered to the
-	// resumed session at its first Stop.
-	typeLine(t, e, w.ID, "turn")
-	screen(t, e, w.ID, "committed the changes you had not committed")
+	// The notice was queued while it was exited and went into the resumed
+	// session's first prompt.
+	if !deliveredWith(t, e, w.ID, "committed the changes you had not committed", DeliveryPrompt) {
+		t.Fatal("the saved-work notice was not given to the resumed session")
+	}
 	eventually(t, "the lead hears that the work was saved", func() bool {
 		return bodiesContaining(messagesTo(t, e, tf.lead.ID), "its uncommitted work was saved as commit") == 1
 	})
@@ -222,6 +223,19 @@ func TestRelaunchGetsMessagesQueuedWhileEnding(t *testing.T) {
 		t.Fatal(err)
 	}
 	tf.log.waitFrom(t, startWait, mark, agentState(w.ID, hooks.Idle))
-	typeLine(t, e, w.ID, "turn")
-	screen(t, e, w.ID, "check the schema first")
+	if !deliveredWith(t, e, w.ID, "check the schema first", DeliveryPrompt) {
+		t.Fatal("the waiting message was not in the relaunch's first prompt")
+	}
+}
+
+// deliveredWith reports whether a message to id containing sub was delivered
+// by way.
+func deliveredWith(t *testing.T, e *Engine, id, sub, way string) bool {
+	t.Helper()
+	for _, m := range messagesTo(t, e, id) {
+		if strings.Contains(m.Body, sub) && m.DeliveredAt != nil && m.Delivery == way {
+			return true
+		}
+	}
+	return false
 }

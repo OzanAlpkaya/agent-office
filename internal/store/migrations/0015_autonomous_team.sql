@@ -45,3 +45,24 @@ CREATE TABLE access_grants (
     created_at DATETIME NOT NULL
 );
 CREATE INDEX access_grants_project ON access_grants (project_id, agent_id);
+
+-- Messages waiting for an agent that was not running are put into the first prompt of the session
+-- that resumes or relaunches it (ADR 0051): delivery gains 'prompt'. Rebuilt like access_requests;
+-- nothing references messages.
+CREATE TABLE messages_v15 (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    TEXT NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+    from_agent_id TEXT REFERENCES agents (id) ON DELETE CASCADE,
+    to_agent_id   TEXT NOT NULL REFERENCES agents (id) ON DELETE CASCADE,
+    body          TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 4000),
+    created_at    DATETIME NOT NULL,
+    delivered_at  DATETIME,
+    delivery      TEXT NOT NULL DEFAULT '' CHECK (delivery IN ('', 'stop_hook', 'pty', 'prompt')),
+    from_user     BOOLEAN NOT NULL DEFAULT 0
+);
+INSERT INTO messages_v15 (id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery, from_user)
+SELECT id, project_id, from_agent_id, to_agent_id, body, created_at, delivered_at, delivery, from_user FROM messages;
+DROP TABLE messages;
+ALTER TABLE messages_v15 RENAME TO messages;
+CREATE INDEX messages_to ON messages (to_agent_id, delivered_at, id);
+CREATE INDEX messages_from ON messages (from_agent_id, created_at);

@@ -411,7 +411,7 @@ export interface Message {
   body: string;
   created_at: string;
   delivered_at?: string;
-  delivery?: "stop_hook" | "pty";
+  delivery?: "stop_hook" | "pty" | "prompt";
 }
 
 // AccessRequest is an agent asking for more access (ADR 0019). The reason is

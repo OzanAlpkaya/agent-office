@@ -478,18 +478,32 @@ func TestRemoveKeepsWork(t *testing.T) {
 	if _, err := e.Remove(ctx, a2.ID); !errors.Is(err, ErrStillRunning) {
 		t.Fatalf("remove running: %v", err)
 	}
+	gitIn(t, f.repo, "config", "user.name", "Ozan Test") // the exit commits as the user (ADR 0051)
+	gitIn(t, f.repo, "config", "user.email", "ozan@example.com")
 	_ = e.Stop(a2.ID)
+	e.mu.Lock()
+	exitWork := e.agents[a2.ID].afterExit
+	e.mu.Unlock()
+	<-exitWork
+	// The exit saved the work as a commit; a change made after it (by hand,
+	// say) keeps the worktree.
+	if err := os.WriteFile(filepath.Join(a2.WorktreePath, "late.txt"), []byte("late\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := e.Remove(ctx, a2.ID); !errors.Is(err, ErrWorktreeDirty) {
 		t.Fatalf("remove dirty: %v", err)
 	}
 	if got, _ := e.Get(a2.ID); got.WorktreeStatus != WorktreeKept {
 		t.Fatalf("worktree status %s", got.WorktreeStatus)
 	}
-	if _, err := os.Stat(filepath.Join(a2.WorktreePath, "agent-output.txt")); err != nil {
+	if _, err := os.Stat(filepath.Join(a2.WorktreePath, "late.txt")); err != nil {
 		t.Fatal("uncommitted work was deleted")
 	}
+	if files := gitIn(t, f.repo, "show", "--name-only", "--format=", a2.Branch); files != "agent-output.txt" {
+		t.Fatalf("saved on exit: %q", files)
+	}
 	res, err = e.Discard(ctx, a2.ID)
-	if err != nil || res != (RemoveResult{Worktree: "removed", Branch: "deleted"}) {
+	if err != nil || res != (RemoveResult{Worktree: "removed", Branch: "kept"}) {
 		t.Fatalf("discard: %+v %v", res, err)
 	}
 	if _, err := os.Stat(a2.WorktreePath); !errors.Is(err, os.ErrNotExist) {

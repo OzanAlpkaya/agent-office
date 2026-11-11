@@ -533,6 +533,7 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary string) (mcp.Re
 	if team {
 		// A lead-managed worker frees its slot for the next sub-task.
 		a.stopAfterTurn = true
+		a.heldSince = now()
 	}
 	e.mu.Unlock()
 	if lead != nil {

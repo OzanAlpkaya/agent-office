@@ -933,7 +933,7 @@ function Approvals({ waiting, elsewhere = 0, taskTitle, onOpenAgent, onOpenInbox
   );
 }
 
-const deliveryLabel: Record<string, string> = { stop_hook: "at end of turn", pty: "typed while idle" };
+const deliveryLabel: Record<string, string> = { stop_hook: "at end of turn", pty: "typed while idle", prompt: "with its resume" };
 
 // MessageList shows messages an agent sent or received, newest first. Bodies
 // are agent-written text.

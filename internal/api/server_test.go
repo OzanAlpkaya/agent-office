@@ -301,16 +301,22 @@ func TestTasksAPI(t *testing.T) {
 		t.Fatalf("unknown task: %d", r.StatusCode)
 	}
 
-	// A dirty worktree is kept on DELETE and only removed by discard.
-	f.do(t, "POST", f.pp+"/agents/"+a.ID+"/stop", nil)
+	// Uncommitted work is committed when the agent exits (ADR 0051), so the
+	// worktree goes on DELETE and the branch with the work stays.
+	for _, kv := range [][2]string{{"user.name", "Ozan Test"}, {"user.email", "ozan@example.com"}} {
+		if out, err := exec.Command("git", "-C", a.WorktreePath, "config", kv[0], kv[1]).CombinedOutput(); err != nil {
+			t.Fatalf("git config: %v %s", err, out)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(a.WorktreePath, "wip.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if r := f.do(t, "DELETE", f.pp+"/agents/"+a.ID, nil); r.StatusCode != http.StatusConflict {
-		t.Fatalf("delete dirty: %d", r.StatusCode)
-	}
-	if r := f.do(t, "POST", f.pp+"/agents/"+a.ID+"/discard", nil); r.StatusCode != http.StatusOK {
-		t.Fatalf("discard: %d", r.StatusCode)
+	f.do(t, "POST", f.pp+"/agents/"+a.ID+"/stop", nil)
+	r = f.do(t, "DELETE", f.pp+"/agents/"+a.ID, nil)
+	var res engine.RemoveResult
+	_ = json.NewDecoder(r.Body).Decode(&res)
+	if r.StatusCode != http.StatusOK || res.Branch != "kept" {
+		t.Fatalf("delete after the exit saved the work: %d %+v", r.StatusCode, res)
 	}
 	if r := f.do(t, "DELETE", f.pp+"/tasks/"+task.ID, nil); r.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete task: %d", r.StatusCode)

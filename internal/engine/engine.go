@@ -251,6 +251,7 @@ type agentProc struct {
 	reviewID   int64          // reviewers: the review they were started for (ADR 0021)
 	followup   *followupRound // workers relaunched for a review, until they report (ADR 0022); guarded by Engine.mu
 	since      time.Time      // this session's start: older messages are not delivered to it (ADR 0022)
+	heldSince  time.Time      // when it stopped taking messages (its report, or its exit): later ones wait for its next session (ADR 0051); guarded by Engine.mu
 	usage      *sessionUsage  // this session's token usage (ADR 0026); nil for agents of a previous run
 	log        *slog.Logger   // this session's logger: agent, session and task ids (ADR 0028)
 	resumeFrom string         // the session this one continues (ADR 0035); "" for a fresh one
@@ -925,6 +926,9 @@ func (e *Engine) watch(a *agentProc) {
 	a.status = hooks.Status{State: hooks.Exited}
 	code := x.code
 	a.info.ExitedAt, a.info.ExitCode, a.info.ExitReason = &t, &code, reason
+	if a.heldSince.IsZero() {
+		a.heldSince = t
+	}
 	e.syncSlotsLocked()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -823,6 +823,7 @@ func (e *Engine) submitReview(ctx context.Context, caller string, in mcp.SubmitR
 	lock.Unlock()
 	e.mu.Lock()
 	a.stopAfterTurn = true // even if recording failed: never post a second review
+	a.heldSince = now()
 	e.mu.Unlock()
 	if err != nil {
 		return mcp.SubmitReviewOutput{}, err

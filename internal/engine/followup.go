@@ -145,6 +145,7 @@ func (e *Engine) reportNoChange(ctx context.Context, caller, reason string) (mcp
 	team := task.ParentTaskID.Valid
 	if team {
 		a.stopAfterTurn = true
+		a.heldSince = now()
 	}
 	e.mu.Unlock()
 	if lead != nil {

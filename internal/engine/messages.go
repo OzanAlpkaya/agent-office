@@ -312,6 +312,49 @@ func (e *Engine) deliverIdle(id string) {
 	}
 }
 
+// DeliveryPrompt: messages that waited for an agent, put into the first
+// prompt of the session that resumes or relaunches it (ADR 0051).
+const DeliveryPrompt = "prompt"
+
+// withHeldMessages claims agent id's undelivered messages queued since
+// since and appends them to prompt, framed like any delivery (ADR 0018).
+func (e *Engine) withHeldMessages(ctx context.Context, id string, since time.Time, prompt string) (string, []Message) {
+	rows, err := e.q.ClaimMessages(ctx, db.ClaimMessagesParams{DeliveredAt: nullTime(now()), Delivery: DeliveryPrompt,
+		ToAgentID: id, Since: since})
+	if err != nil {
+		e.log.Error("claim messages for a first prompt", "agent_id", id, "err", err)
+		return prompt, nil
+	}
+	if len(rows) == 0 {
+		return prompt, nil
+	}
+	slices.SortFunc(rows, func(a, b db.Message) int { return cmp.Compare(a.ID, b.ID) })
+	msgs := make([]Message, 0, len(rows))
+	e.mu.Lock()
+	for _, r := range rows {
+		m := messageFromRow(r)
+		msgs = append(msgs, m)
+		e.log.Info("message delivered", "agent_id", id, "message_id", m.ID, "delivery", DeliveryPrompt)
+		e.publishLocked(Update{Type: "message", Message: &m})
+	}
+	names := e.namesLocked()
+	e.mu.Unlock()
+	return prompt + "\n\n" + formatMessages(msgs, names), msgs
+}
+
+// unclaim puts messages back in the queue: the session they were given to
+// did not start.
+func (e *Engine) unclaim(ctx context.Context, msgs []Message) {
+	for _, m := range msgs {
+		if err := e.q.UnclaimMessage(ctx, m.ID); err != nil {
+			e.log.Error("unclaim message", "message_id", m.ID, "err", err)
+			continue
+		}
+		m.DeliveredAt, m.Delivery = nil, ""
+		e.publish(Update{Type: "message", Message: &m})
+	}
+}
+
 // agentLabel describes an agent in a delivered message.
 type agentLabel struct{ name, role string }
 

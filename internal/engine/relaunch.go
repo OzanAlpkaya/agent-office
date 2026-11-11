@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
@@ -180,11 +181,21 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 	if r.resume {
 		// Messages queued for the conversation it continues are its own.
 		l.resumeFrom, l.since = from.ID, from.StartedAt.UTC()
-	} else if !a.since.IsZero() {
-		// ADR 0051: what the ended session did not get (queued while it ended
-		// or was exited) is for this one; older sessions' messages stay theirs
-		// (ADR 0022).
-		l.since = a.since
+	} else if held := e.heldSince(a); !held.IsZero() {
+		// ADR 0051: what was sent once it stopped taking messages (its report,
+		// its exit) is for this session; what its own session missed stays
+		// that session's (ADR 0022).
+		l.since = held
+	}
+	// ADR 0051: what waited for it goes into its first prompt, so a session
+	// that finishes in its first turn (a report) still gets it.
+	var held []Message
+	if l.prompt != "" {
+		since := l.since
+		if since.IsZero() {
+			since = started
+		}
+		l.prompt, held = e.withHeldMessages(ctx, id, since, l.prompt)
 	}
 	var out AgentInfo
 	if info.Sandbox == SandboxPodman {
@@ -194,6 +205,7 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 	}
 	if err != nil {
 		bg := context.Background()
+		e.unclaim(bg, held)
 		_ = e.q.MarkAgentExited(bg, db.MarkAgentExitedParams{ExitedAt: nullTime(now()), ExitReason: ExitStartFailed, ID: id})
 		_ = e.q.EndSessions(bg, db.EndSessionsParams{EndedAt: nullTime(now()), AgentID: id})
 		if r.resume {
@@ -216,6 +228,20 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 		e.log.Info("agent relaunched", "agent_id", id, "session_id", sid, "task_id", info.TaskID, "branch", info.Branch)
 	}
 	return out, nil
+}
+
+// heldSince is when an exited agent stopped taking messages; for an agent of
+// a previous daemon run, its exit.
+func (e *Engine) heldSince(a *agentProc) time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !a.heldSince.IsZero() {
+		return a.heldSince
+	}
+	if a.info.ExitedAt != nil {
+		return a.info.ExitedAt.UTC()
+	}
+	return time.Time{}
 }
 
 // MaxResumePrompt bounds the optional prompt of a resume.

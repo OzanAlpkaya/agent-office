@@ -372,6 +372,7 @@ func (e *Engine) reportQA(ctx context.Context, caller string, in mcp.ReportQAInp
 	e.publishQARun(row)
 	e.mu.Lock()
 	a.stopAfterTurn = true
+	a.heldSince = now()
 	lead := e.leadOfGoalLocked(goal.ID)
 	e.mu.Unlock()
 	if lead != nil {
