@@ -355,3 +355,39 @@ button.approval-link { align-self: flex-start; padding: 0.1rem 0.5rem; font-size
   .agent-tab { flex: none; max-width: 60vw; }
   .tabs .switcher-button { position: sticky; right: 0; z-index: 1; box-shadow: -8px 0 8px var(--bg); }
 }
+
+/* Projects (ADR 0046, 0048) */
+.project-switcher { display: inline-flex; gap: 0.35rem; align-items: center; min-width: 0; }
+.project-switcher select { max-width: 16rem; background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 0.15rem 0.35rem; font: inherit; font-size: 0.85rem; }
+.projects-panel { display: flex; flex-direction: column; gap: 0.6rem; }
+.projects-panel h2, .projects-panel h3 { margin: 0; font-size: 1rem; }
+.project-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.project-item { border-left: 2px solid var(--border); padding-left: 0.6rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.project-item.current { border-left-color: var(--accent); }
+.project-head { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: baseline; min-width: 0; }
+.project-head .mono { overflow-wrap: anywhere; }
+.project-item .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.badge.state-error { color: #ff7b72; }
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 0.4rem 0.75rem; }
+.setting { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.8rem; color: var(--muted); }
+.setting input, .setting select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.3rem 0.4rem; font: inherit; font-size: 0.85rem; min-width: 0; }
+.project-add, .project-settings { display: flex; flex-direction: column; gap: 0.45rem; border-top: 1px solid var(--border);
+  padding-top: 0.6rem; }
+.project-add button.primary, .project-settings button.primary { align-self: flex-start; width: auto; }
+.no-project main.single { padding: 1rem; max-width: 60rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.other-projects { border-top: 1px solid var(--border); margin-top: 0.75rem; padding-top: 0.5rem; }
+.other-projects h3 { font-size: 0.9rem; margin: 0.25rem 0; }
+.elevator { display: flex; flex-wrap: wrap; gap: 0.35rem; padding: 0.4rem 0.75rem; border-bottom: 1px solid var(--border); }
+.elevator .floor { display: inline-flex; gap: 0.35rem; align-items: center; font-size: 0.8rem; }
+.elevator .floor.current { border-color: var(--accent); color: var(--accent); }
+.elevator .floor.has-waiting .count { background: #ffb454; color: #111; border-radius: 999px; padding: 0 0.4rem; }
+.elevator .floor-number { font-family: ui-monospace, monospace; opacity: 0.7; }
+.all-projects { margin: 0.5rem 0 1rem; }
+.all-projects h3 { font-size: 0.9rem; margin: 0 0 0.35rem; }
+.all-projects tr.total td { font-weight: 600; border-top: 1px solid var(--border); }
+@media (max-width: 640px) {
+  .project-switcher select { max-width: 9rem; }
+  .elevator .floor { min-height: 44px; }
+}

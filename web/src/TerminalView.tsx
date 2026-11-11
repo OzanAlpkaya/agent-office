@@ -2,7 +2,8 @@ import { type JSX, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { type Agent, type SessionInfo, api, signalUnauthorized, statusSignedOut, wsURL } from "./api";
+import { type Agent, type SessionInfo, signalUnauthorized, statusSignedOut, wsURL } from "./api";
+import { useApi } from "./ProjectContext";
 import { barKeys } from "./terminalKeys";
 import { TerminalOverlay, useTerminalClipboard } from "./TerminalClipboard";
 
@@ -23,6 +24,7 @@ const termOptions = {
 // runs, else a saved session's output, read-only (ADR 0036). A picker lists
 // every session of the agent.
 export function TerminalView({ agent, onResume }: Props): JSX.Element {
+  const api = useApi();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [choice, setChoice] = useState(""); // "": the live session, else the newest saved one
   const exited = agent.state === "exited";
@@ -80,6 +82,7 @@ function sessionLabel(s: SessionInfo): string {
 // LiveTerminal attaches to an agent's PTY. The daemon first replays the
 // scrollback, then streams live output; input and resize go back as JSON.
 function LiveTerminal({ agent, onResume }: Props): JSX.Element {
+  const api = useApi();
   const agentId = agent.id;
   const host = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
@@ -103,7 +106,7 @@ function LiveTerminal({ agent, onResume }: Props): JSX.Element {
     term.open(host.current);
     fit.fit();
 
-    const ws = new WebSocket(wsURL(`/api/agents/${agentId}/terminal`));
+    const ws = new WebSocket(wsURL(api.terminalPath(agentId)));
     ws.binaryType = "arraybuffer";
     const send = (m: object) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
     let last = { cols: 0, rows: 0 };
@@ -206,6 +209,7 @@ function ResumeNote({ agent }: { agent: Agent }): JSX.Element {
 
 // SavedTerminal replays a session's saved output into a read-only terminal.
 function SavedTerminal({ agentId, sid, agent, onResume }: { agentId: string; sid: string } & Props): JSX.Element {
+  const api = useApi();
   const host = useRef<HTMLDivElement>(null);
   const [error, setError] = useState("");
   const clip = useTerminalClipboard(); // copy only: a saved session takes no input

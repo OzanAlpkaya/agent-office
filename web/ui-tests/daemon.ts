@@ -4,8 +4,8 @@
 // types, so a change to them shows up here.
 import type { Page, WebSocketRoute } from "@playwright/test";
 import type {
-  AccessRequest, Agent, AgentState, Device, InboxItem, Kind, MemoryEntry, Message, ModelUsage, QARun, RoleInfo, SessionUsage, Spec,
-  Status, Task, TaskStatus, Tokens, UsageReport,
+  AccessRequest, Agent, AgentState, DaemonStatus, DaemonUsage, Device, InboxItem, Kind, MemoryEntry, Message, ModelUsage, Project,
+  ProjectSettings, QARun, RoleInfo, SessionUsage, Spec, Status, Task, TaskStatus, Tokens, UsageReport,
 } from "../src/api";
 import { defaultRole } from "../src/api";
 
@@ -151,6 +151,20 @@ export const status: Status = {
   warnings: [], remote_hosts: ["box.tail1234.ts.net"],
 };
 
+// The daemon's flags as project settings (ADR 0046).
+export const defaults: ProjectSettings = {
+  pack: "go", secrets_dir: "/home/dev/.config/agent-office/secrets", egress_allow: [], model: "haiku", role_models: {},
+  max_agents: 8, github: false, github_remote: "origin", reviewer: "internal", review_rounds: 2,
+  budget_session_micro_usd: 0, budget_goal_micro_usd: 5_000_000,
+};
+
+export function project(id: string, name: string, over: Partial<Project> = {}): Project {
+  return {
+    id, name, repo_path: `/home/dev/${name}`, slug: `${name}-1234abcd`, settings: {}, effective: { ...defaults }, state: "open",
+    default: false, created_at: iso(0), ...over,
+  };
+}
+
 // The pairing code the mock accepts (ADR 0039).
 export const mockCode = "ABCD-EFGH";
 
@@ -159,6 +173,7 @@ export class MockDaemon {
   private events?: WebSocketRoute;
   readonly terminals: string[] = []; // agent ids whose terminal was opened
   readonly requests: string[] = []; // "METHOD path body" of every write the page sent
+  readonly projectRequests: string[] = []; // "project METHOD path" of every write to a project's routes
   readonly terminalInput: string[] = []; // text frames the page sent to terminals
   // A terminal program for tests: what follows the greeting (e.g. mouse tracking
   // on, like Claude Code's fullscreen mode) and how it answers input.
@@ -171,13 +186,45 @@ export class MockDaemon {
     { id: "d2", name: "Pixel 9", kind: "browser", paired_via: "tailscale:ozan@github", created_at: iso(5), last_seen_at: iso(20) },
   ];
 
-  constructor(readonly world: World) {}
+  // Projects (ADR 0046): the first is p1, linkshelf, with the world the test
+  // gave; addProject adds more, each with its own world and events stream.
+  readonly projects: { project: Project; world: World }[];
+  private hubEvents?: WebSocketRoute;
+  private readonly projectEvents = new Map<string, WebSocketRoute>();
+
+  constructor(readonly world: World) {
+    this.projects = [{ project: project("p1", "linkshelf", { default: true }), world }];
+  }
+
+  // addProject registers another project before (or after) install.
+  addProject(p: Project, world: World): void {
+    this.projects.push({ project: p, world });
+    this.hubEvents?.send(JSON.stringify({ type: "project", project: p }));
+  }
+
+  private worldOf(id: string): World | undefined {
+    return this.projects.find((x) => x.project.id === id)?.world;
+  }
+
+  private snapshot(w: World): string {
+    return JSON.stringify({
+      type: "snapshot", agents: w.agents, tasks: w.tasks, access_requests: w.accessRequests, pull_requests: [], inbox: w.inbox ?? [],
+      specs: w.specs ?? [], qa_runs: w.qaRuns ?? [], memory: w.memory ?? [],
+    });
+  }
+
+  // sendTo sends an update on one project's events stream.
+  sendTo(projectId: string, msg: object): void {
+    const ws = projectId === "p1" ? this.events : this.projectEvents.get(projectId);
+    if (!ws) throw new Error(`mock daemon: the page has not opened the events of ${projectId}`);
+    ws.send(JSON.stringify({ ...msg, project_id: projectId }));
+  }
 
   async install(page: Page): Promise<void> {
     const json = (body: unknown) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
     await page.route("**/api/**", async (route) => {
       const url = new URL(route.request().url());
-      const p = url.pathname;
+      let p = url.pathname;
       const method = route.request().method();
       const me = this.devices[0];
       if (p === "/api/auth/session") {
@@ -214,47 +261,103 @@ export class MockDaemon {
         return route.fulfill({ status: 204 });
       }
       if (p === "/api/health") return route.fulfill(json({ status: "ok", version: "phase-7-test" }));
-      if (p === "/api/project") return route.fulfill(json({ id: "p1", name: "linkshelf", repo_path: "/home/dev/linkshelf", slug: "linkshelf" }));
+      if (p === "/api/status") {
+        const running = this.projects.reduce((n, x) => n + x.world.agents.filter((a) => a.state !== "exited").length, 0);
+        const d: DaemonStatus = { sandbox: "podman", max_agents: 8, running, warnings: [], defaults, default_project: "p1",
+          remote_hosts: ["box.tail1234.ts.net"], version: "phase-7-test" };
+        return route.fulfill(json(d));
+      }
+      if (p === "/api/usage") {
+        const per = this.projects.map((x) => ({ project_id: x.project.id, name: x.project.name, state: x.project.state, totals: report(x.world).totals }));
+        const totals = per.reduce((t, x) => ({
+          sessions: t.sessions + x.totals.sessions, messages: t.messages + x.totals.messages,
+          cost_micro_usd: t.cost_micro_usd + x.totals.cost_micro_usd, unpriced_tokens: t.unpriced_tokens + x.totals.unpriced_tokens,
+          tokens: { ...t.tokens, input: t.tokens.input + x.totals.tokens.input, output: t.tokens.output + x.totals.tokens.output },
+        }), report({ agents: [], tasks: [], accessRequests: [], messages: [] }).totals);
+        const u: DaemonUsage = { prices: report(this.world).prices, projects: per, totals };
+        return route.fulfill(json(u));
+      }
+      if (p === "/api/projects") {
+        if (method === "POST") {
+          const body = route.request().postDataJSON() as { repo: string; name: string; settings: ProjectSettings };
+          this.requests.push(`POST ${p} ${JSON.stringify(body)}`);
+          const name = body.name || body.repo.split("/").pop() || "repo";
+          const np = project(`p${this.projects.length + 1}`, name, { repo_path: body.repo, settings: body.settings,
+            effective: { ...defaults, ...body.settings } });
+          this.addProject(np, { agents: [], tasks: [], accessRequests: [], messages: [] });
+          return route.fulfill({ ...json(np), status: 201 });
+        }
+        return route.fulfill(json(this.projects.map((x) => x.project)));
+      }
+      const proj = /^\/api\/projects\/([^/]+)(\/.*)?$/.exec(p);
+      if (proj && (proj[2] === undefined || proj[2] === "/retry")) {
+        const i = this.projects.findIndex((x) => x.project.id === proj[1]);
+        if (i === -1) return route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"project not found"}' });
+        if (method === "GET") return route.fulfill(json(this.projects[i].project));
+        this.requests.push(`${method} ${p} ${route.request().postData() ?? ""}`.trim());
+        if (method === "DELETE") {
+          this.projects.splice(i, 1);
+          this.hubEvents?.send(JSON.stringify({ type: "project_removed", id: proj[1] }));
+          return route.fulfill({ status: 204 });
+        }
+        const patch = (route.request().postDataJSON() ?? {}) as { name?: string; settings?: ProjectSettings };
+        const cur = this.projects[i].project;
+        const next = { ...cur, name: patch.name ?? cur.name, settings: patch.settings ?? cur.settings,
+          effective: { ...defaults, ...(patch.settings ?? cur.settings) } };
+        this.projects[i].project = next;
+        this.hubEvents?.send(JSON.stringify({ type: "project", project: next }));
+        return route.fulfill(json(next));
+      }
+      // A project's routes are served from its world, under the paths the
+      // mock had before projects (so recorded requests read the same).
+      let w = this.world;
+      if (proj) {
+        const pw = this.worldOf(proj[1]);
+        if (!pw) return route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"project not found"}' });
+        w = pw;
+        p = `/api${proj[2]}`;
+        if (method !== "GET") this.projectRequests.push(`${proj[1]} ${method} ${p}`);
+      }
       if (p === "/api/status") return route.fulfill(json(status));
-      if (p === "/api/usage") return route.fulfill(json(report(this.world)));
+      if (p === "/api/usage") return route.fulfill(json(report(w)));
       if (p === "/api/roles") return route.fulfill(json(roles));
       if (method !== "GET") {
         this.requests.push(`${method} ${p} ${route.request().postData() ?? ""}`.trim());
         if (/^\/api\/inbox\/\d+\/(reply|read)$/.test(p)) {
           const id = Number(p.split("/")[3]);
-          const it = (this.world.inbox ?? []).find((x) => x.id === id);
+          const it = (w.inbox ?? []).find((x) => x.id === id);
           const body = route.request().postDataJSON() as { body?: string } | null;
           const next = { ...it, read_at: iso(30), ...(body?.body ? { reply: body.body, answered_at: iso(30) } : {}) };
           return route.fulfill(json(next));
         }
         if (method === "PUT" && /^\/api\/specs\/\d+$/.test(p)) {
-          const s = this.world.specs?.[0];
+          const s = w.specs?.[0];
           return route.fulfill(json({ ...s, id: 99, version: (s?.version ?? 0) + 1, plan: route.request().postDataJSON() }));
         }
         if (/^\/api\/specs\/\d+\/approve$/.test(p)) {
-          return route.fulfill(json({ spec: this.world.specs?.[0], created: ["t1"], updated: [], deleted: [], kept: [] }));
+          return route.fulfill(json({ spec: w.specs?.[0], created: ["t1"], updated: [], deleted: [], kept: [] }));
         }
         if (p.endsWith("/resolve-conflict") || (method === "DELETE" && p.startsWith("/api/memory/"))) {
           return route.fulfill({ status: 204 });
         }
         const decide = /^\/api\/access-requests\/(\d+)\/(approve|deny)$/.exec(p);
         if (decide) {
-          const r = this.world.accessRequests.find((x) => x.id === Number(decide[1]));
+          const r = w.accessRequests.find((x) => x.id === Number(decide[1]));
           return route.fulfill(json({ ...r, status: decide[2] === "approve" ? "approved" : "denied", decided_at: iso(30) }));
         }
         const resume = /^\/api\/agents\/([^/]+)\/resume$/.exec(p);
         if (resume) {
-          const a = this.world.agents.find((x) => x.id === resume[1]);
+          const a = w.agents.find((x) => x.id === resume[1]);
           return route.fulfill(json({ ...a, state: "starting", resumable: false, session_id: "11111111-0000-4000-8000-000000000001" }));
         }
         if (/^\/api\/memory\/\d+\/accept$/.test(p)) {
           const id = Number(p.split("/")[3]);
-          return route.fulfill(json({ ...(this.world.memory ?? []).find((m) => m.id === id), status: "accepted" }));
+          return route.fulfill(json({ ...(w.memory ?? []).find((m) => m.id === id), status: "accepted" }));
         }
       }
       const ss = /^\/api\/agents\/([^/]+)\/sessions$/.exec(p);
       if (ss) {
-        const a = this.world.agents.find((x) => x.id === ss[1]);
+        const a = w.agents.find((x) => x.id === ss[1]);
         if (!a) return route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' });
         const live = a.has_terminal && a.state !== "exited";
         return route.fulfill(json([
@@ -269,7 +372,7 @@ export class MockDaemon {
       }
       const m = /^\/api\/agents\/([^/]+)\/(events|messages)$/.exec(p);
       if (m) {
-        return route.fulfill(json(m[2] === "messages" ? this.world.messages.filter((x) => x.to === m[1] || x.from === m[1]) : []));
+        return route.fulfill(json(m[2] === "messages" ? w.messages.filter((x) => x.to === m[1] || x.from === m[1]) : []));
       }
       return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `mock: no route for ${p}` }) });
     });
@@ -278,15 +381,22 @@ export class MockDaemon {
         void ws.close({ code: 4401, reason: "signed out" });
         return;
       }
-      this.events = ws;
-      ws.send(JSON.stringify({
-        type: "snapshot", agents: this.world.agents, tasks: this.world.tasks,
-        access_requests: this.world.accessRequests, pull_requests: [], inbox: this.world.inbox ?? [],
-        specs: this.world.specs ?? [], qa_runs: this.world.qaRuns ?? [], memory: this.world.memory ?? [],
-      }));
+      this.hubEvents = ws;
+      ws.send(JSON.stringify({ type: "projects", projects: this.projects.map((x) => x.project) }));
     });
-    await page.routeWebSocket(/\/api\/agents\/[^/]+\/terminal$/, (ws) => {
-      const id = /\/api\/agents\/([^/]+)\/terminal$/.exec(ws.url())?.[1] ?? "";
+    await page.routeWebSocket(/\/api\/projects\/[^/]+\/events$/, (ws) => {
+      const pid = /\/api\/projects\/([^/]+)\/events$/.exec(ws.url())?.[1] ?? "";
+      const w = this.worldOf(pid);
+      if (!this.paired || !w) {
+        void ws.close({ code: this.paired ? 1011 : 4401, reason: this.paired ? "no such project" : "signed out" });
+        return;
+      }
+      if (pid === "p1") this.events = ws;
+      else this.projectEvents.set(pid, ws);
+      ws.send(this.snapshot(w));
+    });
+    await page.routeWebSocket(/\/api\/projects\/[^/]+\/agents\/[^/]+\/terminal$/, (ws) => {
+      const id = /\/agents\/([^/]+)\/terminal$/.exec(ws.url())?.[1] ?? "";
       this.terminals.push(id);
       ws.send(Buffer.from(`\x1b[32mmock terminal of ${id}\x1b[0m\r\n> ${this.terminalPreamble}`));
       this.terminalSockets.set(id, ws);
@@ -315,8 +425,8 @@ export class MockDaemon {
   }
 
   private send(msg: object): void {
-    if (!this.events) throw new Error("mock daemon: the page has not opened /api/events");
-    this.events.send(JSON.stringify(msg));
+    if (!this.events) throw new Error("mock daemon: the page has not opened the events of p1");
+    this.events.send(JSON.stringify({ ...msg, project_id: "p1" }));
   }
 
   updateAgent(id: string, patch: Partial<Agent>): void {

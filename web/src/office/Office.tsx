@@ -16,6 +16,19 @@ export interface OfficeProps {
   messages: Record<string, Message[]>;
   waiting: Waiting[]; // waitingOnUser: what the Approvals badge counts (ADR 0044)
   onOpenAgent: (id: string) => void;
+  // One floor per project (ADR 0048): the shown one is current; choosing
+  // another switches the project. Omitted or one floor: no elevator panel.
+  floors?: Floor[];
+  onFloor?: (id: string) => void;
+}
+
+// Floor is one project's floor in the elevator panel.
+export interface Floor {
+  id: string;
+  name: string;
+  waiting: number; // agents waiting on the user there (ADR 0044)
+  running: number;
+  current: boolean;
 }
 
 const poseOrder: Pose[] = ["typing", "reviewing", "waiting", "idle", "booting"];
@@ -30,16 +43,17 @@ const statusLabel: Record<TaskStatus, string> = {
   todo: "to do", in_progress: "in progress", review: "in review", done: "done", blocked: "blocked",
 };
 
-// Who sits where, kept for the page's lifetime rather than the component's,
-// so leaving the tab and coming back does not move anyone. A reload starts
-// over (in start order).
-let keptAssignment: Assignment = emptyAssignment;
+// Who sits where, kept per floor for the page's lifetime rather than the
+// component's, so leaving the tab (or the floor) and coming back does not
+// move anyone. A reload starts over (in start order).
+const keptAssignments = new Map<string, Assignment>();
 
 function reducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-export default function Office({ agents, tasks, messages, waiting, onOpenAgent }: OfficeProps): JSX.Element {
+export default function Office({ agents, tasks, messages, waiting, onOpenAgent, floors = [], onFloor }: OfficeProps): JSX.Element {
+  const floorId = floors.find((f) => f.current)?.id ?? "";
   const pane = useRef<HTMLDivElement>(null);
   const canvasHost = useRef<HTMLDivElement>(null);
   const [scene, setScene] = useState<OfficeScene>();
@@ -54,10 +68,10 @@ export default function Office({ agents, tasks, messages, waiting, onOpenAgent }
   // assignDesks is idempotent, so recomputing with the stored assignment
   // (e.g. in StrictMode) gives the same seats.
   const model = useMemo(() => {
-    const m = buildOffice(keptAssignment, agents, tasks, waiting);
-    keptAssignment = m.assignment;
+    const m = buildOffice(keptAssignments.get(floorId) ?? emptyAssignment, agents, tasks, waiting);
+    keptAssignments.set(floorId, m.assignment);
     return m;
-  }, [agents, tasks, waiting]);
+  }, [agents, tasks, waiting, floorId]);
 
   // Latest callback for the scene, which is created once.
   const open = useRef(onOpenAgent);
@@ -130,6 +144,19 @@ export default function Office({ agents, tasks, messages, waiting, onOpenAgent }
   return (
     <div className="office" ref={root} data-renderer={scene?.renderer ?? ""} data-scale={xf?.scale ?? ""}
       data-plan={xf ? (planOf(xf.grid).stacked ? "stacked" : "wide") : ""}>
+      {floors.length > 1 && (
+        <nav className="elevator" aria-label="Floors">
+          {floors.map((f, i) => (
+            <button key={f.id} className={`floor ${f.current ? "current" : ""} ${f.waiting > 0 ? "has-waiting" : ""}`}
+              aria-current={f.current ? "true" : undefined} data-floor={f.id}
+              title={`${f.name}: ${f.running} running${f.waiting > 0 ? `, ${f.waiting} waiting on you` : ""}`}
+              onClick={() => { if (!f.current) onFloor?.(f.id); }}>
+              <span className="floor-number">{i + 1}</span> {f.name}
+              {f.waiting > 0 && <span className="count">{f.waiting}</span>}
+            </button>
+          ))}
+        </nav>
+      )}
       <div className="office-bar">
         {counts.length === 0
           ? <span className="muted">

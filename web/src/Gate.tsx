@@ -1,6 +1,6 @@
 import { type JSX, useCallback, useEffect, useState } from "react";
 import { type AuthSession, api, unauthorizedEvent } from "./api";
-import { App } from "./App";
+import { Root } from "./Root";
 import { codeFromHash } from "./auth";
 import { PairScreen } from "./Pair";
 
@@ -47,6 +47,6 @@ export function Gate(): JSX.Element {
     case "unpaired":
       return <PairScreen remote={state.remote} initialCode={code} onPaired={(s) => setState({ kind: "paired", session: s })} />;
     case "paired":
-      return <App session={state.session} onSignedOut={() => setState({ kind: "unpaired", remote: state.session.remote })} />;
+      return <Root session={state.session} onSignedOut={() => setState({ kind: "unpaired", remote: state.session.remote })} />;
   }
 }
