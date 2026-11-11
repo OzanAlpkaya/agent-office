@@ -268,6 +268,7 @@ type serveConfig struct {
 	roleModels          map[string]string
 	qa                  bool              // a goal's report needs a passing QA run (ADR 0033)
 	restoreAgents       bool              // resume the agents the previous run's stop interrupted (ADR 0035)
+	stallAfter          time.Duration     // the stall watchdog's wait (ADR 0052); 0: off
 	remoteHosts         []string          // tailnet names tailscale serve forwards here (ADR 0038)
 	remoteUsers         []string          // Tailscale logins allowed through them; empty = every tailnet user
 	roleCLIs            map[string]string // agent CLI per role (ADR 0050)
@@ -388,6 +389,16 @@ func parseServe(args []string) (serveConfig, error) {
 	if err != nil {
 		return c, err
 	}
+	stall := engine.DefaultStallAfter
+	if v := os.Getenv("AGENT_OFFICE_STALL_AFTER"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return c, fmt.Errorf("AGENT_OFFICE_STALL_AFTER: %w", err)
+		}
+		stall = d
+	}
+	fs.DurationVar(&c.stallAfter, "stall-after", stall, "wake a goal's Tech Lead with a status summary when every agent of "+
+		"the goal was idle this long and nothing waits on you; 0 = off [AGENT_OFFICE_STALL_AFTER]")
 	fs.BoolVar(&c.restoreAgents, "restore-agents", restore,
 		"at start, resume the conversations of the agents the previous run's stop interrupted [AGENT_OFFICE_RESTORE_AGENTS]")
 	retention, err := envInt("AGENT_OFFICE_EVENT_RETENTION_DAYS", 30)
@@ -620,7 +631,7 @@ func serve(args []string) error {
 			RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 			TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
 			Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version,
-			Roles: roles, QA: cfg.qa, RestoreAgents: cfg.restoreAgents, HistoryDir: filepath.Join(cfg.dataDir, "terminals"),
+			Roles: roles, QA: cfg.qa, RestoreAgents: cfg.restoreAgents, StallAfter: stallOption(cfg.stallAfter), HistoryDir: filepath.Join(cfg.dataDir, "terminals"),
 			Prices: prices, EventRetention: time.Duration(cfg.eventRetentionDays) * 24 * time.Hour,
 		},
 		Defaults:   defaults,
@@ -833,4 +844,13 @@ func envBool(key string, def bool) (bool, error) {
 		return false, fmt.Errorf("%s: %w", key, err)
 	}
 	return b, nil
+}
+
+// stallOption maps --stall-after to Options.StallAfter, where 0 is the
+// default and a negative value is off.
+func stallOption(d time.Duration) time.Duration {
+	if d <= 0 {
+		return -1
+	}
+	return d
 }

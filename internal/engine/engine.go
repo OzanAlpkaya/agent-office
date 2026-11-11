@@ -296,9 +296,10 @@ type Engine struct {
 	ids      *sessionIDs        // running agents' sessions, for log lines (ADR 0028)
 	closing  bool               // Shutdown began: no agent starts any more; guarded by mu
 
-	leadHosts      sandbox.Allowlist // Options.LeadAccessHosts, parsed (ADR 0053)
-	restartImports sync.WaitGroup    // sandbox imports after a restart; a restore waits for them
-	noRestore      map[string]string // agent id -> why a restore leaves it exited (set before the restore runs)
+	leadHosts      sandbox.Allowlist      // Options.LeadAccessHosts, parsed (ADR 0053)
+	stalls         map[string]*stallState // the stall watchdog's goals (ADR 0052); guarded by mu
+	restartImports sync.WaitGroup         // sandbox imports after a restart; a restore waits for them
+	noRestore      map[string]string      // agent id -> why a restore leaves it exited (set before the restore runs)
 }
 
 // New validates opts, registers the repository as a project, reconciles state
@@ -404,6 +405,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		naming:       map[string]bool{},
 		noRestore:    map[string]string{},
 		leadHosts:    leadHosts,
+		stalls:       map[string]*stallState{},
 	}
 	if opts.Sandbox != nil {
 		if err := e.prepareSandbox(); err != nil {
@@ -422,6 +424,8 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	e.stopBG = cancel
 	e.wg.Add(1)
 	go e.retentionLoop(bg)
+	e.wg.Add(1)
+	go e.watchdogLoop(bg)
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
