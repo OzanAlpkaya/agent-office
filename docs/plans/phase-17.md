@@ -1,6 +1,6 @@
 # Phase 17 plan: Daily use
 
-- **Status:** Done on `phase-17/daily-use`, waiting for Ozan's review (not merged). Written 2026-11-11 with the recommended option for
+- **Status:** Done; reviewed and approved by Ozan, merged into `main` (2026-11-12). Written 2026-11-11 with the recommended option for
   every choice, as Ozan asked ("run it like the earlier phases ... with the recommended options, no
   check-ins, one summary at the end").
 - **Roadmap:** [docs/plan.md](../plan.md), Phase 17. Progress: [PROGRESS.md](../../PROGRESS.md).

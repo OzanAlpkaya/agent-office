@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 17 (Daily use) done on `phase-17/daily-use`, waiting for Ozan's review; not merged.
+**Current phase:** none in progress. Phase 17 (Daily use) is merged into `main`.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -26,7 +26,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 14: Multi-project office
 - [x] Phase 15: Codex adapter
 - [x] Phase 16: Autonomous team
-- [x] Phase 17: Daily use (on its branch, review pending)
+- [x] Phase 17: Daily use
 
 ## Log
 
@@ -377,3 +377,6 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   review to 5 fixes. `make check`, `make ui-test` (89), `make sandbox-test` and `make e2e` (the workflow run
   now merges and pushes a real goal to a local bare remote) pass; one Phase 16 autonomy e2e failure in the
   first full run is recorded, not explained.
+- 2026-11-12: Phase 17 review: all decisions approved. Ozan tested it by hand on the real daemon (a goal on
+  the playground, Merge and Push from the goal card, closing the goal, the archive view, removing exited
+  agents). Merged into `main` (`--no-ff`).
