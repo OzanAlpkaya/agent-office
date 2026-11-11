@@ -2,7 +2,8 @@
 // nameplates over it. It reads the same world as the rest of the UI and has
 // one action: open an agent.
 import { type JSX, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Agent, Message, Task, TaskStatus } from "../api";
+import type { Agent, Message, OfficeInfo, Task, TaskStatus } from "../api";
+import type { Presence } from "../presence";
 import type { Waiting } from "../waiting";
 import { type Assignment, emptyAssignment, inCell, planOf, slotOrigin, whiteboardAt } from "./layout";
 import { buildOffice, freshMessages } from "./model";
@@ -20,6 +21,11 @@ export interface OfficeProps {
   // another switches the project. Omitted or one floor: no elevator panel.
   floors?: Floor[];
   onFloor?: (id: string) => void;
+  // Phase 18: the project's office layout (absent: the default plan), the
+  // user's presence, and where to change the layout.
+  layout?: OfficeInfo;
+  presence?: Presence;
+  onLayoutSettings?: () => void;
 }
 
 // Floor is one project's floor in the elevator panel.

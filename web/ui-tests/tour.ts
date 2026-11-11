@@ -74,7 +74,16 @@ export function tourWorld(): World {
       commit_message: "feat: full-text search\n\nAn FTS5 index over titles and notes, and a search box.", created_at: t(-35) },
     merges: [merge],
   };
-  w.records = { [done1.id]: record };
+  w.records = {
+    [done1.id]: record,
+    [reported.id]: {
+      goal: reported, sub_tasks: [], qa_runs: [qa], merges: [],
+      agents: [{ id: "a1ead0000009", name: "Sana", role: "tech-lead", kind: "lead", cli: "claude", model: "haiku", task_id: reported.id,
+        branch: "agent-office/a1ead0000009", state: "idle", started_at: t(-60), removed: false }],
+      report: { summary: "CSV export works from the list page and `linkshelf export --csv`; QA passed on both branches.",
+        commit_message: "feat: export links as CSV\n\nAdds a CSV writer and a download button.", created_at: t(-9) },
+    },
+  };
   w.inbox = [
     { id: 1, agent_id: "a1ead0000001", task_id: "g00000000001", goal_id: "g00000000001", role: "tech-lead", kind: "question",
       body: "Should tag names be case-insensitive (\"Go\" and \"go\" the same tag)?", created_at: t(-5) },

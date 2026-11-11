@@ -354,9 +354,9 @@ const qaLabel: Record<QARun["status"], string> = {
   running: "QA running", passed: "QA passed", failed: "QA failed", error: "QA ended without a result",
 };
 
-export function QAPanel({ run, onOpenAgent }: { run: QARun; onOpenAgent: (id: string) => void }): JSX.Element {
+export function QAPanel({ run, onOpenAgent, open }: { run: QARun; onOpenAgent: (id: string) => void; open?: boolean }): JSX.Element {
   return (
-    <details className={`qa small qa-${run.status}`} onClick={(e) => e.stopPropagation()}>
+    <details className={`qa small qa-${run.status}`} open={open} onClick={(e) => e.stopPropagation()}>
       <summary>
         <span className={`chip qa-${run.status}`}>{qaLabel[run.status]}</span> run {run.id} · {run.merged.length} branch
         {run.merged.length === 1 ? "" : "es"} merged{run.bugs.length > 0 && ` · ${run.bugs.length} bug${run.bugs.length === 1 ? "" : "s"}`}
@@ -381,11 +381,12 @@ export function QAPanel({ run, onOpenAgent }: { run: QARun; onOpenAgent: (id: st
 
 // TaskPlanInfo is a sub-task's dependencies, files, acceptance criteria and
 // conflicts (ADR 0032).
-export function TaskPlanInfo({ task, tasks, agents, onResolve }: {
+export function TaskPlanInfo({ task, tasks, agents, onResolve, open }: {
   task: Task;
   tasks: Task[];
   agents: Agent[];
   onResolve: (t: Task) => void;
+  open?: boolean; // the acceptance criteria start open (the card's modal)
 }): JSX.Element | null {
   const deps = task.depends_on ?? [];
   const waiting = waitsFor(task, tasks);
@@ -405,7 +406,7 @@ export function TaskPlanInfo({ task, tasks, agents, onResolve }: {
       )}
       {task.files && task.files.length > 0 && <div className="mono muted" title="Files it touches">{task.files.join(", ")}</div>}
       {task.acceptance && task.acceptance.length > 0 && (
-        <details><summary className="muted">{task.acceptance.length} acceptance criteri{task.acceptance.length === 1 ? "on" : "a"}</summary>
+        <details open={open}><summary className="muted">{task.acceptance.length} acceptance criteri{task.acceptance.length === 1 ? "on" : "a"}</summary>
           <ul>{task.acceptance.map((a, i) => <li key={i}>{a}</li>)}</ul></details>
       )}
       {conflicts.map((c, i) => (

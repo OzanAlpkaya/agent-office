@@ -13,7 +13,7 @@ async function open(page: Page): Promise<MockDaemon> {
   await daemon.install(page);
   await page.goto("/");
   await expect(page.locator(".board")).toBeVisible();
-  await expect(page.locator(".usage-line").first()).toBeVisible(); // usage and roles have loaded
+  await expect(page.locator(".task-cost").first()).toBeVisible(); // usage has loaded
   await page.waitForTimeout(300);
   return daemon;
 }
@@ -25,35 +25,56 @@ async function officeReady(page: Page): Promise<void> {
   await page.waitForTimeout(1500);
 }
 
+// Animations (a modal popping in) are finished first, so nothing is caught half-drawn.
+const shot = (page: Page, name: string): Promise<Buffer> => page.screenshot({ path: `${out}/${name}.png`, animations: "disabled" });
+
+const nav = (page: Page, name: string) => page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: new RegExp(`^${name}`) });
+
 test("desktop tour", async ({ page }) => {
   await open(page);
-  await page.screenshot({ path: `${out}/board.png` });
+  await shot(page, "board");
 
-  // Before Phase 18 a card shows everything; the detail is the card itself.
-  const card = page.locator("#task-g00000000002");
-  await card.scrollIntoViewIfNeeded();
-  await card.screenshot({ path: `${out}/card.png` });
+  await page.locator("#task-g00000000002").click();
+  const modal = page.getByRole("dialog", { name: "Export links as CSV" });
+  await expect(modal.getByText("Tech Lead's report")).toBeVisible();
+  await shot(page, "card");
+  await modal.getByRole("button", { name: "Close" }).click();
 
-  await page.getByRole("button", { name: "Projects", exact: true }).click();
-  await page.getByRole("button", { name: "Settings", exact: true }).first().click();
-  await page.screenshot({ path: `${out}/settings.png` });
-  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  await nav(page, "Settings").click();
+  await expect(page.getByRole("tabpanel", { name: "Project" })).toBeVisible();
+  await page.waitForTimeout(500);
+  await shot(page, "settings");
 
+  await nav(page, "Board").click();
   await page.getByRole("button", { name: /^Archive/ }).click();
   await page.getByRole("button", { name: /Sprint 3: full-text search/ }).click();
   await expect(page.getByTestId("goal-record")).toBeVisible();
-  await page.screenshot({ path: `${out}/archive.png` });
+  await shot(page, "archive");
 
-  await page.getByRole("button", { name: "Office", exact: true }).click();
+  await nav(page, "Office").click();
   await officeReady(page);
-  await page.screenshot({ path: `${out}/office.png` });
+  await shot(page, "office");
+
+  await page.locator('.agent-row[data-agent="b2c3d4000001"] button').click();
+  await expect(page.locator(".agent-header")).toBeVisible();
+  await page.waitForTimeout(500);
+  await shot(page, "agent");
 });
 
 test("phone tour", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await open(page);
-  await page.screenshot({ path: `${out}/phone-board.png` });
-  await page.getByRole("button", { name: "Office", exact: true }).click();
+  await shot(page, "phone-board");
+  await page.locator("#task-g00000000002").click();
+  await expect(page.getByRole("dialog", { name: "Export links as CSV" })).toBeVisible();
+  await shot(page, "phone-card");
+  await page.getByRole("dialog", { name: "Export links as CSV" }).getByRole("button", { name: "Close" }).click();
+  await nav(page, "Office").click();
   await officeReady(page);
-  await page.screenshot({ path: `${out}/phone-office.png` });
+  await shot(page, "phone-office");
+  await page.getByRole("button", { name: /^Agents · / }).click();
+  await shot(page, "phone-agents");
+  await nav(page, "Settings").click();
+  await page.waitForTimeout(300);
+  await shot(page, "phone-settings");
 });

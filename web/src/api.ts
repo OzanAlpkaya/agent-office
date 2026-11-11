@@ -401,6 +401,50 @@ export interface GoalMerge {
   push_remote?: string;
 }
 
+// Branch clean-up (Phase 18): agent-office/* branches by whether their work
+// is in the target branch. merged: an ancestor of it; squashed: its changes
+// are in it (a goal's squash merge, or merging it changes nothing);
+// unmerged: anything else, deleted only after an explicit confirmation.
+export type BranchClass = "merged" | "squashed" | "unmerged";
+
+export interface BranchInfo {
+  name: string;
+  head: string;
+  class: BranchClass;
+  ahead: number; // commits not in the target branch
+  in_use?: string; // why it cannot be deleted now (checked out, its agent runs)
+  agent_id?: string;
+  agent_name?: string;
+  task_id?: string;
+}
+
+export interface BranchPreview {
+  target: string;
+  target_head: string;
+  branches: BranchInfo[];
+}
+
+export interface DeletedBranch {
+  id: number;
+  goal_id?: string;
+  name: string;
+  head: string;
+  class: BranchClass;
+  deleted_at: string;
+}
+
+export interface BranchDeleteResult {
+  deleted: DeletedBranch[];
+  refused: { name: string; reason: string }[];
+}
+
+// BranchDelete is the user's confirmation: the branches with the heads the
+// preview showed, and the unmerged ones confirmed a second time by name.
+export interface BranchDelete {
+  branches: { name: string; head: string }[];
+  unmerged: string[];
+}
+
 export function isGoalMerge(v: unknown): v is GoalMerge {
   return isObj(v) && typeof v.id === "number" && typeof v.goal_id === "string" && typeof v.target === "string" &&
     typeof v.commit === "string" && typeof v.message === "string" && typeof v.created_at === "string";
@@ -454,6 +498,7 @@ export interface GoalRecord {
   qa_runs: QARun[];
   report?: { agent_id?: string; summary: string; commit_message?: string; created_at: string };
   merges: GoalMerge[];
+  deleted_branches?: DeletedBranch[]; // Phase 18: its branches the user deleted, with their heads
 }
 
 export interface GoalCleanup {
@@ -555,6 +600,50 @@ export interface ProjectSettings {
   worker_memory?: string; // sandboxed workers' memory limit, e.g. 4g (ADR 0051)
   worker_pids?: number; // sandboxed workers' process limit; 0: the pack's or --sandbox-pids (Phase 17)
   merge_target?: string; // the branch the goal's Merge button squash-merges into; default main (ADR 0055)
+  office_layout?: string; // the office's floor plan as YAML (Phase 18); absent: the default plan
+}
+
+// Office layouts (Phase 18): the rooms of a project's office on a grid of
+// 16-pixel tiles, parsed and validated by the daemon from the YAML in the
+// project's settings. The UI never parses YAML.
+export type LayoutRoomId = "lead" | "planning" | "user" | "review" | "qa" | "kitchen" | "lobby" | "work";
+
+export interface LayoutRoom {
+  id: LayoutRoomId;
+  name?: string; // shown instead of the room's usual name
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface OfficeLayout {
+  columns: number; // the grid's size in tiles
+  rows: number;
+  rooms: LayoutRoom[];
+  doors: { a: LayoutRoomId; b: LayoutRoomId }[];
+  desks: number; // regular desks in the workroom
+}
+
+// OfficeInfo is the layout a project's office uses: the default plan, or its
+// own layout; a stored layout that does not validate falls back to the
+// default with its problems.
+export interface OfficeInfo {
+  source: "default" | "custom";
+  layout?: OfficeLayout;
+  problems?: string[];
+}
+
+export interface LayoutPreset {
+  name: string;
+  title: string;
+  description: string;
+  yaml: string;
+}
+
+export interface LayoutCheck {
+  layout?: OfficeLayout;
+  problems: string[];
 }
 
 // A registered project (ADR 0046): one repository with its own team.
@@ -569,6 +658,7 @@ export interface Project {
   error?: string; // why it could not open
   default: boolean; // serve --repo's project
   created_at: string;
+  office?: OfficeInfo; // Phase 18; absent from older daemons: the default plan
 }
 
 export function isProject(v: unknown): v is Project {
@@ -911,6 +1001,9 @@ export const api = {
   newPairingCode: (): Promise<PairingCode> => request("POST", "/api/devices/pairing-codes"),
   revokeDevice: (id: string): Promise<void> => request("DELETE", `/api/devices/${id}`),
   signOutOthers: (): Promise<{ signed_out: number }> => request("POST", "/api/devices/sign-out-others"),
+  // Phase 18: office layout presets, and checking a layout's YAML for the preview.
+  officeLayouts: (): Promise<LayoutPreset[]> => request("GET", "/api/office-layouts"),
+  checkOfficeLayout: (yaml: string): Promise<LayoutCheck> => request("POST", "/api/office-layouts/check", { yaml }),
 };
 
 
@@ -969,6 +1062,12 @@ export function projectApi(projectId: string) {
     mergeGoal: (goalId: string, confirm: { target_head: string; source_head: string; message: string }): Promise<GoalMerge> =>
       request("POST", `${base}/tasks/${goalId}/merge`, confirm),
     pushGoal: (goalId: string): Promise<GoalMerge> => request("POST", `${base}/tasks/${goalId}/push`),
+    // Phase 18: branch clean-up, of a done goal or of the whole project.
+    goalBranches: (goalId: string): Promise<BranchPreview> => request("GET", `${base}/tasks/${goalId}/branches`),
+    deleteGoalBranches: (goalId: string, d: BranchDelete): Promise<BranchDeleteResult> =>
+      request("POST", `${base}/tasks/${goalId}/branches/delete`, d),
+    projectBranches: (): Promise<BranchPreview> => request("GET", `${base}/branches`),
+    deleteProjectBranches: (d: BranchDelete): Promise<BranchDeleteResult> => request("POST", `${base}/branches/delete`, d),
     goalMerges: async (): Promise<GoalMerge[]> => {
       const ms: unknown = await request("GET", `${base}/goal-merges`);
       return Array.isArray(ms) ? ms.filter(isGoalMerge) : [];

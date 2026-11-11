@@ -148,6 +148,43 @@ const emptyDraft: SettingsDraft = {
   workerPids: "", mergeTarget: "", accessDecider: "", leadHosts: "",
 };
 
+// ProjectForm changes one project's name and settings. Settings left empty
+// inherit the daemon's flags; fields the form does not show are kept.
+export function ProjectForm({ project: p, status, sandboxed, onSaved }: {
+  project: Project; status?: DaemonStatus; sandboxed: boolean; onSaved?: () => void;
+}): JSX.Element {
+  const [edit, setEdit] = useState<SettingsDraft>(() => draftOf(p.settings));
+  const [name, setName] = useState(p.name);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  return (
+    <form className="project-settings" onSubmit={(e) => {
+      e.preventDefault();
+      setError("");
+      setSaved(false);
+      let settings: ProjectSettings;
+      try {
+        settings = settingsOf(edit, p.settings);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return;
+      }
+      api.updateProject(p.id, { name: name.trim(), settings }).then(() => { setSaved(true); onSaved?.(); },
+        (err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+    }}>
+      <label className="setting"><span>Name</span>
+        <input value={name} aria-label="Name" onChange={(e) => setName(e.target.value)} />
+      </label>
+      <SettingsFields draft={edit} onChange={setEdit} defaults={status?.defaults} sandboxed={sandboxed} />
+      <div className="row">
+        <button className="primary" type="submit">Save</button>
+        {saved && <span className="small muted" role="status">Saved.</span>}
+        {error && <p className="error small" role="alert">{error}</p>}
+      </div>
+    </form>
+  );
+}
+
 export function ProjectsPanel({ projects, current, status, running, onSelect }: {
   projects: Project[]; current?: string; status?: DaemonStatus;
   running: number; // agents that have not exited, in every project: live, unlike the status
@@ -170,8 +207,6 @@ export function ProjectsPanel({ projects, current, status, running, onSelect }: 
   const [name, setName] = useState("");
   const [draft, setDraft] = useState<SettingsDraft>(emptyDraft);
   const [editing, setEditing] = useState<string>();
-  const [edit, setEdit] = useState<SettingsDraft>(emptyDraft);
-  const [editName, setEditName] = useState("");
   const [removing, setRemoving] = useState<string>();
   const sandboxed = status?.sandbox !== "host";
 
@@ -211,8 +246,6 @@ export function ProjectsPanel({ projects, current, status, running, onSelect }: 
               {p.state === "error" && <button onClick={() => void act(`item:${p.id}`, () => api.retryProject(p.id))}>Retry</button>}
               <button aria-expanded={editing === p.id} onClick={() => {
                 setEditing(editing === p.id ? undefined : p.id);
-                setEdit(draftOf(p.settings));
-                setEditName(p.name);
               }}>Settings</button>
               {removing === p.id ? (
                 <>
@@ -229,26 +262,7 @@ export function ProjectsPanel({ projects, current, status, running, onSelect }: 
               )}
             </div>
             {errorAt(`item:${p.id}`)}
-            {editing === p.id && (
-              <form className="project-settings" onSubmit={(e) => {
-                e.preventDefault();
-                void act(`save:${p.id}`, async () => {
-                  const next = await api.updateProject(p.id, { name: editName.trim(), settings: settingsOf(edit, p.settings) });
-                  setEditing(undefined);
-                  return next;
-                });
-              }}>
-                <label className="setting"><span>Name</span>
-                  <input value={editName} aria-label="Name" onChange={(e) => setEditName(e.target.value)} />
-                </label>
-                <SettingsFields draft={edit} onChange={setEdit} defaults={status?.defaults} sandboxed={sandboxed} />
-                <p className="muted small">New settings restart nothing: they are refused while the project's agents run.</p>
-                <div className="row">
-                  <button className="primary" type="submit">Save</button>
-                  {errorAt(`save:${p.id}`)}
-                </div>
-              </form>
-            )}
+            {editing === p.id && <ProjectForm project={p} status={status} sandboxed={sandboxed} onSaved={() => setEditing(undefined)} />}
           </li>
         ))}
       </ul>
