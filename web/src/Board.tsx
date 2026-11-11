@@ -5,7 +5,7 @@ import {
 } from "./api";
 import { AgentName } from "./AgentName";
 import { InboxEntry, PlanPanel, QAPanel, TaskPlanInfo } from "./Team";
-import { currentSpec, inboxFor, latestQA, waitsFor, workerRoles } from "./workflow";
+import { type GoalBusy, currentSpec, goalBusy, inboxFor, latestQA, waitsFor, workerRoles } from "./workflow";
 import { type UsageRow, formatMoney, formatTokens, totalTokens } from "./usage";
 
 const columnTitle: Record<TaskStatus, string> = {
@@ -62,6 +62,7 @@ export function Board(p: Props): JSX.Element {
             .filter((t) => t.status === status)
             .map((t) => (
               <TaskCard {...p} key={t.id} task={t} agents={p.agents.filter((a) => a.task_id === t.id)}
+                busy={goalBusy(t, p.agents, p.tasks)}
                 goal={p.tasks.find((g) => g.id === t.parent_task_id)}
                 prs={p.pullRequests.filter((pr) => pr.task_id === t.id)} />
             ))}
@@ -117,6 +118,7 @@ function NewTask({ onCreate }: Pick<Props, "onCreate">): JSX.Element {
 }
 
 interface CardProps extends Props {
+  busy?: GoalBusy; // another goal's Tech Lead or architect runs: why this goal's buttons are off
   task: Task;
   agents: Agent[];
   goal?: Task;
@@ -206,6 +208,12 @@ function TaskCard(p: CardProps): JSX.Element {
         )}
         <button className="link" disabled={running} onClick={() => onDelete(task)} title="Delete task">✕</button>
       </div>
+      {p.busy && !running && (
+        <p className="small muted goal-busy" role="note">
+          {p.busy.text}{" "}
+          <button className="link" onClick={() => onOpenAgent(p.busy?.agentId ?? "")}>Open it</button>
+        </p>
+      )}
     </article>
   );
 }

@@ -156,3 +156,14 @@ stop and ask Ozan. Otherwise the findings go into `docs/research/codex-cli.md` a
   encoded paths and protocol upgrades; the session id is learned only from a startup or resume
   SessionStart; DEL is escaped in the generated TOML; `CODEX_`/`OPENAI_` variables are reserved from
   packs. Residuals are listed in ADR 0049.
+- **Ozan's review (2026-11-11)**: all decisions approved, including the real account id and plan type
+  in the placeholder login; tested by hand in a real browser on the real daemon (a Claude Tech Lead
+  with a Codex worker, the role picker, the Codex terminal with no login dialog, usage per vendor, a
+  SIGKILL restart that recalled PLUM73, only placeholders in the container's `auth.json`). Before the
+  merge: a goal whose Tech Lead (or architect) cannot start because another goal's runs now says so
+  on its card, with what to do and a button to open the running one (the reason was only in the
+  disabled button's tooltip, which browsers do not show; Vitest `goalBusy` and Playwright "a second
+  goal says why its Tech Lead cannot start yet"). The Codex terminal's "1 warning" is Codex's notice
+  that `--dangerously-bypass-hook-trust` is on: expected, since agent-office passes it on purpose (its
+  hooks are its own, mounted read-only); it does not matter. "Several goals at once in one project"
+  is in the backlog.

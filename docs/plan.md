@@ -608,3 +608,6 @@ stays sandboxed with the credential outside its container.
   conservative count for Responses streams broken off before their final event.
 - A repository's own `.codex/config.toml` is loaded for the trusted workspace; consider mounting an
   empty one over it.
+- Several goals at once in one project, when real use shows the need. Today a project runs one
+  goal at a time (one Tech Lead, architect and QA, ADR 0017); the Board says so on the other goals'
+  cards. Two goals can already run in parallel as two projects (Phase 14).
