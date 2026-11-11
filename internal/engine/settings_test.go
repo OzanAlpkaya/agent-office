@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -40,6 +41,10 @@ func TestProjectSettingsParseAndValidate(t *testing.T) {
 		`{"budget_session_micro_usd": -1}`:       "budget_session_micro_usd -1",
 		`{"github_remote": "has space"}`:         "github_remote",
 		`{"role_models": {"qa": ""}}`:            "role_models",
+		`{"access_decider": "anyone"}`:           `access_decider "anyone"`,
+		`{"lead_access_hosts": ["*.x.com"]}`:     "lead_access_hosts",
+		`{"worker_memory": "100m"}`:              `worker_memory "100m"`,
+		`{"worker_memory": "4 GB"}`:              "worker_memory",
 		`{} {}`:                                  "one JSON object",
 		`{"max_agents": 0, "reviewer": "gpt"}`:   "between 1 and 32; reviewer \"gpt\"", // every problem at once
 		`{"pack": "none", "model": ""}` + "\x00": "invalid",
@@ -51,6 +56,20 @@ func TestProjectSettingsParseAndValidate(t *testing.T) {
 	}
 	if _, err := ParseProjectSettings([]byte(`{"pack": "none", "model": ""}`)); err != nil {
 		t.Fatalf("pack none and the CLI's default model: %v", err)
+	}
+	// ADR 0053, 0051.
+	s, err = ParseProjectSettings([]byte(`{"access_decider": "lead_policy", "lead_access_hosts": ["storage.googleapis.com", ".example.org"],
+		"worker_memory": "4g"}`))
+	if err != nil || *s.AccessDecider != DeciderLeadPolicy || len(s.LeadAccessHosts) != 2 || *s.WorkerMemory != "4g" {
+		t.Fatalf("access and memory settings: %+v %v", s, err)
+	}
+	eff := NeutralDefaults().Merge(s)
+	if *eff.AccessDecider != DeciderLeadPolicy || *eff.WorkerMemory != "4g" || len(eff.LeadAccessHosts) != 2 {
+		t.Fatalf("merged %+v", eff)
+	}
+	// Letting the lead decide widens the sandbox: from this machine only (ADR 0046).
+	if ch := NeutralDefaults().SandboxChanges(eff); !slices.Contains(ch, "access_decider") || !slices.Contains(ch, "lead_access_hosts") {
+		t.Fatalf("sandbox changes %v", ch)
 	}
 }
 

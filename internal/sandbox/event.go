@@ -24,6 +24,9 @@ const (
 	ImportDiverged EventKind = "import_diverged" // rewritten history went to a new -rewrite-N branch
 	CommitFlagged  EventKind = "commit_flagged"  // an imported commit lacks the expected author or trailer
 	ImportFailed   EventKind = "import_failed"
+
+	// The worker's memory limit (ADR 0051).
+	OOMKill EventKind = "oom_kill" // the out-of-memory killer ended a process in the worker
 )
 
 // Event is one refusal or failure. Detail holds only the target (host:port or

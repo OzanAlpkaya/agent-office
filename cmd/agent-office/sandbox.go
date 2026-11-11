@@ -120,6 +120,9 @@ func applyPack(ctx context.Context, sb *engine.SandboxOptions, spec packSpec) ([
 		return nil, fmt.Errorf("egress allowlist: %w", err)
 	}
 	sb.Image, sb.Allow, sb.AllowNames, sb.Pack, sb.SecretsDir = sp.image, allow, sp.hosts, sp.pack, spec.secretsDir
+	if sp.pack != nil && sp.pack.Memory != "" {
+		sb.Memory = sp.pack.Memory // over --sandbox-memory; a project's worker_memory wins over both (ADR 0051)
+	}
 	return warnings, nil
 }
 

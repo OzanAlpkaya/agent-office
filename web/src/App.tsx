@@ -85,6 +85,7 @@ const eventLabel: Record<string, string> = {
   import_failed: "Import failed",
   api_budget: "Budget spent",
   api_meter: "Usage not readable",
+  oom_kill: "Out of memory",
 };
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();

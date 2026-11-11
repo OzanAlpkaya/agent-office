@@ -119,6 +119,22 @@ type HelperSpec struct {
 	Command    []string
 }
 
+// memoryLimitRe is a configurable worker memory limit (ADR 0051).
+var memoryLimitRe = regexp.MustCompile(`^[1-9][0-9]{0,5}[mg]$`)
+
+// ValidMemory reports whether m is a worker memory limit packs and projects
+// may set: 256m to 256g, as podman takes it (512m, 4g).
+func ValidMemory(m string) bool {
+	if !memoryLimitRe.MatchString(m) {
+		return false
+	}
+	n, _ := strconv.Atoi(m[:len(m)-1])
+	if m[len(m)-1] == 'g' {
+		n *= 1024
+	}
+	return n >= 256 && n <= 256*1024
+}
+
 // ContainerName is the worker container's name for agentID.
 func ContainerName(agentID string) string { return containerPrefix + agentID }
 

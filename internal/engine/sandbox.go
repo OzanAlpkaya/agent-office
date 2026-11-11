@@ -457,8 +457,9 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 	if codex && l.prompt == "" {
 		e.codexReadyWithoutPrompt(a, log)
 	}
-	e.wg.Add(1)
+	e.wg.Add(2)
 	go e.watch(a)
+	go e.watchMemory(a, res)
 	return view, nil
 }
 

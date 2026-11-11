@@ -256,9 +256,7 @@ func (h *Hub) options(ctx context.Context, row db.Project, s ProjectSettings) (O
 		}
 	}
 	if m := eff.WorkerMemory; m != nil && *m != "" && o.Sandbox != nil {
-		sb := *o.Sandbox // the project's own copy: the pack's or the daemon's limit stays for the others
-		sb.Memory = *m
-		o.Sandbox = &sb
+		o.Sandbox.Memory = *m // the project's own copy (above); over the pack's and --sandbox-memory (ADR 0051)
 	}
 	return o, nil
 }

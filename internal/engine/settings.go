@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/OzanAlpkaya/agent-office/internal/pack"
@@ -65,21 +64,9 @@ const (
 	DeciderLeadPolicy = "lead_policy" // the Tech Lead, for hosts in lead_access_hosts only; the user for the rest
 )
 
-// workerMemoryRe is the worker memory limit's form, as podman takes it.
-var workerMemoryRe = regexp.MustCompile(`^[1-9][0-9]{0,5}[mg]$`)
-
 // ValidWorkerMemory reports whether m is a worker memory limit between 256m
 // and 256g, written as podman takes it (512m, 4g).
-func ValidWorkerMemory(m string) bool {
-	if !workerMemoryRe.MatchString(m) {
-		return false
-	}
-	n, _ := strconv.Atoi(m[:len(m)-1])
-	if m[len(m)-1] == 'g' {
-		n *= 1024
-	}
-	return n >= 256 && n <= 256*1024
-}
+func ValidWorkerMemory(m string) bool { return sandbox.ValidMemory(m) }
 
 // ParseProjectSettings decodes stored or posted settings strictly: an
 // unknown field is an error, so a typo never silently inherits.

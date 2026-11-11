@@ -78,6 +78,11 @@ func TestLoadValid(t *testing.T) {
 		t.Fatalf("build files %v %v", keys(files), err)
 	}
 
+	withMem := fstest.MapFS{"pack.yaml": {Data: []byte("schema: 1\nname: mem\ndescription: d\nresources:\n  memory: 4g\n")}}
+	if p, err := load(withMem, "mem", "test", "mem/pack.yaml"); err != nil || p.Memory != "4g" {
+		t.Fatalf("resources.memory: %+v %v", p, err)
+	}
+
 	minimal := fstest.MapFS{"pack.yaml": {Data: []byte("schema: 1\nname: min\ndescription: Nothing but a name.\n")}}
 	p, err = load(minimal, "min", "test", "min/pack.yaml")
 	if err != nil || p.Containerfile != "" || p.Egress != nil {
@@ -110,6 +115,9 @@ func TestLoadInvalid(t *testing.T) {
 		{"no description", "schema: 1\nname: demo\n", nil, []string{"description: missing"}},
 		{"multi-line description", "schema: 1\nname: demo\ndescription: |\n  a\n  b\n", nil, []string{"must be one line"}},
 		{"duplicate key", base + "name: demo\n", nil, []string{"already defined"}},
+		{"bad memory", base + "resources:\n  memory: 4GB\n", nil, []string{`resources.memory: "4GB" must be a size between 256m and 256g`}},
+		{"tiny memory", base + "resources:\n  memory: 64m\n", nil, []string{`resources.memory: "64m"`}},
+		{"empty resources", base + "resources:\n  memory: ''\n", nil, []string{"resources.memory: missing"}},
 		{"wildcard host", base + "egress:\n  allow: ['*.example.com']\n", nil, []string{`egress.allow[0]: "*.example.com" is not a host name`}},
 		{"ip host", base + "egress:\n  allow: [1.2.3.4]\n", nil, []string{`egress.allow[0]: "1.2.3.4" is not a host name`}},
 		{"url host", base + "egress:\n  allow: [example.com, 'https://a.com']\n", nil, []string{`egress.allow[1]: "https://a.com"`}},

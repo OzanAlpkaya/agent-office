@@ -60,6 +60,7 @@ while IFS= read -r line; do
     amend*) cd /workspace && git commit -q --amend -m "feat: agent work (amended)" && echo amended ;;
     nohook*) cd /workspace && git -c core.hooksPath=/dev/null commit -q --allow-empty -m "chore: no trailer" && echo nohook ;;
     dirty*) echo wip > /workspace/uncommitted.txt && echo dirty ;;
+    hog*) x=$(head -c 900m /dev/zero | tr '\0' a); echo "hog survived ${#x}" ;;
     message*) curl -s -o /dev/null -w 'message=%{http_code}\n' -X POST -H 'content-type: application/json' \
       -H "Authorization: Bearer $CLAUDE_CODE_OAUTH_TOKEN" -d '{"model":"m","messages":[]}' http://127.0.0.1:8080/v1/messages ;;
     mcp\ *) tool=${line#mcp }; tool=${tool%% *}; args=${line#mcp $tool }
@@ -364,9 +365,24 @@ func TestSandboxedRemoveKeepsDirtyAndSavesWork(t *testing.T) {
 	if _, err := e.SaveWork(ctx, a.ID); !errors.Is(err, ErrStillRunning) {
 		t.Fatalf("save work while running: %v", err)
 	}
+	// ADR 0051: the exit commits what the worker left uncommitted, and the exit
+	// import brings it into the main repository.
 	exitAgent(t, e, log, a.ID)
-	waitImport(t, log, a.ID, TriggerExit) // no commits yet
+	imp := waitImport(t, log, a.ID, TriggerExit)
+	if imp.Outcome != string(git.ImportCreated) || imp.Commits != 1 || len(imp.Flagged) != 0 {
+		t.Fatalf("import on exit %+v", imp)
+	}
+	if files := gitIn(t, f.repo, "show", "--name-only", "--format=%s", a.Branch); files != wipMessage+"\n\nuncommitted.txt" {
+		t.Fatalf("saved on exit %q", files)
+	}
+	if _, err := e.SaveWork(ctx, a.ID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("save work with nothing to save: %v", err)
+	}
 
+	// Changes made after the exit (by hand, say) still keep the clone.
+	if out, err := exec.Command("podman", "unshare", "sh", "-c", "echo late > "+filepath.Join(a.WorktreePath, "late.txt")).CombinedOutput(); err != nil {
+		t.Fatalf("write into the clone: %v %s", err, out)
+	}
 	if _, err := e.Remove(ctx, a.ID); !errors.Is(err, ErrWorktreeDirty) {
 		t.Fatalf("dirty clone removed: %v", err)
 	}
@@ -374,14 +390,11 @@ func TestSandboxedRemoveKeepsDirtyAndSavesWork(t *testing.T) {
 		t.Fatal("dirty clone is gone")
 	}
 	imp, err := e.SaveWork(ctx, a.ID)
-	if err != nil || imp.Trigger != TriggerSaveWork || imp.Outcome != string(git.ImportCreated) || len(imp.Flagged) != 0 {
+	if err != nil || imp.Trigger != TriggerSaveWork || imp.Outcome != string(git.ImportFastForward) || len(imp.Flagged) != 0 {
 		t.Fatalf("save work %+v %v", imp, err)
 	}
-	if files := gitIn(t, f.repo, "show", "--name-only", "--format=", a.Branch); files != "uncommitted.txt" {
+	if files := gitIn(t, f.repo, "show", "--name-only", "--format=", a.Branch); files != "late.txt" {
 		t.Fatalf("saved files %q", files)
-	}
-	if _, err := e.SaveWork(ctx, a.ID); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("save work with nothing to save: %v", err)
 	}
 	res, err := e.Remove(ctx, a.ID)
 	if err != nil || res.Worktree != "removed" || res.Branch != "kept" {
