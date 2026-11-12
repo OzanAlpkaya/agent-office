@@ -104,7 +104,7 @@ func imports(kind string) bool { return kind == KindWorker || kind == KindQA }
 // expandPrompt fills a role prompt's placeholders.
 func (e *Engine) expandPrompt(def *role.Role) string {
 	return strings.NewReplacer(
-		role.PlaceholderMaxSubTasks, strconv.Itoa(MaxSubTasks),
+		role.PlaceholderMaxSubTasks, strconv.Itoa(e.maxSubTasks()),
 		role.PlaceholderMaxWorkers, strconv.Itoa(max(e.maxAgents()-1, 1)),
 	).Replace(def.Prompt)
 }

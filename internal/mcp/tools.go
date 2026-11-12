@@ -273,6 +273,7 @@ type CreateTaskInput struct {
 	Files       []string `json:"files,omitempty" jsonschema:"Files it changes: repository-relative paths, directories ending in /, or globs. Sub-tasks with overlapping files cannot run at the same time unless one depends on the other."`
 	Acceptance  []string `json:"acceptance,omitempty" jsonschema:"Acceptance criteria QA tests, one per item."`
 	Role        string   `json:"role,omitempty" jsonschema:"The worker role that builds it (agent-office lists them in list_tasks); empty: worker."`
+	Supersedes  []string `json:"supersedes,omitempty" jsonschema:"Ids of sub-tasks of your goal this one replaces: they are closed as superseded (none may have a running agent; stop_agent first). Use it instead of leaving a replaced sub-task open."`
 }
 
 // AgentRef is an agent as the tools show it.
@@ -296,6 +297,7 @@ type TaskInfo struct {
 	Files        []string       `json:"files,omitempty"`
 	Acceptance   []string       `json:"acceptance,omitempty"`
 	Role         string         `json:"role,omitempty"`
+	SupersededBy string         `json:"superseded_by,omitempty"` // closed because this sub-task (or plan version) replaced it
 	Conflicts    []ConflictInfo `json:"conflicts,omitempty"`
 	Agents       []AgentRef     `json:"agents,omitempty"`
 }

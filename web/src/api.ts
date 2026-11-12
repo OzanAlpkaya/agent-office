@@ -297,6 +297,7 @@ export interface Task {
   acceptance?: string[];
   role?: string;
   spec_key?: string;
+  superseded_by?: string; // closed as replaced: a task id, or "spec:<version>" (ADR 0062)
   conflicts?: Conflict[];
   conflicts_checked_at?: string;
 }

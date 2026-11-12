@@ -5,7 +5,7 @@ import { type JSX, useEffect, useState } from "react";
 import { type Agent, type GoalRecord, type PullRequest, type Review, type Task, type TaskStatus, taskStatuses } from "./api";
 import { AgentName } from "./AgentName";
 import { type BoardProps, columnTitle } from "./Board";
-import { type DetailAction, cardStatus, detailActions } from "./cards";
+import { type DetailAction, cardStatus, detailActions, supersededTitle } from "./cards";
 import { BranchCleanup, MergePanel, PushPanel } from "./Goals";
 import { busyOf, closeWarning, goalAgents, latestMerge, mergeOffered, pushOffered, subTasksOf } from "./goals";
 import { Modal } from "./Modal";
@@ -127,6 +127,14 @@ export function TaskDetail(p: BoardProps & { task: Task; onClose: () => void }):
         {task.created_by && <span title={`Created by agent ${task.created_by}`}>· created by <AgentName id={task.created_by} /></span>}
         <span>· {columnTitle[task.status]}</span>
       </div>
+      {task.superseded_by && (
+        <p className="callout small superseded" role="note" data-testid="superseded">
+          {supersededTitle(task, p.tasks)}.{" "}
+          {p.tasks.some((t) => t.id === task.superseded_by) && p.onDetail && (
+            <button className="link" onClick={() => p.onDetail?.(task.superseded_by)}>Open it</button>
+          )}
+        </p>
+      )}
       {otherBusy && !running && (
         <p className="callout warn small goal-busy" role="note">
           {otherBusy.text} <button className="link" onClick={() => onOpenAgent(otherBusy.agentId)}>Open it</button>

@@ -71,7 +71,10 @@ export function cardStatus(task: Task, ctx: CardContext): CardStatus {
     if (running.some((a) => a.state === "working")) return st("working", "Working", "accent", "An agent is working on it");
     if (running.some((a) => a.state === "starting")) return st("starting", "Starting", "muted", "An agent is starting");
   }
-  // 4. The task's own status.
+  // 4. The task's own status. A superseded sub-task is closed: another replaced it (ADR 0062).
+  if (task.superseded_by) {
+    return st("superseded", "Superseded", "muted", supersededTitle(task, ctx.tasks));
+  }
   switch (task.status) {
     case "blocked":
       return st("blocked", "Blocked", "danger", "Marked blocked");
@@ -91,6 +94,14 @@ export function cardStatus(task: Task, ctx: CardContext): CardStatus {
       : st("no-agent", "No agent", "muted", "In progress, but no agent runs on it");
   }
   return st("todo", "To do", "muted", "Not started");
+}
+
+// supersededTitle says what replaced a superseded sub-task.
+export function supersededTitle(task: Task, tasks: readonly Task[]): string {
+  const by = task.superseded_by ?? "";
+  if (by.startsWith("spec:")) return `Dropped by version ${by.slice(5)} of the plan after work started`;
+  const r = tasks.find((t) => t.id === by);
+  return r ? `Replaced by “${r.title}”` : "Replaced by another sub-task";
 }
 
 const kindOrder: Record<string, number> = { lead: 0, architect: 1, qa: 2, worker: 3, reviewer: 4, assistant: 5 };

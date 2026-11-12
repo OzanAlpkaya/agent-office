@@ -2,7 +2,7 @@
 // daemon-wide one, plans with a change request, QA rounds on the board, the
 // task modal's run info and the background wait state.
 import { type Page, expect, test } from "@playwright/test";
-import { MockDaemon, type World, projectSettings, settingsTab, team } from "./daemon";
+import { MockDaemon, type World, openCard, projectSettings, settingsTab, task, team } from "./daemon";
 
 async function open(page: Page, daemon: MockDaemon): Promise<string[]> {
   const errors: string[] = [];
@@ -49,5 +49,20 @@ test("the effective agent cap is shown and the daemon-wide cap changes without a
   await expect(cap).toContainText("From --max-agents");
   expect(daemon.requests).toContain('PUT /api/daemon {"max_agents":null}');
   await expect(page.getByTestId("running-cap")).toHaveText(`${running} / 4 running`);
+  expect(errors).toEqual([]);
+});
+
+test("a superseded sub-task is closed and links to what replaced it", async ({ page }) => {
+  const w: World = team(4);
+  w.tasks.push(task("t00000000008", "Tag model, first try", "done",
+    { parent_task_id: "g00000000001", superseded_by: "t00000000001", created_by: "a1ead0000001" }));
+  const errors = await open(page, new MockDaemon(w));
+  const card = page.locator("#task-t00000000008");
+  await expect(card.getByTestId("card-status")).toHaveText("Superseded");
+  await expect(card.getByTestId("card-status")).toHaveAttribute("title", "Replaced by “Tag model and migration”");
+  const modal = await openCard(page, "t00000000008");
+  await expect(modal.getByTestId("superseded")).toContainText("Replaced by “Tag model and migration”");
+  await modal.getByTestId("superseded").getByRole("button", { name: "Open it" }).click();
+  await expect(page.locator(".modal.task-detail .detail-title")).toHaveText("Tag model and migration");
   expect(errors).toEqual([]);
 });

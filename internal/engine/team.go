@@ -19,8 +19,11 @@ import (
 
 // Limits (ADR 0017, 0018).
 const (
-	MaxSubTasks   = 20   // sub-tasks per goal
-	MaxSummaryLen = 2000 // report_done summary
+	// MaxTotalSubTasks bounds every sub-task a goal ever has, done ones
+	// included, against a runaway loop; the project's max_sub_tasks bounds the
+	// open ones (ADR 0062).
+	MaxTotalSubTasks = 200
+	MaxSummaryLen    = 2000 // report_done summary
 	// MaxCommitMessageLen bounds the Tech Lead's merge message (ADR 0055).
 	MaxCommitMessageLen = 4000
 )
@@ -91,7 +94,8 @@ func (e *Engine) agentRefLocked(a *agentProc) mcp.AgentRef {
 func (e *Engine) taskInfoLocked(t db.Task) mcp.TaskInfo {
 	v := taskFromRow(t)
 	ti := mcp.TaskInfo{ID: t.ID, Title: t.Title, Description: t.Description, Status: t.Status,
-		ParentTaskID: t.ParentTaskID.String, DependsOn: v.DependsOn, Files: v.Files, Acceptance: v.Acceptance, Role: v.Role}
+		ParentTaskID: t.ParentTaskID.String, DependsOn: v.DependsOn, Files: v.Files, Acceptance: v.Acceptance, Role: v.Role,
+		SupersededBy: t.SupersededBy}
 	for _, c := range v.Conflicts {
 		ti.Conflicts = append(ti.Conflicts, mcp.ConflictInfo{With: c.With, Branch: c.Branch, Files: c.Files})
 	}
@@ -131,12 +135,12 @@ func (t team) CreateTask(ctx context.Context, caller string, in mcp.CreateTaskIn
 	if err != nil {
 		return mcp.TaskInfo{}, userErr(err)
 	}
-	n, err := e.q.CountChildTasks(ctx, nullString(goal.ID))
+	replaced, err := e.supersedable(ctx, goal, in.Supersedes)
 	if err != nil {
-		return mcp.TaskInfo{}, err
+		return mcp.TaskInfo{}, userErr(err)
 	}
-	if n >= MaxSubTasks {
-		return mcp.TaskInfo{}, userErr(fmt.Errorf("%w: a goal has at most %d sub-tasks", ErrLimit, MaxSubTasks))
+	if err := e.subTaskRoom(ctx, goal.ID, len(replaced)); err != nil {
+		return mcp.TaskInfo{}, userErr(err)
 	}
 	ti, err := e.subTaskInput(ctx, goal, in)
 	if err != nil {
@@ -146,7 +150,12 @@ func (t team) CreateTask(ctx context.Context, caller string, in mcp.CreateTaskIn
 	if err != nil {
 		return mcp.TaskInfo{}, userErr(err)
 	}
-	e.log.Info("sub-task created", "agent_id", caller, "task_id", task.ID, "goal", goal.ID)
+	e.log.Info("sub-task created", "agent_id", caller, "task_id", task.ID, "goal", goal.ID, "supersedes", replaced)
+	for _, old := range replaced {
+		if err := e.supersede(ctx, old, task.ID); err != nil {
+			e.log.Warn("close a superseded sub-task", "task_id", old, "by", task.ID, "err", err)
+		}
+	}
 	return mcp.TaskInfo{ID: task.ID, Title: task.Title, Description: task.Description, Status: task.Status,
 		ParentTaskID: task.ParentTaskID, DependsOn: task.DependsOn, Files: task.Files, Acceptance: task.Acceptance,
 		Role: task.Role}, nil

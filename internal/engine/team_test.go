@@ -255,7 +255,7 @@ func TestAssignTaskIsExclusive(t *testing.T) {
 func TestTeamLimits(t *testing.T) {
 	tf := newTeam(t)
 	ctx := context.Background()
-	for i := range MaxSubTasks {
+	for i := range DefaultMaxSubTasks {
 		if _, err := tf.team.CreateTask(ctx, tf.lead.ID, mcp.CreateTaskInput{Title: fmt.Sprintf("t%d", i)}); err != nil {
 			t.Fatal(err)
 		}

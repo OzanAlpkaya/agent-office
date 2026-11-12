@@ -30,7 +30,7 @@ func (e *Engine) subTaskInput(ctx context.Context, goal db.Task, in mcp.CreateTa
 	if ti.Role, err = e.workerRole(strings.TrimSpace(in.Role)); err != nil {
 		return TaskInput{}, err
 	}
-	deps, err := normalizeList(in.DependsOn, MaxSubTasks, 32, "depends_on", nil)
+	deps, err := normalizeList(in.DependsOn, MaxProjectSubTasks, 32, "depends_on", nil)
 	if err != nil {
 		return TaskInput{}, err
 	}
@@ -92,6 +92,13 @@ func (e *Engine) unmetDependencies(ctx context.Context, task db.Task) ([]string,
 		if err != nil {
 			return nil, err
 		}
+		if isSuperseded(dep) { // its replacement's work counts (ADR 0062)
+			r, ok := e.replacementOf(ctx, dep)
+			if !ok {
+				continue
+			}
+			dep = r
+		}
 		if dep.Status != StatusReview && dep.Status != StatusDone {
 			out = append(out, fmt.Sprintf("%s %q (%s)", dep.ID, dep.Title, dep.Status))
 		}
@@ -143,8 +150,19 @@ func (e *Engine) subTaskBase(ctx context.Context, task db.Task) (string, error) 
 	base := ""
 	var merged []string
 	for _, d := range deps {
-		if _, err := e.getTask(ctx, d); errors.Is(err, ErrNotFound) {
+		dt, err := e.getTask(ctx, d)
+		if errors.Is(err, ErrNotFound) {
 			continue // deleted: no work to start from
+		}
+		if err != nil {
+			return "", err
+		}
+		if isSuperseded(dt) {
+			r, ok := e.replacementOf(ctx, dt)
+			if !ok {
+				continue // dropped by a plan revision: no work to start from
+			}
+			d = r.ID
 		}
 		branch, head, err := e.branchOfTask(ctx, d)
 		if err != nil {

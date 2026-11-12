@@ -152,8 +152,8 @@ func (e *Engine) validatePlan(p *Plan) error {
 	if p.Risks = strings.TrimSpace(p.Risks); utf8.RuneCountInString(p.Risks) > maxPlanRisks || !utf8.ValidString(p.Risks) {
 		return invalid("risks: at most %d characters of text", maxPlanRisks)
 	}
-	if n := len(p.SubTasks); n == 0 || n > MaxSubTasks {
-		return invalid("sub_tasks: 1-%d sub-tasks", MaxSubTasks)
+	if n, limit := len(p.SubTasks), e.maxSubTasks(); n == 0 || n > limit {
+		return invalid("sub_tasks: 1-%d sub-tasks (the project's open sub-task limit)", limit)
 	}
 	keys := map[string]bool{}
 	for i := range p.SubTasks {
@@ -182,7 +182,7 @@ func (e *Engine) validatePlan(p *Plan) error {
 		if st.Acceptance, err = normalizeList(st.Acceptance, maxPlanAcceptance, maxCriterionLen, field+".acceptance", nil); err != nil {
 			return err
 		}
-		if st.DependsOn, err = normalizeList(st.DependsOn, MaxSubTasks, 32, field+".depends_on", nil); err != nil {
+		if st.DependsOn, err = normalizeList(st.DependsOn, MaxProjectSubTasks, 32, field+".depends_on", nil); err != nil {
 			return err
 		}
 	}
@@ -444,13 +444,14 @@ func (e *Engine) EditSpec(ctx context.Context, id int64, p Plan) (Spec, error) {
 
 // ApproveResult is what approving a plan did.
 type ApproveResult struct {
-	Spec      Spec       `json:"spec"`
-	Created   []string   `json:"created"` // sub-task ids
-	Updated   []string   `json:"updated"`
-	Deleted   []string   `json:"deleted"`
-	Kept      []string   `json:"kept"` // sub-tasks already worked on, left as they are
-	Lead      *AgentInfo `json:"lead,omitempty"`
-	LeadError string     `json:"lead_error,omitempty"` // the Tech Lead could not start (e.g. no free slot)
+	Spec       Spec       `json:"spec"`
+	Created    []string   `json:"created"` // sub-task ids
+	Updated    []string   `json:"updated"`
+	Deleted    []string   `json:"deleted"`
+	Kept       []string   `json:"kept"`       // sub-tasks already worked on, left as they are
+	Superseded []string   `json:"superseded"` // worked on, dropped by this version, nobody running: closed (ADR 0062)
+	Lead       *AgentInfo `json:"lead,omitempty"`
+	LeadError  string     `json:"lead_error,omitempty"` // the Tech Lead could not start (e.g. no free slot)
 }
 
 // specLocation is where a goal's spec is committed.
@@ -504,7 +505,7 @@ func (e *Engine) ApproveSpec(ctx context.Context, id int64) (ApproveResult, erro
 	}
 
 	// 2. The sub-tasks, in one transaction with the approval.
-	res := ApproveResult{Created: []string{}, Updated: []string{}, Deleted: []string{}, Kept: []string{}}
+	res := ApproveResult{Created: []string{}, Updated: []string{}, Deleted: []string{}, Kept: []string{}, Superseded: []string{}}
 	touched := e.touchedTasks()
 	err = e.st.Tx(ctx, func(q *db.Queries) error {
 		r, err := q.ApproveSpec(ctx, db.ApproveSpecParams{Branch: branch, CommitSha: commit, Path: file,
@@ -516,7 +517,7 @@ func (e *Engine) ApproveSpec(ctx context.Context, id int64) (ApproveResult, erro
 			return err
 		}
 		res.Spec = specFromRow(r)
-		return e.applyPlanLocked(ctx, q, goal, s.Plan, touched, &res)
+		return e.applyPlanLocked(ctx, q, goal, s.Plan, s.Version, touched, &res)
 	})
 	if err != nil {
 		return ApproveResult{}, err
@@ -539,8 +540,10 @@ func (e *Engine) ApproveSpec(ctx context.Context, id int64) (ApproveResult, erro
 	for _, d := range res.Deleted {
 		e.publish(Update{Type: "task_deleted", ID: d})
 	}
+	// (Superseded sub-tasks were published with the goal's children above.)
 	e.log.Info("plan approved", "task_id", goal.ID, "spec_id", id, "version", s.Version, "commit", short(commit),
-		"created", len(res.Created), "updated", len(res.Updated), "deleted", len(res.Deleted), "kept", len(res.Kept))
+		"created", len(res.Created), "updated", len(res.Updated), "deleted", len(res.Deleted), "kept", len(res.Kept),
+		"superseded", len(res.Superseded))
 
 	// 3. The architect's job is done; the Tech Lead executes the plan.
 	e.mu.Lock()
@@ -558,8 +561,9 @@ func (e *Engine) ApproveSpec(ctx context.Context, id int64) (ApproveResult, erro
 	}
 	if lead != nil {
 		body := fmt.Sprintf("The user approved version %d of the plan. Created sub-tasks: %s. Updated: %s. Deleted: %s. "+
-			"Unchanged because work started: %s. Call list_tasks and continue in dependency order.", s.Version,
-			listOrNone(res.Created), listOrNone(res.Updated), listOrNone(res.Deleted), listOrNone(res.Kept))
+			"Closed as superseded (worked on, no longer in the plan): %s. Unchanged because work started: %s. Call "+
+			"list_tasks and continue in dependency order.", s.Version, listOrNone(res.Created), listOrNone(res.Updated),
+			listOrNone(res.Deleted), listOrNone(res.Superseded), listOrNone(res.Kept))
 		if _, err := e.sendMessage(ctx, "", lead.info.ID, body, false); err != nil {
 			e.log.Warn("tell the lead about the plan", "err", err)
 		}
@@ -604,8 +608,8 @@ func (e *Engine) touchedTasks() map[string]bool {
 // applyPlanLocked creates, updates and deletes the goal's sub-tasks to match
 // an approved plan: new keys are created; untouched todo sub-tasks are updated
 // or, when dropped from the plan, deleted; anything already worked on stays.
-func (e *Engine) applyPlanLocked(ctx context.Context, q *db.Queries, goal db.Task, p Plan, touched map[string]bool,
-	res *ApproveResult) error {
+func (e *Engine) applyPlanLocked(ctx context.Context, q *db.Queries, goal db.Task, p Plan, version int64,
+	touched map[string]bool, res *ApproveResult) error {
 	existing, err := q.ListChildTasks(ctx, nullString(goal.ID))
 	if err != nil {
 		return err
@@ -624,8 +628,10 @@ func (e *Engine) applyPlanLocked(ctx context.Context, q *db.Queries, goal db.Tas
 	for _, st := range p.SubTasks {
 		inPlan[st.Key] = true
 	}
-	// Drop untouched sub-tasks the plan no longer has.
-	remaining := 0
+	// Drop untouched sub-tasks the plan no longer has; one already worked on
+	// that nobody runs is closed as superseded by this version (ADR 0062).
+	running := e.tasksWithRunningAgents()
+	open := 0
 	for _, t := range existing {
 		switch {
 		case t.SpecKey != "" && !inPlan[t.SpecKey] && untouched(t):
@@ -634,8 +640,15 @@ func (e *Engine) applyPlanLocked(ctx context.Context, q *db.Queries, goal db.Tas
 			}
 			res.Deleted = append(res.Deleted, t.ID)
 			delete(byKey, t.SpecKey)
-		default:
-			remaining++
+		case t.SpecKey != "" && !inPlan[t.SpecKey] && t.Status != StatusDone && !running[t.ID]:
+			if _, err := q.SupersedeTask(ctx, db.SupersedeTaskParams{SupersededBy: supersededBySpec(version), UpdatedAt: now(),
+				ID: t.ID}); err != nil {
+				return err
+			}
+			res.Superseded = append(res.Superseded, t.ID)
+			delete(byKey, t.SpecKey)
+		case t.Status == StatusTodo || t.Status == StatusInProgress || t.Status == StatusBlocked:
+			open++
 		}
 	}
 	created := 0
@@ -644,8 +657,11 @@ func (e *Engine) applyPlanLocked(ctx context.Context, q *db.Queries, goal db.Tas
 			created++
 		}
 	}
-	if remaining+created > MaxSubTasks {
-		return fmt.Errorf("%w: the goal would have %d sub-tasks; at most %d", ErrLimit, remaining+created, MaxSubTasks)
+	if limit := e.maxSubTasks(); open+created > limit {
+		return fmt.Errorf("%w: the goal would have %d open sub-tasks; at most %d", ErrLimit, open+created, limit)
+	}
+	if total := len(existing) - len(res.Deleted) + created; total > MaxTotalSubTasks {
+		return fmt.Errorf("%w: the goal would have %d sub-tasks in all; at most %d", ErrLimit, total, MaxTotalSubTasks)
 	}
 	// Create new keys first (without dependencies), so every key has an id.
 	ids := map[string]string{}

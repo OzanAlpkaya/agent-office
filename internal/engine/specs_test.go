@@ -12,6 +12,7 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/role"
+	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
 
 func samplePlan() Plan {
@@ -317,4 +318,61 @@ func TestEscalationRevisesThePlan(t *testing.T) {
 	if p := gitOutIn(t, f.repo, "rev-parse", res2.Spec.Branch+"^"); p != res.Spec.Commit {
 		t.Fatalf("version 2's parent %s, version 1 %s", p, res.Spec.Commit)
 	}
+}
+
+// A revision that drops a sub-task already worked on, with nobody running on
+// it, closes it as superseded by the new version (ADR 0062).
+func TestRevisionSupersedesDroppedWork(t *testing.T) {
+	f := newFixture(t)
+	f.opts.MaxAgents = 5
+	gitIn(t, f.repo, "config", "user.name", "Ozan")
+	gitIn(t, f.repo, "config", "user.email", "o@example.com")
+	e := f.engine(t)
+	log := record(t, e)
+	ctx := context.Background()
+	goal, _ := e.CreateTask(ctx, TaskInput{Title: "Ship tags"})
+	arch, _ := e.Start(ctx, StartRequest{TaskID: goal.ID, Role: RoleArchitect})
+	log.wait(t, startWait, agentState(arch.ID, hooks.Idle))
+	s1, err := e.saveSpec(ctx, mustTask(t, e, goal.ID), arch.ID, samplePlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ApproveSpec(ctx, s1.ID); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	tasks, _ := e.ListTasks(ctx)
+	for _, x := range tasks {
+		ids[x.SpecKey] = x.ID
+	}
+	// "docs" was worked on (in progress), its worker is gone.
+	if _, err := e.UpdateTask(ctx, ids["docs"], TaskPatch{Status: Ptr(StatusInProgress)}); err != nil {
+		t.Fatal(err)
+	}
+	rev := samplePlan()
+	rev.SubTasks = rev.SubTasks[:2]
+	s2, err := e.EditSpec(ctx, s1.ID, rev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.ApproveSpec(ctx, s2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Superseded, []string{ids["docs"]}) || len(res.Deleted) != 0 {
+		t.Fatalf("revision result %+v", res)
+	}
+	d, _ := e.getTask(ctx, ids["docs"])
+	if d.Status != StatusDone || d.SupersededBy != "spec:2" {
+		t.Fatalf("dropped sub-task %+v", taskFromRow(d))
+	}
+}
+
+func mustTask(t *testing.T, e *Engine, id string) db.Task {
+	t.Helper()
+	r, err := e.getTask(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }

@@ -103,7 +103,7 @@ func (e *Engine) reportedBranches(ctx context.Context, children []db.Task) []QAB
 	}
 	var reported []db.Task
 	for _, c := range children {
-		if c.Status == StatusReview || c.Status == StatusDone {
+		if (c.Status == StatusReview || c.Status == StatusDone) && !isSuperseded(c) {
 			reported = append(reported, c)
 		}
 	}
@@ -340,7 +340,7 @@ func (e *Engine) reportQA(ctx context.Context, caller string, in mcp.ReportQAInp
 	var bugTasks, unfiled []string
 	for i := range bugs {
 		b := &bugs[i]
-		if n, err := e.q.CountChildTasks(ctx, nullString(goal.ID)); err != nil || n >= MaxSubTasks {
+		if err := e.subTaskRoom(ctx, goal.ID, 0); err != nil {
 			unfiled = append(unfiled, b.Title)
 			continue
 		}
@@ -384,7 +384,8 @@ func (e *Engine) reportQA(ctx context.Context, caller string, in mcp.ReportQAInp
 			body += "\n\nQA passed: report the goal with report_done."
 		}
 		if len(unfiled) > 0 {
-			body += "\n\nNot filed (the goal has " + fmt.Sprint(MaxSubTasks) + " sub-tasks): " + strings.Join(unfiled, "; ")
+			body += "\n\nNot filed (the goal has " + fmt.Sprint(e.maxSubTasks()) + " open sub-tasks, its limit): " +
+				strings.Join(unfiled, "; ") + ". Close or supersede open sub-tasks, then file them with create_task"
 		}
 		if _, err := e.sendMessage(ctx, info.ID, lead.info.ID, truncateRunes(body, MaxMessageLen), false); err != nil {
 			e.log.Warn("tell the lead about QA", "err", err)
