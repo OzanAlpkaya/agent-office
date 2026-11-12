@@ -94,3 +94,15 @@ when the width allows, starts at the top, and covers a taller pane by deepening 
 (not with empty desks); an office taller than the pane scrolls. A custom layout is scaled by width.
 On a phone a nameplate shows only the name; a tap shows the task and a second opens the agent.
 
+## Amendment (2026-11-12, Phase 18 second review): Fit and Zoom
+
+Scaling to the width alone made the office taller than the pane at 3 CSS pixels: the workroom needed
+scrolling. The office now has a zoom in its bar. **Fit** (the default): the largest whole-pixel scale
+at which the whole floor fits the pane in both width and height; among plans drawn at that scale the
+one that uses the width best (more columns on wide screens); height left below becomes workroom floor
+only as far as it fits, so nothing scrolls (a 1440 × 900 window: 2 CSS pixels, eight columns). **Zoom
++**: about a third larger (2 → 3 CSS pixels on a desktop; 3 → 4 device pixels on a phone, which still
+fits its width), and the pane scrolls. The choice is remembered per browser (localStorage). A plan
+wider than the pane is never picked while a narrower one fits. On a phone a name-only plate leaves out
+the role too, so plates do not overlap.
+

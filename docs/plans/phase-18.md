@@ -157,3 +157,14 @@ repository path); fixed. The project list's per-project settings form went (a pr
 its own page). Filling a phone's height with desk rows was tried first and gave rows of empty desks;
 the floor is deepened instead.
 
+## Second review change (2026-11-12)
+
+The office at 3x did not fit the pane's height. It now fits the pane in both width and height by
+default (**Fit**: the largest sharp scale with the whole floor visible, no scrolling), and **Zoom +**
+in the office bar draws it about a third larger for details (it scrolls); the choice is remembered per
+device. The step is a third rather than one CSS pixel: on a phone one CSS pixel more (3 device pixels)
+made the office wider than the screen. Found while doing it: a pane too narrow for every plan at one
+device pixel let a plan wider than the pane be picked; and on a phone a name-only plate still showed
+the role, which made plates overlap. The phone screenshots are now taken at a real phone's pixel
+ratio (iPhone 14, 3×); the before set was taken at 1×.
+
