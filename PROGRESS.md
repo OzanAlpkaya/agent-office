@@ -396,4 +396,13 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   screenshots in `docs/screenshots/phase-18/`. No new dependencies. A security review led to 3 fixes and a
   code review to 3 more. `make check` (328 Vitest tests), `make ui-test` (101), `make sandbox-test` and
   `make e2e` (host, sandbox, team, workflow, multi-project, Codex team, autonomy) pass; the GitHub e2e was not run.
+- 2026-11-12: Phase 18 review changes, on `phase-18/ui-polish` before the merge: the shown project's settings
+  behind a gear by the picker (General, Office, Sandbox, Memory) and the app's in the rail (Projects,
+  Devices, Profile); "+ New project" in the picker; Settings → Profile with a name for the user's nameplate
+  and an avatar creator drawn with the office's art, saved daemon-wide (migration 0018, `/api/profile`);
+  the modal shows only the actions that fit the task's state; the office fills the pane's width at a
+  whole-pixel scale and covers a tall pane with workroom floor; names only on a phone, the task on a tap;
+  inherited values in full under each setting; settings tabs that fit a phone. ADR 0056-0058 amended.
+  `make check` (407 Vitest tests), `make ui-test` (106), `make sandbox-test` and `make e2e` pass (GitHub e2e
+  not run).
 

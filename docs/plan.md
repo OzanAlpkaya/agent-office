@@ -788,6 +788,6 @@ user at their desk; a done goal is merged, closed and cleaned up from the same d
       5. Merge then Done: Playwright `daily.spec.ts`;
       6. branch clean-up: `TestGoalBranchCleanup`, `TestProjectBranchCleanup`, `TestAgentBranchesAndDeleteBranchAt`,
          `TestBranchCleanupAPI`, Vitest `branches.test.ts`, Playwright (a goal's and the project's).
-- [x] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass: 328 Vitest tests, 101 Playwright tests; every e2e but the
-      GitHub one (not run, as in Phase 17).
+- [x] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass: 407 Vitest tests, 106 Playwright tests (after the review); every e2e
+      but the GitHub one (not run, as in Phase 17).
 
