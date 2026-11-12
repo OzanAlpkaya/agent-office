@@ -185,6 +185,7 @@ func (e *Engine) onHookLocked(ctx context.Context, a *agentProc, ev agent.Event,
 		e.stopAfterReportLocked(a)
 	case (mainStop || ev.Kind == agent.Idle) && a.status.State == hooks.Idle:
 		e.scheduleDeliveryLocked(ctx, a)
+		e.maybeEndArchitectLocked(a) // its plan approved and nothing left: it frees its slot (Phase 19)
 	case ev.Kind == agent.SessionStarted && !a.hasPrompt && a.status.State == hooks.Idle:
 		// No initial prompt to wait for (a resume without one, ADR 0035): what
 		// was queued for the conversation is delivered once it settles.

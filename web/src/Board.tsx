@@ -50,6 +50,7 @@ export interface BoardProps {
   onStartRole?: (task: Task, role: string) => void;
   onSaveSpec?: (spec: Spec, plan: Plan) => Promise<boolean>;
   onApproveSpec?: (spec: Spec) => void;
+  onRequestChanges?: (spec: Spec, changes: string) => Promise<boolean>; // Phase 19: the Architect revises the plan
   onResolve?: (task: Task) => void;
   onReadInbox?: (i: InboxItem) => void;
   onReplyInbox?: (i: InboxItem, body: string) => Promise<boolean>;

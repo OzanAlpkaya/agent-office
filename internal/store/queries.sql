@@ -662,3 +662,7 @@ SELECT * FROM task_reports WHERE task_id = ? ORDER BY id;
 -- name: ListAgentStateEvents :many
 -- An agent's reduced state changes, oldest first, for its working and waiting time.
 SELECT session_id, state, at FROM events WHERE agent_id = ? ORDER BY id;
+
+-- name: CountOpenQuestionsFrom :one
+-- An agent's questions to the user that wait for an answer.
+SELECT count(*) FROM inbox WHERE agent_id = ? AND kind = 'question' AND answered_at IS NULL;

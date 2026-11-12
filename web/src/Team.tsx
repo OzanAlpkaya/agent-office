@@ -2,11 +2,12 @@
 // architect's plan, QA runs and a sub-task's plan and conflicts. Every text
 // that agents wrote is rendered as text, never as HTML.
 import { type FormEvent, type JSX, useState } from "react";
-import type { Agent, InboxItem, MemoryDraft, MemoryEntry, Plan, QARun, RoleInfo, Spec, Task } from "./api";
+import type { Agent, InboxItem, MemoryDraft, MemoryEntry, Plan, PlanSubTask, QARun, RoleInfo, Spec, Task } from "./api";
 import { AgentName } from "./AgentName";
 import { parseScope, scopeLabel } from "./memory";
 import {
-  type PlanForm, type SubTaskForm, fromForm, groupInbox, needsAnswer, newSubTask, proposedSpec, toForm, waitsFor,
+  type SubTaskForm, fromSubTaskForm, groupInbox, needsAnswer, newSubTask, pendingChanges, proposedSpec, subTaskForm, toForm,
+  waitsFor, withSubTask, withoutSubTask,
 } from "./workflow";
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
@@ -247,103 +248,192 @@ const specLabel: Record<Spec["status"], string> = {
   proposed: "waiting for your approval", approved: "approved", superseded: "superseded",
 };
 
-// PlanPanel shows a goal's plan; a proposed version can be edited or approved.
-export function PlanPanel({ spec, roles, onSave, onApprove }: {
+// PlanPanel shows a goal's plan (Phase 19): Approve in one click, a
+// "request changes" box the Architect answers with a new version, and light
+// edits, one sub-task or the summary at a time, each saved as a new version.
+export function PlanPanel({ spec, specs = [], roles, onSave, onApprove, onRequestChanges }: {
   spec: Spec;
+  specs?: readonly Spec[]; // every version of the goal, to tell whether a change request is answered
   roles: RoleInfo[];
   onSave: (spec: Spec, plan: Plan) => Promise<boolean>;
   onApprove: (spec: Spec) => void;
+  onRequestChanges?: (spec: Spec, changes: string) => Promise<boolean>;
 }): JSX.Element {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState<"summary" | number | "new">();
+  const [removing, setRemoving] = useState<string>();
   const p = spec.plan;
+  const live = spec.status !== "superseded";
+  const pending = pendingChanges(spec, specs);
+  const save = async (plan: Plan): Promise<boolean> => {
+    const ok = await onSave(spec, plan);
+    if (ok) {
+      setEditing(undefined);
+      setRemoving(undefined);
+    }
+    return ok;
+  };
+  const roleNames = roles.filter((r) => r.behaviour === "worker").map((r) => r.name);
   return (
     <details className={`plan small spec-${spec.status}`} open={spec.status === "proposed"} onClick={(e) => e.stopPropagation()}>
       <summary>
         Plan v{spec.version} · {specLabel[spec.status]} · {p.sub_tasks.length} sub-task{p.sub_tasks.length === 1 ? "" : "s"}
         {spec.author ? <> · by architect <AgentName id={spec.author} /></> : " · edited by you"}
       </summary>
-      {editing ? (
-        <PlanEditor plan={p} roles={roles} onCancel={() => setEditing(false)}
-          onSave={async (plan) => { const ok = await onSave(spec, plan); if (ok) setEditing(false); return ok; }} />
+      {spec.status === "proposed" && (
+        <div className="row plan-actions">
+          <button className="primary" onClick={() => onApprove(spec)}
+            title="Commit the spec, create the sub-tasks and start a Tech Lead">Approve plan</button>
+          <span className="muted">or ask for changes below; small fixes: Edit on the line.</span>
+        </div>
+      )}
+      {editing === "summary" ? (
+        <SummaryEditor plan={p} onSave={save} onCancel={() => setEditing(undefined)} />
       ) : (
-        <>
+        <div className="plan-summary">
           <div className="quote">{p.summary}</div>
           {p.design && <details><summary>Design</summary><div className="quote pre">{p.design}</div></details>}
-          <ol className="plan-tasks">
-            {p.sub_tasks.map((s) => (
-              <li key={s.key}>
+          {p.risks && <div><span className="muted">Risks:</span> <span className="quote">{p.risks}</span></div>}
+          {live && <button className="link" onClick={() => setEditing("summary")} aria-label="Edit the summary">Edit summary</button>}
+        </div>
+      )}
+      <ol className="plan-tasks">
+        {p.sub_tasks.map((s, i) => (
+          <li key={s.key} data-key={s.key}>
+            {editing === i ? (
+              <SubTaskEditor sub={s} roles={roleNames} keys={p.sub_tasks.map((x) => x.key)}
+                onSave={(st) => save(withSubTask(p, i, st))} onCancel={() => setEditing(undefined)} />
+            ) : (
+              <>
                 <span className="mono">{s.key}</span> <span className="strong">{s.title}</span>
                 {s.role && <span className="chip"> {s.role}</span>}
                 {s.depends_on?.length ? <span className="muted"> · after {s.depends_on.join(", ")}</span> : null}
+                {live && (
+                  <span className="plan-task-actions">
+                    <button className="link" onClick={() => setEditing(i)} aria-label={`Edit ${s.key}`}>Edit</button>
+                    {removing === s.key ? (
+                      <>
+                        <span className="small">Remove “{s.title}”?</span>
+                        <button className="link danger" onClick={() => void save(withoutSubTask(p, s.key))}>Remove</button>
+                        <button className="link" onClick={() => setRemoving(undefined)}>Keep</button>
+                      </>
+                    ) : (
+                      p.sub_tasks.length > 1 &&
+                        <button className="link" onClick={() => setRemoving(s.key)} aria-label={`Remove ${s.key}`}>Remove</button>
+                    )}
+                  </span>
+                )}
                 {s.files?.length ? <div className="mono muted">{s.files.join(", ")}</div> : null}
-                {s.acceptance?.length ? <ul>{s.acceptance.map((a, i) => <li key={i}>{a}</li>)}</ul> : null}
-              </li>
-            ))}
-          </ol>
-          {p.risks && <div><span className="muted">Risks:</span> <span className="quote">{p.risks}</span></div>}
-          {spec.status === "approved" && spec.path && (
-            <div className="muted mono">{spec.path} on {spec.branch} ({spec.commit?.slice(0, 8)})</div>
-          )}
-          {spec.status === "proposed" && (
-            <div className="row">
-              <button className="primary" onClick={() => onApprove(spec)}
-                title="Commit the spec, create the sub-tasks and start a Tech Lead">Approve plan</button>
-              <button onClick={() => setEditing(true)}>Edit</button>
-              <span className="muted">Questions or changes: answer the architect in the inbox or its terminal.</span>
-            </div>
-          )}
-          {spec.status === "approved" && (
-            <button onClick={() => setEditing(true)} title="Save an edited version; it needs your approval again">Revise</button>
-          )}
-        </>
+                {s.acceptance?.length ? <ul>{s.acceptance.map((a, j) => <li key={j}>{a}</li>)}</ul> : null}
+              </>
+            )}
+          </li>
+        ))}
+      </ol>
+      {live && (editing === "new" ? (
+        <SubTaskEditor sub={fromSubTaskForm(newSubTask(toForm(p)))} roles={roleNames} keys={p.sub_tasks.map((x) => x.key)}
+          onSave={(st) => save(withSubTask(p, -1, st))} onCancel={() => setEditing(undefined)} />
+      ) : (
+        <button className="link" onClick={() => setEditing("new")}>+ Sub-task</button>
+      ))}
+      {spec.status === "approved" && spec.path && (
+        <div className="muted mono">{spec.path} on {spec.branch} ({spec.commit?.slice(0, 8)})</div>
       )}
+      {pending && (
+        <p className="callout small change-pending" data-testid="change-pending">
+          Changes requested, waiting for the Architect: <span className="quote">{pending}</span>
+        </p>
+      )}
+      {live && onRequestChanges && <ChangeRequest spec={spec} onSend={onRequestChanges} />}
     </details>
   );
 }
 
-function PlanEditor({ plan, roles, onSave, onCancel }: {
-  plan: Plan;
-  roles: RoleInfo[];
-  onSave: (plan: Plan) => Promise<boolean>;
-  onCancel: () => void;
-}): JSX.Element {
-  const [f, setF] = useState<PlanForm>(() => toForm(plan));
-  const set = (patch: Partial<PlanForm>): void => setF({ ...f, ...patch });
-  const setSub = (i: number, patch: Partial<SubTaskForm>): void =>
-    set({ subTasks: f.subTasks.map((s, j) => (j === i ? { ...s, ...patch } : s)) });
-  const workerRoles = roles.filter((r) => r.behaviour === "worker");
+// ChangeRequest is the "request changes" box: the user writes what to change
+// and the Architect revises the plan (Phase 19).
+function ChangeRequest({ spec, onSend }: { spec: Spec; onSend: (spec: Spec, changes: string) => Promise<boolean> }): JSX.Element {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
   return (
-    <form className="plan-editor task-form" onSubmit={(e) => { e.preventDefault(); void onSave(fromForm(f)); }}>
-      <label>Summary<textarea rows={2} maxLength={2000} value={f.summary} onChange={(e) => set({ summary: e.target.value })} /></label>
-      <label>Design<textarea rows={5} maxLength={20000} value={f.design} onChange={(e) => set({ design: e.target.value })} /></label>
-      {f.subTasks.map((s, i) => (
-        <fieldset key={i}>
-          <legend>Sub-task {i + 1}</legend>
-          <div className="row">
-            <input aria-label="Key" className="mono spec-key" value={s.key} onChange={(e) => setSub(i, { key: e.target.value })} />
-            <input aria-label="Title" placeholder="Title" value={s.title} onChange={(e) => setSub(i, { title: e.target.value })} />
-            <select aria-label="Role" value={s.role} onChange={(e) => setSub(i, { role: e.target.value })}>
-              <option value="">worker</option>
-              {workerRoles.filter((r) => r.name !== "worker").map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
-            </select>
-            <button type="button" className="link" onClick={() => set({ subTasks: f.subTasks.filter((_, j) => j !== i) })}>
-              remove
-            </button>
-          </div>
-          <textarea aria-label="Description" rows={2} placeholder="What to do and how to check it" value={s.description}
-            onChange={(e) => setSub(i, { description: e.target.value })} />
-          <input aria-label="Depends on" placeholder="Depends on (keys, comma separated)" value={s.dependsOn}
-            onChange={(e) => setSub(i, { dependsOn: e.target.value })} />
-          <input aria-label="Files" className="mono" placeholder="Files (paths, dirs/, globs; comma separated)" value={s.files}
-            onChange={(e) => setSub(i, { files: e.target.value })} />
-          <textarea aria-label="Acceptance criteria" rows={2} placeholder="Acceptance criteria, one per line"
-            value={s.acceptance} onChange={(e) => setSub(i, { acceptance: e.target.value })} />
-        </fieldset>
-      ))}
-      <button type="button" onClick={() => set({ subTasks: [...f.subTasks, newSubTask(f)] })}>+ Sub-task</button>
-      <label>Risks<textarea rows={2} maxLength={4000} value={f.risks} onChange={(e) => set({ risks: e.target.value })} /></label>
+    <form className="change-request" aria-label="Request changes" onSubmit={(e) => {
+      e.preventDefault();
+      setBusy(true);
+      void onSend(spec, text.trim()).then((ok) => {
+        setBusy(false);
+        if (ok) setText("");
+      });
+    }}>
+      <label className="setting">
+        <span>Request changes</span>
+        <textarea rows={2} maxLength={4000} value={text} aria-label="What to change"
+          placeholder="What should the Architect change? e.g. split the API sub-task, drop the docs" onChange={(e) => setText(e.target.value)} />
+      </label>
+      <div className="row">
+        <button type="submit" disabled={text.trim() === "" || busy}>{busy ? "Sending…" : "Send to the Architect"}</button>
+        <span className="muted small">It revises the plan; you approve the new version.</span>
+      </div>
+    </form>
+  );
+}
+
+function SummaryEditor({ plan, onSave, onCancel }: {
+  plan: Plan; onSave: (p: Plan) => Promise<boolean>; onCancel: () => void;
+}): JSX.Element {
+  const [summary, setSummary] = useState(plan.summary);
+  const [design, setDesign] = useState(plan.design);
+  const [risks, setRisks] = useState(plan.risks ?? "");
+  return (
+    <form className="plan-editor task-form" aria-label="Edit the summary" onSubmit={(e) => {
+      e.preventDefault();
+      const next: Plan = { ...plan, summary: summary.trim(), design: design.trim() };
+      if (risks.trim()) next.risks = risks.trim();
+      else delete next.risks;
+      void onSave(next);
+    }}>
+      <label>Summary<textarea rows={2} maxLength={2000} value={summary} onChange={(e) => setSummary(e.target.value)} /></label>
+      <details><summary className="muted">Design and risks</summary>
+        <label>Design<textarea rows={5} maxLength={20000} value={design} onChange={(e) => setDesign(e.target.value)} /></label>
+        <label>Risks<textarea rows={2} maxLength={4000} value={risks} onChange={(e) => setRisks(e.target.value)} /></label>
+      </details>
       <div className="row">
         <button className="primary" type="submit">Save as a new version</button>
+        <button type="button" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+// SubTaskEditor edits one sub-task: title, description and acceptance
+// criteria, with the key, role, dependencies and files under "More".
+function SubTaskEditor({ sub, roles, keys, onSave, onCancel }: {
+  sub: PlanSubTask; roles: string[]; keys: string[]; onSave: (s: PlanSubTask) => Promise<boolean>; onCancel: () => void;
+}): JSX.Element {
+  const [f, setF] = useState<SubTaskForm>(() => subTaskForm(sub));
+  const set = (patch: Partial<SubTaskForm>): void => setF({ ...f, ...patch });
+  return (
+    <form className="plan-editor task-form sub-task-editor" aria-label={`Edit ${sub.key}`} onSubmit={(e) => {
+      e.preventDefault();
+      void onSave(fromSubTaskForm(f));
+    }}>
+      <input aria-label="Title" placeholder="Title" value={f.title} autoFocus onChange={(e) => set({ title: e.target.value })} />
+      <textarea aria-label="Description" rows={3} placeholder="What to do and how to check it" value={f.description}
+        onChange={(e) => set({ description: e.target.value })} />
+      <textarea aria-label="Acceptance criteria" rows={2} placeholder="Acceptance criteria, one per line"
+        value={f.acceptance} onChange={(e) => set({ acceptance: e.target.value })} />
+      <details><summary className="muted">More: key, role, dependencies, files</summary>
+        <div className="row">
+          <input aria-label="Key" className="mono spec-key" value={f.key} onChange={(e) => set({ key: e.target.value })} />
+          <select aria-label="Role" value={f.role} onChange={(e) => set({ role: e.target.value })}>
+            <option value="">worker</option>
+            {roles.filter((r) => r !== "worker").map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </div>
+        <input aria-label="Depends on" placeholder={`Depends on (keys: ${keys.filter((k) => k !== sub.key).join(", ") || "none"})`}
+          value={f.dependsOn} onChange={(e) => set({ dependsOn: e.target.value })} />
+        <input aria-label="Files" className="mono" placeholder="Files (paths, dirs/, globs; comma separated)" value={f.files}
+          onChange={(e) => set({ files: e.target.value })} />
+      </details>
+      <div className="row">
+        <button className="primary" type="submit" disabled={f.title.trim() === ""}>Save as a new version</button>
         <button type="button" onClick={onCancel}>Cancel</button>
       </div>
     </form>

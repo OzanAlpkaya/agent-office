@@ -511,6 +511,7 @@ export function App({
                 onStartRole={(t, role) => void startAgent(t.id, role)}
                 onSaveSpec={(s, plan) => ok(() => api.editSpec(s.id, plan))}
                 onApproveSpec={(s) => void run(() => approveSpec(s))}
+                onRequestChanges={(s, changes) => ok(() => api.requestSpecChanges(s.id, changes))}
                 onResolve={(t) => void run(async () => { await api.resolveConflict(t.id); return true; })}
                 onReadInbox={(i) => void run(() => api.readInbox(i.id))}
                 onReplyInbox={(i, body) => ok(() => api.replyInbox(i.id, body))}

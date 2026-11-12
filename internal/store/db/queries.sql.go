@@ -377,6 +377,18 @@ func (q *Queries) CountOpenChildTasks(ctx context.Context, parentTaskID sql.Null
 	return count, err
 }
 
+const countOpenQuestionsFrom = `-- name: CountOpenQuestionsFrom :one
+SELECT count(*) FROM inbox WHERE agent_id = ? AND kind = 'question' AND answered_at IS NULL
+`
+
+// An agent's questions to the user that wait for an answer.
+func (q *Queries) CountOpenQuestionsFrom(ctx context.Context, agentID sql.NullString) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countOpenQuestionsFrom, agentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countPendingAccessRequests = `-- name: CountPendingAccessRequests :one
 SELECT count(*) FROM access_requests WHERE agent_id = ? AND status = 'pending'
 `

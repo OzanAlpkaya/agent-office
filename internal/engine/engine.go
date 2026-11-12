@@ -280,6 +280,7 @@ type agentProc struct {
 	lastInput     time.Time   // last terminal input from the user
 	deliverTimer  *time.Timer // pending idle delivery
 	delivering    bool        // a message is being typed into the PTY
+	endCheck      bool        // an idle Architect's end check is scheduled (Phase 19)
 	stopAfterTurn bool        // report_done: end the session when the turn ends
 	reporting     bool        // a report_done call is running
 }

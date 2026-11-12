@@ -63,12 +63,20 @@ type Spec struct {
 	Path       string     `json:"path,omitempty"` // docs/specs/<goal>.md
 	CreatedAt  time.Time  `json:"created_at"`
 	ApprovedAt *time.Time `json:"approved_at,omitempty"`
+	// The user's change request on this version, for the Architect (Phase 19).
+	ChangeRequest     string     `json:"change_request,omitempty"`
+	ChangeRequestedAt *time.Time `json:"change_requested_at,omitempty"`
 }
 
 func specFromRow(r db.Spec) Spec {
 	s := Spec{ID: r.ID, GoalID: r.GoalID, Version: r.Version, Status: r.Status, Author: r.Author, Markdown: r.Markdown,
 		Branch: r.Branch, Commit: r.CommitSha, Path: r.Path, CreatedAt: r.CreatedAt.UTC()}
 	_ = json.Unmarshal([]byte(r.Plan), &s.Plan)
+	s.ChangeRequest = r.ChangeRequest
+	if r.ChangeRequestedAt.Valid {
+		t := r.ChangeRequestedAt.Time.UTC()
+		s.ChangeRequestedAt = &t
+	}
 	if r.ApprovedAt.Valid {
 		t := r.ApprovedAt.Time.UTC()
 		s.ApprovedAt = &t

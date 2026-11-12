@@ -370,6 +370,8 @@ export interface Spec {
   path?: string;
   created_at: string;
   approved_at?: string;
+  change_request?: string; // the user's request to change this version (Phase 19)
+  change_requested_at?: string;
 }
 
 export interface ApproveResult {
@@ -1128,6 +1130,7 @@ export function projectApi(projectId: string) {
     messageAgent: (id: string, body: string): Promise<Message> => request("POST", `${base}/agents/${id}/message`, { body }),
     editSpec: (id: number, plan: Plan): Promise<Spec> => request("PUT", `${base}/specs/${id}`, plan),
     approveSpec: (id: number): Promise<ApproveResult> => request("POST", `${base}/specs/${id}/approve`),
+    requestSpecChanges: (id: number, changes: string): Promise<Spec> => request("POST", `${base}/specs/${id}/changes`, { changes }),
     resolveConflict: (taskId: string): Promise<void> => request("POST", `${base}/tasks/${taskId}/resolve-conflict`),
     addMemory: (d: MemoryDraft): Promise<MemoryEntry> => request("POST", `${base}/memory`, d),
     editMemory: (id: number, patch: Partial<MemoryDraft>): Promise<MemoryEntry> => request("PATCH", `${base}/memory/${id}`, patch),

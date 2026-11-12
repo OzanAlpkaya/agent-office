@@ -160,6 +160,7 @@ func (s *server) routes() []route {
 		{pattern: "POST /api/projects/{project}/assistant/briefing", handler: s.askBriefing, project: true},
 		{pattern: "PUT /api/projects/{project}/specs/{id}", handler: s.specAction(false), project: true},
 		{pattern: "POST /api/projects/{project}/specs/{id}/approve", handler: s.specAction(true), project: true},
+		{pattern: "POST /api/projects/{project}/specs/{id}/changes", handler: s.requestSpecChanges, project: true},
 		{pattern: "POST /api/projects/{project}/inbox/{id}/read", handler: s.inboxAction(false), project: true},
 		{pattern: "POST /api/projects/{project}/inbox/{id}/reply", handler: s.inboxAction(true), project: true},
 		{pattern: "GET /api/projects/{project}/events", handler: s.eventsWS, project: true},
@@ -579,6 +580,28 @@ func (s *server) specAction(approve bool) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusCreated, spec)
 	}
+}
+
+// requestSpecChanges is the user's "request changes" on a plan version: the
+// Architect revises the plan (Phase 19).
+func (s *server) requestSpecChanges(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		writeError(w, http.StatusBadRequest, "invalid spec id")
+		return
+	}
+	var body struct {
+		Changes string `json:"changes"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	spec, err := eng(r).RequestSpecChanges(r.Context(), id, body.Changes)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, spec)
 }
 
 func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {

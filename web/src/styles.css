@@ -211,6 +211,12 @@ button.task.goal { box-shadow: inset 3px 0 0 var(--accent), var(--shadow-1); }
 .plan > * + *, .qa > * + * { margin-top: var(--space-2); }
 .plan-tasks { margin: var(--space-2) 0; padding-left: var(--space-5); display: flex; flex-direction: column; gap: var(--space-2); }
 .plan-tasks ul { margin: 2px 0 0; padding-left: var(--space-4); }
+/* Phase 19: light plan edits and the change request box. */
+.plan-task-actions { display: inline-flex; gap: var(--space-2); margin-left: var(--space-2); align-items: baseline; }
+.plan-actions { align-items: center; }
+.change-request { border-top: 1px solid var(--border); padding-top: var(--space-2); }
+.change-request textarea { width: 100%; }
+.sub-task-editor { margin: var(--space-1) 0; }
 .quote.pre { font-family: inherit; }
 .plan-editor { display: flex; flex-direction: column; gap: var(--space-2); }
 .plan-editor label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }

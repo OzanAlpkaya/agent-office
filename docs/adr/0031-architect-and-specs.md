@@ -98,3 +98,24 @@ Option 2, option 3 and option 2.
   reported as such.
 - The architect is optional: "Start lead" skips it, and the lead plans with `create_task`
   (with dependencies and files, ADR 0032) as before.
+
+## Amendment (Phase 19, 2026-11-12): changes by request, light edits, the Architect's exit
+
+Changing a plan meant answering the Architect in the inbox or opening one form with every field of every
+sub-task. For small changes that was too much.
+
+- **Request changes**: a box on a proposed or approved version (`POST /api/specs/{id}/changes`, at most
+  4000 characters, within the plan rate limit). The text is stored on the version (`specs.change_request`,
+  migration 0019) and shown as "Changes requested, waiting for the Architect" until a newer version exists.
+  A running Architect gets it as the user's message; an exited one is started again on the same agent and
+  workspace, with the plan and the request in its prompt; with no Architect, a new one starts. The
+  Architect answers with `submit_plan`. User requests do not count against the escalation relaunch limit.
+- **Approve** stays one click, at the top of a proposed plan.
+- **Light edits**: each sub-task has Edit (title, description and acceptance criteria, with key, role,
+  dependencies and files under "More") and Remove (asked once; dependencies on it are dropped). The summary,
+  design and risks have their own Edit. "+ Sub-task" adds one. Each save is a new proposed version, as before.
+- **The Architect exits**: besides being stopped on approval, an idle Architect ends with `plan_approved`
+  when its goal has an approved plan, no proposed version, no message waiting for it and no unanswered
+  question to the user, checked a few seconds after its turn ends so a message on its way wins. This covers
+  an Architect started again for an escalation that only answered the lead. `--restore-agents` does not
+  resume an Architect whose plan is approved and has no proposed version.

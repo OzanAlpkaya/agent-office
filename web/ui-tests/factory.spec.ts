@@ -3,6 +3,7 @@
 // task modal's run info and the background wait state.
 import { type Page, expect, test } from "@playwright/test";
 import { MockDaemon, type World, openCard, projectSettings, settingsTab, task, team } from "./daemon";
+import { workflow } from "./workflow";
 
 async function open(page: Page, daemon: MockDaemon): Promise<string[]> {
   const errors: string[] = [];
@@ -64,5 +65,36 @@ test("a superseded sub-task is closed and links to what replaced it", async ({ p
   await expect(modal.getByTestId("superseded")).toContainText("Replaced by “Tag model and migration”");
   await modal.getByTestId("superseded").getByRole("button", { name: "Open it" }).click();
   await expect(page.locator(".modal.task-detail .detail-title")).toHaveText("Tag model and migration");
+  expect(errors).toEqual([]);
+});
+
+test("a plan is changed by request, by a one-line edit, or approved in one click", async ({ page }) => {
+  const daemon = new MockDaemon(workflow());
+  const errors = await open(page, daemon);
+  const goal = await openCard(page, "g00000000001");
+  const plan = goal.locator("details.plan");
+  await expect(plan.getByRole("button", { name: "Approve plan" })).toBeVisible();
+  // No big form: each sub-task has its own Edit and Remove.
+  await expect(plan.getByRole("textbox")).toHaveCount(1); // only the change request box
+  await plan.getByRole("textbox", { name: "What to change" }).fill("Split the API sub-task in two.");
+  await plan.getByRole("button", { name: "Send to the Architect" }).click();
+  await expect.poll(() => daemon.requests).toContain('POST /api/specs/1/changes {"changes":"Split the API sub-task in two."}');
+  await expect(plan.getByTestId("change-pending")).toContainText("Split the API sub-task in two.");
+  await expect(plan.getByRole("textbox", { name: "What to change" })).toHaveValue("");
+  // Remove asks once, then saves a version without it and without the dependency on it.
+  await plan.getByRole("button", { name: "Remove schema" }).click();
+  await plan.getByRole("button", { name: "Keep" }).click();
+  await plan.getByRole("button", { name: "Remove schema" }).click();
+  await plan.getByRole("button", { name: "Remove", exact: true }).click();
+  await expect.poll(() => daemon.requests.find((r) => r.startsWith("PUT /api/specs/1"))).toBeDefined();
+  const put = daemon.requests.find((r) => r.startsWith("PUT /api/specs/1")) ?? "";
+  expect(put).not.toContain('"key":"schema"');
+  expect(put).not.toContain('"depends_on":["schema"]');
+  // The summary has its own small editor.
+  await plan.getByRole("button", { name: "Edit the summary" }).click();
+  await expect(plan.getByRole("form", { name: "Edit the summary" })).toBeVisible();
+  await plan.getByRole("button", { name: "Cancel" }).click();
+  await plan.getByRole("button", { name: "Approve plan" }).click();
+  await expect.poll(() => daemon.requests).toContain("POST /api/specs/1/approve");
   expect(errors).toEqual([]);
 });

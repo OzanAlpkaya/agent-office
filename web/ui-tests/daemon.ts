@@ -437,6 +437,14 @@ export class MockDaemon {
           const s = w.specs?.[0];
           return route.fulfill(json({ ...s, id: 99, version: (s?.version ?? 0) + 1, plan: route.request().postDataJSON() }));
         }
+        const changes = /^\/api\/specs\/(\d+)\/changes$/.exec(p);
+        if (changes) {
+          const sp = (w.specs ?? []).find((x) => x.id === Number(changes[1]));
+          const body = route.request().postDataJSON() as { changes: string };
+          const next = { ...sp, change_request: body.changes, change_requested_at: iso(40) };
+          if (w === this.world) this.send({ type: "spec", spec: next });
+          return route.fulfill(json(next));
+        }
         if (/^\/api\/specs\/\d+\/approve$/.test(p)) {
           return route.fulfill(json({ spec: w.specs?.[0], created: ["t1"], updated: [], deleted: [], kept: [] }));
         }

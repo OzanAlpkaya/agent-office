@@ -157,7 +157,8 @@ export function TaskDetail(p: BoardProps & { task: Task; onClose: () => void }):
       {spec && (
         <section className="modal-section">
           <h3>Plan</h3>
-          <PlanPanel spec={spec} roles={p.roles ?? []} onSave={p.onSaveSpec ?? (async () => false)} onApprove={(s) => p.onApproveSpec?.(s)} />
+          <PlanPanel spec={spec} specs={p.specs ?? []} roles={p.roles ?? []} onSave={p.onSaveSpec ?? (async () => false)}
+            onApprove={(s) => p.onApproveSpec?.(s)} onRequestChanges={p.onRequestChanges} />
         </section>
       )}
       {notes.length > 0 && (
