@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 18 (UI and office polish) is done on `phase-18/ui-polish`, waiting for Ozan's review.
+**Current phase:** none in progress. Phase 18 (UI and office polish) is merged into `main`.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -27,7 +27,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 15: Codex adapter
 - [x] Phase 16: Autonomous team
 - [x] Phase 17: Daily use
-- [x] Phase 18: UI and office polish (waiting for review)
+- [x] Phase 18: UI and office polish
 
 ## Log
 
@@ -409,4 +409,6 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   largest sharp scale with the whole floor visible) and Zoom + draws it about a third larger, remembered per
   browser (ADR 0057 amended). `make check` (409 Vitest tests) and `make ui-test` (106) pass; the daemon did
   not change since `make sandbox-test` and `make e2e` passed.
+- 2026-11-12: Phase 18 review: approved. Ozan tested it by hand (the settings split, + New project, the
+  avatar, the card modal, the office's Fit and Zoom). Merged into `main` (`--no-ff`).
 
