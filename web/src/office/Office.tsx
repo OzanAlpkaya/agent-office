@@ -7,7 +7,7 @@ import { type Presence, present, presenceText } from "../presence";
 import { narrowQuery, useMedia } from "../useMedia";
 import { type Profile, displayName, lookOfProfile } from "./avatar";
 import type { Waiting } from "../waiting";
-import { type Assignment, emptyAssignment, inCell, planOf, slotOrigin, whiteboardAt } from "./layout";
+import { type Assignment, type Zoom, emptyAssignment, inCell, planOf, slotOrigin, whiteboardAt } from "./layout";
 import { buildOffice, freshMessages } from "./model";
 import { type Pose, cssColor, poseLabel, shirtOf } from "./pose";
 import { whiteboardSize } from "./art";
@@ -57,6 +57,24 @@ const statusLabel: Record<TaskStatus, string> = {
 // move anyone. A reload starts over (in start order).
 const keptAssignments = new Map<string, Assignment>();
 
+// The zoom is remembered per browser: a convenience, so blocked storage
+// only means Fit.
+const zoomKey = "agent-office.office-zoom";
+function loadZoom(): Zoom {
+  try {
+    return window.localStorage.getItem(zoomKey) === "larger" ? "larger" : "fit";
+  } catch {
+    return "fit";
+  }
+}
+function saveZoom(z: Zoom): void {
+  try {
+    window.localStorage.setItem(zoomKey, z);
+  } catch {
+    // not remembered; the office still zooms
+  }
+}
+
 function reducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
@@ -68,6 +86,11 @@ export default function Office({
   const narrow = useMedia(narrowQuery);
   const [shown, setShown] = useState<string>();
   const userLook = useMemo(() => lookOfProfile(profile), [profile]);
+  const [zoom, setZoomState] = useState<Zoom>(loadZoom);
+  const setZoom = (z: Zoom): void => {
+    setZoomState(z);
+    saveZoom(z);
+  };
   const userName = displayName(profile);
   // The project's own layout when it validated; else the default plan (ADR 0057).
   const custom = layout?.source === "custom" ? layout.layout : undefined;
@@ -134,6 +157,12 @@ export default function Office({
     if (t) setXf(t);
   }, [scene, model]);
 
+  // Fit shows the whole floor; Zoom one step larger (Phase 18 review).
+  useLayoutEffect(() => {
+    const t = scene?.setZoom(zoom);
+    if (t) setXf(t);
+  }, [scene, zoom]);
+
   // The user at their desk while a device has the UI open (Phase 18).
   useEffect(() => {
     scene?.setPresence(userHere, userLook);
@@ -184,6 +213,10 @@ export default function Office({
         </nav>
       )}
       <div className="office-bar">
+        <div className="segmented office-zoom" role="group" aria-label="Office zoom">
+          <button aria-pressed={zoom === "fit"} onClick={() => setZoom("fit")} title="The whole floor in the pane">Fit</button>
+          <button aria-pressed={zoom === "larger"} onClick={() => setZoom("larger")} title="One step larger, for details; the office scrolls">Zoom +</button>
+        </div>
         {counts.length === 0
           ? <span className="muted">
               {model.exited > 0 ? "Nobody is at work. " : "No agents yet. "}
@@ -245,7 +278,7 @@ export default function Office({
               <span className="nameplate-text">
                 <span className="nameplate-name">
                   {a.name || a.id.slice(0, 6)}
-                  {a.role !== "worker" && (
+                  {a.role !== "worker" && expanded && (
                     <span className="nameplate-role" style={{ color: cssColor(shirtOf(a).base) }}> {a.role}</span>
                   )}
                 </span>

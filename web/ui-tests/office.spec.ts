@@ -119,7 +119,8 @@ test("an exited agent walks out, and its desk is free for the next agent", async
   await expect(plate("c3d4e5000002")).toHaveCount(0);
   await page.waitForTimeout(700);
   await page.screenshot({ path: `${screens}/office-walk-out.png` });
-  await expect.poll(async () => (await frameStats(page, 0)).left).toBe(leftBefore + 1);
+  // a wider office is a longer walk to the door
+  await expect.poll(async () => (await frameStats(page, 0)).left, { timeout: 10_000 }).toBe(leftBefore + 1);
   await expect(page.locator(".office-bar")).toContainText("2 left the office");
   // nobody else moved
   expect(await plate("d4e5f6000003").boundingBox()).toEqual(neighbour);
@@ -624,8 +625,12 @@ test.describe("on a phone", () => {
     await openOffice(page, daemon);
     await expect(page.locator(".office")).toHaveAttribute("data-plan", "stacked");
     await expect(page.locator(".room-label")).toHaveCount(8);
-    const scale = Number(await page.locator(".office").getAttribute("data-scale"));
-    expect(scale).toBeGreaterThanOrEqual(1.5);
+    // Fit: the whole floor in view (Phase 18 review); Zoom + for details
+    const pane = page.locator(".office-pane");
+    expect(await pane.evaluate((e) => e.scrollHeight <= e.clientHeight && e.scrollWidth <= e.clientWidth)).toBe(true);
+    await page.getByRole("group", { name: "Office zoom" }).getByRole("button", { name: "Zoom +" }).click();
+    await expect.poll(async () => Number(await page.locator(".office").getAttribute("data-scale"))).toBeGreaterThanOrEqual(1.5);
+    expect(await pane.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true); // no sideways scrolling
     const boxes = await page.locator(".nameplate").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON() as DOMRect));
     for (let i = 0; i < boxes.length; i++) {
       for (let j = i + 1; j < boxes.length; j++) {

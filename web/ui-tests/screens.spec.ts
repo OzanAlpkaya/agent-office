@@ -2,7 +2,7 @@
 // settings, office, archive, and the phone width. Writes PNGs to
 // AO_TOUR_OUT (default test-results/screens/tour); docs/screenshots/phase-18
 // holds the before and after sets.
-import { type Page, expect, test } from "@playwright/test";
+import { type BrowserContextOptions, type Page, devices, expect, test } from "@playwright/test";
 import { MockDaemon } from "./daemon";
 import { tourWorld } from "./tour";
 
@@ -69,6 +69,10 @@ test("desktop tour", async ({ page }) => {
   await nav(page, "Office").click();
   await officeReady(page);
   await shot(page, "office");
+  await page.getByRole("group", { name: "Office zoom" }).getByRole("button", { name: "Zoom +" }).click();
+  await page.waitForTimeout(500);
+  await shot(page, "office-zoom");
+  await page.getByRole("group", { name: "Office zoom" }).getByRole("button", { name: "Fit" }).click();
 
   await page.locator('.agent-row[data-agent="b2c3d4000001"] button').click();
   await expect(page.locator(".agent-header")).toBeVisible();
@@ -76,8 +80,13 @@ test("desktop tour", async ({ page }) => {
   await shot(page, "agent");
 });
 
+// A real phone's viewport and pixel ratio (iPhone 14), on the suite's Chromium.
+const { defaultBrowserType: _, ...phone } = devices["iPhone 14"] as BrowserContextOptions & { defaultBrowserType?: string };
+
+test.describe("phone", () => {
+  test.use(phone);
+
 test("phone tour", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
   await open(page);
   await shot(page, "phone-board");
   await page.locator("#task-g00000000002").click();
@@ -95,4 +104,5 @@ test("phone tour", async ({ page }) => {
   await page.getByRole("button", { name: /^Project settings/ }).click();
   await page.waitForTimeout(300);
   await shot(page, "phone-project-settings");
+});
 });

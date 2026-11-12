@@ -12,7 +12,7 @@ import * as art from "./art";
 import { armRects } from "./arms";
 import { type Capacity, Director, type Errand, type Place } from "./errands";
 import { type FloorKind, type FloorPlan, type Point, type Station, deskExit, roomAt, stationKinds } from "./floor";
-import { type Grid, type Slot, fitGrid, gridFor, inCell, planOf, sameGrid, slotOrigin, worldSize } from "./layout";
+import { type Grid, type Slot, type Zoom, fitGrid, gridFor, inCell, planOf, sameGrid, slotOrigin, worldSize } from "./layout";
 import type { Note, OfficeModel, Seat } from "./model";
 import { along, length, route } from "./paths";
 import { type AvatarLook, avatarPalette, defaultLook, lookKey, sceneLook } from "./avatar";
@@ -99,6 +99,7 @@ export class OfficeScene {
   private readonly nodes: DeskNode[] = [];
   private userNode?: DeskNode; // the user's own desk (Phase 18): they sit there while a device has the UI open
   private userPresent = false;
+  private zoom: Zoom = "fit";
   private userSeat?: Seat;
   private readonly envelopes: { sprite: Sprite; from: Point; to: Point; start: number }[] = [];
   private readonly chars = new Map<string, Character>();
@@ -238,7 +239,7 @@ export class OfficeScene {
     // vanishing under their feet would cut the walk short.
     const want = this.model?.desks ?? 0;
     this.shownDesks = this.leaving() ? Math.max(want, this.shownDesks) : want;
-    const { grid, k } = fitGrid(w, h, dpr, this.shownDesks, this.model?.layout);
+    const { grid, k } = fitGrid(w, h, dpr, this.shownDesks, this.model?.layout, this.zoom);
     if (!sameGrid(grid, this.grid) || this.nodes.length === 0) this.setGrid(grid);
     const { w: W, h: H } = worldSize(grid);
     const scale = k / dpr;
@@ -334,6 +335,15 @@ export class OfficeScene {
     // of the last render, so a click right after a change must see it.
     this.draw(performance.now());
     return sameGrid(t.grid, before) ? undefined : t;
+  }
+
+  // setZoom fits the whole floor, or draws it one step larger (Phase 18 review).
+  setZoom(zoom: Zoom): Transform | undefined {
+    if (this.zoom === zoom) return undefined;
+    this.zoom = zoom;
+    const t = this.layout();
+    this.draw(performance.now());
+    return t;
   }
 
   // setPresence seats the user's character at their desk, in their look, or

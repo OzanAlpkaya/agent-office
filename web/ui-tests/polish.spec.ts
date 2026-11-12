@@ -269,11 +269,20 @@ test.describe("on a phone", () => {
     expect(errors).toEqual([]);
   });
 
-  test("office nameplates show the name; a tap shows the task, a second opens the agent; no empty band above", async ({ page }) => {
+  test("office nameplates show the name; a tap shows the task, a second opens the agent; the whole floor in view", async ({ page }) => {
     const errors = await open(page, new MockDaemon(team(10)));
     await nav(page, "Office");
     const emma = page.locator('.nameplate[data-agent="b2c3d4000001"]');
     await expect(emma).toHaveText("Emma");
+    await expect(page.locator('.nameplate[data-agent="a1ead0000001"]')).toHaveText("Kofi"); // no role either
+    // name-only plates do not overlap
+    const boxes = await page.locator(".nameplate").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON() as DOMRect));
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], b = boxes[j];
+        expect(a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom, `nameplates ${i} and ${j}`).toBe(false);
+      }
+    }
     await expect(emma).toHaveAttribute("aria-expanded", "false");
     await emma.tap();
     await expect(emma).toContainText("Tag model and migration");
@@ -281,26 +290,48 @@ test.describe("on a phone", () => {
     await emma.tap();
     await expect(page.locator(".xterm")).toContainText("mock terminal of b2c3d4000001");
     await nav(page, "Office");
-    // the drawing starts at the top of the pane and fills it down to the bottom
-    const pane = await page.locator(".office-pane").boundingBox();
-    const canvas = await page.locator(".office canvas").boundingBox();
-    expect(pane && canvas && Math.abs(canvas.y - pane.y) <= 1 && canvas.y + canvas.height >= pane.y + pane.height - 1).toBe(true);
+    // the whole floor is in view: it starts at the top, nothing scrolls, and no band is left below
+    await expect(page.locator(".room-label").first()).toBeVisible();
+    const pane = page.locator(".office-pane");
+    expect(await pane.evaluate((e) => e.scrollHeight <= e.clientHeight && e.scrollWidth <= e.clientWidth)).toBe(true);
+    const drawn = await page.locator(".office").evaluate((e) => {
+      const p = e.querySelector(".office-pane")?.getBoundingClientRect();
+      const scale = Number((e as HTMLElement).dataset.scale);
+      const labels = [...e.querySelectorAll(".room-label")].map((l) => l.getBoundingClientRect());
+      return { top: p?.top ?? 0, height: p?.height ?? 0, scale, firstLabel: Math.min(...labels.map((l) => l.top)) };
+    });
+    expect(drawn.firstLabel - drawn.top).toBeLessThan(6 * drawn.scale); // the first room label sits at the top
     await page.screenshot({ path: `${screens}/phone-office-names.png` });
     expect(errors).toEqual([]);
   });
 });
 
-test("the office fills a desktop pane's width", async ({ page }) => {
+test("the office fits the whole floor in the pane; Zoom + is one step larger; the choice is remembered", async ({ page }) => {
   const errors = await open(page, new MockDaemon(team(10)));
   await nav(page, "Office");
   await expect(page.locator(".office")).toHaveAttribute("data-renderer", /webgl|canvas/);
-  const pane = await page.locator(".office-pane").boundingBox();
-  const canvas = await page.locator(".office canvas").boundingBox();
-  const scale = Number(await page.locator(".office").getAttribute("data-scale"));
-  expect(scale).toBeGreaterThanOrEqual(3);
-  // the canvas spans the pane (the drawing inside leaves less than a tile of width)
-  expect(pane && canvas && canvas.width >= pane.width - 20).toBe(true);
-  await page.screenshot({ path: `${screens}/office-desktop-width.png` });
+  const zoom = page.getByRole("group", { name: "Office zoom" });
+  await expect(zoom.getByRole("button", { name: "Fit" })).toHaveAttribute("aria-pressed", "true");
+  const pane = page.locator(".office-pane");
+  // Fit: nothing to scroll, and the drawing uses the pane's width
+  const noScroll = (): Promise<boolean> => pane.evaluate((e) => e.scrollHeight <= e.clientHeight && e.scrollWidth <= e.clientWidth);
+  await expect.poll(noScroll).toBe(true);
+  const fit = Number(await page.locator(".office").getAttribute("data-scale"));
+  expect(fit).toBeGreaterThanOrEqual(2);
+  await page.screenshot({ path: `${screens}/office-fit.png` });
+  // Zoom +: one step larger, and the pane scrolls
+  await zoom.getByRole("button", { name: "Zoom +" }).click();
+  await expect(page.locator(".office")).toHaveAttribute("data-scale", String(fit + 1));
+  await expect.poll(noScroll).toBe(false);
+  await page.screenshot({ path: `${screens}/office-zoom.png` });
+  // remembered in this browser
+  await page.reload();
+  await nav(page, "Office");
+  await expect(page.getByRole("group", { name: "Office zoom" }).getByRole("button", { name: "Zoom +" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".office")).toHaveAttribute("data-scale", String(fit + 1));
+  await page.getByRole("group", { name: "Office zoom" }).getByRole("button", { name: "Fit" }).click();
+  await expect(page.locator(".office")).toHaveAttribute("data-scale", String(fit));
+  await expect.poll(noScroll).toBe(true);
   expect(errors).toEqual([]);
 });
 

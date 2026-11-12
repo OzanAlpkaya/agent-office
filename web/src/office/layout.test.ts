@@ -102,31 +102,37 @@ describe("geometry", () => {
 });
 
 describe("fitGrid", () => {
-  it("fills the pane's width as well as whole pixels allow (Phase 18 review)", () => {
-    // a desktop pane: a wide plan at 3 CSS pixels, not a small centred box
-    const desk = fitGrid(1176, 810, 1, 9);
-    expect(desk.k).toBe(3);
-    expect(desk.grid.columns).toBeGreaterThan(3);
-    const w = worldSize(desk.grid).w * desk.k;
-    expect(w).toBeLessThanOrEqual(1176);
-    expect(1176 - w).toBeLessThan(64); // less than a world tile of width unused
-    // a wider screen spreads the office with more columns at the largest scale
-    const big = fitGrid(2400, 1300, 1, 3);
-    expect(big.k).toBe(maxScale);
-    expect(big.grid.columns).toBeGreaterThan(4);
-    expect(worldSize(big.grid).w * big.k).toBeLessThanOrEqual(2400);
+  it("fits the whole floor in the pane, width and height, at the largest whole-pixel scale", () => {
+    for (const [w, h, dpr] of [[1176, 808, 1], [1600, 1000, 2], [412, 700, 2.625], [390, 640, 3], [2400, 1300, 1]] as const) {
+      const r = fitGrid(w, h, dpr, 6);
+      const size = worldSize(r.grid);
+      expect(size.w * r.k, `${w}x${h} width`).toBeLessThanOrEqual(w * dpr);
+      expect(size.h * r.k, `${w}x${h} height`).toBeLessThanOrEqual(h * dpr);
+      // one device pixel more and the plan would no longer fit (unless capped)
+      const bare = worldSize({ ...r.grid, extra: 0 });
+      expect(bare.w * (r.k + 1) > w * dpr || bare.h * (r.k + 1) > h * dpr || r.k === Math.floor(maxScale * dpr), `${w}x${h}`).toBe(true);
+    }
   });
 
-  it("covers the pane's height with workroom floor, not empty desks: no band below or above", () => {
-    for (const [w, h, dpr] of [[1176, 810, 1], [412, 700, 2.625], [390, 640, 3]] as const) {
-      const r = fitGrid(w, h, dpr, 2);
-      expect(r.grid.rows, `${w}x${h}`).toBe(2); // only the desks the team needs
-      expect(worldSize(r.grid).h * r.k, `${w}x${h}`).toBeGreaterThanOrEqual(h * dpr);
-      // at most one step of floor more than needed
-      expect((worldSize(r.grid).h - 16) * r.k < h * dpr || (r.grid.extra ?? 0) === 0, `${w}x${h}`).toBe(true);
-    }
-    // the desktop office is taller than its pane at 3 CSS pixels: no floor added, it scrolls
-    expect(fitGrid(1176, 810, 1, 2).grid.extra ?? 0).toBe(0);
+  it("uses the width: more columns on a wide pane, the height left filled with floor", () => {
+    const desk = fitGrid(1176, 808, 1, 6);
+    expect(desk.k).toBe(2);
+    expect(desk.grid.columns).toBeGreaterThan(4);
+    expect(1176 - worldSize(desk.grid).w * desk.k).toBeLessThan(128);
+    expect(808 - worldSize(desk.grid).h * desk.k).toBeLessThan(16 * desk.k);
+    expect(desk.grid.rows).toBe(2); // only the desks the team needs
+  });
+
+  it("zooms about a third larger, and then may scroll", () => {
+    const fit = fitGrid(1176, 808, 1, 6);
+    const big = fitGrid(1176, 808, 1, 6, undefined, "larger");
+    expect(big.k).toBe(fit.k + 1);
+    expect(big.grid.columns).toBe(fit.grid.columns);
+    expect(worldSize(big.grid).h * big.k).toBeGreaterThan(808);
+    const phone = fitGrid(412, 700, 2.625, 9);
+    const phoneBig = fitGrid(412, 700, 2.625, 9, undefined, "larger");
+    expect(phoneBig.k).toBe(phone.k + 1);
+    expect(worldSize(phoneBig.grid).w * phoneBig.k).toBeLessThanOrEqual(412 * 2.625); // no sideways scrolling
   });
 
   it("stacks the rooms on a phone", () => {
@@ -148,10 +154,19 @@ describe("fitGrid", () => {
     expect(r.k).toBeGreaterThanOrEqual(4);
   });
 
-  it("scales by width in a short pane and lets it scroll", () => {
-    const r = fitGrid(1000, 200, 1, 9);
-    expect(r.k).toBeGreaterThanOrEqual(2);
-    expect(worldSize(r.grid).h * r.k).toBeGreaterThan(200);
+  it("fits a short pane too, small", () => {
+    expect(fitGrid(1000, 200, 1, 9).k).toBe(1);
+  });
+
+  it("never picks a plan wider than the pane when a narrower one fits", () => {
+    // a phone-sized pane at one device pixel per CSS pixel: wider plans exist at that scale, none is picked
+    for (const h of [500, 650, 760]) {
+      const r = fitGrid(390, h, 1, 9);
+      expect(worldSize(r.grid).w * r.k, `390x${h}`).toBeLessThanOrEqual(390);
+      expect(worldSize(r.grid).h * r.k, `390x${h}`).toBeLessThanOrEqual(h);
+    }
+    // nothing fits: the narrowest plan
+    expect(fitGrid(100, 100, 1, 9).grid.columns).toBe(3);
   });
 
   it("never goes below one device pixel", () => {
