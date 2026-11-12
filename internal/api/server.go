@@ -124,6 +124,7 @@ func (s *server) routes() []route {
 		{pattern: "PATCH /api/projects/{project}/tasks/{id}", handler: s.updateTask, project: true},
 		{pattern: "DELETE /api/projects/{project}/tasks/{id}", handler: s.deleteTask, project: true},
 		{pattern: "GET /api/projects/{project}/tasks/{id}/record", handler: s.goalRecord, project: true},
+		{pattern: "GET /api/projects/{project}/tasks/{id}/runs", handler: s.taskRuns, project: true},
 		{pattern: "POST /api/projects/{project}/tasks/{id}/remove-agents", handler: s.removeGoalAgents, project: true},
 		{pattern: "GET /api/projects/{project}/tasks/{id}/merge", handler: s.mergePreview, project: true},
 		{pattern: "POST /api/projects/{project}/tasks/{id}/merge", handler: s.mergeGoal, project: true},
@@ -580,6 +581,16 @@ func (s *server) specAction(approve bool) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusCreated, spec)
 	}
+}
+
+// taskRuns is the run info of a task's agents, for its modal (Phase 19).
+func (s *server) taskRuns(w http.ResponseWriter, r *http.Request) {
+	runs, err := eng(r).TaskRuns(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, runs)
 }
 
 // requestSpecChanges is the user's "request changes" on a plan version: the

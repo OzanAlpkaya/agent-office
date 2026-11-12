@@ -62,6 +62,7 @@ export function task(id: string, title: string, status: TaskStatus, over: Partia
 }
 
 export interface World {
+  runs?: Record<string, unknown[]>; // run info per task id (Phase 19); absent: a plain run per agent
   agents: Agent[];
   tasks: Task[];
   accessRequests: AccessRequest[];
@@ -492,6 +493,17 @@ export class MockDaemon {
         }
       }
       if (p === "/api/goal-merges") return route.fulfill(json(w.merges ?? []));
+      const runs = /^\/api\/tasks\/([^/]+)\/runs$/.exec(p);
+      if (runs) {
+        // Run info (Phase 19): the world's own, else a plain run per agent of the task.
+        const own = w.runs?.[runs[1]];
+        const plain = w.agents.filter((a) => a.task_id === runs[1]).map((a) => ({
+          agent_id: a.id, name: a.name, kind: a.kind, role: a.role, model: a.model, cli: a.cli ?? "claude", state: a.state,
+          started_at: a.started_at, exited_at: a.exited_at, exit_reason: a.exit_reason, working_seconds: 120, waiting_seconds: 30,
+          branch: a.branch, sessions: [{ id: a.session_id ?? `${a.id}-s1`, started_at: a.started_at, turns: 1, tool_calls: 1 }], reports: [],
+        }));
+        return route.fulfill(json(own ?? plain));
+      }
       const br = /^\/api\/(?:tasks\/([^/]+)\/)?branches$/.exec(p);
       if (br) {
         const goal = br[1] ? w.tasks.find((t) => t.id === br[1]) : undefined;

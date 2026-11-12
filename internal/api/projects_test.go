@@ -498,3 +498,18 @@ func TestDaemonCapAPI(t *testing.T) {
 		t.Fatalf("back to the flag %+v", st)
 	}
 }
+
+// TestTaskRunsAPI: a task's run info (Phase 19); an unknown task is 404.
+func TestTaskRunsAPI(t *testing.T) {
+	f := newFixture(t)
+	var task engine.Task
+	jsonBody(t, f.doBody(t, "POST", f.pp+"/tasks", jsonCT, `{"title": "Runs"}`), http.StatusCreated, &task)
+	var runs []engine.AgentRun
+	jsonBody(t, f.do(t, "GET", f.pp+"/tasks/"+task.ID+"/runs", nil), http.StatusOK, &runs)
+	if len(runs) != 0 {
+		t.Fatalf("runs of a task nobody worked on: %+v", runs)
+	}
+	if r := f.do(t, "GET", f.pp+"/tasks/nope/runs", nil); r.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown task: %d", r.StatusCode)
+	}
+}

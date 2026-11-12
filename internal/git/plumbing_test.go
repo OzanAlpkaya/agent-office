@@ -174,3 +174,25 @@ func TestMergeTreeBaseAfterSquash(t *testing.T) {
 		t.Fatal("MergeTreeBase without a base accepted")
 	}
 }
+
+func TestDiffStatAndLastCommit(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t)
+	gitOut(t, repo, "config", "user.name", "t")
+	gitOut(t, repo, "config", "user.email", "t@example.com")
+	base := writeCommit(t, repo, "a.go", "1\n2\n3\n")
+	writeCommit(t, repo, "a.go", "1\ntwo\n3\n4\n")
+	head := writeCommit(t, repo, "b.go", "x\n")
+	g := Git{}
+	st, err := g.DiffStat(ctx, repo, base, head)
+	if err != nil || st != (DiffStat{Files: 2, Added: 3, Removed: 1}) {
+		t.Fatalf("diff stat %+v %v", st, err)
+	}
+	c, err := g.LastCommit(ctx, repo, head)
+	if err != nil || c.SHA != head || c.Subject == "" || c.At.IsZero() {
+		t.Fatalf("last commit %+v %v", c, err)
+	}
+	if _, err := g.DiffStat(ctx, repo, "-x", head); err == nil {
+		t.Fatal("option-like revision accepted")
+	}
+}

@@ -11,6 +11,7 @@ import { busyOf, closeWarning, goalAgents, latestMerge, mergeOffered, pushOffere
 import { Modal } from "./Modal";
 import { useApi } from "./ProjectContext";
 import { InboxEntry, PlanPanel, QAPanel, TaskPlanInfo } from "./Team";
+import { type AgentRun, exitLabel, formatDuration, timeRange, tokenParts } from "./runs";
 import { type UsageRow, formatMoney, formatTokens, totalTokens } from "./usage";
 import { currentSpec, goalBusy, inboxFor, latestQA, workerRoles } from "./workflow";
 
@@ -43,6 +44,16 @@ export function TaskDetail(p: BoardProps & { task: Task; onClose: () => void }):
     tasks: p.tasks, agents: p.agents, qaRuns: p.qaRuns ?? [], merges, specs: p.specs ?? [], inbox: p.inbox ?? [],
     waitingAgents: p.waitingAgents ?? new Set(),
   });
+
+  // Run info of the task's agents (Phase 19): fetched when the modal opens and
+  // when one of them changes state.
+  const [runs, setRuns] = useState<AgentRun[]>();
+  const runKey = agents.map((a) => `${a.id}:${a.state}`).join(",");
+  useEffect(() => {
+    let live = true;
+    api.taskRuns(task.id).then((r) => { if (live) setRuns(r); }, () => { if (live) setRuns(undefined); });
+    return () => { live = false; };
+  }, [api, task.id, task.updated_at, runKey]);
 
   // The Tech Lead's report comes with the goal's record (ADR 0054), once it reported.
   const [record, setRecord] = useState<GoalRecord>();
@@ -217,6 +228,14 @@ export function TaskDetail(p: BoardProps & { task: Task; onClose: () => void }):
           </ul>
         )}
       </section>
+      {runs && runs.length > 0 && (
+        <section className="modal-section">
+          <h3>Runs</h3>
+          <ul className="runs">
+            {runs.map((r) => <RunInfo key={r.agent_id} run={r} usage={p.usageByAgent?.get(r.agent_id)} onOpenAgent={onOpenAgent} />)}
+          </ul>
+        </section>
+      )}
       {subs.length > 0 && (
         <section className="modal-section">
           <h3>Sub-tasks</h3>
@@ -241,6 +260,61 @@ export function TaskDetail(p: BoardProps & { task: Task; onClose: () => void }):
         <TaskUsage own={p.usageByTask?.get(task.id)} team={isGoal ? p.usageByGoal?.get(task.id) : undefined} />
       </section>
     </Modal>
+  );
+}
+
+// RunInfo is one agent's run on the task (Phase 19). Commit subjects, reports
+// and verification results are agent-written: text only.
+function RunInfo({ run: r, usage, onOpenAgent }: { run: AgentRun; usage?: UsageRow; onOpenAgent: (id: string) => void }): JSX.Element {
+  return (
+    <li className="run" data-agent={r.agent_id}>
+      <div className="run-head row">
+        <button className="link strong" onClick={() => onOpenAgent(r.agent_id)}>{r.name || r.agent_id.slice(0, 6)}</button>
+        <span className="muted">{r.role}{r.model ? ` · ${r.model}` : ""}</span>
+        <span className="spacer" />
+        <span className="small" data-testid="run-time">{timeRange(r.started_at, r.exited_at)}</span>
+        {usage && <span className="small usage-line" data-testid="run-cost">{formatMoney(usage.costMicroUSD)}</span>}
+      </div>
+      <dl className="run-facts small">
+        <dt>Time</dt>
+        <dd data-testid="run-duration">{formatDuration(r.working_seconds)} working · {formatDuration(r.waiting_seconds)} waiting
+          {r.exit_reason && <span className="muted"> · ended: {exitLabel(r.exit_reason)}</span>}</dd>
+        <dt>Branch</dt>
+        <dd><span className="mono">{r.branch}</span>
+          {r.last_commit && <> · <span className="mono">{r.last_commit.sha.slice(0, 8)}</span> {r.last_commit.subject}</>}</dd>
+        {r.changes && (
+          <>
+            <dt>Changes</dt>
+            <dd data-testid="run-changes">{r.changes.files} file{r.changes.files === 1 ? "" : "s"} ·{" "}
+              <span className="tone-ok">+{r.changes.added}</span> <span className="tone-danger">−{r.changes.removed}</span></dd>
+          </>
+        )}
+        {usage && (
+          <>
+            <dt>Tokens</dt>
+            <dd data-testid="run-tokens">{tokenParts(usage.tokens).map((t) => `${formatTokens(t.value)} ${t.label}`).join(" · ")}</dd>
+          </>
+        )}
+        <dt>Sessions</dt>
+        <dd>
+          <ol className="run-sessions">
+            {r.sessions.map((s, i) => (
+              <li key={s.id}>{i === 0 ? "started" : s.resumed_from ? "resumed" : "relaunched"} {timeRange(s.started_at, s.ended_at)}
+                {s.exit_reason && <span className="muted"> · {exitLabel(s.exit_reason)}</span>}
+                <span className="muted"> · {s.turns} turn{s.turns === 1 ? "" : "s"}</span></li>
+            ))}
+          </ol>
+        </dd>
+        {r.reports.length > 0 && (
+          <>
+            <dt>Verified</dt>
+            <dd data-testid="run-verification">{r.reports[r.reports.length - 1].verification
+              ? <span className="quote">{r.reports[r.reports.length - 1].verification}</span>
+              : <span className="muted">not reported</span>}</dd>
+          </>
+        )}
+      </dl>
+    </li>
   );
 }
 

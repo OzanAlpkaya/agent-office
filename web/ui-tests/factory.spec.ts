@@ -132,3 +132,37 @@ test("each QA round is a card with its result, its bug sub-tasks and its cost", 
   await expect(page.locator(".modal.task-detail .detail-title")).toHaveText("Bug: Filter is case-sensitive");
   expect(errors).toEqual([]);
 });
+
+test("the task modal is wider and shows each agent's run", async ({ page }) => {
+  const w = team(4);
+  const t1 = "t00000000001";
+  const worker = w.agents.find((a) => a.task_id === t1);
+  if (!worker) throw new Error("fixture: no worker on t1");
+  w.usage = [session("s-w1", worker, "g00000000001", { cost_micro_usd: 340_000,
+    tokens: { input: 1200, output: 3400, cache_read: 50_000, cache_write_5m: 2000, cache_write_1h: 0 } })];
+  w.runs = { [t1]: [{
+    agent_id: worker.id, name: worker.name, kind: "worker", role: "worker", model: "haiku", cli: "claude", state: "exited",
+    started_at: "2026-11-08T10:02:00Z", exited_at: "2026-11-08T10:41:00Z", exit_reason: "reported_done",
+    working_seconds: 1500, waiting_seconds: 840, branch: "agent-office/tag-model-b2c3d4", base: "1111",
+    last_commit: { sha: "abcdef0123456789abcdef0123456789abcdef01", subject: "feat: tags table", at: "2026-11-08T10:40:00Z" },
+    changes: { files: 3, added: 120, removed: 7 },
+    sessions: [{ id: "s1", started_at: "2026-11-08T10:02:00Z", ended_at: "2026-11-08T10:20:00Z", exit_reason: "stopped", turns: 4, tool_calls: 9 },
+      { id: "s2", started_at: "2026-11-08T10:25:00Z", ended_at: "2026-11-08T10:41:00Z", resumed_from: "s1", exit_reason: "reported_done", turns: 3, tool_calls: 5 }],
+    reports: [{ summary: "done", verification: "make check: pass (42 tests)", at: "2026-11-08T10:40:30Z" }],
+  }] };
+  const errors = await open(page, new MockDaemon(w));
+  const modal = await openCard(page, t1);
+  const box = await modal.boundingBox();
+  expect(box?.width ?? 0).toBeGreaterThan(1000);
+  const run = modal.locator(".run").first();
+  await expect(run).toContainText("haiku");
+  await expect(run.getByTestId("run-cost")).toHaveText("$0.3400");
+  await expect(run.getByTestId("run-duration")).toContainText("25m working · 14m waiting · ended: reported done");
+  await expect(run).toContainText("abcdef01 feat: tags table");
+  await expect(run.getByTestId("run-changes")).toHaveText("3 files · +120 −7");
+  await expect(run.getByTestId("run-tokens")).toContainText("cache read");
+  await expect(run.locator(".run-sessions li")).toHaveCount(2);
+  await expect(run.locator(".run-sessions li").nth(1)).toContainText("resumed");
+  await expect(run.getByTestId("run-verification")).toHaveText("make check: pass (42 tests)");
+  expect(errors).toEqual([]);
+});

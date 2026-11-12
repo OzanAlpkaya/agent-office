@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -232,4 +233,65 @@ func (g Git) FetchBranch(ctx context.Context, repo, remote, branch string) (stri
 // IsAncestor reports whether a is an ancestor of b (or equal) in repo.
 func (g Git) IsAncestor(ctx context.Context, repo, a, b string) (bool, error) {
 	return g.isAncestor(ctx, repo, a, b)
+}
+
+// DiffStat is how much changed between two commits.
+type DiffStat struct {
+	Files   int `json:"files"`
+	Added   int `json:"added"`   // lines; binary files count as 0
+	Removed int `json:"removed"` // lines
+}
+
+// DiffStat counts the files and lines changed from base to head (git diff
+// --numstat), without a working tree.
+func (g Git) DiffStat(ctx context.Context, repo, base, head string) (DiffStat, error) {
+	for _, r := range []string{base, head} {
+		if strings.HasPrefix(r, "-") || r == "" {
+			return DiffStat{}, fmt.Errorf("git: invalid revision %q", r)
+		}
+	}
+	out, err := g.run(ctx, repo, "diff", "--numstat", "-z", "--no-renames", base, head, "--")
+	if err != nil {
+		return DiffStat{}, err
+	}
+	var st DiffStat
+	for _, rec := range strings.Split(out, "\x00") {
+		f := strings.SplitN(rec, "\t", 3)
+		if len(f) != 3 {
+			continue
+		}
+		st.Files++
+		a, _ := strconv.Atoi(f[0]) // "-" for a binary file: 0
+		r, _ := strconv.Atoi(f[1])
+		st.Added += a
+		st.Removed += r
+	}
+	return st, nil
+}
+
+// CommitInfo is a commit's hash, subject and committer time.
+type CommitInfo struct {
+	SHA     string    `json:"sha"`
+	Subject string    `json:"subject"`
+	At      time.Time `json:"at"`
+}
+
+// LastCommit describes the commit rev points at.
+func (g Git) LastCommit(ctx context.Context, repo, rev string) (CommitInfo, error) {
+	if strings.HasPrefix(rev, "-") || rev == "" {
+		return CommitInfo{}, fmt.Errorf("git: invalid revision %q", rev)
+	}
+	out, err := g.run(ctx, repo, "log", "-1", "--no-show-signature", "--format=%H%x00%s%x00%cI", rev, "--")
+	if err != nil {
+		return CommitInfo{}, err
+	}
+	f := strings.SplitN(strings.TrimSpace(out), "\x00", 3)
+	if len(f) != 3 || !shaRe.MatchString(f[0]) {
+		return CommitInfo{}, errors.New("git: unexpected log output")
+	}
+	at, err := time.Parse(time.RFC3339, f[2])
+	if err != nil {
+		return CommitInfo{}, err
+	}
+	return CommitInfo{SHA: f[0], Subject: f[1], At: at.UTC()}, nil
 }

@@ -424,14 +424,25 @@ func (t team) ReportNoChange(ctx context.Context, caller string, in mcp.ReportNo
 }
 
 func (t team) ReportDone(ctx context.Context, caller string, in mcp.ReportDoneInput) (mcp.ReportDoneOutput, error) {
-	out, err := t.e.reportDone(ctx, caller, in.Summary, in.CommitMessage)
+	out, err := t.e.reportDoneWith(ctx, caller, in.Summary, in.CommitMessage, in.Verification)
 	return out, userErr(err)
 }
 
 func (e *Engine) reportDone(ctx context.Context, caller, summary, commitMessage string) (mcp.ReportDoneOutput, error) {
+	return e.reportDoneWith(ctx, caller, summary, commitMessage, "")
+}
+
+// MaxVerificationLen bounds report_done's verification (Phase 19).
+const MaxVerificationLen = 2000
+
+func (e *Engine) reportDoneWith(ctx context.Context, caller, summary, commitMessage, verification string) (mcp.ReportDoneOutput, error) {
 	summary, err := normalizeText(summary, MaxSummaryLen, "summary")
 	if err != nil {
 		return mcp.ReportDoneOutput{}, err
+	}
+	verification = strings.TrimSpace(verification)
+	if len([]rune(verification)) > MaxVerificationLen {
+		return mcp.ReportDoneOutput{}, invalid("verification: at most %d characters", MaxVerificationLen)
 	}
 	e.mu.Lock()
 	a, err := e.callerLocked(caller)
@@ -529,6 +540,11 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary, commitMessage 
 	}
 	if _, err := e.setTaskStatus(ctx, task, StatusReview); err != nil {
 		return out, err
+	}
+	// The worker's report, for the task modal's run info (Phase 19).
+	if _, err := e.q.InsertTaskReport(ctx, db.InsertTaskReportParams{TaskID: task.ID, AgentID: nullString(info.ID),
+		Summary: summary, Verification: verification, CreatedAt: now()}); err != nil {
+		e.log.Warn("store the worker's report", "agent_id", info.ID, "err", err)
 	}
 	// ADR 0032: will it merge? Against the base branch and the goal's other open
 	// sub-tasks, in the main repository. Shown, never a refusal.
@@ -676,7 +692,8 @@ func truncateRunes(s string, max int) string {
 // workerRules is the part of a worker's prompt about reporting, its lead and
 // the network; also used by follow-ups (ADR 0022).
 func (e *Engine) workerRules(task *db.Task) string {
-	p := "\n\nWhen the task is done and committed, call the agent-office report_done tool with a short summary."
+	p := "\n\nWhen the task is done and committed, call the agent-office report_done tool with a short summary, and in " +
+		"verification the checks you ran (tests, linters, the build) and their result."
 	if task.ParentTaskID.Valid {
 		p += " This task is part of a goal led by another agent. If you are blocked or need a decision," +
 			` use the agent-office send_message tool with to="lead", then end your turn: the answer is delivered` +

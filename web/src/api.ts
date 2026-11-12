@@ -3,6 +3,7 @@
 // InboxItem, Spec, QARun, MemoryEntry, RoleInfo, ApproveResult), internal/mcp (Plan),
 // internal/sandbox (Event), internal/usage (Tokens) and the API in internal/api.
 // Written by hand for now (ADR 0005); keep them in sync.
+import { type AgentRun, isAgentRun } from "./runs";
 import { type Presence, isPresence } from "./presence";
 import { type AvatarLook, type Profile, isProfile } from "./office/avatar";
 
@@ -1098,6 +1099,11 @@ export function projectApi(projectId: string) {
     },
     revokeGrant: (id: number): Promise<AccessGrant> => request("DELETE", `${base}/access-grants/${id}`),
     goalRecord: (goalId: string): Promise<GoalRecord> => request("GET", `${base}/tasks/${goalId}/record`),
+    taskRuns: async (taskId: string): Promise<AgentRun[]> => {
+      const v: unknown = await request("GET", `${base}/tasks/${taskId}/runs`);
+      if (!Array.isArray(v) || !v.every(isAgentRun)) throw new ApiError("unexpected run info", 200, undefined);
+      return v;
+    },
     removeGoalAgents: (goalId: string): Promise<GoalCleanup> => request("POST", `${base}/tasks/${goalId}/remove-agents`),
     mergePreview: (goalId: string): Promise<MergePreview> => request("GET", `${base}/tasks/${goalId}/merge`),
     mergeGoal: (goalId: string, confirm: { target_head: string; source_head: string; message: string }): Promise<GoalMerge> =>

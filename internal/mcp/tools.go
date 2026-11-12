@@ -351,6 +351,8 @@ type SendMessageOutput struct {
 type ReportDoneInput struct {
 	Summary string `json:"summary" jsonschema:"What you did and anything the reader must know (1-2000 characters)."`
 	// The Tech Lead's squash-merge message for the goal (ADR 0055).
+	// Phase 19: what the worker checked, shown to the user with its run.
+	Verification string `json:"verification,omitempty" jsonschema:"Workers: the checks you ran and their result, e.g. 'make check: pass (42 tests)' or 'go test ./...: 1 failure in store, unrelated' (up to 2000 characters). Leave it out if you ran none."`
 	CommitMessage string `json:"commit_message,omitempty" jsonschema:"Tech Lead only: the commit message for squash-merging the goal's tested work into the target branch, in the repository's style (a subject line, a blank line, a short body; up to 4000 characters). The user reviews it before merging. Workers leave it out."`
 }
 
