@@ -4,6 +4,8 @@
 import { type JSX, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Agent, Message, OfficeInfo, Task, TaskStatus } from "../api";
 import { type Presence, present, presenceText } from "../presence";
+import { narrowQuery, useMedia } from "../useMedia";
+import { type Profile, displayName, lookOfProfile } from "./avatar";
 import type { Waiting } from "../waiting";
 import { type Assignment, emptyAssignment, inCell, planOf, slotOrigin, whiteboardAt } from "./layout";
 import { buildOffice, freshMessages } from "./model";
@@ -26,6 +28,7 @@ export interface OfficeProps {
   layout?: OfficeInfo;
   presence?: Presence;
   onLayoutSettings?: () => void;
+  profile?: Profile; // the user's name and look (Phase 18 review)
 }
 
 // Floor is one project's floor in the elevator panel.
@@ -59,8 +62,13 @@ function reducedMotion(): boolean {
 }
 
 export default function Office({
-  agents, tasks, messages, waiting, onOpenAgent, floors = [], onFloor, layout, presence, onLayoutSettings,
+  agents, tasks, messages, waiting, onOpenAgent, floors = [], onFloor, layout, presence, onLayoutSettings, profile,
 }: OfficeProps): JSX.Element {
+  // On a phone a nameplate shows the name only; a tap shows the task, a second tap opens the agent.
+  const narrow = useMedia(narrowQuery);
+  const [shown, setShown] = useState<string>();
+  const userLook = useMemo(() => lookOfProfile(profile), [profile]);
+  const userName = displayName(profile);
   // The project's own layout when it validated; else the default plan (ADR 0057).
   const custom = layout?.source === "custom" ? layout.layout : undefined;
   const problems = layout?.problems ?? [];
@@ -128,8 +136,8 @@ export default function Office({
 
   // The user at their desk while a device has the UI open (Phase 18).
   useEffect(() => {
-    scene?.setPresence(userHere);
-  }, [scene, userHere]);
+    scene?.setPresence(userHere, userLook);
+  }, [scene, userHere, userLook]);
 
   useLayoutEffect(() => {
     const el = pane.current;
@@ -223,15 +231,16 @@ export default function Office({
             `${a.name} · ${a.role} · ${a.id}`, poseLabel[s.pose], whereLabel[place], a.activity ? `tool: ${a.activity}` : "", s.taskTitle ?? "",
             "Click to open its terminal",
           ].filter(Boolean).join("\n");
+          const expanded = !narrow || shown === a.id;
           return (
-            <button key={a.id} type="button"
-              className={`nameplate pose-${s.pose} ${hovered === a.id ? "hovered" : ""}`}
+            <button key={a.id} type="button" aria-expanded={narrow ? expanded : undefined}
+              className={`nameplate pose-${s.pose} ${hovered === a.id ? "hovered" : ""} ${expanded ? "" : "name-only"}`}
               style={{ left, top, maxWidth: Math.max(48, 60 * xf.scale) }}
               data-agent={a.id} data-pose={s.pose} data-state={a.state} data-place={place} data-shirt={cssColor(shirtOf(a).base)}
               title={tip}
               onMouseEnter={() => scene?.hover(a.id)} onMouseLeave={() => scene?.hover(undefined)}
               onFocus={() => scene?.hover(a.id)} onBlur={() => scene?.hover(undefined)}
-              onClick={() => onOpenAgent(a.id)}>
+              onClick={() => (expanded ? onOpenAgent(a.id) : setShown(a.id))}>
               <span className="dot" />
               <span className="nameplate-text">
                 <span className="nameplate-name">
@@ -240,7 +249,8 @@ export default function Office({
                     <span className="nameplate-role" style={{ color: cssColor(shirtOf(a).base) }}> {a.role}</span>
                   )}
                 </span>
-                {s.taskTitle && <span className="nameplate-task">{s.taskTitle}</span>}
+                {s.taskTitle && expanded && <span className="nameplate-task">{s.taskTitle}</span>}
+                {narrow && expanded && <span className="nameplate-open">Tap to open</span>}
               </span>
             </button>
           );
@@ -248,10 +258,10 @@ export default function Office({
         {xf && userHere && (() => {
           const u = planOf(xf.grid).userDesk;
           return (
-            <div className="user-plate" data-testid="user-plate" title={presenceText(presence)}
+            <div className="user-plate" data-testid="user-plate" title={presenceText(presence, userName)}
               style={{ left: xf.x + (u.x + inCell.nameplate.x) * xf.scale, top: xf.y + (u.y + inCell.nameplate.y) * xf.scale }}>
               <span className="dot" style={{ color: "var(--accent)" }} />
-              <span className="nameplate-text"><span className="nameplate-name">You</span></span>
+              <span className="nameplate-text"><span className="nameplate-name">{userName}</span></span>
             </div>
           );
         })()}

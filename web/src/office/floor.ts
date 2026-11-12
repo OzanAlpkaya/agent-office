@@ -177,17 +177,19 @@ const cache = new Map<string, FullPlan>();
 
 // floorPlan lays out the office for a grid of desks. Three columns give the
 // stacked plan (narrow panes, phones); more give the wide one.
-export function floorPlan(columns: number, rows: number): FullPlan {
-  const key = `${columns}x${rows}`;
+// extra deepens the workroom below its desks (world pixels), so the office
+// covers a tall pane without empty desks (Phase 18 review).
+export function floorPlan(columns: number, rows: number, extra = 0): FullPlan {
+  const key = `${columns}x${rows}+${extra}`;
   let plan = cache.get(key);
   if (!plan) {
-    plan = build(columns, rows);
+    plan = build(columns, rows, extra);
     cache.set(key, plan);
   }
   return plan;
 }
 
-function build(columns: number, rows: number): FullPlan {
+function build(columns: number, rows: number, extra: number): FullPlan {
   const stacked = columns <= 3;
   const bands = stacked ? stackedBands : wideBands;
   const W = Math.max(columns * cell.w + 2 * margin, minWidth(stacked));
@@ -205,7 +207,7 @@ function build(columns: number, rows: number): FullPlan {
   });
   const R = (id: RoomId): Rect => rect[id] as Rect;
   const workTop = bands.length * band;
-  const H = workTop + corridor + rows * cell.h + bottom;
+  const H = workTop + corridor + rows * cell.h + bottom + extra;
   const workRect: Rect = { x: 0, y: workTop, w: W, h: H - workTop };
   const ids: RoomId[] = [...bands.flat().map((s) => s.id), "work"];
   const rooms: Room[] = ids.map((id) => {

@@ -91,18 +91,21 @@ export { cell } from "./floor";
 
 export const minRows = 2;
 
-// Columns of regular desks the office may use; the one that shows the office
-// largest in the pane wins (ties go to the one closest to four). Three
-// columns stack the rooms, which suits a phone.
-export const columnChoices = [3, 4, 5, 6] as const;
+// Columns of regular desks the office may use. Three stack the rooms, which
+// suits a phone; more spread the office over a wide screen.
+export const columnChoices = [3, 4, 5, 6, 7, 8, 9, 10] as const;
 const preferredColumns = 4;
 // Largest drawing scale, in CSS pixels per world pixel.
 export const maxScale = 4;
+// Floor added below the desks to cover a tall pane: in steps, at most.
+const extraStep = 16;
+const maxExtra = 2048;
 
 export interface Grid {
   readonly columns: number;
   readonly rows: number;
   readonly layout?: OfficeLayout; // a project's own layout: a fixed plan (Phase 18)
+  readonly extra?: number; // floor added below the workroom's desks to cover a tall pane, world pixels
 }
 
 export function gridFor(desks: number, columns: number): Grid {
@@ -110,58 +113,61 @@ export function gridFor(desks: number, columns: number): Grid {
 }
 
 export function planOf(g: Grid): FloorPlan {
-  return g.layout ? customPlan(g.layout) : floorPlan(g.columns, g.rows);
+  return g.layout ? customPlan(g.layout) : floorPlan(g.columns, g.rows, g.extra ?? 0);
 }
 
 // sameGrid says whether two grids give the same plan.
 // A layout parsed again (any project update) is the same plan: compared by plan, not object (code review).
 export const sameGrid = (a: Grid, b: Grid): boolean =>
-  a.columns === b.columns && a.rows === b.rows && (a.layout === b.layout || (!!a.layout && !!b.layout && planOf(a) === planOf(b)));
+  a.columns === b.columns && a.rows === b.rows && (a.extra ?? 0) === (b.extra ?? 0) &&
+  (a.layout === b.layout || (!!a.layout && !!b.layout && planOf(a) === planOf(b)));
 
 export function worldSize(g: Grid): { w: number; h: number } {
   const p = planOf(g);
   return { w: p.w, h: p.h };
 }
 
-// fitGrid picks the columns and the whole number k of device pixels per world
-// pixel for a pane of w×h CSS pixels at device pixel ratio dpr. It never goes
-// below 2 CSS pixels per world pixel while the width allows it; the pane then
-// scrolls vertically.
+// fitGrid picks the columns, the rows and the whole number k of device
+// pixels per world pixel for a pane of w×h CSS pixels at device pixel ratio
+// dpr (Phase 18 review): the office fills the pane's width as well as whole
+// pixels allow (pixel art stays sharp), at most maxScale; then it gets desk
+// rows until it covers the pane's height, so there is no empty band above or
+// below it. A taller office scrolls. A custom layout is fixed: only its scale
+// is chosen, by width.
 export function fitGrid(w: number, h: number, dpr: number, desks: number, layout?: OfficeLayout): { grid: Grid; k: number } {
   const cap = Math.max(1, Math.floor(maxScale * dpr));
+  const W = w * dpr;
+  const H = h * dpr;
   if (layout) {
-    // A fixed plan: only the scale is chosen; too small to read fills the width.
     const p = customPlan(layout);
-    const grid: Grid = { columns: p.columns, rows: p.rows, layout };
-    const k = Math.min(cap, Math.floor(Math.min((w * dpr) / p.w, (h * dpr) / p.h)));
-    if (k >= 2 * dpr) return { grid, k };
-    return { grid, k: Math.max(1, k, Math.min(Math.ceil(2 * dpr), Math.floor((w * dpr) / p.w))) };
+    return { grid: { columns: p.columns, rows: p.rows, layout }, k: Math.max(1, Math.min(cap, Math.floor(W / p.w))) };
   }
-  let best: { grid: Grid; k: number } | undefined;
-  const better = (c: { grid: Grid; k: number }): boolean =>
-    !best || c.k > best.k ||
-    (c.k === best.k && Math.abs(c.grid.columns - preferredColumns) < Math.abs(best.grid.columns - preferredColumns));
+  // Readable first: a plan drawn under 1.5 CSS pixels is a candidate only
+  // when nothing else fits (a phone would otherwise fit the wide plan, tiny).
+  const readable = Math.ceil(1.5 * dpr);
+  const fits = (columns: number): number => Math.max(1, Math.min(cap, Math.floor(W / worldSize(gridFor(desks, columns)).w)));
+  const minK = columnChoices.some((c) => fits(c) >= readable) ? readable : 1;
+  let best: { columns: number; k: number; left: number } | undefined;
   for (const columns of columnChoices) {
-    const grid = gridFor(desks, columns);
-    const size = worldSize(grid);
-    const k = Math.min(cap, Math.floor(Math.min((w * dpr) / size.w, (h * dpr) / size.h)));
-    if (better({ grid, k })) best = { grid, k };
+    const ww = worldSize(gridFor(desks, columns)).w;
+    const k = fits(columns);
+    const left = W - ww * k; // unused width, device pixels
+    if (left < 0 || k < minK) continue;
+    const better = !best || left < best.left - 0.5 ||
+      (Math.abs(left - best.left) <= 0.5 && (k > best.k || (k === best.k &&
+        Math.abs(columns - preferredColumns) < Math.abs(best.columns - preferredColumns))));
+    if (better) best = { columns, k, left };
   }
-  const fit = best ?? { grid: gridFor(desks, preferredColumns), k: 1 };
-  if (fit.k >= 2 * dpr) return fit;
-  // Too small to read: fill the width instead, at most 2 CSS pixels.
-  best = undefined;
-  for (const columns of columnChoices) {
-    const grid = gridFor(desks, columns);
-    const k = Math.min(Math.ceil(2 * dpr), Math.floor((w * dpr) / worldSize(grid).w));
-    if (better({ grid, k })) best = { grid, k };
-  }
-  const wide = best ?? fit;
-  return wide.k > fit.k ? wide : { ...fit, k: Math.max(1, fit.k) };
+  const columns = best?.columns ?? columnChoices[0];
+  const k = best?.k ?? 1;
+  const grid = gridFor(desks, columns);
+  // Deepen the workroom's floor (not more desks) until the office covers the
+  // pane, in whole tiles so a small resize does not rebuild it.
+  const short = H / k - worldSize(grid).h;
+  const extra = short > 0 ? Math.min(maxExtra, Math.ceil(short / extraStep) * extraStep) : 0;
+  return { grid: extra > 0 ? { ...grid, extra } : grid, k };
 }
 
-// "user" is the user's own desk (Phase 18): their character sits there while
-// a device has the UI open.
 export type Slot = { kind: "lead" } | { kind: "desk"; index: number } | { kind: "station"; station: StationKind } | { kind: "user" };
 
 // slotOrigin is the top-left corner of a desk slot's cell. A station has no

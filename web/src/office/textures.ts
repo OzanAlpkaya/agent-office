@@ -1,7 +1,8 @@
 // Turns pixel maps into Pixi textures once and keeps them until the office
 // closes (ADR 0024).
 import { CanvasSource, Rectangle, Texture } from "pixi.js";
-import { type Palette, type PixelMap, transparent } from "./art";
+import type { Palette, PixelMap } from "./art";
+import { drawMap } from "./pixels";
 
 function toCanvas(map: PixelMap, palette: Palette): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
@@ -9,23 +10,7 @@ function toCanvas(map: PixelMap, palette: Palette): HTMLCanvasElement {
   canvas.height = map.h;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("office: no 2D canvas context for textures");
-  const img = ctx.createImageData(map.w, map.h);
-  map.rows.forEach((row, y) => {
-    for (let x = 0; x < row.length; x++) {
-      const ch = row[x];
-      const color = palette[ch];
-      if (color === undefined) {
-        if (ch === transparent) continue;
-        throw new Error(`office: pixel ${JSON.stringify(ch)} is not in the palette`);
-      }
-      const i = (y * map.w + x) * 4;
-      img.data[i] = (color >> 16) & 0xff;
-      img.data[i + 1] = (color >> 8) & 0xff;
-      img.data[i + 2] = color & 0xff;
-      img.data[i + 3] = 0xff;
-    }
-  });
-  ctx.putImageData(img, 0, 0);
+  drawMap(ctx, map, palette, 0, 0);
   return canvas;
 }
 

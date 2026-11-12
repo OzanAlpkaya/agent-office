@@ -102,18 +102,37 @@ describe("geometry", () => {
 });
 
 describe("fitGrid", () => {
-  it("uses the columns that draw the office largest", () => {
-    // a wide, short pane: more columns, fewer rows
-    const wide = fitGrid(1300, 1100, 1, 9);
-    expect(wide.grid.columns).toBeGreaterThan(4);
-    expect(wide.k).toBe(3);
-    const size = worldSize(wide.grid);
-    expect(size.w * wide.k).toBeLessThanOrEqual(1300);
-    expect(size.h * wide.k).toBeLessThanOrEqual(1100);
+  it("fills the pane's width as well as whole pixels allow (Phase 18 review)", () => {
+    // a desktop pane: a wide plan at 3 CSS pixels, not a small centred box
+    const desk = fitGrid(1176, 810, 1, 9);
+    expect(desk.k).toBe(3);
+    expect(desk.grid.columns).toBeGreaterThan(3);
+    const w = worldSize(desk.grid).w * desk.k;
+    expect(w).toBeLessThanOrEqual(1176);
+    expect(1176 - w).toBeLessThan(64); // less than a world tile of width unused
+    // a wider screen spreads the office with more columns at the largest scale
+    const big = fitGrid(2400, 1300, 1, 3);
+    expect(big.k).toBe(maxScale);
+    expect(big.grid.columns).toBeGreaterThan(4);
+    expect(worldSize(big.grid).w * big.k).toBeLessThanOrEqual(2400);
   });
 
-  it("prefers four columns when several fit equally", () => {
-    expect(fitGrid(2000, 2000, 1, 3).grid.columns).toBe(4);
+  it("covers the pane's height with workroom floor, not empty desks: no band below or above", () => {
+    for (const [w, h, dpr] of [[1176, 810, 1], [412, 700, 2.625], [390, 640, 3]] as const) {
+      const r = fitGrid(w, h, dpr, 2);
+      expect(r.grid.rows, `${w}x${h}`).toBe(2); // only the desks the team needs
+      expect(worldSize(r.grid).h * r.k, `${w}x${h}`).toBeGreaterThanOrEqual(h * dpr);
+      // at most one step of floor more than needed
+      expect((worldSize(r.grid).h - 16) * r.k < h * dpr || (r.grid.extra ?? 0) === 0, `${w}x${h}`).toBe(true);
+    }
+    // the desktop office is taller than its pane at 3 CSS pixels: no floor added, it scrolls
+    expect(fitGrid(1176, 810, 1, 2).grid.extra ?? 0).toBe(0);
+  });
+
+  it("stacks the rooms on a phone", () => {
+    const phone = fitGrid(412, 700, 2.625, 6);
+    expect(phone.grid.columns).toBe(3);
+    expect(phone.k / 2.625).toBeGreaterThanOrEqual(1.5);
   });
 
   it("caps the scale", () => {
@@ -129,9 +148,9 @@ describe("fitGrid", () => {
     expect(r.k).toBeGreaterThanOrEqual(4);
   });
 
-  it("keeps 2 CSS pixels in a short pane and lets it scroll", () => {
+  it("scales by width in a short pane and lets it scroll", () => {
     const r = fitGrid(1000, 200, 1, 9);
-    expect(r.k).toBe(2);
+    expect(r.k).toBeGreaterThanOrEqual(2);
     expect(worldSize(r.grid).h * r.k).toBeGreaterThan(200);
   });
 

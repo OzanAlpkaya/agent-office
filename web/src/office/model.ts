@@ -2,7 +2,7 @@
 // whiteboard shows. The scene draws this; the HTML nameplates label it. Pure.
 import type { Agent, Message, OfficeLayout, Task, TaskStatus } from "../api";
 import type { Waiting } from "../waiting";
-import { noteGrid } from "./art";
+import { type Palette, noteGrid } from "./art";
 import { stationKinds } from "./floor";
 import { customPlan } from "./custom";
 import { type Assignment, type Slot, assignDesks, ownPlaces, placesOf } from "./layout";
@@ -14,6 +14,9 @@ export interface Seat {
   pose: Pose;
   look: Look;
   taskTitle?: string;
+  // The user's own colours (Phase 18 review): their saved look, not a kind's shirt.
+  palette?: Palette;
+  paletteKey?: string;
 }
 
 export interface Note {

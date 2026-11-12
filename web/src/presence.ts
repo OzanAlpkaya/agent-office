@@ -16,10 +16,10 @@ export function isPresence(v: unknown): v is Presence {
 export const present = (p: Presence | undefined): boolean => (p?.devices.length ?? 0) > 0;
 
 // presenceText is the tooltip of the user's nameplate.
-export function presenceText(p: Presence | undefined): string {
+export function presenceText(p: Presence | undefined, name = "You"): string {
   const ds = p?.devices ?? [];
   if (ds.length === 0) return "Away: no device has agent-office open";
-  return `You, on ${ds.length === 1 ? ds[0] : `${ds.slice(0, -1).join(", ")} and ${ds[ds.length - 1]}`}`;
+  return `${name}, on ${ds.length === 1 ? ds[0] : `${ds.slice(0, -1).join(", ")} and ${ds[ds.length - 1]}`}`;
 }
 
 // visibilityMessage is what a page sends on its hub WebSocket.

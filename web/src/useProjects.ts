@@ -3,6 +3,7 @@ import { type Project, api, parseEventMessage, parseProjectsMessage, projectApi,
 import type { Connection } from "./useAgents";
 import { type LightWorld, applyProjects, emptyLight, reduceLight } from "./projects";
 import { type Presence, visibilityMessage } from "./presence";
+import type { Profile } from "./office/avatar";
 
 const backoff = (retry: number): number => Math.min(5000, 500 * 2 ** retry);
 
@@ -10,9 +11,10 @@ const backoff = (retry: number): number => Math.min(5000, 500 * 2 ** retry);
 // (ADR 0046). loaded turns true with the first snapshot. The page tells the
 // daemon on the same socket whether it is visible, and gets the user's
 // presence back (Phase 18): the devices with a visible page.
-export function useProjects(): { projects: Project[]; loaded: boolean; connection: Connection; presence?: Presence } {
+export function useProjects(): { projects: Project[]; loaded: boolean; connection: Connection; presence?: Presence; profile?: Profile } {
   const [projects, setProjects] = useState<Project[]>([]);
   const [presence, setPresence] = useState<Presence>();
+  const [profile, setProfile] = useState<Profile>();
   const [loaded, setLoaded] = useState(false);
   const [connection, setConnection] = useState<Connection>("connecting");
   useEffect(() => {
@@ -37,6 +39,10 @@ export function useProjects(): { projects: Project[]; loaded: boolean; connectio
         }
         if (m.type === "presence") {
           setPresence(m.presence);
+          return;
+        }
+        if (m.type === "profile") {
+          setProfile(m.profile);
           return;
         }
         setProjects((prev) => applyProjects(prev, m));
@@ -65,7 +71,7 @@ export function useProjects(): { projects: Project[]; loaded: boolean; connectio
       ws?.close();
     };
   }, []);
-  return { projects, loaded, connection, presence };
+  return { projects, loaded, connection, presence, profile };
 }
 
 // useWatchers follows every open project but the shown one, lightly: only

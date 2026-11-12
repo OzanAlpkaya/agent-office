@@ -54,6 +54,7 @@ export function applyProjects(list: readonly Project[], m: ProjectsMessage): Pro
     case "project_removed":
       return list.filter((p) => p.id !== m.id);
     case "presence":
+    case "profile":
       return list as Project[];
   }
 }

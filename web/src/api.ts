@@ -4,6 +4,7 @@
 // internal/sandbox (Event), internal/usage (Tokens) and the API in internal/api.
 // Written by hand for now (ADR 0005); keep them in sync.
 import { type Presence, isPresence } from "./presence";
+import { type AvatarLook, type Profile, isProfile } from "./office/avatar";
 
 export type AgentState = "starting" | "idle" | "working" | "waiting_permission" | "exited";
 export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "blocked";
@@ -709,7 +710,8 @@ export type ProjectsMessage =
   | { type: "projects"; projects: Project[] }
   | { type: "project"; project: Project }
   | { type: "project_removed"; id: string }
-  | { type: "presence"; presence: Presence }; // the user's devices with a visible page (Phase 18)
+  | { type: "presence"; presence: Presence } // the user's devices with a visible page (Phase 18)
+  | { type: "profile"; profile: Profile }; // the user's name and look (Phase 18 review)
 
 export function parseProjectsMessage(raw: string): ProjectsMessage | undefined {
   let m: unknown;
@@ -728,6 +730,8 @@ export function parseProjectsMessage(raw: string): ProjectsMessage | undefined {
       return typeof m.id === "string" ? { type: "project_removed", id: m.id } : undefined;
     case "presence":
       return isPresence(m.presence) ? { type: "presence", presence: m.presence } : undefined;
+    case "profile":
+      return isProfile(m.profile) ? { type: "profile", profile: m.profile } : undefined;
     default:
       return undefined;
   }
@@ -1008,6 +1012,8 @@ export const api = {
   // Phase 18: office layout presets, and checking a layout's YAML for the preview.
   officeLayouts: (): Promise<LayoutPreset[]> => request("GET", "/api/office-layouts"),
   checkOfficeLayout: (yaml: string): Promise<LayoutCheck> => request("POST", "/api/office-layouts/check", { yaml }),
+  profile: (): Promise<Profile> => request("GET", "/api/profile"),
+  setProfile: (p: { name: string; look: AvatarLook }): Promise<Profile> => request("PUT", "/api/profile", p),
 };
 
 

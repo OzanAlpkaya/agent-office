@@ -9,12 +9,14 @@ import "pixi.js/unsafe-eval";
 import { Application, Container, Graphics, Rectangle, Sprite, type Texture, TilingSprite } from "pixi.js";
 import type { Agent, Kind, TaskStatus } from "../api";
 import * as art from "./art";
+import { armRects } from "./arms";
 import { type Capacity, Director, type Errand, type Place } from "./errands";
 import { type FloorKind, type FloorPlan, type Point, type Station, deskExit, roomAt, stationKinds } from "./floor";
 import { type Grid, type Slot, fitGrid, gridFor, inCell, planOf, sameGrid, slotOrigin, worldSize } from "./layout";
 import type { Note, OfficeModel, Seat } from "./model";
 import { along, length, route } from "./paths";
-import { type Look, type Pose, lookOf, shirtOf } from "./pose";
+import { type AvatarLook, avatarPalette, defaultLook, lookKey, sceneLook } from "./avatar";
+import { type Look, type Pose, shirtOf } from "./pose";
 import { TextureCache } from "./textures";
 
 export interface Transform {
@@ -97,6 +99,7 @@ export class OfficeScene {
   private readonly nodes: DeskNode[] = [];
   private userNode?: DeskNode; // the user's own desk (Phase 18): they sit there while a device has the UI open
   private userPresent = false;
+  private userSeat?: Seat;
   private readonly envelopes: { sprite: Sprite; from: Point; to: Point; start: number }[] = [];
   private readonly chars = new Map<string, Character>();
   private readonly director = new Director();
@@ -242,7 +245,7 @@ export class OfficeScene {
     const width = Math.max(w, Math.ceil(W * scale));
     const height = Math.max(h, Math.ceil(H * scale));
     const x = Math.round(((width - W * scale) / 2) * dpr) / dpr;
-    const y = Math.round(((height - H * scale) / 2) * dpr) / dpr;
+    const y = 0; // from the top: a shorter office leaves no band above it (Phase 18 review)
     this.app.renderer.resize(width, height, dpr);
     this.world.scale.set(scale);
     this.world.position.set(x, y);
@@ -333,11 +336,14 @@ export class OfficeScene {
     return sameGrid(t.grid, before) ? undefined : t;
   }
 
-  // setPresence seats the user's character at their desk, or empties it (Phase 18).
-  setPresence(present: boolean): void {
-    if (this.userPresent === present) return;
+  // setPresence seats the user's character at their desk, in their look, or
+  // empties it (Phase 18).
+  setPresence(present: boolean, look: AvatarLook = defaultLook): void {
+    const seat = present ? userSeat(look) : undefined;
+    if (this.userPresent === present && this.userSeat?.paletteKey === seat?.paletteKey) return;
     this.userPresent = present;
-    this.userNode?.setSeat(present ? userSeat : undefined);
+    this.userSeat = seat;
+    this.userNode?.setSeat(seat);
     this.dirty = true;
   }
 
@@ -401,7 +407,7 @@ export class OfficeScene {
       // an office where no agent moves must not redraw (ADR 0024).
       this.userNode = new DeskNode(this, this.textures, { kind: "user" }, true, false);
       this.sorted.addChild(this.userNode.root);
-      this.userNode.setSeat(this.userPresent ? userSeat : undefined);
+      this.userNode.setSeat(this.userSeat);
     }
     this.userNode.place(grid);
     this.buildRooms();
@@ -783,7 +789,9 @@ const maxEnvelopes = 20;
 
 // The user's character (Phase 18): its own look and shirt, at work while present.
 const userAgent = { id: "you", name: "You", kind: "worker", role: "you", state: "working" } as Agent;
-const userSeat: Seat = { slot: { kind: "user" }, agent: userAgent, pose: "typing", look: lookOf("you") };
+const userSeat = (l: AvatarLook): Seat => ({
+  slot: { kind: "user" }, agent: userAgent, pose: "typing", look: sceneLook(l), palette: avatarPalette(l), paletteKey: lookKey(l),
+});
 
 const slotKey = (s: Slot): string =>
   s.kind === "lead" ? "lead" : s.kind === "user" ? "user" : s.kind === "station" ? `station-${s.station}` : `desk-${s.index}`;
@@ -1058,10 +1066,11 @@ class DeskNode {
     this.mug.visible = seat !== undefined;
     this.bubble.visible = false;
     if (!seat) this.setHover(false);
-    if (seat && (prev?.agent.id !== seat.agent.id || prev.agent.kind !== seat.agent.kind || prev.agent.role !== seat.agent.role)) {
+    if (seat && (prev?.agent.id !== seat.agent.id || prev.agent.kind !== seat.agent.kind || prev.agent.role !== seat.agent.role ||
+      prev.paletteKey !== seat.paletteKey)) {
       const l = seat.look;
-      const palette = art.personPalette(art.skins[l.skin], art.hairColors[l.hair], shirtOf(seat.agent));
-      const key = `${l.skin}-${l.hair}-${seat.agent.kind}-${seat.agent.role}`;
+      const palette = seat.palette ?? art.personPalette(art.skins[l.skin], art.hairColors[l.hair], shirtOf(seat.agent));
+      const key = seat.paletteKey ?? `${l.skin}-${l.hair}-${seat.agent.kind}-${seat.agent.role}`;
       this.bodyTextures = [
         this.textures.get(`body-${key}`, art.body, palette),
         this.textures.get(`blink-${key}`, art.bodyBlink, palette),
@@ -1138,96 +1147,8 @@ class DeskNode {
   }
 }
 
-// drawArms draws sleeves and hands for a pose frame, in coordinates relative
-// to the person sprite (shoulders at y 12, desk top at y 15, keyboard at
-// x 2..13, y 18..20; a standing figure's legs start at y 16).
+// drawArms draws sleeves and hands for a pose frame (armRects).
 function drawArms(g: Graphics, frame: string, p: art.Palette): void {
-  const shirt = p.c, shade = p.C, skin = p.s, line = p.k;
   g.clear();
-  const r = (x: number, y: number, w: number, h: number, color: number): void => {
-    g.rect(x, y, w, h).fill(color);
-  };
-  const leftResting = (lift: number): void => {
-    r(1, 13, 2, 3, shade);
-    r(2, 16, 3, 1, shirt);
-    r(4, 17 - lift, 2, 2, skin);
-    r(4, 19 - lift, 2, 1, line);
-  };
-  const rightResting = (lift: number): void => {
-    r(13, 13, 2, 3, shade);
-    r(11, 16, 3, 1, shirt);
-    r(10, 17 - lift, 2, 2, skin);
-    r(10, 19 - lift, 2, 1, line);
-  };
-  // Arms hanging beside a standing figure; swing moves one hand forward.
-  const hanging = (side: "left" | "right", swing: number): void => {
-    const x = side === "left" ? 0 : 14;
-    r(x, 12, 2, 4 - swing, shade);
-    r(x, 16 - swing, 2, 2, skin);
-    r(x, 18 - swing, 2, 1, line);
-  };
-  const raised = (dx: number): void => {
-    r(14, 4, 4, 10, line);
-    r(15, 5, 2, 9, shirt);
-    r(16, 5, 1, 9, shade);
-    r(13 + dx, -1, 5, 6, line);
-    r(14 + dx, 0, 3, 4, skin);
-    r(14 + dx, 4, 3, 1, shirt);
-  };
-  switch (frame) {
-    case "type0":
-      leftResting(1);
-      rightResting(0);
-      break;
-    case "type1":
-      leftResting(0);
-      rightResting(1);
-      break;
-    case "raise0":
-    case "raise1":
-      // the right arm straight up beside the head, the hand waving
-      leftResting(0);
-      raised(frame === "raise1" ? 1 : 0);
-      break;
-    case "review0":
-    case "review1": {
-      const up = frame === "review1" ? 1 : 0;
-      r(-1, 13, 3, 2, shade);
-      r(-3, 14 - up, 2, 2, skin);
-      rightResting(0);
-      break;
-    }
-    case "sip":
-      leftResting(0);
-      r(13, 13, 2, 2, shade);
-      r(11, 11, 2, 2, shirt);
-      r(10, 10, 2, 2, skin);
-      break;
-    case "walk0":
-    case "walk1": {
-      const s = frame === "walk1" ? 1 : 0;
-      hanging("left", s);
-      hanging("right", 1 - s);
-      break;
-    }
-    case "point":
-      // at the whiteboard: one arm up to the board, a red marker in the hand
-      hanging("left", 0);
-      r(14, 3, 3, 10, line);
-      r(15, 4, 1, 9, shirt);
-      r(14, 0, 3, 4, line);
-      r(15, 1, 1, 2, skin);
-      r(15, -2, 1, 2, 0xe05a5a);
-      break;
-    case "hold":
-      // a mug held in front
-      hanging("left", 0);
-      r(13, 12, 2, 3, shade);
-      r(11, 14, 3, 1, shirt);
-      r(10, 14, 2, 2, skin);
-      break;
-    default:
-      leftResting(0);
-      rightResting(0);
-  }
+  for (const r of armRects(frame, p)) g.rect(r.x, r.y, r.w, r.h).fill(r.color);
 }
