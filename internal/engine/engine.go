@@ -945,7 +945,7 @@ func (e *Engine) watch(a *agentProc) {
 		alog.Error("persist agent exit", "err", err)
 	}
 	e.recordExitDetailLocked(ctx, a, x, alog)
-	_ = e.q.EndSessions(ctx, db.EndSessionsParams{EndedAt: nullTime(t), AgentID: a.info.ID})
+	_ = e.q.EndSessions(ctx, db.EndSessionsParams{EndedAt: nullTime(t), ExitReason: reason, AgentID: a.info.ID})
 	if reason == ExitResumeFailed {
 		// It never ran: a later resume continues the session before it (ADR 0035).
 		if err := e.q.DeleteSession(ctx, a.info.SessionID); err != nil {

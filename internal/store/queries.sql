@@ -51,6 +51,15 @@ SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY created_at, id;
 -- name: CountChildTasks :one
 SELECT count(*) FROM tasks WHERE parent_task_id = ?;
 
+-- name: CountOpenChildTasks :one
+-- Sub-tasks that count against a goal's limit (ADR 0062): to do, in progress or blocked.
+SELECT count(*) FROM tasks WHERE parent_task_id = ? AND status IN ('todo', 'in_progress', 'blocked');
+
+-- name: SupersedeTask :one
+-- Closes a sub-task another replaced (ADR 0062); once.
+UPDATE tasks SET status = 'done', superseded_by = ?, updated_at = ? WHERE id = ? AND status != 'done'
+RETURNING *;
+
 -- name: GetTask :one
 SELECT * FROM tasks WHERE id = ?;
 
@@ -114,7 +123,7 @@ INSERT INTO sessions (id, agent_id, started_at, resumed_from, cli_session_id) VA
 UPDATE sessions SET cli_session_id = ? WHERE id = ? AND cli_session_id = '';
 
 -- name: EndSessions :exec
-UPDATE sessions SET ended_at = ? WHERE agent_id = ? AND ended_at IS NULL;
+UPDATE sessions SET ended_at = ?, exit_reason = ? WHERE agent_id = ? AND ended_at IS NULL;
 
 -- name: CreateWorktree :exec
 INSERT INTO worktrees (agent_id, project_id, path, branch, base_commit, status, created_at, kind)
@@ -586,6 +595,9 @@ SELECT m.* FROM goal_merges m JOIN tasks t ON t.id = m.goal_id WHERE t.project_i
 -- name: LatestGoalMerge :one
 SELECT * FROM goal_merges WHERE goal_id = ? ORDER BY id DESC LIMIT 1;
 
+-- name: ListGoalMerges :many
+SELECT * FROM goal_merges WHERE goal_id = ? ORDER BY id DESC;
+
 -- name: MarkGoalMergePushed :one
 -- Compare-and-swap: a merge is recorded as pushed once.
 UPDATE goal_merges SET pushed_at = ?, push_remote = ? WHERE id = ? AND pushed_at IS NULL
@@ -625,3 +637,28 @@ SELECT * FROM profile WHERE id = 1;
 INSERT INTO profile (id, name, look, updated_at) VALUES (1, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET name = excluded.name, look = excluded.look, updated_at = excluded.updated_at
 RETURNING *;
+
+-- Phase 19 (migration 0019).
+
+-- name: GetDaemonSettings :one
+SELECT * FROM daemon_settings WHERE id = 1;
+
+-- name: SetDaemonMaxAgents :one
+INSERT INTO daemon_settings (id, max_agents, updated_at) VALUES (1, ?, ?)
+ON CONFLICT (id) DO UPDATE SET max_agents = excluded.max_agents, updated_at = excluded.updated_at
+RETURNING *;
+
+-- name: RequestSpecChanges :one
+UPDATE specs SET change_request = ?, change_requested_at = ? WHERE id = ? AND status IN ('proposed', 'approved')
+RETURNING *;
+
+-- name: InsertTaskReport :one
+INSERT INTO task_reports (task_id, agent_id, summary, verification, created_at) VALUES (?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: ListTaskReports :many
+SELECT * FROM task_reports WHERE task_id = ? ORDER BY id;
+
+-- name: ListAgentStateEvents :many
+-- An agent's reduced state changes, oldest first, for its working and waiting time.
+SELECT session_id, state, at FROM events WHERE agent_id = ? ORDER BY id;
