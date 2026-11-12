@@ -25,12 +25,13 @@ function codexTeam(): MockDaemon {
 
 test("a Codex worker shows its CLI; the role picker names a role's CLI", async ({ page }) => {
   const daemon = codexTeam();
+  daemon.world.tasks.push(task("n00000000001", "Archive old links", "todo"));
   await daemon.install(page);
   await page.goto("/");
   await expect((await openAgent(page, "c0dex0000001")).locator(".cli-codex")).toHaveText("codex");
   await expect((await openAgent(page, "a1ead0000001")).locator(".cli-codex")).toHaveCount(0);
   await nav(page, "Board");
-  await page.locator("button.task").first().click();
+  await page.locator("#task-n00000000001").click();
   await expect(page.getByRole("combobox", { name: "Role" }).locator("option", { hasText: "worker" })).toHaveText("worker · codex");
 });
 

@@ -3,7 +3,7 @@
 // project memory.
 import { type Page, expect, test } from "@playwright/test";
 import type { Spec } from "../src/api";
-import { MockDaemon, type World, agent, task, team, nav, settingsTab } from "./daemon";
+import { MockDaemon, type World, agent, task, team, nav, projectSettings } from "./daemon";
 
 const screens = "test-results/screens";
 const at = "2026-11-08T10:05:00Z";
@@ -129,7 +129,8 @@ test("a proposed plan is shown on the goal and approved by the user", async ({ p
   await expect(plan).toContainText("Users can tag links and filter by tag.");
   await expect(plan).toContainText("after schema");
   await expect(plan).toContainText("?tag=x filters");
-  await expect(goal.getByRole("button", { name: "Start architect" })).toBeDisabled(); // one is running
+  // an architect runs: no Start architect, and nothing greyed out (Phase 18 review)
+  await expect(goal.getByRole("button", { name: "Start architect" })).toHaveCount(0);
   await page.screenshot({ path: `${screens}/team-plan.png`, fullPage: true });
   await plan.getByRole("button", { name: "Edit" }).click();
   await plan.getByLabel("Title").first().fill("Tags table and index");
@@ -141,7 +142,9 @@ test("a proposed plan is shown on the goal and approved by the user", async ({ p
 });
 
 test("task cards show dependencies, conflicts, QA and their roles", async ({ page }) => {
-  const daemon = new MockDaemon(workflow());
+  const world = workflow();
+  world.tasks.push(task("t00000000008", "Tag docs", "todo", { parent_task_id: "g00000000001" }));
+  const daemon = new MockDaemon(world);
   const errors = await open(page, daemon);
   // The cards say it in one chip; the modal has the detail.
   await expect(card(page, "Tag filter").getByTestId("card-status")).toHaveText("Waits on 1");
@@ -149,7 +152,10 @@ test("task cards show dependencies, conflicts, QA and their roles", async ({ pag
   await page.screenshot({ path: `${screens}/team-board.png`, fullPage: true });
   let m = await detail(page, "Tag filter");
   await expect(m).toContainText("Waits for “Tag API”");
+  await expect(m.getByRole("button", { name: "Start agent" })).toHaveCount(0); // it waits: nothing to start yet
+  await page.keyboard.press("Escape");
   // Roles: the worker roles are offered when starting an agent.
+  m = await detail(page, "Tag docs");
   await expect(m.getByLabel("Role")).toContainText("docs");
   await page.keyboard.press("Escape");
   m = await detail(page, "Tag CLI");
@@ -175,10 +181,9 @@ test("task cards show dependencies, conflicts, QA and their roles", async ({ pag
 test("project memory proposals wait for the user", async ({ page }) => {
   const daemon = new MockDaemon(workflow());
   const errors = await open(page, daemon);
-  // A proposal is counted on Settings; the memory is a tab there (Phase 18).
-  await expect(page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: /^Settings/ }))
-    .toHaveAccessibleName("Settings (1 memory note proposed)");
-  await settingsTab(page, "Memory");
+  // A proposal is counted on the project's settings (the gear); the memory is a tab there (Phase 18).
+  await expect(page.getByRole("button", { name: /^Project settings/ })).toHaveAccessibleName("Project settings (1 memory note proposed)");
+  await projectSettings(page, "Memory");
   const panel = page.getByRole("region", { name: "Project memory" });
   await expect(panel).toContainText("Errors are wrapped");
   await expect(panel).toContainText("proposed by f00000");
@@ -193,7 +198,7 @@ test("project memory proposals wait for the user", async ({ page }) => {
   await panel.getByRole("button", { name: "Accept" }).click();
   await expect.poll(() => daemon.requests).toContain("POST /api/memory/1/accept");
   daemon.memoryEntry({ ...workflow().memory![0], status: "accepted" });
-  await expect(page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: /^Settings/ })).toHaveAccessibleName("Settings");
+  await expect(page.getByRole("button", { name: /^Project settings/ })).toHaveAccessibleName("Project settings");
   await expect(panel.getByRole("button", { name: "Accept" })).toHaveCount(0);
   // Briefing is asked for at the top of the inbox.
   await page.getByRole("button", { name: /^Inbox/ }).click();
@@ -237,7 +242,7 @@ test("a second goal says why its Tech Lead cannot start yet, and opens the runni
   await page.goto("/");
   await page.locator("#task-g00000000002").click();
   const card = page.getByRole("dialog", { name: "Add search" });
-  await expect(card.getByRole("button", { name: "Start Tech Lead" })).toBeDisabled();
+  await expect(card.getByRole("button", { name: "Start Tech Lead" })).toHaveCount(0); // hidden, the note says why
   const note = card.getByRole("note");
   await expect(note).toContainText("One goal at a time in this project: the Tech Lead of “Add tags to saved links” is still running");
   await expect(note).toContainText("mark that goal done or stop its Tech Lead");

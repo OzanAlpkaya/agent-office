@@ -243,6 +243,9 @@ export class MockDaemon {
   readonly visibility: boolean[] = [];
   otherDevices: string[] = [];
   private pageVisible = false;
+  // The user's profile (Phase 18 review): unsaved until the page saves one.
+  profile: { name: string; look: { skin: number; hair: number; style: number; shirt: number; pants: number }; set: boolean } =
+    { name: "", look: { skin: 0, hair: 0, style: 0, shirt: 0, pants: 0 }, set: false };
   private readonly projectEvents = new Map<string, WebSocketRoute>();
 
   constructor(readonly world: World) {
@@ -331,6 +334,15 @@ export class MockDaemon {
         return route.fulfill(json(u));
       }
       if (p === "/api/office-layouts") return route.fulfill(json(presets));
+      if (p === "/api/profile") {
+        if (method === "PUT") {
+          const body = route.request().postDataJSON() as { name: string; look: MockDaemon["profile"]["look"] };
+          this.requests.push(`PUT /api/profile ${JSON.stringify(body)}`);
+          this.profile = { name: body.name, look: body.look, set: true };
+          this.hubEvents?.send(JSON.stringify({ type: "profile", profile: this.profile }));
+        }
+        return route.fulfill(json(this.profile));
+      }
       if (p === "/api/office-layouts/check") {
         const { yaml } = route.request().postDataJSON() as { yaml: string };
         const l = layoutOf(yaml);
@@ -498,6 +510,7 @@ export class MockDaemon {
       this.hubEvents = ws;
       ws.send(JSON.stringify({ type: "projects", projects: this.projects.map((x) => x.project) }));
       ws.send(JSON.stringify({ type: "presence", presence: { devices: this.presentDevices() } }));
+      ws.send(JSON.stringify({ type: "profile", profile: this.profile }));
       ws.onMessage((m) => {
         const msg = JSON.parse(String(m)) as { type?: string; visible?: boolean };
         if (msg.type !== "presence" || typeof msg.visible !== "boolean") return;
@@ -688,10 +701,15 @@ export class MockDaemon {
 export async function nav(page: Page, name: "Board" | "Office" | "Usage" | "Settings"): Promise<void> {
   await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: new RegExp(`^${name}`) }).click();
 }
-// settingsTab opens Settings at a tab.
-export async function settingsTab(page: Page, tab: "Project" | "Projects" | "Sandbox" | "Memory" | "Devices"): Promise<void> {
+// settingsTab opens the app's settings (the rail) at a tab.
+export async function settingsTab(page: Page, tab: "Projects" | "Devices" | "Profile"): Promise<void> {
   await nav(page, "Settings");
   await page.getByRole("tablist", { name: "Settings" }).getByRole("tab", { name: new RegExp(`^${tab}`) }).click();
+}
+// projectSettings opens the shown project's settings (the gear by the picker) at a tab.
+export async function projectSettings(page: Page, tab: "General" | "Office" | "Sandbox" | "Memory" = "General"): Promise<void> {
+  await page.getByRole("button", { name: /^Project settings/ }).click();
+  await page.getByRole("tablist", { name: "Project settings" }).getByRole("tab", { name: new RegExp(`^${tab}`) }).click();
 }
 // agentRow is an agent in the rail (or the phone's Agents view).
 export const agentRow = (page: Page, idOrName: string) =>

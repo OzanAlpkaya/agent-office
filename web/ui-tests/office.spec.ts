@@ -285,9 +285,10 @@ test("desks stay put when the tab is left and reopened", async ({ page }) => {
 test("clicks hit the right agent after a resize and a new row of desks", async ({ page }) => {
   const daemon = new MockDaemon(team(10));
   await openOffice(page, daemon);
-  const scaleBefore = await page.locator(".office").getAttribute("data-scale");
+  const widthBefore = (await page.locator(".office canvas").boundingBox())?.width ?? 0;
   await page.setViewportSize({ width: 1920, height: 1200 });
-  await expect(page.locator(".office")).not.toHaveAttribute("data-scale", scaleBefore ?? "");
+  // the office follows the pane's width (Phase 18 review)
+  await expect.poll(async () => (await page.locator(".office canvas").boundingBox())?.width ?? 0).toBeGreaterThan(widthBefore + 300);
   for (let i = 0; i < 9; i++) {
     daemon.addAgent(agent(`f1${String(i).padStart(10, "0")}`, "worker", "working", { started_at: new Date(Date.now() + i).toISOString() }));
   }
@@ -638,6 +639,9 @@ test.describe("on a phone", () => {
     // the workroom scrolls into view, and a tap on a nameplate opens the agent
     await plate(page, "b8c9d0000007").scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${screens}/phone-office-workroom.png` });
+    // a tap shows the task, a second opens the agent (Phase 18 review)
+    await plate(page, "b8c9d0000007").tap();
+    await expect(plate(page, "b8c9d0000007")).toContainText("Validate tag names");
     await plate(page, "b8c9d0000007").tap();
     await expect(page.locator(".terminal-wrap")).toContainText("mock terminal of b8c9d0000007");
     expect(errorsOf(page)).toEqual([]);

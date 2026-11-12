@@ -3,7 +3,7 @@
 // project, the user at their desk, and the project-wide branch clean-up.
 import { type BrowserContextOptions, type Page, devices, expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { MockDaemon, type World, nav, presets, settingsTab, team } from "./daemon";
+import { MockDaemon, type World, nav, presets, projectSettings, settingsTab, task, team } from "./daemon";
 
 const screens = "test-results/screens";
 
@@ -22,7 +22,7 @@ const noHorizontalScroll = async (page: Page): Promise<void> => {
   expect(sw).toBeLessThanOrEqual(w);
 };
 
-test("settings live on one page with tabs; nothing opens over the board and pushes it down", async ({ page }) => {
+test("settings are pages with tabs, the project's and the app's; nothing opens over the board and pushes it down", async ({ page }) => {
   const errors = await open(page, new MockDaemon(team(10)));
   const board = await page.locator(".board").boundingBox();
   // The inbox is a drawer over the page: the board does not move.
@@ -33,13 +33,17 @@ test("settings live on one page with tabs; nothing opens over the board and push
   // No panel buttons in the top bar any more: Memory, Devices and Projects are Settings tabs.
   const top = page.locator("header.topbar");
   for (const name of ["Memory", "Devices", "Projects", "Briefing"]) await expect(top.getByRole("button", { name, exact: true })).toHaveCount(0);
+  // Two settings (Phase 18 review): the project's behind the gear by the picker, the app's in the rail.
+  await page.getByRole("button", { name: /^Project settings/ }).click();
+  await expect(page.locator(".project-settings-page h1")).toHaveText("linkshelf");
+  await expect(page.getByRole("tablist", { name: "Project settings" }).getByRole("tab")).toHaveText(["General", "Office", "Sandbox", "Memory"]);
+  for (const [tab, region] of [["General", "Branch clean-up"], ["Office", "Office layout"], ["Sandbox", "Access grants"], ["Memory", "Project memory"]]) {
+    await projectSettings(page, tab as "General");
+    await expect(page.getByRole("region", { name: region })).toBeVisible();
+  }
   await nav(page, "Settings");
-  const tabs = page.getByRole("tablist", { name: "Settings" }).getByRole("tab");
-  await expect(tabs).toHaveText(["Project", "Projects", "Sandbox", "Memory", "Devices"]);
-  await expect(page.getByRole("tab", { name: "Project", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("region", { name: "Office layout" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Branch clean-up" })).toBeVisible();
-  for (const [tab, region] of [["Projects", "Projects"], ["Sandbox", "Access grants"], ["Memory", "Project memory"], ["Devices", "Devices"]]) {
+  await expect(page.getByRole("tablist", { name: "Settings" }).getByRole("tab")).toHaveText(["Projects", "Devices", "Profile"]);
+  for (const [tab, region] of [["Projects", "Projects"], ["Devices", "Devices"], ["Profile", "Profile"]]) {
     await settingsTab(page, tab as "Projects");
     await expect(page.getByRole("region", { name: region })).toBeVisible();
   }
@@ -67,7 +71,8 @@ test("a compact card shows only its title, status, agent and cost; the modal has
   await expect(m.getByTestId("detail-status")).toHaveText("Working");
   await expect(m.locator(".detail-meta")).toContainText("“Add tags to saved links”");
   await expect(m.locator(".detail-agents")).toContainText("Emma");
-  for (const name of ["Start agent", "Delete…"]) await expect(m.getByRole("button", { name })).toBeVisible();
+  // Emma works on it: nothing to start or delete, only the status
+  await expect(m.locator(".modal-foot button")).toHaveCount(0);
   await expect(m.getByLabel("Status")).toHaveValue("in_progress");
   // An agent in the modal opens its terminal, and the modal closes.
   await m.locator('.detail-agent[data-agent="b2c3d4000001"]').click();
@@ -88,7 +93,7 @@ test("the office layout is chosen from a preset, checked as you type, previewed 
   const p1 = daemon.projects[0].project;
   daemon.projects[0].project = { ...p1, effective: { ...p1.effective, max_agents: 10 } };
   const errors = await open(page, daemon);
-  await nav(page, "Settings");
+  await projectSettings(page, "Office");
   const layout = page.getByTestId("layout-settings");
   await expect(layout.getByRole("button", { name: "Default office" })).toHaveAttribute("aria-pressed", "true");
   await layout.getByRole("button", { name: "Own layout" }).click();
@@ -118,7 +123,7 @@ test("the office layout is chosen from a preset, checked as you type, previewed 
   await expect(page.locator(".nameplate")).toHaveCount(9);
   await page.screenshot({ path: `${screens}/office-open-plan.png` });
   // Back to the default office.
-  await nav(page, "Settings");
+  await projectSettings(page, "Office");
   await layout.getByRole("button", { name: "Default office" }).click();
   await layout.getByRole("button", { name: "Save layout" }).click();
   await expect.poll(() => daemon.requests.filter((r) => r.startsWith("PATCH /api/projects/p1")).length).toBe(2);
@@ -209,7 +214,7 @@ test("old merged agent-office branches of a project are cleaned up from the sett
   ];
   const daemon = new MockDaemon(w);
   const errors = await open(page, daemon);
-  await nav(page, "Settings");
+  await projectSettings(page, "General");
   const section = page.getByRole("region", { name: "Branch clean-up" });
   await section.getByRole("button", { name: "Clean up branches…" }).click();
   const clean = section.getByRole("dialog", { name: "Clean up branches" });
@@ -250,7 +255,121 @@ test.describe("on a phone", () => {
       await nav(page, view);
       await noHorizontalScroll(page);
     }
+    // Every settings tab fits the phone's width (Phase 18 review).
+    for (const open of [() => nav(page, "Settings"), () => page.getByRole("button", { name: /^Project settings/ }).click()]) {
+      await open();
+      const vp = page.viewportSize();
+      for (const tab of await page.getByRole("tab").all()) {
+        const b = await tab.boundingBox();
+        expect(b && vp && b.x >= 0 && b.x + b.width <= vp.width, await tab.textContent() ?? "").toBe(true);
+      }
+      await noHorizontalScroll(page);
+    }
     await page.screenshot({ path: `${screens}/phone-settings.png`, fullPage: true });
     expect(errors).toEqual([]);
   });
+
+  test("office nameplates show the name; a tap shows the task, a second opens the agent; no empty band above", async ({ page }) => {
+    const errors = await open(page, new MockDaemon(team(10)));
+    await nav(page, "Office");
+    const emma = page.locator('.nameplate[data-agent="b2c3d4000001"]');
+    await expect(emma).toHaveText("Emma");
+    await expect(emma).toHaveAttribute("aria-expanded", "false");
+    await emma.tap();
+    await expect(emma).toContainText("Tag model and migration");
+    await expect(page.locator(".xterm")).toHaveCount(0);
+    await emma.tap();
+    await expect(page.locator(".xterm")).toContainText("mock terminal of b2c3d4000001");
+    await nav(page, "Office");
+    // the drawing starts at the top of the pane and fills it down to the bottom
+    const pane = await page.locator(".office-pane").boundingBox();
+    const canvas = await page.locator(".office canvas").boundingBox();
+    expect(pane && canvas && Math.abs(canvas.y - pane.y) <= 1 && canvas.y + canvas.height >= pane.y + pane.height - 1).toBe(true);
+    await page.screenshot({ path: `${screens}/phone-office-names.png` });
+    expect(errors).toEqual([]);
+  });
 });
+
+test("the office fills a desktop pane's width", async ({ page }) => {
+  const errors = await open(page, new MockDaemon(team(10)));
+  await nav(page, "Office");
+  await expect(page.locator(".office")).toHaveAttribute("data-renderer", /webgl|canvas/);
+  const pane = await page.locator(".office-pane").boundingBox();
+  const canvas = await page.locator(".office canvas").boundingBox();
+  const scale = Number(await page.locator(".office").getAttribute("data-scale"));
+  expect(scale).toBeGreaterThanOrEqual(3);
+  // the canvas spans the pane (the drawing inside leaves less than a tile of width)
+  expect(pane && canvas && canvas.width >= pane.width - 20).toBe(true);
+  await page.screenshot({ path: `${screens}/office-desktop-width.png` });
+  expect(errors).toEqual([]);
+});
+
+test("the avatar creator: a name, a live preview, Randomize, and Save for every floor", async ({ page }) => {
+  const daemon = new MockDaemon(team(4));
+  const errors = await open(page, daemon);
+  await settingsTab(page, "Profile");
+  const creator = page.getByTestId("avatar-creator");
+  const preview = creator.getByTestId("avatar-preview");
+  await expect(preview).toContainText("You"); // the default name until one is given
+  // each click gives a new look
+  for (let i = 0; i < 5; i++) {
+    const before = await preview.getAttribute("data-look");
+    await creator.getByRole("button", { name: "Randomize" }).click();
+    await expect(preview).not.toHaveAttribute("data-look", before ?? "");
+  }
+  await creator.getByLabel("Name on your nameplate").fill("Ozan");
+  await expect(preview).toContainText("Ozan");
+  const look = await preview.getAttribute("data-look");
+  // the preview is drawn: not an empty canvas
+  const painted = await preview.locator("canvas").evaluate((c: HTMLCanvasElement) =>
+    Array.from(c.getContext("2d")?.getImageData(0, 0, c.width, c.height).data ?? []).some((v, i) => i % 4 === 3 && v > 0));
+  expect(painted).toBe(true);
+  await page.screenshot({ path: `${screens}/avatar-creator.png` });
+  expect(daemon.requests.filter((r) => r.startsWith("PUT /api/profile"))).toEqual([]); // nothing until Save
+  await creator.getByRole("button", { name: "Save" }).click();
+  const [skin, hair, style, shirt, pants] = (look ?? "").split("-").map(Number);
+  await expect.poll(() => daemon.requests.find((r) => r.startsWith("PUT /api/profile")))
+    .toBe(`PUT /api/profile ${JSON.stringify({ name: "Ozan", look: { skin, hair, style, shirt, pants } })}`);
+  await expect(creator.getByRole("status")).toHaveText("Saved: you look like this on every floor.");
+  // The office: the user's nameplate says the name.
+  await nav(page, "Office");
+  await expect(page.getByTestId("user-plate")).toHaveText("Ozan");
+  await expect(page.getByTestId("user-plate")).toHaveAttribute("title", "Ozan, on Chrome on Linux");
+  expect(errors).toEqual([]);
+});
+
+test("+ New project in the picker opens the add form", async ({ page }) => {
+  const daemon = new MockDaemon(team(4));
+  const errors = await open(page, daemon);
+  await page.getByRole("combobox", { name: "Project" }).selectOption({ label: "+ New project…" });
+  const dlg = page.getByRole("dialog", { name: "New project" });
+  await expect(dlg.getByLabel("Repository path")).toBeFocused();
+  await expect(page.getByRole("combobox", { name: "Project" })).toHaveValue("p1"); // the entry is never selected
+  await dlg.getByLabel("Repository path").fill("/home/dev/api-server");
+  await dlg.getByRole("button", { name: "Add project" }).click();
+  await expect(dlg).toHaveCount(0);
+  await expect(page.getByRole("combobox", { name: "Project" })).toHaveValue("p2");
+  expect(errors).toEqual([]);
+});
+
+test("a card's modal shows only the actions that fit its state", async ({ page }) => {
+  const w = team(4);
+  w.tasks.push(task("g00000000002", "Add search", "todo"), task("g00000000003", "Export", "review"));
+  const errors = await open(page, new MockDaemon(w));
+  const actions = (name: string) => page.getByRole("dialog", { name }).locator(".modal-foot button");
+  // To do, while another goal's Tech Lead runs: the starts that can run, nothing greyed out
+  await page.locator("#task-g00000000002").click();
+  await expect(actions("Add search")).toHaveText(["Start agent", "Start architect", "Delete…"]);
+  await expect(page.getByRole("dialog", { name: "Add search" }).getByRole("note")).toContainText("One goal at a time");
+  await page.keyboard.press("Escape");
+  // Review: Mark done, no start buttons
+  await page.locator("#task-g00000000003").click();
+  await expect(actions("Export")).toHaveText(["Mark done", "Delete…"]);
+  await page.keyboard.press("Escape");
+  // A sub-task being worked on: nothing to start, no Delete
+  await page.locator("#task-t00000000001").click();
+  await expect(actions("Tag model and migration")).toHaveCount(0);
+  for (const b of await page.locator(".modal-foot button").all()) await expect(b).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+

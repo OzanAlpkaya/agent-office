@@ -93,7 +93,7 @@ test("a project is added from the Projects panel with its own pack, and removed 
   await settingsTab(page, "Projects");
   const panel = page.getByRole("region", { name: "Projects" });
   await expect(panel.locator(".project-item")).toHaveCount(2);
-  await expect(panel.getByLabel("Stack pack").first()).toHaveAttribute("placeholder", "daemon: go");
+  await expect(panel.getByTestId("hint-pack")).toHaveText("Default: go");
   const add = panel.locator(".project-add");
   await add.getByLabel("Repository path").fill("/home/dev/api-server");
   await add.getByLabel("Stack pack").fill("node");
@@ -102,7 +102,8 @@ test("a project is added from the Projects panel with its own pack, and removed 
   await expect.poll(() => daemon.requests.find((r) => r.startsWith("POST /api/projects"))).toContain(
     '{"repo":"/home/dev/api-server","name":"","settings":{"pack":"node","max_agents":2}}');
   await expect(switcher(page)).toHaveValue("p3");
-  await expect(switcher(page).locator("option")).toHaveText(["linkshelf · 9 running · 2 waiting", "webapp · 2 running · 1 waiting", "api-server"]);
+  await expect(switcher(page).locator("option")).toHaveText(["linkshelf · 9 running · 2 waiting", "webapp · 2 running · 1 waiting", "api-server",
+    "+ New project…"]);
 
   await settingsTab(page, "Projects");
   const item = page.getByRole("region", { name: "Projects" }).locator(".project-item").filter({ hasText: "webapp" });
@@ -110,20 +111,26 @@ test("a project is added from the Projects panel with its own pack, and removed 
   await expect(item).toContainText("Its history, branches and worktrees are kept.");
   await item.getByRole("button", { name: "Remove", exact: true }).click();
   await expect.poll(() => daemon.requests).toContain("DELETE /api/projects/p2");
-  await expect(switcher(page).locator("option")).toHaveText(["linkshelf · 9 running · 2 waiting", "api-server"]);
+  await expect(switcher(page).locator("option")).toHaveText(["linkshelf · 9 running · 2 waiting", "api-server", "+ New project…"]);
   expect(errors).toEqual([]);
 });
 
 test("a project's settings are changed in the panel; empty fields inherit the daemon's", async ({ page }) => {
   const daemon = twoProjects();
   await open(page, daemon);
+  // From the app's project list, Settings opens that project's own settings (Phase 18 review).
   await settingsTab(page, "Projects");
   const item = page.getByRole("region", { name: "Projects" }).locator(".project-item").filter({ hasText: "webapp" });
   await item.getByRole("button", { name: "Settings" }).click();
-  await item.getByLabel("Model").fill("sonnet");
-  await item.getByLabel("Goal budget ($)").fill("1.5");
-  await item.getByLabel("GitHub").selectOption("off");
-  await item.getByRole("button", { name: "Save" }).click();
+  await expect(switcher(page)).toHaveValue("p2");
+  const form = page.locator(".project-settings-page");
+  await expect(form.getByRole("heading", { level: 1 })).toHaveText("webapp");
+  // the inherited value is shown in full under each field
+  await expect(form.getByTestId("hint-workerPids")).toHaveText("Default: pack's or --sandbox-pids");
+  await form.getByLabel("Model").fill("sonnet");
+  await form.getByLabel("Goal budget ($)").fill("1.5");
+  await form.getByLabel("GitHub").selectOption("off");
+  await form.getByRole("button", { name: "Save" }).click();
   await expect.poll(() => daemon.requests.find((r) => r.startsWith("PATCH /api/projects/p2"))).toContain(
     '"settings":{"model":"sonnet","github":false,"budget_goal_micro_usd":1500000}');
 });
@@ -204,9 +211,9 @@ test("a refused settings change is shown next to its Save button, not in the sid
   await settingsTab(page, "Projects");
   const item = page.getByRole("region", { name: "Projects" }).locator(".project-item").filter({ hasText: "webapp" });
   await item.getByRole("button", { name: "Settings" }).click();
-  await item.getByLabel("Model").fill("sonnet");
-  await item.getByRole("button", { name: "Save" }).click();
-  const form = item.locator(".project-settings");
+  const form = page.locator(".project-settings-page .project-settings");
+  await form.getByLabel("Model").fill("sonnet");
+  await form.getByRole("button", { name: "Save" }).click();
   await expect(form.getByRole("alert")).toHaveText("the project has running agents; stop them first");
   await expect(form.getByRole("button", { name: "Save" })).toBeVisible(); // the form stays open
   await expect(page.locator(".banner.danger")).toHaveCount(0);

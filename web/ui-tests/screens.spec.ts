@@ -40,16 +40,25 @@ test("desktop tour", async ({ page }) => {
   await shot(page, "card");
   await modal.getByRole("button", { name: "Close" }).click();
 
-  await nav(page, "Settings").click();
-  await expect(page.getByRole("tabpanel", { name: "Project" })).toBeVisible();
-  await page.waitForTimeout(500);
+  // The project's settings (the gear by the picker) and the app's (the rail).
+  await page.getByRole("button", { name: /^Project settings/ }).click();
+  await expect(page.getByRole("tabpanel", { name: "General" })).toBeVisible();
+  await page.waitForTimeout(300);
   await shot(page, "settings");
+  await page.getByRole("tab", { name: "Office" }).click();
   const layout = page.getByTestId("layout-settings");
   await layout.getByRole("button", { name: "Own layout" }).click();
   await layout.getByRole("button", { name: "Open plan" }).click();
   await expect(layout.getByTestId("layout-summary")).toBeVisible();
-  await layout.scrollIntoViewIfNeeded();
   await shot(page, "settings-layout");
+  await nav(page, "Settings").click();
+  await expect(page.getByRole("tabpanel", { name: "Projects" })).toBeVisible();
+  await shot(page, "app-settings");
+  await page.getByRole("tab", { name: "Profile" }).click();
+  const creator = page.getByTestId("avatar-creator");
+  await creator.getByLabel("Name on your nameplate").fill("Ozan");
+  await creator.getByRole("button", { name: "Randomize" }).click();
+  await shot(page, "avatar-creator");
 
   await nav(page, "Board").click();
   await page.getByRole("button", { name: /^Archive/ }).click();
@@ -83,4 +92,7 @@ test("phone tour", async ({ page }) => {
   await nav(page, "Settings").click();
   await page.waitForTimeout(300);
   await shot(page, "phone-settings");
+  await page.getByRole("button", { name: /^Project settings/ }).click();
+  await page.waitForTimeout(300);
+  await shot(page, "phone-project-settings");
 });
