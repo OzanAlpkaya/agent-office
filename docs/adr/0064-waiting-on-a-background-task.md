@@ -27,15 +27,17 @@ Option 2, started by the hook signal of option 1.
 
 - The Claude Code adapter reads one boolean of the tool input: `run_in_background` on a Bash
   `PreToolUse` (`agent.Event.Background`). The command and anything else stay undecoded, as before.
-- On that PreToolUse (the hook blocks the tool until the daemon answers), the engine takes a snapshot of
-  the agent's processes: below its CLI's PTY process on the host, and in the container's cgroup in a
-  sandbox (the cgroup the memory watch already finds, ADR 0051). Only pids, parents and the first two
-  words of a command line are read from `/proc`. Nothing is logged or stored.
+- On each such PreToolUse (the hook blocks the tool until the daemon answers), the engine takes a fresh
+  snapshot of the agent's processes, minus those already counted as background work: below its CLI's PTY process on the host, and in the container's cgroup in a
+  sandbox (the cgroup the memory watch already finds, ADR 0051). Only pids and parents are read from `/proc`
+  for every process, and the first two words of a command line for the agent's own processes only. Nothing is logged or stored.
 - When a turn of that session ends idle, processes that are new since the snapshot and are not
   agent-office's own helpers (`agent-office mcp`, `agent-office hook`) mean a background command still
   runs. The agent is then shown as `waiting_background` ("Waiting on background task"), rechecked every
   5 seconds, and back to Idle once they are gone. Any hook that moves the agent (a new turn, a tool, a
-  permission prompt) ends the wait at once. Zombies do not count.
+  permission prompt) ends the wait at once; each wait has a generation, so a wait that starts right after
+  another ended is not missed. Zombies do not count. A wait ends after 2 hours whatever still runs, so an
+  agent cannot hide as busy forever.
 - The engine's own state stays idle, so messages are still delivered (they start a turn, as for an
   idle agent). The shown state is in the agent view, the board card ("Background task"), the agent list,
   and the office, where the character stays at its desk with code on its screen. The wait is recorded as a

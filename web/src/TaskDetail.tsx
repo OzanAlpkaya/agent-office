@@ -308,7 +308,7 @@ function RunInfo({ run: r, usage, onOpenAgent }: { run: AgentRun; usage?: UsageR
         </dd>
         {r.reports.length > 0 && (
           <>
-            <dt>Verified</dt>
+            <dt title="What the worker says it ran; agent-office did not check it">Verified (reported)</dt>
             <dd data-testid="run-verification">{r.reports[r.reports.length - 1].verification
               ? <span className="quote">{r.reports[r.reports.length - 1].verification}</span>
               : <span className="muted">not reported</span>}</dd>

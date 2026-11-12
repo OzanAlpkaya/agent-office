@@ -1,7 +1,7 @@
 // Projects panel (ADR 0046, 0048): add a repository, change a project's
 // settings, retry or remove it. Settings left empty inherit the daemon's
 // flags, shown as placeholders.
-import { type JSX, useState } from "react";
+import { type JSX, useEffect, useState } from "react";
 import { type AccessDecider, type Caps, type DaemonStatus, type Project, type ProjectSettings, api } from "./api";
 import { capNote, needsStop } from "./caps";
 import { formatMoney } from "./usage";
@@ -344,6 +344,8 @@ function DaemonCap({ status }: { status: DaemonStatus }): JSX.Element {
   const [value, setValue] = useState(String(status.max_agents));
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  // Another device's change arrives with the daemon's status.
+  useEffect(() => setValue(String(status.max_agents)), [status.max_agents]);
   const save = (n: number | null): void => {
     setError("");
     setSaved(false);

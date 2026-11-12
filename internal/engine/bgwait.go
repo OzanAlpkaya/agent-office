@@ -30,6 +30,10 @@ const StateWaitingBackground = "waiting_background"
 // shorten it.
 var bgPollEvery = 5 * time.Second
 
+// bgMaxWait ends a wait that lasts longer: the agent shows idle again (and
+// the stall watchdog sees it), whatever still runs.
+const bgMaxWait = 2 * time.Hour
+
 // agentProcs returns an agent's processes: below its CLI on the host, the
 // container's cgroup in a sandbox; ok is false when they cannot be read.
 func (e *Engine) agentProcs(a *agentProc) (map[int]procInfo, bool) {
@@ -56,7 +60,7 @@ func (e *Engine) agentProcs(a *agentProc) (map[int]procInfo, bool) {
 				out[pid] = p
 			}
 		}
-		return out, true
+		return withCmdlines(out), true
 	}
 	if a.term == nil {
 		return nil, false
@@ -65,7 +69,7 @@ func (e *Engine) agentProcs(a *agentProc) (map[int]procInfo, bool) {
 	if err != nil {
 		return nil, false
 	}
-	return descendants(tab, a.term.Pid()), true
+	return withCmdlines(descendants(tab, a.term.Pid())), true
 }
 
 // cgroupPids lists the pids in a cgroup and the cgroups below it.
@@ -102,17 +106,20 @@ func (e *Engine) noteBackgroundLocked(a *agentProc, ev agent.Event) {
 		return
 	}
 	a.bgSeen = true
-	if a.bgBaseline != nil {
-		return
-	}
 	procs, ok := e.agentProcs(a)
 	if !ok {
 		return
 	}
-	a.bgBaseline = map[int]bool{}
+	// Each background command gets a fresh snapshot (review finding: a single
+	// one counted every later process, such as a lazily started MCP server);
+	// what earlier background commands left running stays counted.
+	next := map[int]bool{}
 	for pid := range procs {
-		a.bgBaseline[pid] = true
+		if !a.bgKnown[pid] {
+			next[pid] = true
+		}
 	}
+	a.bgBaseline = next
 }
 
 // backgroundRunning reports whether a started background command still runs.
@@ -125,12 +132,14 @@ func (e *Engine) backgroundRunning(a *agentProc) bool {
 		return false
 	}
 	bin := e.ownBin()
+	known := map[int]bool{}
 	for pid, p := range procs {
 		if !a.bgBaseline[pid] && !ownHelper(p, bin) {
-			return true
+			known[pid] = true
 		}
 	}
-	return false
+	a.bgKnown = known
+	return len(known) > 0
 }
 
 // afterTurnLocked starts the background check when a turn ended idle in a
@@ -139,45 +148,42 @@ func (e *Engine) backgroundRunning(a *agentProc) bool {
 func (e *Engine) afterTurnLocked(ctx context.Context, a *agentProc, ev agent.Event) {
 	if a.bgWaiting && (a.status.State != hooks.Idle || !a.running()) {
 		a.bgWaiting = false
+		a.bgGen++ // its poller ends at its next tick
 		e.publishAgentLocked(a)
 	}
-	if ev.Kind != agent.TurnFinished || ev.Subagent || !a.bgSeen || a.bgWaiting || a.bgChecking ||
-		a.status.State != hooks.Idle {
+	if ev.Kind != agent.TurnFinished || ev.Subagent || !a.bgSeen || a.bgWaiting || a.status.State != hooks.Idle {
 		return
 	}
 	if !e.backgroundRunning(a) {
 		return
 	}
 	a.bgWaiting = true
+	a.bgGen++
 	e.recordStateLocked(ctx, a, StateWaitingBackground, "background_wait")
 	e.publishAgentLocked(a)
-	a.bgChecking = true
 	e.wg.Add(1)
-	go e.pollBackground(a)
+	go e.pollBackground(a, a.bgGen, now())
 }
 
-// pollBackground ends the wait once the background command is gone.
-func (e *Engine) pollBackground(a *agentProc) {
+// pollBackground ends wait gen once the background command is gone, or
+// after bgMaxWait: a command that runs that long is not shown as a wait.
+func (e *Engine) pollBackground(a *agentProc, gen int, since time.Time) {
 	defer e.wg.Done()
 	t := time.NewTicker(bgPollEvery)
 	defer t.Stop()
 	for {
 		select {
 		case <-a.exited:
-			e.mu.Lock()
-			a.bgChecking = false
-			e.mu.Unlock()
 			return
 		case <-t.C:
 		}
 		e.mu.Lock()
-		if !a.bgWaiting || e.agents[a.info.ID] != a {
-			a.bgChecking = false
+		if !a.bgWaiting || a.bgGen != gen || e.agents[a.info.ID] != a {
 			e.mu.Unlock()
 			return
 		}
-		if !e.backgroundRunning(a) {
-			a.bgWaiting, a.bgChecking = false, false
+		if !e.backgroundRunning(a) || now().Sub(since) > bgMaxWait {
+			a.bgWaiting = false
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			e.recordStateLocked(ctx, a, string(hooks.Idle), "background_done")
 			cancel()

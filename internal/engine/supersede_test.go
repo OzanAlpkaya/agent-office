@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
+	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
 
 // Only open sub-tasks count against the project's limit; reported, done and
@@ -111,5 +112,61 @@ func TestDependencyFollowsReplacement(t *testing.T) {
 	}
 	if unmet, _ := tf.e.unmetDependencies(ctx, bt); len(unmet) != 0 {
 		t.Fatalf("b still waits: %v", unmet)
+	}
+}
+
+// A sub-task that supersedes one it depends on takes over that one's
+// dependencies instead of waiting on itself (code review).
+func TestSupersedeOwnDependency(t *testing.T) {
+	tf := newTeam(t)
+	ctx := context.Background()
+	base, _ := tf.team.CreateTask(ctx, tf.lead.ID, mcp.CreateTaskInput{Title: "base"})
+	a, _ := tf.team.CreateTask(ctx, tf.lead.ID, mcp.CreateTaskInput{Title: "a", DependsOn: []string{base.ID}})
+	n, err := tf.team.CreateTask(ctx, tf.lead.ID, mcp.CreateTaskInput{Title: "a again", DependsOn: []string{a.ID},
+		Supersedes: []string{a.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(n.DependsOn) != 1 || n.DependsOn[0] != base.ID {
+		t.Fatalf("depends on %v, want %s", n.DependsOn, base.ID)
+	}
+}
+
+// A QA bug a lead closes with supersedes is dealt with only once its
+// replacement is reported (security review).
+func TestQAGateFollowsSupersededBugs(t *testing.T) {
+	tf := newTeamWith(t, func(o *Options) { o.QA = true })
+	ctx := context.Background()
+	bug, _ := tf.team.CreateTask(ctx, tf.lead.ID, mcp.CreateTaskInput{Title: "Bug: crash"})
+	bugs := `[{"title":"crash","description":"","bug_task_id":"` + bug.ID + `"}]`
+	for i, status := range []string{QAFailed, QAPassed} {
+		run, err := tf.e.q.InsertQARun(ctx, db.InsertQARunParams{GoalID: tf.goal.ID, Branch: fmt.Sprintf("agent-office/qa-%d", i),
+			Merged: "[]", CreatedAt: now(), UpdatedAt: now()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := "[]"
+		if status == QAFailed {
+			b = bugs
+		}
+		if _, err := tf.e.q.FinishQARun(ctx, db.FinishQARunParams{Status: status, Head: "h", Bugs: b, UpdatedAt: now(), ID: run.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repl, err := tf.team.CreateTask(ctx, tf.lead.ID, mcp.CreateTaskInput{Title: "nothing", Supersedes: []string{bug.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal, _ := tf.e.getTask(ctx, tf.goal.ID)
+	kids, _ := tf.e.q.ListChildTasks(ctx, nullString(goal.ID))
+	if err := tf.e.qaGate(ctx, goal, kids); err == nil || !strings.Contains(err.Error(), repl.ID) {
+		t.Fatalf("gate with the bug superseded by an open sub-task: %v", err)
+	}
+	if _, err := tf.e.UpdateTask(ctx, repl.ID, TaskPatch{Status: Ptr(StatusReview)}); err != nil {
+		t.Fatal(err)
+	}
+	kids, _ = tf.e.q.ListChildTasks(ctx, nullString(goal.ID))
+	if err := tf.e.qaGate(ctx, goal, kids); err != nil && strings.Contains(err.Error(), "bug sub-tasks") {
+		t.Fatalf("gate once the replacement is reported: %v", err)
 	}
 }

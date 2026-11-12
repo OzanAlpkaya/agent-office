@@ -69,6 +69,51 @@ func (e *Engine) supersedable(ctx context.Context, goal db.Task, ids []string) (
 	return out, nil
 }
 
+// dependsWithout drops from deps the sub-tasks the new one supersedes, which
+// would make it wait on itself, and takes over their own dependencies
+// (review finding).
+func (e *Engine) dependsWithout(ctx context.Context, deps, replaced []string) ([]string, error) {
+	if len(replaced) == 0 {
+		return deps, nil
+	}
+	out := []string{}
+	add := func(id string) {
+		if !slices.Contains(out, id) && !slices.Contains(replaced, id) {
+			out = append(out, id)
+		}
+	}
+	for _, d := range deps {
+		if !slices.Contains(replaced, d) {
+			add(d)
+			continue
+		}
+		t, err := e.getTask(ctx, d)
+		if err != nil {
+			return nil, err
+		}
+		for _, x := range jsonList(t.DependsOn) {
+			add(x)
+		}
+	}
+	return out, nil
+}
+
+// dependsOnTask reports whether t depends on id, directly or through a
+// superseded sub-task that id replaced.
+func (e *Engine) dependsOnTask(ctx context.Context, t db.Task, id string) bool {
+	for _, d := range jsonList(t.DependsOn) {
+		if d == id {
+			return true
+		}
+		if dt, err := e.getTask(ctx, d); err == nil && isSuperseded(dt) {
+			if r, ok := e.replacementOf(ctx, dt); ok && r.ID == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // tasksWithRunningAgents is every task an agent runs on or is being assigned to.
 func (e *Engine) tasksWithRunningAgents() map[string]bool {
 	e.mu.Lock()

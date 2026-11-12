@@ -52,17 +52,29 @@ func readProcs() (map[int]procInfo, error) {
 		if err != nil {
 			continue
 		}
-		p := procInfo{ppid: ppid}
-		if cl, err := os.ReadFile(filepath.Join("/proc", d.Name(), "cmdline")); err == nil {
+		out[pid] = procInfo{ppid: ppid} // command lines only for the agent's own processes (withCmdlines)
+	}
+	return out, nil
+}
+
+// withCmdlines fills in the first two words of each process's command line:
+// read for an agent's processes only, never for the rest of the host
+// (security review: other users' command lines may hold secrets).
+func withCmdlines(procs map[int]procInfo) map[int]procInfo {
+	for pid, p := range procs {
+		if p.exe != "" {
+			continue // a test's table
+		}
+		if cl, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline")); err == nil {
 			args := bytes.SplitN(cl, []byte{0}, 3)
 			p.exe = filepath.Base(string(args[0]))
 			if len(args) > 1 {
 				p.arg1 = string(args[1])
 			}
+			procs[pid] = p
 		}
-		out[pid] = p
 	}
-	return out, nil
+	return procs
 }
 
 // descendants lists every process below root in tab (not root itself).

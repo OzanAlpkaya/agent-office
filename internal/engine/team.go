@@ -146,6 +146,9 @@ func (t team) CreateTask(ctx context.Context, caller string, in mcp.CreateTaskIn
 	if err != nil {
 		return mcp.TaskInfo{}, userErr(err)
 	}
+	if ti.DependsOn, err = e.dependsWithout(ctx, ti.DependsOn, replaced); err != nil {
+		return mcp.TaskInfo{}, userErr(err)
+	}
 	task, err := e.createTask(ctx, ti, goal.ID, caller)
 	if err != nil {
 		return mcp.TaskInfo{}, userErr(err)

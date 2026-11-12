@@ -488,7 +488,7 @@ func TestDaemonCapAPI(t *testing.T) {
 	if ps.Caps.DaemonMax != 2 || ps.Caps.Effective > 2 || ps.Caps.MaxSubTasks != engine.DefaultMaxSubTasks {
 		t.Fatalf("project caps %+v", ps.Caps)
 	}
-	for _, bad := range []string{`{"max_agents": 0}`, `{"max_agents": 33}`, `{"max_agents": "4"}`, `{"cap": 1}`} {
+	for _, bad := range []string{`{"max_agents": 0}`, `{"max_agents": 33}`, `{"max_agents": "4"}`, `{"cap": 1}`, `{}`} {
 		if r := f.doBody(t, "PUT", "/api/daemon", jsonCT, bad); r.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s: %d", bad, r.StatusCode)
 		}

@@ -274,8 +274,8 @@ type MergeRequest struct {
 const goalTrailer = "Agent-Office-Goal"
 
 func (e *Engine) mergeTarget() string {
-	if e.lv().MergeTarget != "" {
-		return e.lv().MergeTarget
+	if t := e.lv().MergeTarget; t != "" {
+		return t
 	}
 	return DefaultMergeTarget
 }

@@ -286,9 +286,10 @@ type agentProc struct {
 	bgSeen        bool
 	bgBaseline    map[int]bool
 	bgWaiting     bool
-	bgChecking    bool
-	stopAfterTurn bool // report_done: end the session when the turn ends
-	reporting     bool // a report_done call is running
+	bgGen         int          // the current wait; a poller of an older one ends
+	bgKnown       map[int]bool // processes counted as background work at the last check
+	stopAfterTurn bool         // report_done: end the session when the turn ends
+	reporting     bool         // a report_done call is running
 }
 
 // Engine owns agent and task lifecycles. All state changes go through it.

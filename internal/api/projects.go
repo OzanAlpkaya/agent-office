@@ -323,7 +323,7 @@ func (s *server) putProfile(w http.ResponseWriter, r *http.Request) {
 // daemonSettings is what the app's settings change daemon-wide (ADR 0061):
 // max_agents, or null for --max-agents.
 type daemonSettings struct {
-	MaxAgents *int `json:"max_agents"`
+	MaxAgents json.RawMessage `json:"max_agents"` // "null" when given as null; empty when missing
 }
 
 func (s *server) putDaemon(w http.ResponseWriter, r *http.Request) {
@@ -331,7 +331,16 @@ func (s *server) putDaemon(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &d) {
 		return
 	}
-	st, err := s.hub.SetMaxAgents(r.Context(), d.MaxAgents)
+	if d.MaxAgents == nil {
+		writeError(w, http.StatusBadRequest, "max_agents is required: a number, or null for --max-agents")
+		return
+	}
+	var n *int
+	if err := json.Unmarshal(d.MaxAgents, &n); err != nil {
+		writeError(w, http.StatusBadRequest, "max_agents: a whole number or null")
+		return
+	}
+	st, err := s.hub.SetMaxAgents(r.Context(), n)
 	if err != nil {
 		s.engineError(w, err)
 		return

@@ -119,11 +119,25 @@ func (e *Engine) port(ctx context.Context, c *mergedCut, onto, head, what string
 		return "", err
 	}
 	if !res.Clean {
-		return "", invalid("the new changes of %s conflict with %s in %s", what, c.target, strings.Join(res.Conflicts, ", "))
+		return "", invalid("the new changes of %s conflict with %s in %s", what, c.target, quotedPaths(res.Conflicts))
 	}
 	return e.git.CommitTree(ctx, repo, res.Tree, []string{onto},
 		fmt.Sprintf("agent-office: %s on %s\n\nIts changes since the goal's squash merge, ported onto %s.\n\n"+
 			"Agent-Office-Ported-From: %s\n", what, c.target, short(onto), head))
+}
+
+// quotedPaths lists file names from agents' commits as quoted data: a name
+// may hold line breaks or text meant for a reader.
+func quotedPaths(paths []string) string {
+	q := make([]string, 0, len(paths))
+	for i, p := range paths {
+		if i == 10 {
+			q = append(q, fmt.Sprintf("and %d more", len(paths)-10))
+			break
+		}
+		q = append(q, fmt.Sprintf("%q", truncateRunes(p, 200)))
+	}
+	return strings.Join(q, ", ")
 }
 
 // foldOnto adds head to base without a working tree: base itself when it
@@ -182,6 +196,8 @@ func (e *Engine) goalWork(ctx context.Context, goalID string) (string, error) {
 	}
 	base := ""
 	switch run, ok := e.latestFinishedQA(ctx, goalID); {
+	case c != nil && ok && e.isAncestor(ctx, c.commit, run.Head):
+		base = run.Head // a QA run after the merge, from the target: its merges and tests (review finding)
 	case c != nil:
 		base = c.targetHead
 	case ok:

@@ -499,9 +499,20 @@ func (e *Engine) qaGate(ctx context.Context, goal db.Task, children []db.Task) e
 			continue
 		}
 		for _, b := range r.Bugs {
-			if s, ok := status[b.BugTaskID]; ok && b.BugTaskID != "" && s != StatusReview && s != StatusDone &&
-				!slices.Contains(open, b.BugTaskID) {
-				open = append(open, b.BugTaskID)
+			id := b.BugTaskID
+			if bt, err := e.getTask(ctx, id); err == nil && isSuperseded(bt) {
+				// Closed by a lead's supersedes: dealt with once its replacement is.
+				if rt, ok := e.replacementOf(ctx, bt); ok {
+					id = rt.ID
+					if _, known := status[id]; !known {
+						status[id] = rt.Status
+					}
+				} else {
+					continue // dropped by a plan the user approved
+				}
+			}
+			if s, ok := status[id]; ok && id != "" && s != StatusReview && s != StatusDone && !slices.Contains(open, id) {
+				open = append(open, id)
 			}
 		}
 	}

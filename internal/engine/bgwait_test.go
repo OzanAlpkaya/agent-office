@@ -52,6 +52,10 @@ func TestWaitingOnBackgroundTask(t *testing.T) {
 	log.waitFrom(t, 5*time.Second, mark, agentState(a.ID, hooks.State(StateWaitingBackground)))
 	typeLine(t, e, a.ID, "busy")
 	log.waitFrom(t, 5*time.Second, mark, agentState(a.ID, hooks.Working))
+	// That turn ends at once while the command still runs: waiting again (code review).
+	mark = log.mark()
+	typeLine(t, e, a.ID, "stop")
+	log.waitFrom(t, 5*time.Second, mark, agentState(a.ID, hooks.State(StateWaitingBackground)))
 }
 
 func TestBackgroundProcs(t *testing.T) {
@@ -87,7 +91,10 @@ func TestReadProcs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, ok := tab[cmd.Process.Pid]
+	if tab[cmd.Process.Pid].exe != "" {
+		t.Fatal("readProcs read a command line")
+	}
+	p, ok := withCmdlines(map[int]procInfo{cmd.Process.Pid: tab[cmd.Process.Pid]})[cmd.Process.Pid]
 	if !ok || p.ppid != os.Getpid() || p.exe != "sleep" || p.arg1 != "5" {
 		t.Fatalf("child %+v %v", p, ok)
 	}

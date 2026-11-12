@@ -72,6 +72,15 @@ func TestRequestPlanChanges(t *testing.T) {
 	log.waitFrom(t, startWait, mark, agentState(arch.ID, hooks.Idle))
 	screen(t, e, arch.ID, "The user asks for changes to version 1 of the plan (approved)")
 	screen(t, e, arch.ID, "Add a CLI sub-task.")
+	// It does not end while the request waits for a new version (code review), nor is it left out of a restore.
+	typeLine(t, e, arch.ID, "turn")
+	time.Sleep(architectIdleGrace + time.Second)
+	if a, _ := e.Get(arch.ID); a.State == string(hooks.Exited) {
+		t.Fatal("the architect ended with a change request unanswered")
+	}
+	if !e.architectRestorable(ctx, goal.ID) {
+		t.Fatal("a restore would leave out an architect with a change request")
+	}
 	if a, _ := e.Get(arch.ID); a.TaskID != goal.ID {
 		t.Fatalf("relaunched architect %+v", a)
 	}

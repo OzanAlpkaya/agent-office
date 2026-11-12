@@ -125,3 +125,30 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
   the memory watch already finds, ADR 0051), not from `podman inspect`'s pid. Comparing with a snapshot
   taken at the `run_in_background` start (instead of excluding a fixed list) keeps MCP servers out. Zombies
   do not count. The office draws the character at its desk with code on its screen ("background" pose).
+- **Independent reviews.** A code review and a security review of the phase's diff. Fixed:
+  - after a merge, a QA run started from the target is the follow-up base, not the bare target, so its
+    merges and tests are kept;
+  - a sub-task that supersedes one it depends on takes over that one's dependencies instead of waiting on
+    itself, and siblings that depend on a superseded sub-task are told when its replacement reports;
+  - an Architect with an unanswered change request neither ends nor is left out of a restore; a user's change
+    request is not counted against the plan rate limit;
+  - the background check takes a fresh snapshot per background command and has a generation per wait (a
+    second wait right after a quick turn was missed), and gives up after 2 hours; command lines are read
+    for the agent's own processes only;
+  - a QA bug a lead closes with `supersedes` counts as dealt with only when its replacement is reported, so
+    `supersedes` is no way past the QA gate;
+  - the unit's `Environment=` no longer doubles `$`, and empty or relative `PATH` entries are dropped;
+    `service install` refuses a binary in the temp dir (`go run`);
+  - `PUT /api/daemon` needs `max_agents` given (a number or `null`); `{}` no longer resets it;
+  - the port error quotes the conflicting paths (agent-chosen names); `mergeTarget` reads the live
+    settings once; the app's cap field follows changes from other devices; the run info labels the
+    verification as reported by the agent.
+
+  Recorded, not changed: conflict paths in report-time messages and acceptance criteria in the QA prompt
+  are agent text without line-break filtering (both from Phase 12; backlog). Budgets, worker limits,
+  models and both caps can be changed from a paired remote device, now also while agents run; before
+  this phase the same device could change them while the agents were stopped (backlog: a guarded set that
+  includes them). Port branches accumulate per QA run until branch clean-up (ADR 0059). The process scan runs
+  under the engine lock (milliseconds; backlog: snapshot outside it). A failed change request delivery
+  leaves the request stored. A goal whose merges went to different targets is not seen as merged.
+

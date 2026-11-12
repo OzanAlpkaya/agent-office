@@ -201,10 +201,11 @@ func unitFile(binary string, args []string, path string) (string, error) {
 		}
 		quoted[i] = q
 	}
-	p, err := systemdQuote("PATH=" + path)
-	if err != nil {
-		return "", err
+	if strings.ContainsAny(path, "\n\r\x00") {
+		return "", fmt.Errorf("PATH has a line break: %q", path)
 	}
+	// Environment= expands specifiers (%), not variables ($): only % is doubled.
+	p := `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%").Replace("PATH="+absolutePath(path)) + `"`
 	var b strings.Builder
 	b.WriteString(`# Written by "agent-office service install"; run it again to change the flags (ADR 0060).
 [Unit]
@@ -242,6 +243,9 @@ func serviceInstall(ctx context.Context, env serviceEnv, args []string, stdout, 
 	}
 	if !env.userUnits {
 		return errors.New("systemctl was not found: the service needs systemd's user manager")
+	}
+	if tmp := os.TempDir(); strings.HasPrefix(env.binary, filepath.Clean(tmp)+string(filepath.Separator)) {
+		return fmt.Errorf("%s is a temporary binary (go run?): build it (make build) and install from bin/agent-office", env.binary)
 	}
 	sargs, dataDir, err := serveArgs(rest, env.cwd)
 	if err != nil {
@@ -363,6 +367,18 @@ func serviceStatus(ctx context.Context, env serviceEnv, stdout io.Writer) error 
 	}
 	fmt.Fprintln(stdout, "logs:     journalctl --user -u agent-office -f")
 	return nil
+}
+
+// absolutePath keeps PATH's absolute entries: an empty or relative one would
+// resolve against the service's working directory (security review).
+func absolutePath(path string) string {
+	var keep []string
+	for _, d := range strings.Split(path, ":") {
+		if filepath.IsAbs(d) && !slices.Contains(keep, d) {
+			keep = append(keep, d)
+		}
+	}
+	return strings.Join(keep, ":")
 }
 
 // agentOfficeEnv lists the AGENT_OFFICE_* variables that are set (names only).

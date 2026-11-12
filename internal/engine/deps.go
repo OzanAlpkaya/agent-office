@@ -62,7 +62,7 @@ func (e *Engine) nextSteps(ctx context.Context, reported db.Task) string {
 		if s.Status != StatusReview && s.Status != StatusDone {
 			pending = true
 		}
-		if s.Status != StatusTodo || !slices.Contains(jsonList(s.DependsOn), reported.ID) {
+		if s.Status != StatusTodo || !e.dependsOnTask(ctx, s, reported.ID) {
 			continue
 		}
 		if unmet, err := e.unmetDependencies(ctx, s); err == nil && len(unmet) == 0 {

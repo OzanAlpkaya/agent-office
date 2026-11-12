@@ -41,9 +41,6 @@ func (e *Engine) RequestSpecChanges(ctx context.Context, id int64, text string) 
 	case row.Status != SpecProposed && row.Status != SpecApproved:
 		return Spec{}, invalid("version %d is %s; ask for changes on the current version", row.Version, row.Status)
 	}
-	if err := e.planRate(ctx, goal.ID); err != nil {
-		return Spec{}, err
-	}
 	updated, err := e.q.RequestSpecChanges(ctx, db.RequestSpecChangesParams{ChangeRequest: text,
 		ChangeRequestedAt: nullTime(now()), ID: id})
 	if err != nil {
@@ -138,6 +135,9 @@ func (e *Engine) architectBusy(ctx context.Context, id, goalID string, since tim
 			return "a proposed version waits for the user"
 		}
 	}
+	if changeRequested(specs) {
+		return "a change request waits for a new version"
+	}
 	if n, err := e.q.CountPendingMessages(ctx, db.CountPendingMessagesParams{ToAgentID: id, CreatedAt: since}); err != nil || n > 0 {
 		return "a message waits for it"
 	}
@@ -162,5 +162,17 @@ func (e *Engine) architectRestorable(ctx context.Context, goalID string) bool {
 			return true
 		}
 	}
-	return false
+	return changeRequested(specs)
+}
+
+// changeRequested reports whether the newest version of a goal's plan has a
+// change request the Architect has not answered with a newer version.
+func changeRequested(specs []db.Spec) bool {
+	var newest *db.Spec
+	for i := range specs {
+		if newest == nil || specs[i].Version > newest.Version {
+			newest = &specs[i]
+		}
+	}
+	return newest != nil && newest.ChangeRequest != "" && newest.Status != SpecSuperseded
 }

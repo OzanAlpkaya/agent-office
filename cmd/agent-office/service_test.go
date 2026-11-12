@@ -49,7 +49,7 @@ func testServiceEnv(t *testing.T) (serviceEnv, *fakeCtl) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	ctl := &fakeCtl{}
 	return serviceEnv{ctl: ctl, unitDir: filepath.Join(t.TempDir(), "systemd", "user"), binary: "/opt/ao/agent-office",
-		path: "/usr/local/bin:/usr/bin", cwd: "/home/u/work", env: []string{"HOME=/home/u", "AGENT_OFFICE_MODEL=haiku"},
+		path: "/usr/local/bin:.::/usr/bin:bin:/opt/$x", cwd: "/home/u/work", env: []string{"HOME=/home/u", "AGENT_OFFICE_MODEL=haiku"},
 		userUnits: true, daemonUp: func(string) bool { return false },
 		runtime: func() (string, error) { return t.TempDir(), nil }}, ctl
 }
@@ -69,7 +69,7 @@ func TestServiceInstallWritesUnitAndStarts(t *testing.T) {
 	unit := string(b)
 	for _, want := range []string{
 		`ExecStart="/opt/ao/agent-office" "serve" "--max-agents=6" "--model=100%%$$HOME" "--repo=/home/u/work/proj"`,
-		`Environment="PATH=/usr/local/bin:/usr/bin"`,
+		`Environment="PATH=/usr/local/bin:/usr/bin:/opt/$x"`, // relative and empty entries dropped; $ kept as is
 		"Restart=on-failure", "KillMode=mixed", "SyslogIdentifier=agent-office", "WantedBy=default.target",
 	} {
 		if !strings.Contains(unit, want) {
@@ -130,6 +130,12 @@ func TestServiceInstallRefusals(t *testing.T) {
 		t.Errorf("install over a running daemon: %d %s", code, errOut.String())
 	}
 	env.daemonUp = func(string) bool { return false }
+	tmpEnv := env
+	tmpEnv.binary = filepath.Join(os.TempDir(), "go-build123", "exe", "agent-office")
+	if code := runService(context.Background(), tmpEnv, []string{"install"}, &out, &errOut); code == 0 ||
+		!strings.Contains(errOut.String(), "temporary binary") {
+		t.Errorf("install of a temporary binary: %d %s", code, errOut.String())
+	}
 	env.userUnits = false
 	if code := runService(context.Background(), env, []string{"install"}, &out, &errOut); code == 0 {
 		t.Error("install without systemctl accepted")
