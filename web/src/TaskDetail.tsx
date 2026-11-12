@@ -16,7 +16,8 @@ import { type UsageRow, formatMoney, formatTokens, totalTokens } from "./usage";
 import { currentSpec, goalBusy, inboxFor, latestQA, workerRoles } from "./workflow";
 
 const stateLabel: Record<Agent["state"], string> = {
-  starting: "starting", idle: "idle", working: "working", waiting_permission: "waiting for permission", exited: "exited",
+  starting: "starting", idle: "idle", working: "working", waiting_permission: "waiting for permission",
+  waiting_background: "waiting on background task", exited: "exited",
 };
 
 export function TaskDetail(p: BoardProps & { task: Task; onClose: () => void }): JSX.Element {

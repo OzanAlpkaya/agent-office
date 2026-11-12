@@ -158,6 +158,18 @@ func fakeClaude() int {
 			time.Sleep(300 * time.Millisecond)
 			_ = os.WriteFile(transcript, main, 0o600)
 			fmt.Println("transcript written")
+		case "bgturn": // a turn that starts a background command (run_in_background) and ends while it runs
+			send("UserPromptSubmit", "")
+			send("PreToolUse", `,"tool_name":"Bash","tool_input":{"command":"x","run_in_background":true}`)
+			bg := exec.Command("sleep", os.Getenv("AO_FAKE_BG_SECONDS"))
+			if err := bg.Start(); err != nil {
+				fmt.Println("bg failed:", err)
+			} else {
+				go func() { _ = bg.Wait(); fmt.Println("bg done") }() // reaped: no zombie
+			}
+			send("PostToolUse", `,"tool_name":"Bash"`)
+			send("Stop", `,"stop_hook_active":false`)
+			fmt.Println("bg turn ended")
 		case "busy": // a turn that keeps running
 			send("UserPromptSubmit", "")
 		case "turn": // a whole turn

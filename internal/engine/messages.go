@@ -179,7 +179,9 @@ func (e *Engine) onHookLocked(ctx context.Context, a *agentProc, ev agent.Event,
 			log.Error("encode stop reply", "err", err)
 		}
 	}
+	e.noteBackgroundLocked(a, ev)
 	e.applyLocked(ctx, a, ev, log)
+	e.afterTurnLocked(ctx, a, ev)
 	switch {
 	case mainStop && a.stopAfterTurn:
 		e.stopAfterReportLocked(a)

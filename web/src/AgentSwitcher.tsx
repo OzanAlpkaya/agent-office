@@ -7,7 +7,8 @@ import type { Agent, AgentState, Task } from "./api";
 import { searchAgents, shortId } from "./agents";
 
 const stateText: Record<AgentState, string> = {
-  starting: "starting", idle: "idle", working: "working", waiting_permission: "waiting for you", exited: "exited",
+  starting: "starting", idle: "idle", working: "working", waiting_permission: "waiting for you",
+  waiting_background: "waiting on background task", exited: "exited",
 };
 
 export function AgentSwitcher({ agents, tasks, current, waiting, onPick, onClose }: {

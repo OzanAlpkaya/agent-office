@@ -274,17 +274,31 @@ func ShellQuote(s string) string {
 
 // claudeHook holds only the payload fields state tracking needs. Everything
 // else (prompt, tool_input, tool_response, last_assistant_message, message) is
-// never decoded.
+// never decoded, but for one boolean of a Bash call's tool_input:
+// run_in_background (ADR 0064).
 type claudeHook struct {
-	HookEventName    string `json:"hook_event_name"`
-	SessionID        string `json:"session_id"`
-	ToolName         string `json:"tool_name"`
-	Source           string `json:"source"`
-	Reason           string `json:"reason"`
-	NotificationType string `json:"notification_type"`
-	AgentID          string `json:"agent_id"`
-	StopHookActive   bool   `json:"stop_hook_active"`
-	TranscriptPath   string `json:"transcript_path"`
+	HookEventName    string          `json:"hook_event_name"`
+	SessionID        string          `json:"session_id"`
+	ToolName         string          `json:"tool_name"`
+	Source           string          `json:"source"`
+	Reason           string          `json:"reason"`
+	NotificationType string          `json:"notification_type"`
+	AgentID          string          `json:"agent_id"`
+	StopHookActive   bool            `json:"stop_hook_active"`
+	TranscriptPath   string          `json:"transcript_path"`
+	ToolInput        json.RawMessage `json:"tool_input"`
+}
+
+// backgroundBash reports whether a Bash tool_input asks to run in the
+// background. Anything unexpected is false.
+func backgroundBash(tool string, input json.RawMessage) bool {
+	if tool != "Bash" || len(input) == 0 {
+		return false
+	}
+	var in struct {
+		RunInBackground bool `json:"run_in_background"`
+	}
+	return json.Unmarshal(input, &in) == nil && in.RunInBackground
 }
 
 // ErrInvalidPayload is returned for hook payloads that cannot be used.
@@ -314,6 +328,7 @@ func ParseClaudeHook(raw []byte) (Event, error) {
 		ev.Kind = TurnStarted
 	case "PreToolUse":
 		ev.Kind = ToolStarted
+		ev.Background = backgroundBash(h.ToolName, h.ToolInput)
 	case "PostToolUse":
 		ev.Kind = ToolFinished
 	case "PostToolUseFailure":

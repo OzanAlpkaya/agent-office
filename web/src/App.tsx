@@ -36,6 +36,7 @@ const stateLabel: Record<AgentState, string> = {
   idle: "Idle",
   working: "Working",
   waiting_permission: "Waiting for permission",
+  waiting_background: "Waiting on background task",
   exited: "Exited",
 };
 
@@ -685,6 +686,9 @@ function AgentRow({ agent: a, taskTitle, selected, waiting, usage, onSelect }: {
         </span>
         <span className="agent-row-side">
           {waiting && <span className="chip small tone-warn">needs you</span>}
+          {!waiting && a.state === "waiting_background" && (
+            <span className="chip small tone-accent" title="Its turn ended while a command it started still runs">background task</span>
+          )}
           {usage && usage.costMicroUSD > 0 && <span className="agent-row-cost">{formatMoney(usage.costMicroUSD)}</span>}
         </span>
       </button>

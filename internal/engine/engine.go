@@ -275,14 +275,20 @@ type agentProc struct {
 	historyDone    chan struct{} // closed after the session's terminal was saved for the last time (ADR 0036); nil for agents of a previous run
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
-	hasPrompt     bool        // started with an initial prompt
-	turns         int         // turns finished (Stop or StopFailure of the main agent)
-	lastInput     time.Time   // last terminal input from the user
-	deliverTimer  *time.Timer // pending idle delivery
-	delivering    bool        // a message is being typed into the PTY
-	endCheck      bool        // an idle Architect's end check is scheduled (Phase 19)
-	stopAfterTurn bool        // report_done: end the session when the turn ends
-	reporting     bool        // a report_done call is running
+	hasPrompt    bool        // started with an initial prompt
+	turns        int         // turns finished (Stop or StopFailure of the main agent)
+	lastInput    time.Time   // last terminal input from the user
+	deliverTimer *time.Timer // pending idle delivery
+	delivering   bool        // a message is being typed into the PTY
+	endCheck     bool        // an idle Architect's end check is scheduled (Phase 19)
+	// The background wait state (ADR 0064): a background Bash started in this
+	// session, the agent's processes before it, and whether it is waited on.
+	bgSeen        bool
+	bgBaseline    map[int]bool
+	bgWaiting     bool
+	bgChecking    bool
+	stopAfterTurn bool // report_done: end the session when the turn ends
+	reporting     bool // a report_done call is running
 }
 
 // Engine owns agent and task lifecycles. All state changes go through it.
@@ -317,6 +323,7 @@ type Engine struct {
 	closing  bool               // Shutdown began: no agent starts any more; guarded by mu
 
 	live           atomic.Pointer[liveOptions] // settings a project may change while agents run (ADR 0061)
+	readProcs      procReader                  // the process table (ADR 0064); nil: /proc
 	stalls         map[string]*stallState      // the stall watchdog's goals (ADR 0052); guarded by mu
 	restartImports sync.WaitGroup              // sandbox imports after a restart; a restore waits for them
 	noRestore      map[string]string           // agent id -> why a restore leaves it exited (set before the restore runs)
@@ -1494,6 +1501,9 @@ func (a *agentProc) logger(e *Engine) *slog.Logger {
 func (a *agentProc) view() AgentInfo {
 	v := a.info
 	v.State, v.Activity = string(a.status.State), a.status.Activity
+	if a.bgWaiting && a.status.State == hooks.Idle {
+		v.State, v.Activity = StateWaitingBackground, "background task" // ADR 0064
+	}
 	v.HasTerminal = a.term != nil
 	v.Resumable = a.status.State == hooks.Exited && !a.busy && resumable(v.Kind) && v.WorktreeStatus != WorktreeRemoved
 	return v

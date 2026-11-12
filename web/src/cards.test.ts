@@ -130,3 +130,12 @@ describe("detailActions", () => {
     expect(detailActions(task("x", "done"), ctx())).toEqual(["delete"]);
   });
 });
+
+describe("the background wait state (ADR 0064)", () => {
+  it("says a background task runs instead of idle", () => {
+    const g = task("g1", "in_progress");
+    const s = task("s1", "in_progress", "g1");
+    const st = cardStatus(s, ctx({ tasks: [g, s], agents: [agent("w", "s1", "waiting_background")] }));
+    expect(st).toMatchObject({ key: "background", label: "Background task" });
+  });
+});

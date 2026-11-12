@@ -166,3 +166,16 @@ test("the task modal is wider and shows each agent's run", async ({ page }) => {
   await expect(run.getByTestId("run-verification")).toHaveText("make check: pass (42 tests)");
   expect(errors).toEqual([]);
 });
+
+test("an agent whose background command still runs is not shown as idle", async ({ page }) => {
+  const w = team(4);
+  const daemon = new MockDaemon(w);
+  const errors = await open(page, daemon);
+  const id = "b2c3d4000001";
+  daemon.updateAgent(id, { state: "waiting_background", activity: "background task" });
+  await expect(page.locator(`#task-t00000000001`).getByTestId("card-status")).toHaveText("Background task");
+  await expect(page.locator(`.agent-row[data-agent="${id}"]`)).toContainText(/background/i);
+  daemon.updateAgent(id, { state: "idle", activity: undefined });
+  await expect(page.locator(`#task-t00000000001`).getByTestId("card-status")).not.toHaveText("Background task");
+  expect(errors).toEqual([]);
+});
