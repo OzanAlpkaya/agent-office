@@ -117,3 +117,42 @@ export function cardAgent(task: Task, ctx: Pick<CardContext, "agents" | "tasks">
   const more = team.filter((a) => live(a) && a.id !== agent?.id).length;
   return { agent, more };
 }
+
+// The actions a card's modal offers (Phase 18 review): only those that fit
+// the task's state, never a greyed-out button. Merge and Push have their own
+// section (offered when QA passed); the status select and Delete stay.
+export type DetailAction = "start-agent" | "start-architect" | "start-lead" | "open-pr" | "mark-done" | "delete";
+
+export interface ActionContext {
+  tasks: readonly Task[];
+  agents: readonly Agent[];
+  leadRunning: boolean; // a Tech Lead runs in this project (one goal at a time)
+  architectRunning: boolean;
+  github: boolean; // pull requests are on
+  openPR: boolean; // the task has an open pull request
+}
+
+export function detailActions(task: Task, ctx: ActionContext): DetailAction[] {
+  const goal = isGoal(task);
+  const own = ctx.agents.filter((a) => a.task_id === task.id);
+  const working = own.some((a) => live(a) && a.kind !== "reviewer" && a.kind !== "qa");
+  const out: DetailAction[] = [];
+  const startable = !working && (task.status === "todo" || task.status === "in_progress" || task.status === "blocked") &&
+    waitsFor(task, ctx.tasks).length === 0;
+  if (startable) {
+    if (goal) {
+      // To do: every way to start; a goal under way only gets its lead back.
+      if (task.status === "todo") out.push("start-agent");
+      if (task.status === "todo" && !ctx.architectRunning) out.push("start-architect");
+      if (!ctx.leadRunning) out.push("start-lead");
+    } else {
+      out.push("start-agent");
+    }
+  }
+  if (task.status === "review") {
+    if (!goal && ctx.github && own.some((a) => a.kind === "worker") && !ctx.openPR) out.push("open-pr");
+    out.push("mark-done");
+  }
+  if (!working) out.push("delete");
+  return out;
+}

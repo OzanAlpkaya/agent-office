@@ -5,14 +5,14 @@ import { type JSX, useEffect, useState } from "react";
 import { type Agent, type GoalRecord, type PullRequest, type Review, type Task, type TaskStatus, taskStatuses } from "./api";
 import { AgentName } from "./AgentName";
 import { type BoardProps, columnTitle } from "./Board";
-import { cardStatus } from "./cards";
+import { type DetailAction, cardStatus, detailActions } from "./cards";
 import { BranchCleanup, MergePanel, PushPanel } from "./Goals";
 import { busyOf, closeWarning, goalAgents, latestMerge, mergeOffered, pushOffered, subTasksOf } from "./goals";
 import { Modal } from "./Modal";
 import { useApi } from "./ProjectContext";
 import { InboxEntry, PlanPanel, QAPanel, TaskPlanInfo } from "./Team";
 import { type UsageRow, formatMoney, formatTokens, totalTokens } from "./usage";
-import { currentSpec, goalBusy, inboxFor, latestQA, waitsFor, workerRoles } from "./workflow";
+import { currentSpec, goalBusy, inboxFor, latestQA, workerRoles } from "./workflow";
 
 const stateLabel: Record<Agent["state"], string> = {
   starting: "starting", idle: "idle", working: "working", waiting_permission: "waiting for permission", exited: "exited",
@@ -28,12 +28,10 @@ export function TaskDetail(p: BoardProps & { task: Task; onClose: () => void }):
   const subs = isGoal ? subTasksOf(p.tasks, task.id) : [];
   const prs = p.pullRequests.filter((pr) => pr.task_id === task.id);
   const running = agents.some((a) => a.state !== "exited" && a.kind !== "reviewer" && a.kind !== "qa");
-  const canOpenPR = p.github && task.status === "review" && agents.some((a) => a.kind === "worker") && !prs.some((pr) => pr.state === "open");
   const roles = workerRoles(p.roles ?? []);
   const [role, setRole] = useState(task.role || "worker");
   const spec = isGoal ? currentSpec(p.specs ?? [], task.id) : undefined;
   const qa = isGoal ? latestQA(p.qaRuns ?? [], task.id) : undefined;
-  const waiting = waitsFor(task, p.tasks);
   const notes = inboxFor(p.inbox ?? [], task).filter((i) => !i.read_at || (!i.answered_at && i.kind === "question")).slice(0, 5);
   const merges = p.merges ?? [];
   const merged = isGoal ? latestMerge(merges, task.id) : undefined;
@@ -65,6 +63,12 @@ export function TaskDetail(p: BoardProps & { task: Task; onClose: () => void }):
   };
   const markDone = (): void => p.onStatus(task, "done");
 
+  // Only the actions that fit the task's state (Phase 18 review): nothing greyed out.
+  const actions = detailActions(task, {
+    tasks: p.tasks, agents: p.agents, leadRunning: p.leadRunning, architectRunning: p.architectRunning ?? false,
+    github: p.github, openPR: prs.some((pr) => pr.state === "open"),
+  });
+  const has = (a: DetailAction): boolean => actions.includes(a);
   const footer = (
     <>
       <label className="inline-field">
@@ -73,42 +77,43 @@ export function TaskDetail(p: BoardProps & { task: Task; onClose: () => void }):
           {taskStatuses.map((s) => <option key={s} value={s}>{columnTitle[s]}</option>)}
         </select>
       </label>
-      {roles.length > 1 && (
+      {has("start-agent") && roles.length > 1 && (
         <select aria-label="Role" value={role} onChange={(e) => setRole(e.target.value)} title={roles.find((r) => r.name === role)?.description}>
           {roles.map((r) => <option key={r.name} value={r.name}>{r.name}{r.cli === "codex" ? " · codex" : ""}</option>)}
         </select>
       )}
-      <button disabled={!p.canStart || running || waiting.length > 0}
-        title={running ? "An agent is already working on this task" : waiting.length ? "It starts after the sub-tasks it depends on are reported" : ""}
-        onClick={() => (role === "worker" || !p.onStartRole ? p.onStart(task) : p.onStartRole(task, role))}>
-        Start agent
-      </button>
-      {isGoal && (
-        <button disabled={!p.canStart || running || p.architectRunning}
-          title={p.architectRunning ? "An architect is already running"
-            : "An architect agrees a plan with you first (read-only); for small goals start the Tech Lead directly"}
+      {has("start-agent") && (
+        <button className={isGoal ? "" : "primary"} onClick={() => (role === "worker" || !p.onStartRole ? p.onStart(task) : p.onStartRole(task, role))}>
+          Start agent
+        </button>
+      )}
+      {has("start-architect") && (
+        <button title="An architect agrees a plan with you first (read-only); for small goals start the Tech Lead directly"
           onClick={() => p.onStartRole?.(task, "architect")}>
           Start architect
         </button>
       )}
-      {isGoal && (
-        <button className={task.status === "todo" ? "primary" : ""} disabled={!p.canStart || running || p.leadRunning}
-          title={p.leadRunning ? "A Tech Lead is already running" : "A Tech Lead executes the goal: it assigns sub-tasks to workers"}
-          onClick={() => p.onStartLead(task)}>
+      {has("start-lead") && (
+        <button className="primary" title="A Tech Lead executes the goal: it assigns sub-tasks to workers" onClick={() => p.onStartLead(task)}>
           Start Tech Lead
         </button>
       )}
-      {canOpenPR && <button onClick={() => p.onOpenPR(task)} title="Push the worker's branch and open a pull request">Open PR</button>}
+      {has("open-pr") && <button onClick={() => p.onOpenPR(task)} title="Push the worker's branch and open a pull request">Open PR</button>}
+      {has("mark-done") && (
+        <button className={mergeOffered(task, p.qaRuns ?? [], merges) ? "" : "primary"} onClick={() => setStatus("done")}>
+          Mark done
+        </button>
+      )}
       <span className="spacer" />
-      {confirmDelete ? (
+      {has("delete") && (confirmDelete ? (
         <>
           <span className="small">Delete this task?</span>
           <button className="danger" onClick={() => { setConfirmDelete(false); p.onClose(); p.onDelete(task); }}>Delete</button>
           <button onClick={() => setConfirmDelete(false)}>Keep</button>
         </>
       ) : (
-        <button className="ghost" disabled={running} onClick={() => setConfirmDelete(true)} title="Delete task">Delete…</button>
-      )}
+        <button className="ghost" onClick={() => setConfirmDelete(true)} title="Delete task">Delete…</button>
+      ))}
     </>
   );
 

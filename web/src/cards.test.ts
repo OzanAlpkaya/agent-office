@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Agent, GoalMerge, InboxItem, QARun, Spec, Task } from "./api";
-import { type CardContext, cardAgent, cardStatus } from "./cards";
+import { type ActionContext, type CardContext, cardAgent, cardStatus, detailActions } from "./cards";
 
 const task = (id: string, status: Task["status"], parent?: string, over: Partial<Task> = {}): Task => ({
   id, title: id, description: "", status, parent_task_id: parent, created_at: "2026-11-01T10:00:00Z", updated_at: "2026-11-01T10:00:00Z",
@@ -86,5 +86,39 @@ describe("cardAgent", () => {
     const recent = agent("new", "s1", "exited", "worker", "2026-11-01T11:00:00Z");
     expect(cardAgent(s, { tasks, agents: [old, recent] })).toEqual({ agent: recent, more: 0 });
     expect(cardAgent(task("x", "todo"), { tasks, agents: [] })).toEqual({ agent: undefined, more: 0 });
+  });
+});
+
+describe("detailActions", () => {
+  const ctx = (over: Partial<ActionContext> = {}): ActionContext => ({
+    tasks: [], agents: [], leadRunning: false, architectRunning: false, github: false, openPR: false, ...over,
+  });
+  it("offers the start buttons for a goal in To do, and only those that can run", () => {
+    const g = task("g", "todo");
+    expect(detailActions(g, ctx({ tasks: [g] }))).toEqual(["start-agent", "start-architect", "start-lead", "delete"]);
+    expect(detailActions(g, ctx({ tasks: [g], leadRunning: true, architectRunning: true }))).toEqual(["start-agent", "delete"]);
+  });
+  it("offers Mark done for a goal in review, and no start buttons", () => {
+    const g = task("g", "review");
+    expect(detailActions(g, ctx({ tasks: [g], agents: [agent("l", "g", "idle", "lead")] }))).toEqual(["mark-done"]);
+  });
+  it("offers nothing to start while the task's agent works, and no Delete", () => {
+    const s = task("s", "in_progress", "g");
+    expect(detailActions(s, ctx({ tasks: [s], agents: [agent("w", "s", "working")] }))).toEqual([]);
+    expect(detailActions(s, ctx({ tasks: [s], agents: [agent("w", "s", "exited")] }))).toEqual(["start-agent", "delete"]);
+  });
+  it("waits for dependencies, and offers a pull request for a reported sub-task with GitHub", () => {
+    const d = task("d", "todo", "g", { depends_on: ["s"] });
+    const s = task("s", "in_progress", "g");
+    expect(detailActions(d, ctx({ tasks: [d, s] }))).toEqual(["delete"]);
+    const r = task("r", "review", "g");
+    const w = agent("w", "r", "exited");
+    expect(detailActions(r, ctx({ tasks: [r], agents: [w], github: true }))).toEqual(["open-pr", "mark-done", "delete"]);
+    expect(detailActions(r, ctx({ tasks: [r], agents: [w], github: true, openPR: true }))).toEqual(["mark-done", "delete"]);
+  });
+  it("offers a goal under way its Tech Lead back when none runs", () => {
+    const g = task("g", "in_progress");
+    expect(detailActions(g, ctx({ tasks: [g] }))).toEqual(["start-lead", "delete"]);
+    expect(detailActions(task("x", "done"), ctx())).toEqual(["delete"]);
   });
 });
