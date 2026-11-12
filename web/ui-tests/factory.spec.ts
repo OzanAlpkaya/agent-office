@@ -2,7 +2,7 @@
 // daemon-wide one, plans with a change request, QA rounds on the board, the
 // task modal's run info and the background wait state.
 import { type Page, expect, test } from "@playwright/test";
-import { MockDaemon, type World, openCard, projectSettings, settingsTab, task, team } from "./daemon";
+import { MockDaemon, type World, agent, openCard, projectSettings, session, settingsTab, task, team } from "./daemon";
 import { workflow } from "./workflow";
 
 async function open(page: Page, daemon: MockDaemon): Promise<string[]> {
@@ -96,5 +96,39 @@ test("a plan is changed by request, by a one-line edit, or approved in one click
   await plan.getByRole("button", { name: "Cancel" }).click();
   await plan.getByRole("button", { name: "Approve plan" }).click();
   await expect.poll(() => daemon.requests).toContain("POST /api/specs/1/approve");
+  expect(errors).toEqual([]);
+});
+
+test("each QA round is a card with its result, its bug sub-tasks and its cost", async ({ page }) => {
+  const w = team(4);
+  const goal = "g00000000001";
+  w.tasks.push(task("t00000000009", "Bug: Filter is case-sensitive", "todo", { parent_task_id: goal, created_by: "e5f6a7000099" }));
+  w.agents.push(agent("e5f6a7000099", "qa", "exited", { name: "Quinn", task_id: goal, exit_reason: "reported_done" }),
+    agent("e5f6a7000098", "qa", "working", { name: "Remy", task_id: goal }));
+  w.usage = [session("s-qa1", w.agents[w.agents.length - 2], goal, { cost_micro_usd: 120_000 })];
+  w.qaRuns = [
+    { id: 2, goal_id: goal, agent_id: "e5f6a7000098", status: "running", branch: "agent-office/qa-2", merged: [], bugs: [],
+      created_at: "2026-11-08T11:00:00Z", updated_at: "2026-11-08T11:00:00Z" },
+    { id: 1, goal_id: goal, agent_id: "e5f6a7000099", status: "failed", branch: "agent-office/qa-1", head: "abcdef0123456789",
+      merged: [{ task_id: "t00000000001", title: "Tag model and migration", branch: "agent-office/port-t00000-1234abcd", head: "1111111111",
+        merge: "2222222222", port: true }],
+      summary: "The filter ignores case.", bugs: [{ title: "Filter is case-sensitive", description: "?tag=Go misses go", bug_task_id: "t00000000009" }],
+      created_at: "2026-11-08T10:00:00Z", updated_at: "2026-11-08T10:30:00Z" },
+  ];
+  const errors = await open(page, new MockDaemon(w));
+  const first = page.locator("#qa-1");
+  await expect(page.locator('section[data-status="review"]').locator("#qa-1")).toBeVisible();
+  await expect(page.locator('section[data-status="in_progress"]').locator("#qa-2")).toContainText("QA round 2");
+  await expect(first).toContainText("QA round 1");
+  await expect(first.getByTestId("card-status")).toHaveText("Failed · 1 bug");
+  await expect(first).toContainText("Quinn");
+  await expect(first).toContainText("$0.12");
+  await first.click();
+  const modal = page.locator(".modal.qa-detail");
+  await expect(modal).toContainText("The filter ignores case.");
+  await expect(modal).toContainText("ported");
+  await expect(modal).toContainText("integration branch agent-office/qa-1 @ abcdef01");
+  await modal.getByTestId("bug-task").click();
+  await expect(page.locator(".modal.task-detail .detail-title")).toHaveText("Bug: Filter is case-sensitive");
   expect(errors).toEqual([]);
 });

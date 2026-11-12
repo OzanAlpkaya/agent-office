@@ -492,7 +492,7 @@ export function App({
                 accessRequests={accessRequests} memory={memory} run={run} caps={liveCaps}
                 running={running} />
             ) : view.kind === "board" || !current ? (
-              <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask}
+              <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask} usageByAgent={usageByAgent}
                 usageByGoal={usageByGoal}
                 onStartLead={(t) => void startAgent(t.id, "lead")}
                 onCreate={async (title, description) => (await run(() => api.createTask(title, description))) !== undefined}

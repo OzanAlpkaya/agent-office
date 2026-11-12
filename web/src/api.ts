@@ -392,7 +392,8 @@ export interface QARun {
   status: "running" | "passed" | "failed" | "error";
   branch: string;
   head?: string;
-  merged: { task_id: string; title: string; branch: string; head: string }[];
+  // head: the sub-task's; merge and port: a port onto the target after the goal's squash merge (Phase 19)
+  merged: { task_id: string; title: string; branch: string; head: string; merge?: string; port?: boolean }[];
   summary?: string;
   bugs: { title: string; description: string; task_id?: string; bug_task_id?: string }[];
   error?: string;

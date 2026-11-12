@@ -11,6 +11,8 @@ import { type GoalPick, activeGoals, archivedGoals, boardTasks, validPick } from
 import { cardAgent, cardStatus, type CardContext } from "./cards";
 import { Icon } from "./icons";
 import { Modal } from "./Modal";
+import { QADetail, QARoundCard } from "./QADetail";
+import { qaCards } from "./qaCards";
 import { TaskDetail } from "./TaskDetail";
 import { type UsageRow, formatMoney } from "./usage";
 
@@ -41,6 +43,7 @@ export interface BoardProps {
   onAcceptFlagged: (pr: PullRequest) => void;
   usageByTask?: Map<string, UsageRow>; // token usage per task (ADR 0026)
   usageByGoal?: Map<string, UsageRow>; // per goal: the lead, its workers and their reviewers
+  usageByAgent?: Map<string, UsageRow>; // per agent: a QA round's cost (Phase 19)
   // Phase 12 (ADR 0029-0034).
   roles?: RoleInfo[];
   specs?: Spec[];
@@ -89,6 +92,7 @@ export function Board(p: BoardProps): JSX.Element {
   const [archive, setArchive] = useState(false);
   const [creating, setCreating] = useState(false);
   const [ownDetail, setOwnDetail] = useState<string>();
+  const [qaDetail, setQADetail] = useState<number>();
   const detail = p.onDetail ? p.detail : ownDetail;
   const setDetail = p.onDetail ?? setOwnDetail;
   const pick = validPick(p.tasks, picked);
@@ -104,6 +108,9 @@ export function Board(p: BoardProps): JSX.Element {
     waitingAgents: p.waitingAgents ?? new Set(),
   };
   const open = p.tasks.find((t) => t.id === detail);
+  const rounds = qaCards(p.qaRuns ?? [], p.tasks, shown);
+  const openRound = rounds.find((c) => c.run.id === qaDetail);
+  const agentOf = (id?: string): Agent | undefined => (id ? p.agents.find((a) => a.id === id) : undefined);
   return (
     <div className="board-view">
       <div className="board-toolbar">
@@ -130,20 +137,30 @@ export function Board(p: BoardProps): JSX.Element {
         <div className="board">
           {taskStatuses.map((status) => {
             const cards = shown.filter((t) => t.status === status);
+            const qa = rounds.filter((c) => c.column === status);
             return (
               <section key={status} className="column" data-status={status} aria-label={columnTitle[status]}>
-                <h2>{columnTitle[status]} <span className="count">{cards.length}</span></h2>
+                <h2>{columnTitle[status]} <span className="count">{cards.length + qa.length}</span></h2>
                 {cards.map((t) => (
                   <TaskCard key={t.id} task={t} ctx={ctx} onOpen={() => setDetail(t.id)}
                     usage={t.parent_task_id ? p.usageByTask?.get(t.id) : p.usageByGoal?.get(t.id) ?? p.usageByTask?.get(t.id)} />
                 ))}
-                {cards.length === 0 && <p className="column-empty">Nothing here</p>}
+                {qa.map((c) => (
+                  <QARoundCard key={`qa-${c.run.id}`} card={c} agent={agentOf(c.run.agent_id)}
+                    usage={c.run.agent_id ? p.usageByAgent?.get(c.run.agent_id) : undefined} onOpen={() => setQADetail(c.run.id)} />
+                ))}
+                {cards.length + qa.length === 0 && <p className="column-empty">Nothing here</p>}
               </section>
             );
           })}
         </div>
       )}
       {open && <TaskDetail {...p} task={open} onClose={() => setDetail(undefined)} />}
+      {openRound && !open && (
+        <QADetail card={openRound} usage={openRound.run.agent_id ? p.usageByAgent?.get(openRound.run.agent_id) : undefined}
+          onClose={() => setQADetail(undefined)} onOpenAgent={p.onOpenAgent}
+          onOpenTask={(id) => { setQADetail(undefined); setDetail(id); }} />
+      )}
       {creating && <NewTask onCreate={p.onCreate} onClose={() => setCreating(false)} />}
     </div>
   );
