@@ -831,6 +831,21 @@ starts from the right base, so it merges without history-only conflicts.
    on check.sh), such as "waiting on background task", instead of "Idle".
 
 **Definition of Done**
-- [ ] Each item has tests. Items 5 and 6 are covered end to end: a follow-up round after a squash-merge
-      merges without conflicts.
-- [ ] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass.
+- [x] Each item has tests:
+      1. service: `TestServiceInstallWritesUnitAndStarts`, `TestServiceInstallRefusals`, `TestServiceNoStartStatusUninstall`,
+         `TestServiceUnitVerifies` (`systemd-analyze --user verify`), `TestSystemdQuote` (ADR 0060);
+      2. plan changes: `TestRequestPlanChanges`, Vitest `workflow.test.ts`, Playwright `factory.spec.ts`, `team.spec.ts`;
+      3. the Architect's exit: `TestArchitectEndsAfterAnsweringEscalation`, `TestRequestPlanChanges`, and in `TestTeamWorkflowEndToEnd`;
+      4. caps: `TestHubUpdateSettings`, `TestHubSetMaxAgents`, `TestDaemonCapAPI`, Vitest `caps.test.ts`, Playwright (ADR 0061);
+      5. sub-task limit: `TestSubTaskLimitCountsOpenOnly`, `TestSupersedeRefusals`, `TestDependencyFollowsReplacement`,
+         `TestSupersedeOwnDependency`, `TestQAGateFollowsSupersededBugs`, `TestRevisionSupersedesDroppedWork`, Vitest, Playwright (ADR 0062);
+      6. follow-up bases: `TestMergeTreeBaseAfterSquash`, `TestFollowUpStartsFromFinishedWork`,
+         `TestFollowUpAfterSquashMergeMergesCleanly` (fails without the merged cut and without ports) (ADR 0063);
+      7. QA cards: Vitest `qaCards.test.ts`, Playwright;
+      8. run info: `TestTaskRuns`, `TestStateDurations`, `TestDiffStatAndLastCommit`, `TestTaskRunsAPI`, Vitest `runs.test.ts`, Playwright;
+      9. background wait: `TestWaitingOnBackgroundTask`, `TestSandboxedWaitingOnBackgroundTask` (real Podman), `TestBackgroundProcs`,
+         `TestReadProcs`, `TestParseClaudeHookBackgroundBash`, Vitest, Playwright (ADR 0064).
+      Items 5 and 6 end to end in `TestTeamWorkflowEndToEnd`: after the squash merge, the user asks for a follow-up that
+      changes a squash-merged file, with `max_sub_tasks` lowered to 2 while the lead runs; the follow-up starts from main,
+      QA merges only it, and the second merge into main has no conflicts.
+- [x] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass (the GitHub e2e was not run, as in Phase 18).

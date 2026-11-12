@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 19 (Lessons from the game factory), on `phase-19/game-factory-lessons`.
+**Current phase:** Phase 19 (Lessons from the game factory) is done on `phase-19/game-factory-lessons`, waiting for Ozan's review.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -28,7 +28,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 16: Autonomous team
 - [x] Phase 17: Daily use
 - [x] Phase 18: UI and office polish
-- [ ] Phase 19: Lessons from the game factory
+- [x] Phase 19: Lessons from the game factory (in review)
 
 ## Log
 
@@ -412,4 +412,22 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   not change since `make sandbox-test` and `make e2e` passed.
 - 2026-11-12: Phase 18 review: approved. Ozan tested it by hand (the settings split, + New project, the
   avatar, the card modal, the office's Fit and Zoom). Merged into `main` (`--no-ff`).
+- 2026-11-12: Phase 19 "Lessons from the game factory" added to `docs/plan.md` by Ozan (from Bouncibo Goals
+  01-02) and done on `phase-19/game-factory-lessons` with the recommended options (`docs/plans/phase-19.md`).
+  `agent-office service install|uninstall|status` runs serve as a systemd user unit (ADR 0060). Plans get a
+  "request changes" box the Architect answers with a new version, one-click Approve and per-sub-task editing;
+  an idle Architect with an approved plan and nothing waiting ends itself and is not restored (ADR 0031
+  amended). The daemon-wide cap is set in the app and saved; start-time project settings (caps, models,
+  budgets, worker limits, access decisions, merge target) change while agents run; the UI shows the effective
+  cap and that the lead, Architect and QA count (ADR 0061). The sub-task limit counts open sub-tasks, is the
+  project setting `max_sub_tasks`, and `create_task` closes replaced ones with `supersedes` (migration 0019,
+  ADR 0062). Follow-up sub-tasks start from the goal's finished work; after a squash merge, follow-up work and
+  QA start from the target and pre-squash branches are ported onto it with `git merge-tree --merge-base`
+  (ADR 0063). Each QA round is a board card (ADR 0033 amended). A wider task modal shows each agent's run
+  (times, working vs waiting, branch, last commit, changes, sessions with exit reasons, tokens, the worker's
+  reported verification). A turn that ends while a `run_in_background` command runs shows "Waiting on
+  background task" (ADR 0064). No new dependencies. A code review and a security review led to 14 fixes; the
+  first e2e run led to one more (QA's criteria after a merge). `make check` (424 Vitest tests), `make
+  ui-test` (112), `make sandbox-test` and `make e2e` (host, sandbox, team, workflow with the follow-up after
+  the squash merge, multi-project, Codex team, autonomy) pass; the GitHub e2e was not run.
 

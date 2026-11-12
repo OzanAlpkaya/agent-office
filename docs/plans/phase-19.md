@@ -1,6 +1,6 @@
 # Phase 19 plan: Lessons from the game factory
 
-- **Status:** In progress. Written 2026-11-12 with the recommended option for every choice, as Ozan asked
+- **Status:** Done, waiting for Ozan's review. Written 2026-11-12 with the recommended option for every choice, as Ozan asked
   ("run it like the earlier phases ... with the recommended options, no check-ins, one summary at the end").
 - **Roadmap:** [docs/plan.md](../plan.md), Phase 19. Progress: [PROGRESS.md](../../PROGRESS.md).
 - **Source:** Ozan's runs of Bouncibo Goals 01-02.
@@ -151,4 +151,10 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
   includes them). Port branches accumulate per QA run until branch clean-up (ADR 0059). The process scan runs
   under the engine lock (milliseconds; backlog: snapshot outside it). A failed change request delivery
   leaves the request stored. A goal whose merges went to different targets is not seen as merged.
+- **Found by the e2e.** The first full `make e2e` failed the workflow test's follow-up round: QA got the
+  acceptance criteria of every reported sub-task, including the merged beta sub-task ("wf-beta.txt contains
+  the single word beta"), which the follow-up deliberately changed; haiku QA failed three rounds and the lead
+  filed waiver sub-tasks. After a merge, QA now gets the criteria of the sub-tasks it merges only (ADR 0063).
+  The second run found a bug in the test (it looked for the follow-up by "no dependencies"; the lead made it
+  depend on beta). The third run passed. All other e2e tests passed in the first run.
 
