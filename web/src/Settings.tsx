@@ -1,74 +1,95 @@
-// Settings (Phase 18): one page with tabs for what used to open over the
-// board and push it down: the shown project's settings, its office layout
-// and branch clean-up; every project; the sandbox and access grants; the
-// project memory; the paired devices.
-import { type JSX, type ReactNode, Suspense, lazy } from "react";
+// Settings (Phase 18, split in its review): the shown project's own settings
+// behind the gear by the project picker (general, office layout, sandbox,
+// memory), and the app's behind Settings in the rail (projects, devices,
+// the user's profile).
+import { type JSX, type ReactNode, Suspense, lazy, useLayoutEffect, useRef, useState } from "react";
 import type { AccessRequest, DaemonStatus, MemoryDraft, MemoryEntry, Project, ProjectApi, Status } from "./api";
 import { DevicesPanel } from "./Devices";
 import { BranchCleanup } from "./Goals";
 import { GrantsPanel } from "./Grants";
+import type { Profile } from "./office/avatar";
 import { ProjectForm, ProjectsPanel } from "./Projects";
 import { MemoryPanel } from "./Team";
 
-// The layout editor draws its preview with the office's floor plan code; load it with the tab.
+// Both draw with the office's code; loaded with their tab.
 const LayoutSettings = lazy(() => import("./office/LayoutSettings"));
+const AvatarCreator = lazy(() => import("./office/AvatarCreator"));
 
-export type SettingsTab = "project" | "projects" | "sandbox" | "memory" | "devices";
+export type ProjectTab = "general" | "office" | "sandbox" | "memory";
+export type AppTab = "projects" | "devices" | "profile";
 
-const tabLabel: Record<SettingsTab, string> = {
-  project: "Project", projects: "Projects", sandbox: "Sandbox", memory: "Memory", devices: "Devices",
-};
+const projectTabLabel: Record<ProjectTab, string> = { general: "General", office: "Office", sandbox: "Sandbox", memory: "Memory" };
+const appTabLabel: Record<AppTab, string> = { projects: "Projects", devices: "Devices", profile: "Profile" };
 
-export interface SettingsProps {
-  tab: SettingsTab;
-  onTab: (t: SettingsTab) => void;
+function Tabs<T extends string>({ label, tabs, names, current, onTab, counts = {} }: {
+  label: string; tabs: T[]; names: Record<T, string>; current: T; onTab: (t: T) => void; counts?: Partial<Record<T, number>>;
+}): JSX.Element {
+  // A strip that overflows fades at its right edge, so it shows that it scrolls.
+  const ref = useRef<HTMLDivElement>(null);
+  const [fits, setFits] = useState(true);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const check = (): void => setFits(el.scrollWidth <= el.clientWidth + 1);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [tabs.length]);
+  return (
+    <div className={`tab-list ${fits ? "fits" : "overflows"}`} role="tablist" aria-label={label} ref={ref}>
+      {tabs.map((t) => (
+        <button key={t} role="tab" aria-selected={current === t} onClick={() => onTab(t)} data-tab={t}>
+          {names[t]}
+          {(counts[t] ?? 0) > 0 && <span className="count tone-warn">{counts[t]}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Section({ title, lede, id, children }: { title: string; lede?: string; id?: string; children: ReactNode }): JSX.Element {
+  return (
+    <section className="section-card" id={id} aria-label={title}>
+      <h2>{title}</h2>
+      {lede && <p className="lede">{lede}</p>}
+      {children}
+    </section>
+  );
+}
+
+export interface ProjectSettingsProps {
+  tab: ProjectTab;
+  onTab: (t: ProjectTab) => void;
   project: Project;
-  projects: Project[];
   status?: Status; // this project's
   daemon?: DaemonStatus;
-  version: string;
-  deviceName?: string; // this browser's name as paired
-  running: number; // agents running in every project
   api: ProjectApi;
   accessRequests: AccessRequest[];
   memory: MemoryEntry[];
   run: <T>(fn: () => Promise<T>) => Promise<T | undefined>;
-  onSignedOut: () => void;
-  onSelectProject: (id: string) => void;
 }
 
-export function Settings(p: SettingsProps): JSX.Element {
+// ProjectSettings is one project's settings, titled with its name.
+export function ProjectSettings(p: ProjectSettingsProps): JSX.Element {
   const sandboxed = p.status?.sandbox === "podman";
-  const tabs: SettingsTab[] = ["project", "projects", ...(sandboxed ? ["sandbox" as const] : []), "memory", "devices"];
-  const tab = tabs.includes(p.tab) ? p.tab : "project";
+  const tabs: ProjectTab[] = ["general", "office", ...(sandboxed ? ["sandbox" as const] : []), "memory"];
+  const tab = tabs.includes(p.tab) ? p.tab : "general";
   const proposed = p.memory.filter((m) => m.status === "proposed").length;
   const ok = async (fn: () => Promise<unknown>): Promise<boolean> => (await p.run(fn)) !== undefined;
   return (
-    <div className="settings-page">
+    <div className="settings-page project-settings-page">
       <div className="page-head">
-        <h1>Settings</h1>
-        <p className="muted small">{p.project.name} · <span className="mono">{p.project.repo_path}</span></p>
+        <h1>{p.project.name}</h1>
+        <p className="muted small">Project settings · <span className="mono">{p.project.repo_path}</span></p>
       </div>
-      <div className="tab-list" role="tablist" aria-label="Settings">
-        {tabs.map((t) => (
-          <button key={t} role="tab" aria-selected={tab === t} onClick={() => p.onTab(t)} data-tab={t}>
-            {tabLabel[t]}
-            {t === "memory" && proposed > 0 && <span className="count tone-warn">{proposed}</span>}
-          </button>
-        ))}
-      </div>
-      <div className="settings-body" role="tabpanel" aria-label={tabLabel[tab]}>
-        {tab === "project" && (
+      <Tabs label="Project settings" tabs={tabs} names={projectTabLabel} current={tab} onTab={p.onTab} counts={{ memory: proposed }} />
+      <div className="settings-body" role="tabpanel" aria-label={projectTabLabel[tab]}>
+        {tab === "general" && (
           <>
-            <Section title="Project settings"
+            <Section title="General"
               lede="Empty fields use the daemon's flags. Changing what agents run with is refused while the project's agents run; the name and the office layout are not.">
               <ProjectForm project={p.project} status={p.daemon} sandboxed={sandboxed} />
-            </Section>
-            <Section title="Office layout" id="office-layout"
-              lede="Which rooms the office has, where they sit and how many desks the workroom has. Pick a preset, change its YAML, and check the preview.">
-              <Suspense fallback={<p className="muted">Loading the layout editor…</p>}>
-                <LayoutSettings project={p.project} />
-              </Suspense>
             </Section>
             <Section title="Branch clean-up" id="branch-cleanup"
               lede="Delete old agent-office branches whose work is in the merge target. Branches that are not merged are listed apart and deleted only after a second confirmation; every deleted head is recorded.">
@@ -83,13 +104,15 @@ export function Settings(p: SettingsProps): JSX.Element {
                 </p>
               </Section>
             )}
-            <p className="muted small settings-version">
-              agent-office {p.version ? `v${p.version}` : ""}{p.deviceName ? ` · this device: ${p.deviceName}` : ""}
-            </p>
           </>
         )}
-        {tab === "projects" && (
-          <ProjectsPanel projects={p.projects} current={p.project.id} status={p.daemon} running={p.running} onSelect={p.onSelectProject} />
+        {tab === "office" && (
+          <Section title="Office layout" id="office-layout"
+            lede="Which rooms the office has, where they sit and how many desks the workroom has. Pick a preset, change its YAML, and check the preview.">
+            <Suspense fallback={<p className="muted">Loading the layout editor…</p>}>
+              <LayoutSettings project={p.project} />
+            </Suspense>
+          </Section>
         )}
         {tab === "sandbox" && p.status && (
           <>
@@ -106,19 +129,55 @@ export function Settings(p: SettingsProps): JSX.Element {
             onAccept={(m) => void p.run(() => p.api.acceptMemory(m.id))}
             onDelete={(m) => void p.run(async () => { await p.api.deleteMemory(m.id); return true; })} />
         )}
-        {tab === "devices" && <DevicesPanel remoteHosts={p.status?.remote_hosts ?? []} run={p.run} onSignedOut={p.onSignedOut} />}
       </div>
     </div>
   );
 }
 
-function Section({ title, lede, id, children }: { title: string; lede?: string; id?: string; children: ReactNode }): JSX.Element {
+export interface AppSettingsProps {
+  tab: AppTab;
+  onTab: (t: AppTab) => void;
+  project: Project; // the shown one
+  projects: Project[];
+  daemon?: DaemonStatus;
+  remoteHosts: string[];
+  version: string;
+  deviceName?: string; // this browser's name as paired
+  running: number; // agents running in every project
+  profile?: Profile;
+  run: <T>(fn: () => Promise<T>) => Promise<T | undefined>;
+  onSignedOut: () => void;
+  onSelectProject: (id: string) => void;
+  onProjectSettings: (id: string) => void;
+}
+
+// AppSettings is the app's: every project, the paired devices, the user's profile.
+export function AppSettings(p: AppSettingsProps): JSX.Element {
+  const tabs: AppTab[] = ["projects", "devices", "profile"];
   return (
-    <section className="section-card" id={id} aria-label={title}>
-      <h2>{title}</h2>
-      {lede && <p className="lede">{lede}</p>}
-      {children}
-    </section>
+    <div className="settings-page app-settings-page">
+      <div className="page-head">
+        <h1>Settings</h1>
+        <p className="muted small">
+          agent-office {p.version ? `v${p.version}` : ""}{p.deviceName ? ` · this device: ${p.deviceName}` : ""}
+        </p>
+      </div>
+      <Tabs label="Settings" tabs={tabs} names={appTabLabel} current={p.tab} onTab={p.onTab} />
+      <div className="settings-body" role="tabpanel" aria-label={appTabLabel[p.tab]}>
+        {p.tab === "projects" && (
+          <ProjectsPanel projects={p.projects} current={p.project.id} status={p.daemon} running={p.running}
+            onSelect={p.onSelectProject} onSettings={p.onProjectSettings} />
+        )}
+        {p.tab === "devices" && <DevicesPanel remoteHosts={p.remoteHosts} run={p.run} onSignedOut={p.onSignedOut} />}
+        {p.tab === "profile" && (
+          <Section title="Profile" lede="Your character in the office: it sits at your desk on every project's floor while a device has agent-office open.">
+            <Suspense fallback={<p className="muted">Loading…</p>}>
+              <AvatarCreator profile={p.profile} />
+            </Suspense>
+          </Section>
+        )}
+      </div>
+    </div>
   );
 }
 

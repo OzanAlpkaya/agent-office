@@ -14,7 +14,10 @@ import { backgroundLine, splitEvents } from "./sandboxEvents";
 import { Drawer } from "./Drawer";
 import { Icon, type IconName } from "./icons";
 import { type Presence } from "./presence";
-import { type SettingsTab, Settings } from "./Settings";
+import { type AppTab, type ProjectTab, AppSettings, ProjectSettings } from "./Settings";
+import { AddProjectForm } from "./Projects";
+import { Modal } from "./Modal";
+import type { Profile } from "./office/avatar";
 import { narrowQuery, useMedia } from "./useMedia";
 import { InboxPanel } from "./Team";
 import { unread } from "./workflow";
@@ -128,7 +131,8 @@ function typingTarget(t: EventTarget | null): boolean {
 }
 
 // MainTab is a view every project has; a switch to another project keeps it.
-export type MainTab = "board" | "office" | "usage" | "settings";
+// "settings" is the app's (the rail), "project-settings" the shown project's (the gear).
+export type MainTab = "board" | "office" | "usage" | "settings" | "project-settings";
 
 // "agents" is the phone layout's view of the agent list (the rail on wider screens, ADR 0040).
 type View = { kind: MainTab } | { kind: "agents" } | { kind: "agent"; id: string };
@@ -144,10 +148,11 @@ export interface AppProps {
   initialTab?: MainTab; // the tab the other project showed, kept across a switch (e.g. the office's floors)
   onSelectProject: (id: string, agentId?: string, tab?: MainTab) => void;
   presence?: Presence; // the user's devices with the UI open (Phase 18)
+  profile?: Profile; // the user's name and look (Phase 18 review)
 }
 
 export function App({
-  session, onSignedOut, project, projects, daemon, elsewhere, initialAgent, initialTab, onSelectProject, presence,
+  session, onSignedOut, project, projects, daemon, elsewhere, initialAgent, initialTab, onSelectProject, presence, profile,
 }: AppProps): JSX.Element {
   // The project's routes, plus the daemon's (health, devices, projects) under one name.
   const papi = useMemo(() => projectApi(project.id), [project.id]);
@@ -157,9 +162,12 @@ export function App({
   const [roles, setRoles] = useState<RoleInfo[]>([]);
   const narrow = useMedia(narrowQuery);
   const [view, setView] = useState<View>({ kind: initialTab ?? "board" });
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("project");
+  const [appTab, setAppTab] = useState<AppTab>("projects");
+  const [projectTab, setProjectTab] = useState<ProjectTab>("general");
+  const [newProject, setNewProject] = useState(false);
   // A switch to another project keeps the main view the user is on.
-  const tab: MainTab = view.kind === "office" || view.kind === "usage" || view.kind === "settings" ? view.kind : "board";
+  const tab: MainTab = view.kind === "office" || view.kind === "usage" || view.kind === "settings" || view.kind === "project-settings"
+    ? view.kind : "board";
   const [tabs, setTabs] = useState<Tabs>(() => loadTabs(project.id));
   const [switcher, setSwitcher] = useState(false);
   const [approvalsOpen, setApprovalsOpen] = useState(false);
@@ -285,6 +293,7 @@ export function App({
   const leadRunning = agents.some((a) => a.kind === "lead" && a.state !== "exited");
   const architectRunning = agents.some((a) => a.kind === "architect" && a.state !== "exited");
   const unreadCount = unread(inbox);
+  const proposedMemory = memory.filter((m) => m.status === "proposed").length;
   const ok = async (fn: () => Promise<unknown>): Promise<boolean> => (await run(fn)) !== undefined;
 
   // approveSpec approves a plan (ADR 0031); a Tech Lead that could not start is shown as an error.
@@ -302,9 +311,9 @@ export function App({
   const go = (kind: MainTab | "agents"): void => {
     setView({ kind });
   };
-  const openSettings = (t: SettingsTab): void => {
-    setSettingsTab(t);
-    setView({ kind: "settings" });
+  const openProjectSettings = (t: ProjectTab): void => {
+    setProjectTab(t);
+    setView({ kind: "project-settings" });
   };
   const current = view.kind === "agent" ? agents.find((a) => a.id === view.id) : undefined;
   const waitingAgents = useMemo(() => new Set(waiting.map((w) => w.agent.id)), [waiting]);
@@ -325,7 +334,7 @@ export function App({
     { kind: "board", label: "Board", icon: "board" },
     { kind: "office", label: "Office", icon: "office" },
     { kind: "usage", label: "Usage", icon: "usage" },
-    { kind: "settings", label: "Settings", icon: "settings", count: memory.filter((m) => m.status === "proposed").length || undefined },
+    { kind: "settings", label: "Settings", icon: "settings" },
   ];
 
   const agentList = (
@@ -375,9 +384,16 @@ export function App({
             </div>
           )}
           <ProjectSwitcher project={project} projects={projects} elsewhere={elsewhere} connection={connection}
-            onSelect={(id) => onSelectProject(id, undefined, tab)} />
+            onSelect={(id) => onSelectProject(id, undefined, tab)} onNew={() => setNewProject(true)} />
+          <button className={`topbar-button icon-button project-gear ${view.kind === "project-settings" ? "active" : ""}`}
+            aria-label={proposedMemory ? `Project settings (${proposedMemory} memory note${proposedMemory === 1 ? "" : "s"} proposed)` : "Project settings"}
+            aria-pressed={view.kind === "project-settings"} title={`Settings of ${project.name}`}
+            onClick={() => openProjectSettings("general")}>
+            <Icon name="settings" />
+            {proposedMemory > 0 && <span className="count tone-warn">{proposedMemory}</span>}
+          </button>
           {status?.sandbox === "podman" && !narrow && (
-            <button className="pill sandboxed" onClick={() => openSettings("sandbox")}
+            <button className="pill sandboxed" onClick={() => openProjectSettings("sandbox")}
               title={`Agents run in rootless Podman${status.image ? `; worker image ${status.image}` : ""}. Opens the sandbox settings.`}>
               <span className="dot" />sandboxed{status.pack ? ` · ${status.pack.name}` : ""}
             </button>
@@ -453,8 +469,8 @@ export function App({
                     ...elsewhere.filter((e) => e.project.state === "open").map((e) => ({ id: e.project.id, name: e.project.name,
                       waiting: e.waiting.length, running: e.running, current: false }))]
                     .sort((a, b) => projects.findIndex((p) => p.id === a.id) - projects.findIndex((p) => p.id === b.id))}
-                  onFloor={(id) => onSelectProject(id, undefined, "office")}
-                  onLayoutSettings={() => openSettings("project")} />
+                  onFloor={(id) => onSelectProject(id, undefined, "office")} profile={profile}
+                  onLayoutSettings={() => openProjectSettings("office")} />
               </Suspense>
             ) : view.kind === "usage" ? (
               <Suspense fallback={<div className="empty">Loading usage…</div>}>
@@ -462,9 +478,14 @@ export function App({
                   onOpenAgent={openAgent} />
               </Suspense>
             ) : view.kind === "settings" ? (
-              <Settings tab={settingsTab} onTab={setSettingsTab} project={project} projects={projects} status={status} daemon={daemon}
-                version={version} deviceName={session.device?.name} running={runningEverywhere} api={papi} accessRequests={accessRequests} memory={memory} run={run}
-                onSignedOut={onSignedOut} onSelectProject={(id) => onSelectProject(id, undefined, "settings")} />
+              <AppSettings tab={appTab} onTab={setAppTab} project={project} projects={projects} daemon={daemon}
+                remoteHosts={status?.remote_hosts ?? []} version={version} deviceName={session.device?.name} running={runningEverywhere}
+                profile={profile} run={run} onSignedOut={onSignedOut}
+                onSelectProject={(id) => onSelectProject(id, undefined, "board")}
+                onProjectSettings={(id) => (id === project.id ? openProjectSettings("general") : onSelectProject(id, undefined, "project-settings"))} />
+            ) : view.kind === "project-settings" ? (
+              <ProjectSettings tab={projectTab} onTab={setProjectTab} project={project} status={status} daemon={daemon} api={papi}
+                accessRequests={accessRequests} memory={memory} run={run} />
             ) : view.kind === "board" || !current ? (
               <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask}
                 usageByGoal={usageByGoal}
@@ -619,6 +640,11 @@ export function App({
               onSelectProject(id, agentId);
             }} />
           </Drawer>
+        )}
+        {newProject && (
+          <Modal title="New project" label="New project" onClose={() => setNewProject(false)} className="narrow">
+            <AddProjectForm status={daemon} autoFocus onAdded={(p) => { setNewProject(false); onSelectProject(p.id, undefined, "board"); }} />
+          </Modal>
         )}
         {switcher && (
           <AgentSwitcher agents={agents} tasks={tasks} current={current?.id} waiting={waitingAgents}
@@ -858,8 +884,11 @@ function EventList({ events }: { events: SandboxEvent[] }): JSX.Element {
 // ProjectSwitcher chooses the project the UI shows (ADR 0048); each other
 // project says how many of its agents run and wait on the user. The dot is
 // the connection to the daemon.
-function ProjectSwitcher({ project, projects, elsewhere, connection, onSelect }: {
-  project: Project; projects: Project[]; elsewhere: Elsewhere[]; connection: string; onSelect: (id: string) => void;
+// newProjectValue is the picker's "+ New project" entry: it opens the add form, it is never selected.
+const newProjectValue = "__new_project__";
+
+function ProjectSwitcher({ project, projects, elsewhere, connection, onSelect, onNew }: {
+  project: Project; projects: Project[]; elsewhere: Elsewhere[]; connection: string; onSelect: (id: string) => void; onNew: () => void;
 }): JSX.Element {
   const other = new Map(elsewhere.map((e) => [e.project.id, e]));
   const label = (p: Project): string => {
@@ -875,8 +904,10 @@ function ProjectSwitcher({ project, projects, elsewhere, connection, onSelect }:
         title={connection === "open" ? "Connected to the daemon" : `Daemon connection: ${connection}`}>
         <span className="dot" />
       </span>
-      <select aria-label="Project" value={project.id} title={project.repo_path} onChange={(e) => onSelect(e.target.value)}>
+      <select aria-label="Project" value={project.id} title={project.repo_path}
+        onChange={(e) => (e.target.value === newProjectValue ? onNew() : onSelect(e.target.value))}>
         {projects.map((p) => <option key={p.id} value={p.id}>{label(p)}</option>)}
+        <option value={newProjectValue}>+ New project…</option>
       </select>
     </span>
   );

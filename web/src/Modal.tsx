@@ -17,8 +17,11 @@ export function Modal({ title, label, onClose, children, footer, className = "" 
   const close = useRef(onClose);
   close.current = onClose;
   useLayoutEffect(() => {
-    const before = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
-    panel.current?.focus({ preventScroll: true });
+    const active = document.activeElement;
+    // what opened the dialog gets focus back (not a field inside it that focused itself)
+    const before = active instanceof HTMLElement && !panel.current?.contains(active) ? active : undefined;
+    // A field that focused itself (autoFocus) keeps it; otherwise the dialog takes it.
+    if (!panel.current?.contains(document.activeElement)) panel.current?.focus({ preventScroll: true });
     const onKey = (e: KeyboardEvent): void => {
       // A dialog opened inside this one (none today) or a menu would handle its own Escape first.
       if (e.key === "Escape" && !e.defaultPrevented) close.current();

@@ -475,3 +475,30 @@ button.task.goal { box-shadow: inset 3px 0 0 var(--accent), var(--shadow-1); }
   .elevator .floor { min-height: var(--touch); }
   .record-agents th:nth-child(3), .record-agents td:nth-child(3) { display: none; }
 }
+
+/* ------------------------------------------------- Phase 18 review additions */
+.project-gear { position: relative; }
+.project-gear.active { background: var(--surface-2); color: var(--text); }
+.project-gear .count { position: absolute; top: -2px; right: -4px; min-width: 16px; height: 16px; font-size: 10px; }
+.field-hint { font-size: 11px; font-weight: 400; color: var(--faint); line-height: 1.35; overflow-wrap: anywhere; }
+.setting input::placeholder { color: var(--faint); }
+.avatar-creator { display: flex; gap: var(--space-6); align-items: flex-start; flex-wrap: wrap; }
+.avatar-preview { margin: 0; display: flex; flex-direction: column; align-items: center; gap: var(--space-2); padding: var(--space-4) var(--space-6);
+  background: #3a2a33; border: 1px solid var(--border); border-radius: var(--radius); }
+.avatar-preview canvas { image-rendering: pixelated; display: block; }
+.avatar-controls { flex: 1; min-width: 16rem; max-width: 28rem; gap: var(--space-3); }
+.avatar-parts { display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: var(--space-1) var(--space-3); margin: 0; }
+.avatar-parts div { display: flex; gap: var(--space-2); }
+.avatar-parts dd { margin: 0; }
+.user-plate.static { position: static; transform: none; display: inline-flex; }
+.nameplate.name-only { max-width: none !important; } /* the name alone: never cut (Phase 18 review) */
+.nameplate-open { font-size: 10px; color: var(--accent-strong); }
+/* Tabs that do not fit scroll, and show it with a fade at the edge (Phase 18 review). */
+.tab-list { mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+.tab-list.fits { mask-image: none; -webkit-mask-image: none; }
+@media (max-width: 760px) {
+  .tab-list { gap: 0; }
+  .tab-list button { flex: 1 1 auto; padding: 0 var(--space-2); }
+  .avatar-creator { flex-direction: column; align-items: stretch; }
+  .avatar-preview { align-self: center; }
+}
