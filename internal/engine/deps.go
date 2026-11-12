@@ -137,8 +137,19 @@ func (e *Engine) branchOfTask(ctx context.Context, taskID string) (branch, head 
 // work of its dependencies (one head, or a merge of several made without a
 // working tree), else the goal's approved spec, else "" (HEAD).
 func (e *Engine) subTaskBase(ctx context.Context, task db.Task) (string, error) {
+	follow, cut, err := e.isFollowUp(ctx, task)
+	if err != nil {
+		return "", err
+	}
 	deps := jsonList(task.DependsOn)
 	if len(deps) == 0 {
+		if follow { // ADR 0063: the goal's latest finished work, or the target once merged
+			base, err := e.goalWork(ctx, task.ParentTaskID.String)
+			if err == nil {
+				e.log.Info("follow-up sub-task starts from the goal's finished work", "task_id", task.ID, "base", short(base))
+			}
+			return base, err
+		}
 		return e.goalBase(ctx, task.ParentTaskID.String), nil
 	}
 	if unmet, err := e.unmetDependencies(ctx, task); err != nil {
@@ -146,8 +157,12 @@ func (e *Engine) subTaskBase(ctx context.Context, task db.Task) (string, error) 
 	} else if len(unmet) > 0 {
 		return "", invalid("sub-task %s waits for the sub-tasks it depends on: %s", task.ID, strings.Join(unmet, ", "))
 	}
-	repo := e.project.RepoPath
 	base := ""
+	if follow {
+		if base, err = e.goalWork(ctx, task.ParentTaskID.String); err != nil {
+			return "", err
+		}
+	}
 	var merged []string
 	for _, d := range deps {
 		dt, err := e.getTask(ctx, d)
@@ -168,31 +183,24 @@ func (e *Engine) subTaskBase(ctx context.Context, task db.Task) (string, error) 
 		if err != nil {
 			return "", err
 		}
-		switch {
-		case base == "":
+		if base == "" {
 			base = head
-		case e.isAncestor(ctx, head, base):
-			// already contained
-		case e.isAncestor(ctx, base, head):
-			base = head
-		default:
-			res, err := e.git.MergeTree(ctx, repo, base, head)
-			if err != nil {
-				return "", err
-			}
-			if !res.Clean {
-				return "", invalid("the work of sub-task %s's dependencies does not merge cleanly (%s conflicts in %s); "+
-					"assign a sub-task that resolves it first", task.ID, branch, strings.Join(res.Conflicts, ", "))
-			}
-			if base, err = e.git.CommitTree(ctx, repo, res.Tree, []string{base, head},
-				fmt.Sprintf("agent-office: base for %q, the work of its dependencies\n\nAgent-Office-Task: %s\n",
-					task.Title, task.ID)); err != nil {
-				return "", err
-			}
+			merged = append(merged, branch)
+			continue
 		}
+		next, ok, err := e.foldOnto(ctx, cut, base, head, fmt.Sprintf("%s for %q", branch, task.Title))
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", invalid("the work of sub-task %s's dependencies does not merge cleanly (%s conflicts); "+
+				"assign a sub-task that resolves it first", task.ID, branch)
+		}
+		base = next
 		merged = append(merged, branch)
 	}
-	e.log.Info("sub-task starts from its dependencies", "task_id", task.ID, "branches", merged, "base", short(base))
+	e.log.Info("sub-task starts from its dependencies", "task_id", task.ID, "branches", merged, "base", short(base),
+		"follow_up", follow)
 	return base, nil
 }
 

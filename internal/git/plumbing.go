@@ -146,13 +146,33 @@ type MergeResult struct {
 // MergeTree computes the merge of a and b without a working tree (git
 // merge-tree --write-tree, git 2.38+). Nothing changes but new objects.
 func (g Git) MergeTree(ctx context.Context, repo, a, b string) (MergeResult, error) {
+	return g.mergeTree(ctx, repo, "", a, b)
+}
+
+// MergeTreeBase is MergeTree with an explicit merge base (git merge-tree
+// --merge-base, git 2.40+): the changes from base to b applied onto a, like
+// a cherry-pick of base..b without a working tree (Phase 19, ADR 0063).
+func (g Git) MergeTreeBase(ctx context.Context, repo, base, a, b string) (MergeResult, error) {
+	if base == "" {
+		return MergeResult{}, errors.New("git: MergeTreeBase needs a base")
+	}
+	return g.mergeTree(ctx, repo, base, a, b)
+}
+
+func (g Git) mergeTree(ctx context.Context, repo, base, a, b string) (MergeResult, error) {
 	for _, r := range []string{a, b} {
 		if strings.HasPrefix(r, "-") || r == "" {
 			return MergeResult{}, fmt.Errorf("git: invalid revision %q", r)
 		}
 	}
-	out, code, err := g.runFull(ctx, repo, nil, nil, []int{1}, "merge-tree", "--write-tree", "--name-only",
-		"--no-messages", "-z", a, b)
+	if strings.HasPrefix(base, "-") {
+		return MergeResult{}, fmt.Errorf("git: invalid revision %q", base)
+	}
+	args := []string{"merge-tree", "--write-tree", "--name-only", "--no-messages", "-z"}
+	if base != "" {
+		args = append(args, "--merge-base="+base)
+	}
+	out, code, err := g.runFull(ctx, repo, nil, nil, []int{1}, append(args, a, b)...)
 	if err != nil {
 		return MergeResult{}, err
 	}
@@ -171,6 +191,24 @@ func (g Git) MergeTree(ctx context.Context, repo, a, b string) (MergeResult, err
 		return MergeResult{}, errors.New("git: merge-tree reported a conflict without files")
 	}
 	return res, nil
+}
+
+// MergeBase returns the best common ancestor of a and b, or "" when they have
+// none.
+func (g Git) MergeBase(ctx context.Context, repo, a, b string) (string, error) {
+	for _, r := range []string{a, b} {
+		if strings.HasPrefix(r, "-") || r == "" {
+			return "", fmt.Errorf("git: invalid revision %q", r)
+		}
+	}
+	out, code, err := g.runFull(ctx, repo, nil, nil, []int{1}, "merge-base", a, b)
+	if err != nil {
+		return "", err
+	}
+	if code == 1 {
+		return "", nil
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // FetchBranch fetches branch from remote into refs/remotes/<remote>/<branch>
