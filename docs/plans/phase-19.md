@@ -100,4 +100,28 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
 
 ## Changes during the phase
 
-(appended during the phase)
+- **Your local `MaxSubTasks = 40` change** on `main` (uncommitted) was stashed (`git stash list`: "local
+  MaxSubTasks=40 before phase 19") rather than committed or dropped. Item 5 replaces it: the limit is now
+  the project setting `max_sub_tasks` and counts open sub-tasks only.
+- **serve refuses stray arguments** (it ignored them before): `service install` passes flags through serve's
+  parser, and a stray word would otherwise go into the unit unnoticed.
+- **`--dev` is refused by `service install`**: the service serves the embedded UI.
+- **Live settings** (decision 9): `review_rounds` and `reviewer` stay with the reopen settings (they configure
+  the GitHub client); `role_clis` too. The API's "this machine only" rule for sandbox-affecting settings
+  (ADR 0046) runs before the hub update, so live changes are guarded exactly as before.
+- **Sub-tasks after a revision** (decision 12): the open-sub-task check of an approved plan counts the kept
+  open sub-tasks plus the new ones; the 200 ceiling counts all of them.
+- **The Architect's idle end** waits 3 seconds after the turn (decision 6b) and also stays while it has an
+  unanswered question to the user, so a question asked with `message_user` is not cut off.
+- **Change requests with no Architect** (it was removed) start a new one with the plan and the request in
+  its prompt.
+- **Ports** (decision 15) are also used by the report-time conflict checks (ADR 0032), so a sub-task
+  continued on its pre-squash branch does not show the squash as a conflict on its card.
+- **QA cards** (decision 16) are in Review once a run ended, whatever its result; the failed ones say how
+  many bugs, and the tooltip how many of their sub-tasks are still open.
+- **Run info** (decision 17): token usage and cost come from the usage report the UI already has, not
+  from the new endpoint; the endpoint has the rest.
+- **Background wait** (decision 20): in a sandbox the processes come from the container's cgroup (which
+  the memory watch already finds, ADR 0051), not from `podman inspect`'s pid. Comparing with a snapshot
+  taken at the `run_in_background` start (instead of excluding a fixed list) keeps MCP servers out. Zombies
+  do not count. The office draws the character at its desk with code on its screen ("background" pose).

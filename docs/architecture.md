@@ -117,6 +117,9 @@ stateDiagram-v2
   idle --> exited: SessionEnd
   working --> exited: SessionEnd / process exit
   waiting_permission --> exited: SessionEnd / process exit
+  idle --> waiting_background: Stop while a run_in_background command runs (shown state, ADR 0064)
+  waiting_background --> idle: its processes ended
+  waiting_background --> working: UserPromptSubmit / PreToolUse
 ```
 
 Events that carry an `agent_id` (subagents, internal background agents) update activity details
@@ -152,7 +155,8 @@ sequenceDiagram
   L->>D: report_done (no sub-task in progress) → goal to review; the lead stays (Phase 12)
 ```
 
-- A lead may create up to 20 sub-tasks of its goal, assign those in `todo`/`blocked` (each
+- A lead may create sub-tasks of its goal up to the project's `max_sub_tasks` open ones (default 20;
+  reported, done and superseded ones do not count; 200 in all, ADR 0062), assign those in `todo`/`blocked` (each
   assignment starts a worker through `Start`, within `--max-agents`), message their workers and
   list them. A worker may message only its lead, report only its own task (with committed work),
   and request access. `done` stays a human decision.
@@ -267,7 +271,7 @@ sequenceDiagram
 characters at desks, from the same `/api/events` stream as the board; the daemon is unchanged.
 
 - Pure modules (`web/src/office/`): `pose` maps state and role to a pose (`starting` booting,
-  `idle` leaning back, `working` typing or, for reviewers, reviewing, `waiting_permission` or a
+  `idle` leaning back, `waiting_background` at the desk with code on the screen (ADR 0064), `working` typing or, for reviewers, reviewing, `waiting_permission` or a
   pending access request: hand raised); `layout` keeps every agent at the same desk until it
   exits, when it walks out and frees the desk (ADR 0024 amendment; the lead at the front, by the
   whiteboard) and picks 3 to 6
@@ -562,7 +566,7 @@ attacker-controllable content (issues, web pages, dependencies) that may carry p
 | Agent exhausts host resources | Per-worker memory and pids limits (`--sandbox-memory`, `--sandbox-pids`); sandbox events rate-limited per agent; API request bodies size-limited | 3 |
 | Agent spends inference without limit through the API socket | Phase 4 bounds the number of sessions (below); optional budgets per session and per goal in estimated USD, refused on the API socket by deterministic code, failing closed for unpriced models (ADR 0027). Tested: `TestBudgets`, `TestAPIProxyMetersUsageAndBudget`. Residual: off by default; requests in flight finish; host-mode agents are not limited; estimates follow the price table | 4, 8 |
 | Agent escalates its own permissions | `request_access` only creates a pending row; a human decides in the UI (same-origin POST), or the goal's Tech Lead when the project lets it (below); the grant is made by the engine, domains only, for the asking agent (its later sessions too) or the project (ADR 0019, 0053). Tested: `TestAccessRequests` (no grant before approval, grant reaches this agent only, decided once, kept for a resumable agent), `TestRestartKeepsAccessRequests` (expired on removal), `TestAccessRequestsAPI`, `TestEgressGrants`, `TestSandboxedGrantSurvivesResume`. Team authority comes from the caller's socket and role (ADR 0017); `TestTeamAuthorization`, `TestToolsPerRole` | 4 |
-| A prompt-injected lead spawns workers or floods the team | Lead authority is limited to its goal: 20 sub-tasks, assignments only within `--max-agents`, no human-free path to anything else; reported workers end and free their slot. Tested: `TestTeamLimits`, `TestAssignTaskIsExclusive` | 4 |
+| A prompt-injected lead spawns workers or floods the team | Lead authority is limited to its goal: the project's limit of open sub-tasks (200 in all), assignments only within `--max-agents`, no human-free path to anything else; reported workers end and free their slot. Tested: `TestTeamLimits`, `TestAssignTaskIsExclusive` | 4 |
 | Runaway cost / loops (agents keep each other busy) | Stop-hook loop guard (`stop_hook_active`: no delivery on that Stop); 30 messages per sender per 10 minutes, 50 undelivered per sender and recipient (report notices and agent-office's own messages are exempt, so a flood cannot block them); messages to agents that reported are refused; a goal budget bounds a whole team in money (ADR 0027), and the Usage tab shows the spend live. Residual: within those limits (and with budgets off) two agents can keep answering each other. Tested: `TestStopHookDeliveryExactlyOnce`, `TestTeamLimits`, `TestQueueCapIsPerSender` | 4, 8 |
 | Prompt injection between agents (a compromised agent's message steers another) | Messages are framed as information from other agents, not instructions, with every body line quoted so it cannot forge a header (`TestQueueCapIsPerSender`); workers can reach only their lead and the lead only its workers; the recipient's own task and authorization are unchanged by any message. Residual: the recipient model may still follow a persuasive message within its own permissions | 4 |
 | Terminal injection through message delivery (escape sequences, Esc / Ctrl-C typed into another agent's PTY) | Stored bodies lose control characters except newline and tab; the PTY line loses all of them; delivery goes through the engine's input path (ADR 0008, 0018). Tested: `TestIdleDeliveryOverPTY`, `TestPTYLine` | 4 |

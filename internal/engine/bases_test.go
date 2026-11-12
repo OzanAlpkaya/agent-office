@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -45,9 +46,14 @@ func runQA(t *testing.T, tf *teamFixture) mcp.StartQAOutput {
 		t.Fatal(err)
 	}
 	tf.log.wait(t, startWait, agentState(qa.AgentID, hooks.Idle))
-	for _, b := range qa.Branches {
+	for i, b := range qa.Branches {
 		typeLine(t, tf.e, qa.AgentID, "merge "+b)
-		screen(t, tf.e, qa.AgentID, "merge done (err=false)")
+		// The fake reads its input in order: the marker shows once the merge is done.
+		marker := fmt.Sprintf("merged-%d", i)
+		typeLine(t, tf.e, qa.AgentID, marker)
+		if out := screen(t, tf.e, qa.AgentID, "INPUT:"+marker); strings.Contains(out, "merge done (err=true)") {
+			t.Fatalf("a QA merge failed:\n%s", out)
+		}
 	}
 	if _, err := tf.team.ReportQA(ctx, qa.AgentID, mcp.ReportQAInput{Verdict: "pass", Summary: "ok"}); err != nil {
 		t.Fatal(err)

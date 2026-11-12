@@ -50,7 +50,12 @@ type wfQARun struct {
 // into sub-tasks; the Tech Lead assigns them in order, the dependent one
 // starting from its dependency's work; QA merges both and passes; the goal is
 // reported; the user merges it into main and pushes it to a local bare
-// remote; marking it done closes its sub-tasks; its agents are removed.
+// remote. Phase 19 (items 5 and 6): the user asks for a follow-up round that
+// changes a file the squash merge brought into main, with the project's limit
+// of open sub-tasks at 2 (the reported ones do not count); the new sub-task
+// starts from main, QA tests it from main, and the second merge has no
+// conflicts. Marking the goal done closes its sub-tasks; its agents are
+// removed.
 func TestTeamWorkflowEndToEnd(t *testing.T) {
 	d, repo, listAgents := teamDaemon(t, "--max-agents", "4")
 
@@ -240,6 +245,71 @@ func TestTeamWorkflowEndToEnd(t *testing.T) {
 	}
 	d.json("POST", "/api/tasks/"+goal.ID+"/merge", map[string]string{"target_head": m.Commit,
 		"source_head": p.SourceHead, "message": "again"}, 409, nil)
+
+	// 4b. Phase 19: a follow-up round after the squash merge (ADR 0062, 0063).
+	// The open sub-task limit is lowered to 2 while the lead runs: the goal
+	// already has 2 sub-tasks, reported, which do not count.
+	pid, _ := defaults.Load(d.base)
+	d.json("PATCH", "/api/projects/"+pid.(string), map[string]any{"settings": map[string]any{"max_sub_tasks": 2}}, 200, nil)
+	firstMerge := m.Commit
+	d.json("POST", "/api/agents/"+lead+"/message", map[string]string{"body": "Follow-up for this goal, decided, do not ask: " +
+		"create exactly one new sub-task \"gamma\": change wf-beta.txt so that it has two lines, beta and then gamma, and " +
+		"commit it. Files: wf-beta.txt. Acceptance: wf-beta.txt is beta, then gamma. Assign it, run QA when it is reported, " +
+		"then report the goal again with report_done and a commit_message."}, 201, nil)
+	deadline = time.Now().Add(25 * time.Minute)
+	var gammaTask wfTask
+	for {
+		d.json("GET", "/api/tasks", nil, 200, &tasks)
+		g := tasks[slices.IndexFunc(tasks, func(x wfTask) bool { return x.ID == goal.ID })]
+		for _, x := range tasks {
+			if x.ParentTaskID == goal.ID && x.ID != dependent.ID && len(x.DependsOn) == 0 && x.SpecKey == "" {
+				gammaTask = x
+			}
+		}
+		d.json("GET", "/api/qa-runs", nil, 200, &runs)
+		la := findAgent(listAgents(), lead)
+		if gammaTask.ID != "" && g.Status == "review" && la.State == "idle" && len(runs) >= 2 && runs[0].Status == "passed" {
+			break
+		}
+		if la.State == "exited" {
+			t.Fatalf("the Tech Lead exited (%s) during the follow-up; goal %s", la.ExitReason, g.Status)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout in the follow-up: goal %s; tasks %+v; QA %+v; agents %+v", g.Status, tasks, runs, listAgents())
+		}
+		time.Sleep(5 * time.Second)
+	}
+	var gammaBranch string
+	for _, a := range listAgents() {
+		if a.TaskID == gammaTask.ID && a.Kind == "worker" && a.LastImport != nil {
+			gammaBranch = a.LastImport.Branch
+		}
+	}
+	if gammaBranch == "" {
+		t.Fatalf("no imported branch for the follow-up sub-task %s", gammaTask.ID)
+	}
+	if err := exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", firstMerge, gammaBranch).Run(); err != nil {
+		t.Errorf("the follow-up branch %s does not start from main after the merge (%s)", gammaBranch, firstMerge)
+	}
+	if len(runs[0].Merged) != 1 || runs[0].Merged[0].TaskID != gammaTask.ID {
+		t.Errorf("the follow-up QA run merged %+v; want the follow-up sub-task only", runs[0].Merged)
+	}
+	d.json("GET", "/api/tasks/"+goal.ID+"/merge", nil, 200, &p)
+	if !p.Ready || p.Branch != runs[0].Branch {
+		t.Fatalf("the follow-up's merge preview: %+v", p)
+	}
+	d.json("POST", "/api/tasks/"+goal.ID+"/merge", map[string]string{"target_head": p.TargetHead,
+		"source_head": p.SourceHead, "message": p.Message}, 200, &m)
+	if m.Commit == firstMerge || strings.TrimSpace(gitOut(t, repo, "rev-parse", "main")) != m.Commit {
+		t.Fatalf("the second merge: %+v", m)
+	}
+	if b, err := os.ReadFile(filepath.Join(repo, "wf-beta.txt")); err != nil ||
+		strings.Join(strings.Fields(string(b)), " ") != "beta gamma" {
+		t.Errorf("wf-beta.txt in main after the follow-up's merge: %q %v", b, err)
+	}
+	if st := gitOut(t, repo, "status", "--porcelain"); st != "" {
+		t.Errorf("the checkout is not clean after the second merge: %q", st)
+	}
 
 	// 5. The user marks the goal done: its sub-tasks are done, the Tech Lead
 	// ends; the push and the cleanup work on the done goal.
