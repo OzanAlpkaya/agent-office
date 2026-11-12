@@ -160,6 +160,15 @@ claude setup-token                           # prints a token
 ./bin/agent-office serve --repo ~/src/some-go-project --pack go --model haiku
 ```
 
+To keep the daemon running without a terminal, install it as a systemd user service with the same
+flags (it restarts on failure and logs to the journal; run `install` again to change the flags):
+
+```sh
+./bin/agent-office service install --repo ~/src/some-go-project --pack go --model haiku
+./bin/agent-office service status            # journalctl --user -u agent-office -f for the logs
+./bin/agent-office service uninstall
+```
+
 More repositories become projects of the same daemon, each with its own settings (flags they do
 not set come from `serve`'s). Add them in the UI's **Projects** panel or from the command line:
 
