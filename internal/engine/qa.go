@@ -177,7 +177,7 @@ func (e *Engine) startQA(ctx context.Context, caller string) (mcp.StartQAOutput,
 	if criteria.Len() == 0 {
 		criteria.WriteString("(none written down: check that the goal below is reached)\n")
 	}
-	def := e.opts.Roles.Default(role.QA)
+	def := e.lv().Roles.Default(role.QA)
 	prompt := e.expandPrompt(def) + "\n\n" + goalSection(&goal) +
 		"\nMerge these branches into your branch, in this order:\n" + list.String() +
 		"\nAcceptance criteria:\n" + criteria.String() +
@@ -187,7 +187,7 @@ func (e *Engine) startQA(ctx context.Context, caller string) (mcp.StartQAOutput,
 		extraRefs: extra, prompt: prompt})
 	if errors.Is(err, ErrTooManyAgents) {
 		return mcp.StartQAOutput{}, fmt.Errorf("%w (at most %d agents run at once); wait for a free slot, then start QA",
-			ErrTooManyAgents, e.opts.MaxAgents)
+			ErrTooManyAgents, e.maxAgents())
 	}
 	if err != nil {
 		return mcp.StartQAOutput{}, err

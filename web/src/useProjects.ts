@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { type Project, api, parseEventMessage, parseProjectsMessage, projectApi, signalUnauthorized, statusSignedOut, wsURL } from "./api";
+import { type DaemonStatus, type Project, api, parseEventMessage, parseProjectsMessage, projectApi, signalUnauthorized, statusSignedOut, wsURL } from "./api";
 import type { Connection } from "./useAgents";
 import { type LightWorld, applyProjects, emptyLight, reduceLight } from "./projects";
 import { type Presence, visibilityMessage } from "./presence";
@@ -11,8 +11,11 @@ const backoff = (retry: number): number => Math.min(5000, 500 * 2 ** retry);
 // (ADR 0046). loaded turns true with the first snapshot. The page tells the
 // daemon on the same socket whether it is visible, and gets the user's
 // presence back (Phase 18): the devices with a visible page.
-export function useProjects(): { projects: Project[]; loaded: boolean; connection: Connection; presence?: Presence; profile?: Profile } {
+export function useProjects(): {
+  projects: Project[]; loaded: boolean; connection: Connection; presence?: Presence; profile?: Profile; daemon?: DaemonStatus;
+} {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [daemon, setDaemon] = useState<DaemonStatus>();
   const [presence, setPresence] = useState<Presence>();
   const [profile, setProfile] = useState<Profile>();
   const [loaded, setLoaded] = useState(false);
@@ -45,6 +48,10 @@ export function useProjects(): { projects: Project[]; loaded: boolean; connectio
           setProfile(m.profile);
           return;
         }
+        if (m.type === "daemon") {
+          setDaemon(m.status);
+          return;
+        }
         setProjects((prev) => applyProjects(prev, m));
         if (m.type === "projects") setLoaded(true);
       };
@@ -71,7 +78,7 @@ export function useProjects(): { projects: Project[]; loaded: boolean; connectio
       ws?.close();
     };
   }, []);
-  return { projects, loaded, connection, presence, profile };
+  return { projects, loaded, connection, presence, profile, daemon };
 }
 
 // useWatchers follows every open project but the shown one, lightly: only

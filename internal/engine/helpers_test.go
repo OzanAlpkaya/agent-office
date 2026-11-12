@@ -94,3 +94,23 @@ func screen(t *testing.T, e *Engine, id, want string) string {
 	t.Fatalf("terminal never showed %q:\n%s", want, last)
 	return ""
 }
+
+// setLiveForTest changes a running engine's live settings in place of a
+// project settings change (ADR 0061).
+func (e *Engine) setLiveForTest(change func(*liveOptions)) {
+	lv := *e.lv()
+	change(&lv)
+	e.live.Store(&lv)
+}
+
+// engineWithOptions is a bare engine for tests of option-derived values.
+func engineWithOptions(t *testing.T, o Options) *Engine {
+	t.Helper()
+	lv, err := liveFrom(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{opts: o}
+	e.live.Store(lv)
+	return e
+}

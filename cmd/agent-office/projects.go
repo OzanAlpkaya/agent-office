@@ -38,8 +38,8 @@ func daemonDefaults(cfg serveConfig) engine.ProjectSettings {
 	return engine.ProjectSettings{
 		Pack: engine.Ptr(p), SecretsDir: engine.Ptr(cfg.secretsDir), EgressAllow: slices.Clone(cfg.egressAllow),
 		Model: engine.Ptr(cfg.model), RoleModels: models, RoleCLIs: clis, CodexModel: engine.Ptr(cfg.codexModel),
-		MaxAgents: engine.Ptr(cfg.maxAgents),
-		GitHub:    engine.Ptr(cfg.github), GitHubRemote: engine.Ptr(cfg.githubRemote), Reviewer: engine.Ptr(cfg.reviewer),
+		MaxAgents: engine.Ptr(cfg.maxAgents), MaxSubTasks: engine.Ptr(engine.DefaultMaxSubTasks),
+		GitHub: engine.Ptr(cfg.github), GitHubRemote: engine.Ptr(cfg.githubRemote), Reviewer: engine.Ptr(cfg.reviewer),
 		ReviewRounds:          engine.Ptr(cfg.reviewRounds),
 		BudgetSessionMicroUSD: engine.Ptr(int64(math.Round(cfg.budgetSessionUSD * 1e6))),
 		BudgetGoalMicroUSD:    engine.Ptr(int64(math.Round(cfg.budgetGoalUSD * 1e6))),
@@ -249,7 +249,7 @@ type settingsFlags struct {
 	inherit                                                  *string
 	roleCLIs, codexModel                                     *string
 	accessDecider, leadHosts, workerMemory, mergeTarget      *string
-	workerPids                                               *int
+	workerPids, maxSubTasks                                  *int
 }
 
 func addSettingsFlags(fs *flag.FlagSet, set bool) *settingsFlags {
@@ -262,6 +262,7 @@ func addSettingsFlags(fs *flag.FlagSet, set bool) *settingsFlags {
 	f.roleCLIs = fs.String("role-cli", "", "agent CLI per role, e.g. worker=codex (Codex agents run sandboxed)")
 	f.codexModel = fs.String("codex-model", "", "default model of its Codex agents, e.g. gpt-6.1-sol")
 	f.maxAgents = fs.Int("max-agents", 0, "its agents at the same time (at most the daemon's --max-agents)")
+	f.maxSubTasks = fs.Int("max-sub-tasks", 0, "open sub-tasks per goal (to do, in progress, blocked), 1-100 (default 20)")
 	f.github = fs.Bool("github", false, "push finished work and open pull requests (sandboxed agents only)")
 	f.remote = fs.String("github-remote", "", "remote to push to")
 	f.rev = fs.String("reviewer", "", "internal, coderabbit or none")
@@ -277,7 +278,7 @@ func addSettingsFlags(fs *flag.FlagSet, set bool) *settingsFlags {
 	f.mergeTarget = fs.String("merge-target", "", "the branch a goal's Merge button squash-merges into (default main)")
 	if set {
 		f.inherit = fs.String("inherit", "", "settings to take from the daemon again, comma-separated, e.g. pack,model "+
-			"(names as in the API: pack, secrets_dir, egress_allow, model, role_models, role_clis, codex_model, max_agents, github, github_remote, "+
+			"(names as in the API: pack, secrets_dir, egress_allow, model, role_models, role_clis, codex_model, max_agents, max_sub_tasks, github, github_remote, "+
 			"reviewer, review_rounds, budget_session_micro_usd, budget_goal_micro_usd, access_decider, lead_access_hosts, worker_memory, worker_pids, merge_target)")
 	}
 	return f
@@ -312,6 +313,8 @@ func (f *settingsFlags) settings(cur engine.ProjectSettings) (engine.ProjectSett
 			s.RoleModels, err = role.ParseModels(*f.roleModels)
 		case "max-agents":
 			s.MaxAgents = engine.Ptr(*f.maxAgents)
+		case "max-sub-tasks":
+			s.MaxSubTasks = engine.Ptr(*f.maxSubTasks)
 		case "role-cli":
 			s.RoleCLIs, err = role.ParseCLIs(*f.roleCLIs)
 		case "codex-model":
@@ -376,6 +379,8 @@ func (f *settingsFlags) settings(cur engine.ProjectSettings) (engine.ProjectSett
 				s.CodexModel = nil
 			case "max_agents":
 				s.MaxAgents = nil
+			case "max_sub_tasks":
+				s.MaxSubTasks = nil
 			case "github":
 				s.GitHub = nil
 			case "github_remote":

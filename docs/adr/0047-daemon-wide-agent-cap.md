@@ -1,6 +1,6 @@
 # 0047. A daemon-wide agent cap across projects
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by ADR 0061 (caps change at runtime, checked at each start)
 - **Date:** 2026-11-11
 
 ## Context

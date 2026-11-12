@@ -466,3 +466,35 @@ func TestProfileAPI(t *testing.T) {
 		}
 	}
 }
+
+// TestDaemonCapAPI: the daemon-wide agent cap changes without a restart and
+// goes back to --max-agents with null (ADR 0061); the project's status shows
+// its effective cap.
+func TestDaemonCapAPI(t *testing.T) {
+	f := newFixture(t)
+	var st engine.HubStatus
+	jsonBody(t, f.doBody(t, "PUT", "/api/daemon", jsonCT, `{"max_agents": 2}`), http.StatusOK, &st)
+	if st.MaxAgents != 2 || !st.MaxAgentsSaved {
+		t.Fatalf("set %+v", st)
+	}
+	jsonBody(t, f.do(t, "GET", "/api/status", nil), http.StatusOK, &st)
+	if st.MaxAgents != 2 || st.MaxAgentsFlag == 2 {
+		t.Fatalf("status %+v", st)
+	}
+	var ps struct {
+		Caps engine.Caps `json:"caps"`
+	}
+	jsonBody(t, f.do(t, "GET", f.pp+"/status", nil), http.StatusOK, &ps)
+	if ps.Caps.DaemonMax != 2 || ps.Caps.Effective > 2 || ps.Caps.MaxSubTasks != engine.DefaultMaxSubTasks {
+		t.Fatalf("project caps %+v", ps.Caps)
+	}
+	for _, bad := range []string{`{"max_agents": 0}`, `{"max_agents": 33}`, `{"max_agents": "4"}`, `{"cap": 1}`} {
+		if r := f.doBody(t, "PUT", "/api/daemon", jsonCT, bad); r.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: %d", bad, r.StatusCode)
+		}
+	}
+	jsonBody(t, f.doBody(t, "PUT", "/api/daemon", jsonCT, `{"max_agents": null}`), http.StatusOK, &st)
+	if st.MaxAgentsSaved || st.MaxAgents != st.MaxAgentsFlag {
+		t.Fatalf("back to the flag %+v", st)
+	}
+}

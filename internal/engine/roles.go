@@ -24,10 +24,10 @@ func (e *Engine) resolveRole(req StartRequest) (*role.Role, error) {
 	case roleLeadAlias:
 		name = RoleTechLead
 	}
-	def, ok := e.opts.Roles.Get(name)
+	def, ok := e.lv().Roles.Get(name)
 	if !ok {
 		var names []string
-		for _, r := range e.opts.Roles.List() {
+		for _, r := range e.lv().Roles.List() {
 			names = append(names, r.Name)
 		}
 		return nil, invalid("unknown role %q; roles: %s", name, strings.Join(names, ", "))
@@ -48,10 +48,10 @@ func (e *Engine) resolveRole(req StartRequest) (*role.Role, error) {
 // roleOf returns the definition of an agent's role, or the built-in role of
 // its kind if the role is gone (a user role removed since the agent ran).
 func (e *Engine) roleOf(name, kind string) *role.Role {
-	if def, ok := e.opts.Roles.Get(name); ok && string(def.Behaviour) == kind {
+	if def, ok := e.lv().Roles.Get(name); ok && string(def.Behaviour) == kind {
 		return def
 	}
-	return e.opts.Roles.Default(role.Behaviour(kind))
+	return e.lv().Roles.Default(role.Behaviour(kind))
 }
 
 // modelOf is the model an agent of def runs with: the role's, else --model.
@@ -60,9 +60,9 @@ func (e *Engine) modelOf(def *role.Role) string {
 		return def.Model
 	}
 	if def.CLI == role.CLICodex {
-		return e.opts.CodexModel // --model names Claude Code models
+		return e.lv().CodexModel // --model names Claude Code models
 	}
-	return e.opts.Model
+	return e.lv().Model
 }
 
 // checkCLI says whether agents can run on cli in this daemon: Codex agents
@@ -105,7 +105,7 @@ func imports(kind string) bool { return kind == KindWorker || kind == KindQA }
 func (e *Engine) expandPrompt(def *role.Role) string {
 	return strings.NewReplacer(
 		role.PlaceholderMaxSubTasks, strconv.Itoa(MaxSubTasks),
-		role.PlaceholderMaxWorkers, strconv.Itoa(max(e.opts.MaxAgents-1, 1)),
+		role.PlaceholderMaxWorkers, strconv.Itoa(max(e.maxAgents()-1, 1)),
 	).Replace(def.Prompt)
 }
 
@@ -159,7 +159,7 @@ type RoleInfo struct {
 // Roles lists the team roles of this daemon run (ADR 0029).
 func (e *Engine) Roles() []RoleInfo {
 	var out []RoleInfo
-	for _, r := range e.opts.Roles.List() {
+	for _, r := range e.lv().Roles.List() {
 		out = append(out, RoleInfo{Role: r, Model: e.modelOf(r)})
 	}
 	return out

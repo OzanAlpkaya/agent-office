@@ -74,7 +74,7 @@ type MemoryInput struct {
 // memoryScope validates an entry's scope: known role names, and file
 // patterns as a sub-task's files (ADR 0032).
 func (e *Engine) memoryScope(roles, paths []string) ([]string, []string, error) {
-	r, err := normalizeList(roles, maxMemoryScope, 32, "roles", func(n string) bool { _, ok := e.opts.Roles.Get(n); return ok })
+	r, err := normalizeList(roles, maxMemoryScope, 32, "roles", func(n string) bool { _, ok := e.lv().Roles.Get(n); return ok })
 	if err != nil {
 		return nil, nil, err
 	}
@@ -547,7 +547,7 @@ func (e *Engine) Briefing(ctx context.Context) (mcp.Briefing, error) {
 				b.Cost.TodayMicroUSD += s.CostMicroUSD
 			}
 		}
-		b.Cost.GoalBudget = e.opts.Budgets.GoalMicroUSD
+		b.Cost.GoalBudget = e.lv().Budgets.GoalMicroUSD
 	}
 	if mem, err := e.Memory(ctx); err == nil {
 		for _, m := range mem {

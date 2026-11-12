@@ -23,6 +23,7 @@ import { InboxPanel } from "./Team";
 import { unread } from "./workflow";
 import { type Waiting, waitingOnUser } from "./waiting";
 import { TerminalView } from "./TerminalView";
+import { capNote, runningLabel } from "./caps";
 import { useWorld } from "./useAgents";
 import { type UsageRow, formatMoney, formatTokens, sessionList, totalTokens, usageBy } from "./usage";
 
@@ -157,8 +158,8 @@ export function App({
   // The project's routes, plus the daemon's (health, devices, projects) under one name.
   const papi = useMemo(() => projectApi(project.id), [project.id]);
   const api = useMemo(() => ({ ...daemonApi, ...papi }), [papi]);
-  const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, merges, connection } =
-    useWorld(papi);
+  const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, merges, caps: liveCaps,
+    connection } = useWorld(papi);
   const [roles, setRoles] = useState<RoleInfo[]>([]);
   const narrow = useMedia(narrowQuery);
   const [view, setView] = useState<View>({ kind: initialTab ?? "board" });
@@ -290,6 +291,7 @@ export function App({
     );
 
   const running = agents.filter((a) => a.state !== "exited").length;
+  const caps = liveCaps ?? status?.caps; // the project's effective cap (ADR 0061)
   const leadRunning = agents.some((a) => a.kind === "lead" && a.state !== "exited");
   const architectRunning = agents.some((a) => a.kind === "architect" && a.state !== "exited");
   const unreadCount = unread(inbox);
@@ -341,7 +343,9 @@ export function App({
     <div className="agent-list">
       <div className="agent-list-head">
         <span className="eyebrow">Agents</span>
-        <span className="muted small">{running} running</span>
+        <span className="muted small" data-testid="running-cap" title={caps ? capNote(caps) : undefined}>
+          {caps ? runningLabel({ ...caps, running }) : `${running} running`}
+        </span>
         <span className="spacer" />
         <button className="ghost sm" onClick={() => void startAgent()} aria-label="Start agent (no task)"
           title="Start an agent without a task, e.g. to explore the repository">
@@ -485,7 +489,8 @@ export function App({
                 onProjectSettings={(id) => (id === project.id ? openProjectSettings("general") : onSelectProject(id, undefined, "project-settings"))} />
             ) : view.kind === "project-settings" ? (
               <ProjectSettings tab={projectTab} onTab={setProjectTab} project={project} status={status} daemon={daemon} api={papi}
-                accessRequests={accessRequests} memory={memory} run={run} />
+                accessRequests={accessRequests} memory={memory} run={run} caps={liveCaps}
+                running={running} />
             ) : view.kind === "board" || !current ? (
               <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask}
                 usageByGoal={usageByGoal}

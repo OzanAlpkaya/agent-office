@@ -122,7 +122,7 @@ func (e *Engine) workerRole(name string) (string, error) {
 	if name == "" {
 		return "", nil
 	}
-	r, ok := e.opts.Roles.Get(name)
+	r, ok := e.lv().Roles.Get(name)
 	if !ok || r.Behaviour != role.Worker {
 		return "", invalid("role %q is not a worker role; use one of %s", name, strings.Join(e.workerRoles(), ", "))
 	}
@@ -132,7 +132,7 @@ func (e *Engine) workerRole(name string) (string, error) {
 // workerRoles lists the roles a sub-task can be built by.
 func (e *Engine) workerRoles() []string {
 	var out []string
-	for _, r := range e.opts.Roles.List() {
+	for _, r := range e.lv().Roles.List() {
 		if r.Behaviour == role.Worker {
 			out = append(out, r.Name)
 		}

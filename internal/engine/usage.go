@@ -556,7 +556,7 @@ var errUnpriced = errors.New("no price for a model this agent used, so its spend
 // allowRequest is the API proxy's budget check for a sandboxed session. It
 // runs before every request is forwarded.
 func (e *Engine) allowRequest(su *sessionUsage) error {
-	b := e.opts.Budgets
+	b := e.lv().Budgets
 	if !b.on() {
 		return nil
 	}
@@ -634,7 +634,7 @@ func messageFromUsageRow(r db.UsageMessage) usage.Message {
 // the current table (ADR 0026).
 func (e *Engine) Usage(ctx context.Context) (UsageReport, error) {
 	p := e.prices()
-	rep := UsageReport{Prices: PriceInfo{AsOf: p.AsOf, Source: p.Source, File: p.File}, Budgets: e.opts.Budgets,
+	rep := UsageReport{Prices: PriceInfo{AsOf: p.AsOf, Source: p.Source, File: p.File}, Budgets: e.lv().Budgets,
 		Sessions: []SessionUsage{}, Models: []ModelUsage{}, Vendors: []VendorUsage{}}
 	sessions, err := e.q.ListProjectSessions(ctx, e.project.ID)
 	if err != nil {

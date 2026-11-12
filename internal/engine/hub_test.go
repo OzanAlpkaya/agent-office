@@ -316,8 +316,33 @@ func TestHubUpdateSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{Model: Ptr("opus")}}); !errors.Is(err, ErrProjectBusy) {
-		t.Fatalf("settings change with a running agent: %v", err)
+	// Start-time settings apply while an agent runs, to the next start (ADR 0061).
+	p, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{Model: Ptr("opus"), MaxAgents: Ptr(2),
+		MaxSubTasks: Ptr(7)}})
+	if err != nil || *p.Effective.Model != "opus" || *p.Effective.MaxAgents != 2 {
+		t.Fatalf("live change with a running agent: %+v %v", p, err)
+	}
+	if eb, _ := hf.h.Engine(hf.b.ID); eb != hf.eb {
+		t.Fatal("a live change reopened the project")
+	}
+	if c := hf.eb.Caps(); c.MaxAgents != 2 || c.Effective != 2 || c.DaemonMax != 4 || c.MaxSubTasks != 7 || c.Running != 1 {
+		t.Fatalf("caps after the change %+v", c)
+	}
+	if a, err := hf.eb.Get(w.ID); err != nil || a.Model == "opus" {
+		t.Fatalf("the running agent changed: %+v %v", a, err)
+	}
+	second, err := hf.eb.Start(ctx, StartRequest{})
+	if err != nil || second.Model != "opus" {
+		t.Fatalf("next start: %+v %v", second, err)
+	}
+	if _, err := hf.eb.Start(ctx, StartRequest{}); !errors.Is(err, ErrTooManyAgents) ||
+		!strings.Contains(err.Error(), "project's cap of 2") || !strings.Contains(err.Error(), "QA count too") {
+		t.Fatalf("start over the lowered cap: %v", err)
+	}
+	// What the engine is built from still needs the agents stopped; the refusal names it.
+	if _, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{Model: Ptr("opus"),
+		Reviewer: Ptr(ReviewerNone)}}); !errors.Is(err, ErrProjectBusy) || !strings.Contains(err.Error(), "reviewer") {
+		t.Fatalf("reopen change with a running agent: %v", err)
 	}
 	// A rename needs no reopen.
 	if p, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Name: Ptr("Web app")}); err != nil || p.Name != "Web app" {
@@ -327,12 +352,14 @@ func TestHubUpdateSettings(t *testing.T) {
 		t.Fatalf("invalid settings: %v", err)
 	}
 	log := record(t, hf.eb)
-	if err := hf.eb.Stop(w.ID); err != nil {
-		t.Fatal(err)
+	for _, id := range []string{w.ID, second.ID} {
+		if err := hf.eb.Stop(id); err != nil {
+			t.Fatal(err)
+		}
+		log.wait(t, startWait, agentState(id, hooks.Exited))
 	}
-	log.wait(t, startWait, agentState(w.ID, hooks.Exited))
-	p, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{Model: Ptr("opus")}})
-	if err != nil || *p.Effective.Model != "opus" || p.Name != "Web app" {
+	p, err = hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{Model: Ptr("opus"), Reviewer: Ptr(ReviewerNone)}})
+	if err != nil || *p.Effective.Model != "opus" || *p.Effective.Reviewer != ReviewerNone || p.Name != "Web app" {
 		t.Fatalf("settings change: %+v %v", p, err)
 	}
 	eb, _ := hf.h.Engine(hf.b.ID)
@@ -348,6 +375,57 @@ func TestHubUpdateSettings(t *testing.T) {
 	ps := h2.Projects()
 	if len(ps) != 2 || *ps[1].Effective.Model != "opus" || ps[1].Name != "Web app" {
 		t.Fatalf("after a restart %+v", ps)
+	}
+}
+
+// The daemon-wide cap changes without a restart and is saved (ADR 0061).
+func TestHubSetMaxAgents(t *testing.T) {
+	hf := newHubFixture(t, 4, ProjectSettings{MaxAgents: Ptr(3)})
+	ctx := context.Background()
+	if c := hf.eb.Caps(); c.Effective != 3 || c.DaemonMax != 4 {
+		t.Fatalf("caps %+v", c)
+	}
+	updates, cancel := hf.h.Subscribe()
+	defer cancel()
+	st, err := hf.h.SetMaxAgents(ctx, Ptr(1))
+	if err != nil || st.MaxAgents != 1 || st.MaxAgentsFlag != 4 || !st.MaxAgentsSaved {
+		t.Fatalf("set: %+v %v", st, err)
+	}
+	if c := hf.eb.Caps(); c.Effective != 1 || c.DaemonMax != 1 {
+		t.Fatalf("caps after lowering %+v", c)
+	}
+	if p, _ := hf.h.Project(hf.b.ID); *p.Effective.MaxAgents != 1 {
+		t.Fatalf("effective project cap %d", *p.Effective.MaxAgents)
+	}
+	seen := false
+	for !seen {
+		select {
+		case u := <-updates:
+			seen = u.Type == "daemon" && u.Status != nil && u.Status.MaxAgents == 1
+		case <-time.After(5 * time.Second):
+			t.Fatal("no daemon update")
+		}
+	}
+	if _, err := hf.eb.Start(ctx, StartRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hf.eb.Start(ctx, StartRequest{}); !errors.Is(err, ErrTooManyAgents) || !strings.Contains(err.Error(), "QA count too") {
+		t.Fatalf("start over the daemon-wide cap: %v", err)
+	}
+	if _, err := hf.h.SetMaxAgents(ctx, Ptr(33)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("33: %v", err)
+	}
+	// Saved: a restart keeps it; nil goes back to the flag.
+	if _, err := hf.h.SetMaxAgents(ctx, Ptr(2)); err != nil {
+		t.Fatal(err)
+	}
+	hf.h.Shutdown()
+	h2 := hf.openHub(t)
+	if st := h2.Status(); st.MaxAgents != 2 || !st.MaxAgentsSaved {
+		t.Fatalf("after a restart %+v", st)
+	}
+	if st, err := h2.SetMaxAgents(ctx, nil); err != nil || st.MaxAgents != 4 || st.MaxAgentsSaved {
+		t.Fatalf("back to the flag %+v %v", st, err)
 	}
 }
 
@@ -457,7 +535,7 @@ func TestHubUpdateEndsOldSubscriptions(t *testing.T) {
 	hf := newHubFixture(t, 4, ProjectSettings{})
 	updates, cancel := hf.eb.Subscribe()
 	defer cancel()
-	if _, err := hf.h.Update(context.Background(), hf.b.ID, UpdateProject{Settings: &ProjectSettings{Model: Ptr("opus")}}); err != nil {
+	if _, err := hf.h.Update(context.Background(), hf.b.ID, UpdateProject{Settings: &ProjectSettings{Reviewer: Ptr(ReviewerNone)}}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -552,11 +630,11 @@ func TestHubWorkerLimitsPerProject(t *testing.T) {
 	if err != nil || o.Sandbox.Pids != 512 || o.Sandbox.Memory != "2g" {
 		t.Fatalf("0 keeps the pack's or daemon's limit: %+v %v", o.Sandbox, err)
 	}
-	e := &Engine{opts: o}
+	e := engineWithOptions(t, o)
 	if e.workerPids() != 512 {
 		t.Fatalf("worker pids %d", e.workerPids())
 	}
-	if (&Engine{opts: Options{Sandbox: &SandboxOptions{}}}).workerPids() != sandbox.DefaultPids {
+	if engineWithOptions(t, Options{Sandbox: &SandboxOptions{}}).workerPids() != sandbox.DefaultPids {
 		t.Fatal("no limit set: the sandbox default")
 	}
 }
@@ -589,9 +667,10 @@ func TestHubOfficeLayout(t *testing.T) {
 	if a, _ := hf.eb.Get(w.ID); a.State == string(hooks.Exited) {
 		t.Fatal("a layout change stopped an agent")
 	}
-	// Other settings in the same change still need the agents stopped.
-	if _, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{OfficeLayout: &preset, Model: Ptr("opus")}}); !errors.Is(err, ErrProjectBusy) {
-		t.Fatalf("layout and model change with a running agent: %v", err)
+	// Settings the engine is built from, in the same change, still need the agents stopped (ADR 0061).
+	if _, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{OfficeLayout: &preset,
+		Reviewer: Ptr(ReviewerNone)}}); !errors.Is(err, ErrProjectBusy) {
+		t.Fatalf("layout and reviewer change with a running agent: %v", err)
 	}
 	bad := "version: 1\nrooms: []\n"
 	if _, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{OfficeLayout: &bad}}); !errors.Is(err, ErrInvalid) ||

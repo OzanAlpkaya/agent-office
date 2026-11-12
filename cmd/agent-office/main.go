@@ -651,8 +651,14 @@ func serve(args []string) error {
 			Roles: roles, QA: cfg.qa, RestoreAgents: cfg.restoreAgents, StallAfter: stallOption(cfg.stallAfter), HistoryDir: filepath.Join(cfg.dataDir, "terminals"),
 			Prices: prices, EventRetention: time.Duration(cfg.eventRetentionDays) * 24 * time.Hour,
 		},
-		Defaults:   defaults,
-		Configure:  configureProject(cfg, g, prices, log),
+		Defaults:  defaults,
+		Configure: configureProject(cfg, g, prices, log),
+		Check: func(s engine.ProjectSettings, roles *role.Set) error {
+			if roles == nil {
+				roles = role.MustBuiltins()
+			}
+			return checkBudgetModels(s, roles, prices)
+		},
 		Containers: containers,
 	})
 	if err != nil {

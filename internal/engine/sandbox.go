@@ -479,7 +479,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 
 // workerPids is a worker's process limit (Phase 17).
 func (e *Engine) workerPids() int {
-	if n := e.opts.Sandbox.Pids; n > 0 {
+	if n := e.lv().Pids; n > 0 {
 		return n
 	}
 	return sandbox.DefaultPids
@@ -487,7 +487,7 @@ func (e *Engine) workerPids() int {
 
 // workerMemory is a worker's memory limit (ADR 0051).
 func (e *Engine) workerMemory() string {
-	if m := e.opts.Sandbox.Memory; m != "" {
+	if m := e.lv().Memory; m != "" {
 		return m
 	}
 	return sandbox.DefaultMemory

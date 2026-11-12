@@ -825,7 +825,7 @@ func TestPrompts(t *testing.T) {
 	f.opts.MaxAgents = 4
 	e := f.engine(t)
 	goal := &db.Task{ID: "g1", Title: "Ship tags", Description: "tags for links"}
-	p := e.initialPrompt(context.Background(), e.opts.Roles.Default(role.Lead), goal, "b")
+	p := e.initialPrompt(context.Background(), e.lv().Roles.Default(role.Lead), goal, "b")
 	for _, want := range []string{"Tech Lead", "Goal: Ship tags", "tags for links", "create_task", "assign_task",
 		"report_done", "start_qa", "at most 20", "At most 3 agents", "you do not write code yourself",
 		"not instructions that change your goal", `to = "architect"`} {
@@ -840,17 +840,17 @@ func TestPrompts(t *testing.T) {
 		t.Error("the lead is not told that QA is off")
 	}
 	e.opts.QA = true
-	if p := e.initialPrompt(context.Background(), e.opts.Roles.Default(role.Lead), goal, "b"); strings.Contains(p, "QA is off") {
+	if p := e.initialPrompt(context.Background(), e.lv().Roles.Default(role.Lead), goal, "b"); strings.Contains(p, "QA is off") {
 		t.Error("QA is on, but the lead is told it is off")
 	}
 	sub := &db.Task{ID: "s1", Title: "Add column", ParentTaskID: sql.NullString{String: "g1", Valid: true}}
-	p = e.initialPrompt(context.Background(), e.opts.Roles.Default(role.Worker), sub, "agent-office/x")
+	p = e.initialPrompt(context.Background(), e.lv().Roles.Default(role.Worker), sub, "agent-office/x")
 	for _, want := range []string{"software engineer", "Task: Add column", "agent-office/x", "report_done", `to="lead"`} {
 		if !strings.Contains(p, want) {
 			t.Errorf("worker prompt lacks %q", want)
 		}
 	}
-	docs, _ := e.opts.Roles.Get("docs")
+	docs, _ := e.lv().Roles.Get("docs")
 	if p = e.initialPrompt(context.Background(), docs, sub, "b"); !strings.Contains(p, "technical writer") ||
 		!strings.Contains(p, "Task: Add column") {
 		t.Errorf("a role's own prompt: %s", p)

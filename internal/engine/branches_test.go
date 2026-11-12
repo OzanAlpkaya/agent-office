@@ -224,7 +224,7 @@ func TestProjectBranchCleanup(t *testing.T) {
 		t.Fatal("the running agent's branch was deleted")
 	}
 	// The merge target must exist.
-	e.opts.MergeTarget = "release"
+	e.setLiveForTest(func(l *liveOptions) { l.MergeTarget = "release" })
 	if _, err := e.ProjectBranches(ctx); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "release does not exist") {
 		t.Fatalf("missing target: %v", err)
 	}

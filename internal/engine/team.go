@@ -219,7 +219,7 @@ func (t team) AssignTask(ctx context.Context, caller string, in mcp.AssignTaskIn
 	a, err := e.Start(ctx, StartRequest{TaskID: task.ID, Role: roleName})
 	if errors.Is(err, ErrTooManyAgents) {
 		return mcp.AssignTaskOutput{}, userErr(fmt.Errorf("%w (at most %d agents run at once, you included): "+
-			"wait for a worker's report, then assign this task", ErrTooManyAgents, e.opts.MaxAgents))
+			"wait for a worker's report, then assign this task", ErrTooManyAgents, e.maxAgents()))
 	}
 	if err != nil {
 		return mcp.AssignTaskOutput{}, userErr(err)

@@ -26,7 +26,7 @@ func samplePlan() Plan {
 }
 
 func TestValidatePlan(t *testing.T) {
-	e := &Engine{opts: Options{Roles: role.MustBuiltins()}}
+	e := engineWithOptions(t, Options{Roles: role.MustBuiltins()})
 	p := samplePlan()
 	p.SubTasks[0].Files = append(p.SubTasks[0].Files, " internal/store/ ", "")
 	if err := e.validatePlan(&p); err != nil {

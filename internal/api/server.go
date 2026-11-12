@@ -93,6 +93,7 @@ func (s *server) routes() []route {
 	return []route{
 		{pattern: "GET /api/health", handler: s.health, public: true},
 		{pattern: "GET /api/status", handler: s.daemonStatus},
+		{pattern: "PUT /api/daemon", handler: s.putDaemon},
 		{pattern: "GET /api/usage", handler: s.daemonUsage},
 		{pattern: "GET /api/events", handler: s.hubEventsWS},
 		{pattern: "GET /api/projects", handler: s.listProjects},

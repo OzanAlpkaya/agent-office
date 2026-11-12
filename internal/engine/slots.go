@@ -51,6 +51,21 @@ func (p *slotPool) set(project string, n int) {
 	p.used[project] = n
 }
 
+// cap is the daemon-wide cap now.
+func (p *slotPool) cap() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.max
+}
+
+// setMax changes the daemon-wide cap (ADR 0061). Agents above a lowered cap
+// keep running; starts wait until enough of them exit.
+func (p *slotPool) setMax(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.max = n
+}
+
 // total is how many agents every project holds together.
 func (p *slotPool) total() int {
 	p.mu.Lock()
@@ -66,15 +81,21 @@ func (p *slotPool) total() int {
 // takes a slot; the caller increments e.starting next, under the same lock.
 func (e *Engine) reserveSlotLocked() error {
 	local := e.runningLocked() + e.starting
-	if local >= e.opts.MaxAgents {
-		if e.opts.MaxAgents < e.slots.max {
-			return fmt.Errorf("%w: this project's cap of %d agents is reached", ErrTooManyAgents, e.opts.MaxAgents)
+	own, daemon := e.lv().MaxAgents, e.slots.cap()
+	if local >= min(own, daemon) {
+		if own < daemon {
+			return fmt.Errorf("%w: this project's cap of %d agents is reached (the Tech Lead, Architect and QA count too)",
+				ErrTooManyAgents, own)
 		}
-		return ErrTooManyAgents
+		if others := e.slots.total() - local; others > 0 {
+			return fmt.Errorf("%w: the daemon-wide cap of %d agents is reached (%d run in other projects)",
+				ErrTooManyAgents, daemon, others)
+		}
+		return fmt.Errorf("%w (%d; the Tech Lead, Architect and QA count too)", ErrTooManyAgents, daemon)
 	}
 	if others, ok := e.slots.reserve(e.project.ID, local); !ok {
 		return fmt.Errorf("%w: the daemon-wide cap of %d agents is reached (%d run in other projects)",
-			ErrTooManyAgents, e.slots.max, others)
+			ErrTooManyAgents, daemon, others)
 	}
 	return nil
 }

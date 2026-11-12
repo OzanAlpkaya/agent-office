@@ -247,9 +247,23 @@ export class MockDaemon {
   profile: { name: string; look: { skin: number; hair: number; style: number; shirt: number; pants: number }; set: boolean } =
     { name: "", look: { skin: 0, hair: 0, style: 0, shirt: 0, pants: 0 }, set: false };
   private readonly projectEvents = new Map<string, WebSocketRoute>();
+  // The daemon-wide agent cap (ADR 0061): --max-agents is 8; one saved in the app wins.
+  maxAgentsSaved?: number;
+  projectMaxAgents = 4; // p1's own cap, for its status's caps
 
   constructor(readonly world: World) {
     this.projects = [{ project: project("p1", "linkshelf", { default: true }), world }];
+  }
+
+  daemonStatus(running: number): DaemonStatus {
+    return { sandbox: "podman", max_agents: this.maxAgentsSaved ?? 8, max_agents_flag: 8, max_agents_saved: this.maxAgentsSaved !== undefined,
+      running, warnings: [], defaults, default_project: "p1", remote_hosts: ["box.tail1234.ts.net"], version: "phase-7-test" };
+  }
+
+  caps(): { max_agents: number; daemon_max: number; effective: number; running: number; max_sub_tasks: number } {
+    const d = this.maxAgentsSaved ?? 8;
+    return { max_agents: this.projectMaxAgents, daemon_max: d, effective: Math.min(this.projectMaxAgents, d),
+      running: this.world.agents.filter((a) => a.state !== "exited").length, max_sub_tasks: 20 };
   }
 
   // addProject registers another project before (or after) install.
@@ -319,9 +333,19 @@ export class MockDaemon {
       if (p === "/api/health") return route.fulfill(json({ status: "ok", version: "phase-7-test" }));
       if (p === "/api/status") {
         const running = this.projects.reduce((n, x) => n + x.world.agents.filter((a) => a.state !== "exited").length, 0);
-        const d: DaemonStatus = { sandbox: "podman", max_agents: 8, running, warnings: [], defaults, default_project: "p1",
-          remote_hosts: ["box.tail1234.ts.net"], version: "phase-7-test" };
-        return route.fulfill(json(d));
+        return route.fulfill(json(this.daemonStatus(running)));
+      }
+      if (p === "/api/daemon" && method === "PUT") {
+        const body = route.request().postDataJSON() as { max_agents: number | null };
+        this.requests.push(`PUT ${p} ${JSON.stringify(body)}`);
+        if (body.max_agents !== null && (body.max_agents < 1 || body.max_agents > 32)) {
+          return route.fulfill({ status: 400, contentType: "application/json", body: '{"error":"invalid input: max_agents 1-32"}' });
+        }
+        this.maxAgentsSaved = body.max_agents ?? undefined;
+        const st = this.daemonStatus(0);
+        this.hubEvents?.send(JSON.stringify({ type: "daemon", status: st }));
+        this.send({ type: "caps", caps: this.caps() });
+        return route.fulfill(json(st));
       }
       if (p === "/api/usage") {
         const per = this.projects.map((x) => ({ project_id: x.project.id, name: x.project.name, state: x.project.state, totals: report(x.world).totals }));
@@ -397,7 +421,7 @@ export class MockDaemon {
         p = `/api${proj[2]}`;
         if (method !== "GET") this.projectRequests.push(`${proj[1]} ${method} ${p}`);
       }
-      if (p === "/api/status") return route.fulfill(json(status));
+      if (p === "/api/status") return route.fulfill(json({ ...status, caps: this.caps() }));
       if (p === "/api/usage") return route.fulfill(json(report(w)));
       if (p === "/api/roles") return route.fulfill(json(this.roles));
       if (method !== "GET") {

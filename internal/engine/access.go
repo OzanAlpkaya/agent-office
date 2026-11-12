@@ -72,7 +72,7 @@ func accessFromRow(r db.AccessRequest) AccessRequest {
 
 // decider is who decides the project's access requests.
 func (e *Engine) decider() string {
-	if d := e.opts.AccessDecider; d != "" {
+	if d := e.lv().AccessDecider; d != "" {
 		return d
 	}
 	return DeciderUser
@@ -83,7 +83,7 @@ func (e *Engine) decider() string {
 // policy, and a running lead above a worker (never the lead's own request).
 func (e *Engine) leadDecides(ctx context.Context, agentID, host string) *agentProc {
 	d := e.decider()
-	if d == DeciderUser || (d == DeciderLeadPolicy && !e.leadHosts.Allows(host)) {
+	if d == DeciderUser || (d == DeciderLeadPolicy && !e.lv().LeadHosts.Allows(host)) {
 		return nil
 	}
 	e.mu.Lock()
@@ -510,12 +510,12 @@ func (e *Engine) leadDecideAccess(ctx context.Context, caller string, in mcp.Dec
 	if _, _, err := e.workerOfGoal(ctx, goal, r.AgentID); err != nil {
 		return mcp.DecideAccessOutput{}, forbidden("access request %d is not from a worker of your goal", in.RequestID)
 	}
-	if in.Approve && e.decider() == DeciderLeadPolicy && !e.leadHosts.Allows(r.Value) {
+	if in.Approve && e.decider() == DeciderLeadPolicy && !e.lv().LeadHosts.Allows(r.Value) {
 		return mcp.DecideAccessOutput{}, forbidden("%s is outside the hosts this project lets you approve; the user decides "+
 			"it in the UI (you may deny it)", r.Value)
 	}
 	scope := strings.TrimSpace(in.Scope)
-	if in.Approve && scope == ScopeProject && !e.leadHosts.Allows(r.Value) {
+	if in.Approve && scope == ScopeProject && !e.lv().LeadHosts.Allows(r.Value) {
 		// A project-wide grant reaches every later agent, QA and reviewers too:
 		// the Tech Lead gives one only for hosts the user listed.
 		return mcp.DecideAccessOutput{}, forbidden("an approval for the whole project is for hosts in the project's lead_access_hosts "+
