@@ -190,6 +190,7 @@ button.task.goal { box-shadow: inset 3px 0 0 var(--accent), var(--shadow-1); }
 .task-detail .modal-head h2 { flex-wrap: wrap; }
 /* Phase 19: a wider task modal with run info. */
 .modal.task-detail { width: min(1100px, 96vw); }
+@media (pointer: coarse), (max-width: 760px) { .modal.task-detail { width: 100%; } } /* a full sheet on a phone (theme.css) */
 .runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); }
 .run { border: 1px solid var(--border); border-radius: var(--radius-md, 10px); padding: var(--space-3); }
 .run-head { align-items: baseline; flex-wrap: wrap; }
