@@ -181,9 +181,20 @@ func (e *Engine) startQA(ctx context.Context, caller string) (mcp.StartQAOutput,
 		}
 		fmt.Fprintf(&list, "- %s (sub-task %s %q, at %s)\n", b.Branch, b.TaskID, b.Title, short(b.Head))
 	}
+	// The criteria of what this run tests: after the goal was merged, only the
+	// sub-tasks it merges now, since the merged ones were tested and a follow-up
+	// may change what they did (Phase 19 e2e: QA failed a polish round against
+	// a criterion it replaced); never a superseded sub-task's.
+	inRun := map[string]bool{}
+	for _, b := range branches {
+		inRun[b.TaskID] = true
+	}
 	var criteria strings.Builder
 	for _, c := range children {
 		v := taskFromRow(c)
+		if cut != nil && !inRun[c.ID] || isSuperseded(c) {
+			continue
+		}
 		if (c.Status == StatusReview || c.Status == StatusDone) && len(v.Acceptance) > 0 {
 			fmt.Fprintf(&criteria, "- %s %q:\n", v.ID, v.Title)
 			for _, a := range v.Acceptance {

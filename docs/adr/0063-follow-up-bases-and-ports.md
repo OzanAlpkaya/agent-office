@@ -50,6 +50,9 @@ Option 3.
     and the run records both heads (`head` for the QA gate, `merge` for the pass check). A port that
     conflicts refuses `start_qa` with the files, so the lead assigns a sub-task that resolves them;
   - the QA gate treats merged sub-tasks as tested;
+  - QA gets the acceptance criteria of the sub-tasks it merges in this run only: the merged ones were tested,
+    and a follow-up may change what they did (the first e2e run failed a polish round three times against
+    the criterion it replaced). A superseded sub-task's criteria are never given;
   - report-time conflict checks (ADR 0032) compare the port, so the squash itself is no conflict.
 
 ## Consequences

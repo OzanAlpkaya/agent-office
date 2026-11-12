@@ -254,7 +254,8 @@ func TestTeamWorkflowEndToEnd(t *testing.T) {
 	firstMerge := m.Commit
 	d.json("POST", "/api/agents/"+lead+"/message", map[string]string{"body": "Follow-up for this goal, decided, do not ask: " +
 		"create exactly one new sub-task \"gamma\": change wf-beta.txt so that it has two lines, beta and then gamma, and " +
-		"commit it. Files: wf-beta.txt. Acceptance: wf-beta.txt is beta, then gamma. Assign it, run QA when it is reported, " +
+		"commit it. Files: wf-beta.txt. Acceptance: wf-beta.txt is beta, then gamma. This change is wanted: it replaces what " +
+		"the beta sub-task asked of wf-beta.txt, so file nothing about that. Assign it, run QA when it is reported, " +
 		"then report the goal again with report_done and a commit_message."}, 201, nil)
 	deadline = time.Now().Add(25 * time.Minute)
 	var gammaTask wfTask
@@ -262,7 +263,8 @@ func TestTeamWorkflowEndToEnd(t *testing.T) {
 		d.json("GET", "/api/tasks", nil, 200, &tasks)
 		g := tasks[slices.IndexFunc(tasks, func(x wfTask) bool { return x.ID == goal.ID })]
 		for _, x := range tasks {
-			if x.ParentTaskID == goal.ID && x.ID != dependent.ID && len(x.DependsOn) == 0 && x.SpecKey == "" {
+			// The follow-up is the sub-task not from the plan (the lead may make it depend on beta).
+			if x.ParentTaskID == goal.ID && x.SpecKey == "" && strings.Contains(strings.ToLower(x.Title), "gamma") {
 				gammaTask = x
 			}
 		}
@@ -309,6 +311,36 @@ func TestTeamWorkflowEndToEnd(t *testing.T) {
 	}
 	if st := gitOut(t, repo, "status", "--porcelain"); st != "" {
 		t.Errorf("the checkout is not clean after the second merge: %q", st)
+	}
+	// Item 3: an Architect started again during the follow-up ends once nothing waits for it; one that
+	// asked the user a question waits for the answer.
+	var inbox []struct {
+		AgentID    string `json:"agent_id"`
+		Kind       string `json:"kind"`
+		AnsweredAt string `json:"answered_at"`
+		Body       string `json:"body"`
+	}
+	d.json("GET", "/api/inbox", nil, 200, &inbox)
+	asked := slices.ContainsFunc(inbox, func(i struct {
+		AgentID    string `json:"agent_id"`
+		Kind       string `json:"kind"`
+		AnsweredAt string `json:"answered_at"`
+		Body       string `json:"body"`
+	}) bool {
+		return i.AgentID == arch.ID && i.Kind == "question" && i.AnsweredAt == ""
+	})
+	if a := findAgent(listAgents(), arch.ID); a.State != "exited" && !asked {
+		time.Sleep(10 * time.Second) // its end check runs a few seconds after its turn
+		if a = findAgent(listAgents(), arch.ID); a.State != "exited" {
+			t.Errorf("the Architect is %s after the follow-up, with no question to the user", a.State)
+		}
+	}
+	logData, _ = os.ReadFile(d.logPath)
+	for _, line := range strings.Split(string(logData), "\n") {
+		if strings.Contains(line, "architect") && (strings.Contains(line, "relaunched") || strings.Contains(line, "ends") ||
+			strings.Contains(line, "message_user") || strings.Contains(line, "agent exited")) {
+			t.Log(line)
+		}
 	}
 
 	// 5. The user marks the goal done: its sub-tasks are done, the Tech Lead
