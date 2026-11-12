@@ -5,7 +5,7 @@ approved plan and ends with an updated `PROGRESS.md` and a plain-language summar
 intentionally coarser; their DoD is refined at the start of the phase.
 
 **Order** (decided 2026-11-08): phases run 0–8, then 12, 9, 10, 11, 13, then 14 and 15
-(added 2026-11-11), then 16, 17 and 18. Numbers are kept, so references in ADRs and plans stay valid.
+(added 2026-11-11), then 16, 17, 18 and 19. Numbers are kept, so references in ADRs and plans stay valid.
 
 ---
 
@@ -791,3 +791,46 @@ user at their desk; a done goal is merged, closed and cleaned up from the same d
 - [x] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass: 407 Vitest tests, 106 Playwright tests (after the review); every e2e
       but the GitHub one (not run, as in Phase 17).
 
+---
+
+## Phase 19: Lessons from the game factory
+
+Added by Ozan after Phase 18 was merged (2026-11-12), from running Bouncibo Goals 01-02.
+
+**Goal:** agent-office runs unattended as a service, plans are approved and changed with little effort,
+agent slots and sub-task limits are spent on work that is open, and follow-up work after a squash merge
+starts from the right base, so it merges without history-only conflicts.
+
+**Scope** (see `docs/plans/phase-19.md`)
+1. Daemon as a background service. An `agent-office service install|uninstall|status` command writes a
+   systemd user unit with the serve flags, restarts it on failure and logs to the journal, so nobody keeps a
+   terminal open for serve.
+2. Simpler plan approval. Editing an Architect plan opens too many fields; small changes are too much work.
+   Add a "request changes" box where the user writes what to change and the Architect revises the plan, keep
+   one-click Approve, and make direct editing lighter.
+3. The Architect exits by itself after its plan is approved, so it doesn't hold an agent slot.
+4. Agent caps.
+   - Show the effective cap (the smaller of the project's Max agents and the daemon-wide --max-agents) and
+     say that the lead, Architect and QA count too.
+   - The daemon-wide cap can be changed from app settings without a restart.
+   - Project settings such as Max agents can be changed while agents run; they apply to the next agent start.
+5. Sub-task limit. Count only open sub-tasks against the 20 per goal; done and superseded ones don't count.
+   A superseded task is closed automatically instead of lingering as "No agent". The limit can be set per
+   project.
+6. The right base for follow-up work.
+   - New sub-tasks (polish rounds, QA bugs, a lead's own fixes) branch from the goal's latest finished work,
+     not the plan commit.
+   - After a goal is squash-merged, follow-up work in the same goal starts from the updated target branch.
+     Goal 02 hit 35 history-only conflicts because it kept building on the pre-squash branches.
+7. QA on the board. Each QA round gets its own card: result, linked bug sub-tasks and its own cost, instead
+   of only a "QA running" state on the goal card.
+8. A wider task modal with run info: start and end time next to the cost, model, duration (working vs
+   waiting), branch and last commit, change summary (files and lines), session history (resumes, exit
+   reasons), token breakdown (input, output, cache) and the worker's reported verification result.
+9. A distinct state for an agent whose turn ended while a background shell still runs (e.g. a worker waiting
+   on check.sh), such as "waiting on background task", instead of "Idle".
+
+**Definition of Done**
+- [ ] Each item has tests. Items 5 and 6 are covered end to end: a follow-up round after a squash-merge
+      merges without conflicts.
+- [ ] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass.

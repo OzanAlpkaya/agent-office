@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** none in progress. Phase 18 (UI and office polish) is merged into `main`.
+**Current phase:** Phase 19 (Lessons from the game factory), on `phase-19/game-factory-lessons`.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -28,6 +28,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 16: Autonomous team
 - [x] Phase 17: Daily use
 - [x] Phase 18: UI and office polish
+- [ ] Phase 19: Lessons from the game factory
 
 ## Log
 
