@@ -44,7 +44,7 @@ test("desktop tour", async ({ page }) => {
   await page.getByRole("button", { name: /^Project settings/ }).click();
   await expect(page.getByRole("tabpanel", { name: "General" })).toBeVisible();
   await page.waitForTimeout(300);
-  await shot(page, "settings");
+  await shot(page, "project-settings");
   await page.getByRole("tab", { name: "Office" }).click();
   const layout = page.getByTestId("layout-settings");
   await layout.getByRole("button", { name: "Own layout" }).click();

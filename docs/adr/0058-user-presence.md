@@ -36,3 +36,15 @@ looked at, and an office where no agent moves must not redraw (ADR 0024).
   page that is hidden and another device's view, and is the honest answer to "is anyone watching".
 - Presence carries device names only, to paired devices (who see them under Settings → Devices).
 - Agents are not told whether the user is present.
+
+## Amendment (2026-11-12, Phase 18 review): the user's name and look
+
+Settings → Profile has a name for the user's nameplate (empty: "You") and an avatar creator: a live
+preview drawn with the office's own pixel maps and palettes (the arms and the pixel drawing moved to
+pure modules the scene and the preview share), Randomize for a new look on each click (skin tone,
+hair colour, hair style, shirt, trousers), and Save. The profile is daemon-wide (migration 0018,
+`GET/PUT /api/profile`, validated), sent on the hub stream after the presence and when it changes, and
+used on every project's floor. The look is a set of indexes into the art's lists; the daemon only
+bounds them and the UI wraps them, so the art can grow. Unsaved, the user has a default look of their
+own (agents' looks come from hashes of their ids).
+

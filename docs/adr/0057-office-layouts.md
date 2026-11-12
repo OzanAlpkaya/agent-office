@@ -84,3 +84,13 @@ YAML checked as you type, a schematic preview from the same floor plan code, and
 - Pixel rules (back wall, desk cell, doorway) exist in Go and TypeScript; both are tested against
   the same presets.
 - Deskless agents are invisible in the office itself; they are named in the office bar.
+
+## Amendment (2026-11-12, Phase 18 review): fitting the office to the pane
+
+The office was the largest whole-pixel drawing that fit both the pane's width and height: on a desktop
+a small centred box, on a phone a band of empty space above and below. It now fills the pane's width
+as well as whole pixels allow (more columns on wide screens, up to ten), keeps at least 1.5 CSS pixels
+when the width allows, starts at the top, and covers a taller pane by deepening the workroom's floor
+(not with empty desks); an office taller than the pane scrolls. A custom layout is scaled by width.
+On a phone a nameplate shows only the name; a tap shows the task and a second opens the agent.
+

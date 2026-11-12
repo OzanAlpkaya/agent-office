@@ -47,7 +47,11 @@ daemon serves the UI offline.
 
 - Spacing, sizes, colours and radii come from tokens; no raw values in screen CSS except for the
   office's overlays, which match the pixel art.
-- Nothing opens under the header and pushes the page: use a drawer, a modal or the Settings page.
+- Nothing opens under the header and pushes the page: use a drawer, a modal or a settings page (the
+  project's behind the gear by the picker, the app's in the rail).
+- Show only the actions that apply; say why something cannot be done in a note, not with a greyed-out
+  button.
+- A field's default goes under it in full (`.field-hint`), never only in a placeholder.
 - Every interactive element has an accessible name; counts in a name are spelled out
   ("Approvals: 2 waiting").
 - On a phone (≤ 760 px or a coarse pointer) controls are at least 44 px high and nothing scrolls

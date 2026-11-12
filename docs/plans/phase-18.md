@@ -130,3 +130,30 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
   presence updates that could publish out of order (now under the pages' lock), the same presence race,
   and a full scene rebuild on every project update with a custom layout (plans are compared, not
   objects); fixed.
+
+## Review changes (2026-11-12)
+
+Ozan's review before the merge, done on the same branch:
+
+1. **Settings split.** The gear by the project picker opens the shown project's settings, titled with
+   its name (General with branch clean-up, Office, Sandbox, Memory); Settings in the rail is the app's
+   (Projects, Devices, Profile). Decision: branch clean-up and GitHub stay in the project's General tab
+   (they are the project's).
+2. **"+ New project"** in the picker opens the add form in a dialog.
+3. **Avatar:** Settings → Profile with a name for the nameplate, a live preview drawn with the office's
+   art, Randomize and Save; daemon-wide (migration 0018, `/api/profile`), used on every floor; a default
+   look and "You" until saved. Parts: skin tone, hair colour, hair style, shirt (every shirt colour the
+   office has) and trousers. The user's desk shows them; it is still drawn without animation.
+4. **The modal's actions by state** (`detailActions`): nothing greyed out.
+5. **Office on a phone:** names only, the task on a tap, the agent on a second tap; no band above or
+   below the office (it starts at the top and the workroom's floor fills the rest).
+6. **Office on a desktop:** it fills the width at a whole-pixel scale (3 CSS pixels in a 1440 px
+   window) and scrolls when taller than the pane.
+7. **Settings hints** show the inherited value in full under each field.
+8. **Settings tabs on a phone** fit; a strip that overflows fades at its edge.
+
+Found while doing it: a dialog took the focus from a field that focused itself (the add form's
+repository path); fixed. The project list's per-project settings form went (a project's Settings opens
+its own page). Filling a phone's height with desk rows was tried first and gave rows of empty desks;
+the floor is deepened instead.
+

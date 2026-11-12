@@ -773,7 +773,8 @@ user at their desk; a done goal is merged, closed and cleaned up from the same d
 
 **Definition of Done**
 - [x] Before and after screenshots of the main screens (board, card modal, settings, office, archive,
-      phone width) in `docs/screenshots/phase-18/` (`before/`, `after/`; the Playwright tour `screens.spec.ts`).
+      phone width; after the review also project settings, app settings and the avatar creator) in
+      `docs/screenshots/phase-18/` (`before/`, `after/`; the Playwright tour `screens.spec.ts`).
 - [x] Each item has tests:
       1. UI overhaul: Playwright `polish.spec.ts` (Settings tabs, drawers that move nothing, badges on every
          view, the phone layout without sideways scrolling) and every earlier spec on the new navigation;

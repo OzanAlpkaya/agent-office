@@ -85,3 +85,21 @@ opens the goal's modal. New task is a modal. The archive is a segmented mode of 
   dropped because it moved the nameplates (which are centred with a transform) under a finger.
 - Every Playwright spec was updated for the new structure; tests still find things by role and
   text.
+
+## Amendment (2026-11-12, Phase 18 review)
+
+- **Settings split in two.** One Settings page mixed the shown project's settings with the app's, and
+  "Project" and "Projects" side by side confused. The shown project's settings open from a gear by the
+  project picker, titled with its name: General (its settings, branch clean-up, GitHub), Office, Sandbox,
+  Memory (the gear counts proposed memory notes). Settings in the rail is the app's: Projects (list,
+  add, remove; a project's Settings opens its own), Devices, Profile.
+- **"+ New project"** is the project picker's last entry; it opens the add form in a dialog and is
+  never itself selected.
+- **Inherited values in full.** A field's inherited value was its placeholder and was cut off; it is
+  now a line under the field ("Default: pack's or --sandbox-pids").
+- **Tabs on a phone** fit (shorter labels, "Office"); a strip that still overflows fades at its edge.
+- **The modal's actions follow the task's state** (`detailActions`): the Start buttons only for a task
+  that can start (all of them for a goal in To do, its Tech Lead back for a goal under way), Mark done
+  and Open PR in review, Delete while nothing works on it. A button that does not apply is not shown,
+  rather than greyed out; why a goal cannot start its Tech Lead stays as a note.
+
