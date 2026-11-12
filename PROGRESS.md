@@ -405,4 +405,8 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   inherited values in full under each setting; settings tabs that fit a phone. ADR 0056-0058 amended.
   `make check` (407 Vitest tests), `make ui-test` (106), `make sandbox-test` and `make e2e` pass (GitHub e2e
   not run).
+- 2026-11-12: Phase 18 second review change: the office fits the pane in width and height by default (the
+  largest sharp scale with the whole floor visible) and Zoom + draws it about a third larger, remembered per
+  browser (ADR 0057 amended). `make check` (409 Vitest tests) and `make ui-test` (106) pass; the daemon did
+  not change since `make sandbox-test` and `make e2e` passed.
 
