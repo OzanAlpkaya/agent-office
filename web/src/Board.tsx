@@ -1,18 +1,20 @@
+// The board (Phase 18): a toolbar (active goals or the archive, the goal
+// picker, New task), five columns of compact cards, and the card's modal with
+// everything else (TaskDetail).
 import { type FormEvent, type JSX, useState } from "react";
 import {
   type Agent, type GoalMerge, type InboxItem, type Plan, type PullRequest, type QARun, type Review, type RoleInfo, type Spec, type Task,
   type TaskStatus, taskStatuses,
 } from "./api";
-import { AgentName } from "./AgentName";
-import { Archive, GoalToolbar, MergePanel, PushPanel } from "./Goals";
-import {
-  type GoalPick, boardTasks, busyOf, closeWarning, latestMerge, mergeOffered, pushOffered, validPick,
-} from "./goals";
-import { InboxEntry, PlanPanel, QAPanel, TaskPlanInfo } from "./Team";
-import { type GoalBusy, currentSpec, goalBusy, inboxFor, latestQA, waitsFor, workerRoles } from "./workflow";
-import { type UsageRow, formatMoney, formatTokens, totalTokens } from "./usage";
+import { Archive } from "./Goals";
+import { type GoalPick, activeGoals, archivedGoals, boardTasks, validPick } from "./goals";
+import { cardAgent, cardStatus, type CardContext } from "./cards";
+import { Icon } from "./icons";
+import { Modal } from "./Modal";
+import { TaskDetail } from "./TaskDetail";
+import { type UsageRow, formatMoney } from "./usage";
 
-const columnTitle: Record<TaskStatus, string> = {
+export const columnTitle: Record<TaskStatus, string> = {
   todo: "To do",
   in_progress: "In progress",
   review: "Review",
@@ -20,7 +22,7 @@ const columnTitle: Record<TaskStatus, string> = {
   blocked: "Blocked",
 };
 
-interface Props {
+export interface BoardProps {
   tasks: Task[];
   agents: Agent[];
   canStart: boolean;
@@ -54,6 +56,11 @@ interface Props {
   // Phase 17 (ADR 0054, 0055).
   merges?: GoalMerge[];
   projectId?: string; // the goal picker is remembered per project in this browser
+  // Phase 18: the card whose modal is open (App opens one for "Review plan"),
+  // and what waits on the user (the Approvals list), for the cards' chips.
+  detail?: string;
+  onDetail?: (id: string | undefined) => void;
+  waitingAgents?: ReadonlySet<string>;
 }
 
 // The goal picker's choice, per browser and project: a convenience, so
@@ -76,310 +83,123 @@ function savePick(projectId: string | undefined, pick: GoalPick): void {
   }
 }
 
-export function Board(p: Props): JSX.Element {
+export function Board(p: BoardProps): JSX.Element {
   const [picked, setPicked] = useState<GoalPick>(() => loadPick(p.projectId));
   const [archive, setArchive] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [ownDetail, setOwnDetail] = useState<string>();
+  const detail = p.onDetail ? p.detail : ownDetail;
+  const setDetail = p.onDetail ?? setOwnDetail;
   const pick = validPick(p.tasks, picked);
   const shown = boardTasks(p.tasks, pick);
+  const goals = activeGoals(p.tasks);
+  const done = archivedGoals(p.tasks).length;
   const onPick = (v: GoalPick): void => {
     setPicked(v);
     savePick(p.projectId, v);
   };
+  const ctx: CardContext = {
+    tasks: p.tasks, agents: p.agents, qaRuns: p.qaRuns ?? [], merges: p.merges ?? [], specs: p.specs ?? [], inbox: p.inbox ?? [],
+    waitingAgents: p.waitingAgents ?? new Set(),
+  };
+  const open = p.tasks.find((t) => t.id === detail);
   return (
-    <>
-      <GoalToolbar tasks={p.tasks} pick={pick} onPick={onPick} archive={archive} onArchive={setArchive} />
+    <div className="board-view">
+      <div className="board-toolbar">
+        <div className="segmented" role="group" aria-label="Board view">
+          <button aria-pressed={!archive} onClick={() => setArchive(false)}>Active</button>
+          <button aria-pressed={archive} onClick={() => setArchive(true)}
+            title="Done goals with their sub-tasks, agents, cost and QA result">Archive ({done})</button>
+        </div>
+        {!archive && (
+          <select aria-label="Goal" value={pick} onChange={(e) => onPick(e.target.value)}>
+            <option value="all">All active goals ({goals.length})</option>
+            {goals.map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
+          </select>
+        )}
+        <span className="spacer" />
+        {!archive && (
+          <button className="primary" onClick={() => setCreating(true)}><Icon name="plus" size={16} />New task</button>
+        )}
+      </div>
       {archive ? (
         <Archive tasks={p.tasks} qaRuns={p.qaRuns ?? []} merges={p.merges ?? []} usageByGoal={p.usageByGoal}
           onOpenAgent={p.onOpenAgent} onReopen={(g) => p.onStatus(g, "review")} />
       ) : (
-    <div className="board">
-      {taskStatuses.map((status) => (
-        <section key={status} className="column">
-          <h2>
-            {columnTitle[status]} <span className="muted">{shown.filter((t) => t.status === status).length}</span>
-          </h2>
-          {status === "todo" && <NewTask onCreate={p.onCreate} />}
-          {shown
-            .filter((t) => t.status === status)
-            .map((t) => (
-              <TaskCard {...p} key={t.id} task={t} agents={p.agents.filter((a) => a.task_id === t.id)} allAgents={p.agents}
-                busy={goalBusy(t, p.agents, p.tasks)}
-                goal={p.tasks.find((g) => g.id === t.parent_task_id)}
-                prs={p.pullRequests.filter((pr) => pr.task_id === t.id)} />
-            ))}
-        </section>
-      ))}
-    </div>
+        <div className="board">
+          {taskStatuses.map((status) => {
+            const cards = shown.filter((t) => t.status === status);
+            return (
+              <section key={status} className="column" data-status={status} aria-label={columnTitle[status]}>
+                <h2>{columnTitle[status]} <span className="count">{cards.length}</span></h2>
+                {cards.map((t) => (
+                  <TaskCard key={t.id} task={t} ctx={ctx} onOpen={() => setDetail(t.id)}
+                    usage={t.parent_task_id ? p.usageByTask?.get(t.id) : p.usageByGoal?.get(t.id) ?? p.usageByTask?.get(t.id)} />
+                ))}
+                {cards.length === 0 && <p className="column-empty">Nothing here</p>}
+              </section>
+            );
+          })}
+        </div>
       )}
-    </>
-  );
-}
-
-// TaskUsage is a task's tokens and estimated cost; a goal also shows its
-// team's (ADR 0026). Nothing when no session has run yet.
-function TaskUsage({ own, team }: { own?: UsageRow; team?: UsageRow }): JSX.Element | null {
-  const showTeam = team && team.sessions > (own?.sessions ?? 0);
-  if (!own && !showTeam) return null;
-  const line = (u: UsageRow): string => `${formatTokens(totalTokens(u.tokens))} tokens · ${formatMoney(u.costMicroUSD)}` +
-    (u.unpricedTokens > 0 ? " + unpriced" : "");
-  return (
-    <div className="small muted usage-line" title="estimated from token counts; see the Usage tab">
-      {own && <span>{line(own)}</span>}
-      {showTeam && <span>{own ? " · " : ""}team {line(team)}</span>}
+      {open && <TaskDetail {...p} task={open} onClose={() => setDetail(undefined)} />}
+      {creating && <NewTask onCreate={p.onCreate} onClose={() => setCreating(false)} />}
     </div>
   );
 }
 
-function NewTask({ onCreate }: Pick<Props, "onCreate">): JSX.Element {
+// TaskCard is a compact card: title, status chip, the agent on it and the
+// cost. The whole card opens its modal.
+function TaskCard({ task, ctx, usage, onOpen }: {
+  task: Task; ctx: CardContext; usage?: UsageRow; onOpen: () => void;
+}): JSX.Element {
+  const status = cardStatus(task, ctx);
+  const { agent, more } = cardAgent(task, ctx);
+  const goal = !task.parent_task_id;
+  return (
+    <button className={`task ${goal ? "goal" : "sub-task"}`} id={`task-${task.id}`} data-status={status.key}
+      aria-haspopup="dialog" onClick={onOpen}>
+      <span className="task-title">{task.title}</span>
+      <span className="task-meta">
+        <span className={`chip status-chip tone-${status.tone}`} title={status.title} data-testid="card-status">{status.label}</span>
+        {agent && (
+          <span className={`task-agent state-${agent.state}`} title={`${agent.role} · ${agent.name} · ${agent.state}`} data-agent={agent.id}>
+            <span className="dot" />
+            <span className="task-agent-name">{agent.name || agent.id.slice(0, 6)}</span>
+            {more > 0 && <span className="muted">+{more}</span>}
+          </span>
+        )}
+        {usage && usage.costMicroUSD > 0 && (
+          <span className="task-cost usage-line" title="estimated cost; see the Usage tab">{formatMoney(usage.costMicroUSD)}</span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+function NewTask({ onCreate, onClose }: { onCreate: BoardProps["onCreate"]; onClose: () => void }): JSX.Element {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [open, setOpen] = useState(false);
-
   const submit = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
-    if (await onCreate(title, description)) {
-      setTitle("");
-      setDescription("");
-      setOpen(false);
-    }
+    if (await onCreate(title, description)) onClose();
   };
-
-  if (!open) {
-    return <button className="new-task" onClick={() => setOpen(true)}>+ New task</button>;
-  }
   return (
-    <form className="task-form" onSubmit={(e) => void submit(e)}>
-      <input autoFocus placeholder="Title" maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} />
-      <textarea placeholder="Description (optional)" maxLength={20000} rows={4} value={description}
-        onChange={(e) => setDescription(e.target.value)} />
-      <div className="row">
-        <button className="primary" type="submit" disabled={title.trim() === ""}>Add</button>
-        <button type="button" onClick={() => setOpen(false)}>Cancel</button>
-      </div>
-    </form>
+    <Modal title="New task" label="New task" onClose={onClose} className="narrow">
+      <form className="task-form" onSubmit={(e) => void submit(e)}>
+        <label className="setting"><span>Title</span>
+          <input autoFocus placeholder="What should the team do?" maxLength={200} value={title} aria-label="Title"
+            onChange={(e) => setTitle(e.target.value)} />
+        </label>
+        <label className="setting"><span>Description (optional)</span>
+          <textarea placeholder="Context, constraints, what done looks like" maxLength={20000} rows={6} value={description}
+            aria-label="Description" onChange={(e) => setDescription(e.target.value)} />
+        </label>
+        <div className="row end">
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button className="primary" type="submit" disabled={title.trim() === ""}>Add task</button>
+        </div>
+      </form>
+    </Modal>
   );
-}
-
-interface CardProps extends Props {
-  busy?: GoalBusy; // another goal's Tech Lead or architect runs: why this goal's buttons are off
-  task: Task;
-  agents: Agent[]; // the card's own task's agents
-  allAgents: Agent[]; // every agent of the project (a goal counts its sub-tasks' too)
-  goal?: Task;
-  prs: PullRequest[];
-}
-
-function TaskCard(p: CardProps): JSX.Element {
-  const { task, agents, goal, canStart, leadRunning, onStatus, onStart, onStartLead, onDelete, onOpenAgent, prs } = p;
-  const running = agents.some((a) => a.state !== "exited" && a.kind !== "reviewer" && a.kind !== "qa");
-  const canOpenPR = p.github && task.status === "review" && agents.some((a) => a.kind === "worker") &&
-    !prs.some((pr) => pr.state === "open");
-  const isGoal = !task.parent_task_id;
-  const roles = workerRoles(p.roles ?? []);
-  const [role, setRole] = useState(task.role || "worker");
-  const spec = isGoal ? currentSpec(p.specs ?? [], task.id) : undefined;
-  const qa = isGoal ? latestQA(p.qaRuns ?? [], task.id) : undefined;
-  const waiting = waitsFor(task, p.tasks);
-  // Unanswered or unread messages to you about this task (ADR 0030).
-  const notes = inboxFor(p.inbox ?? [], task).filter((i) => !i.read_at || (!i.answered_at && i.kind === "question")).slice(0, 3);
-  // Phase 17: closing a goal asks first when its agents still run; a reported
-  // goal whose QA passed offers Merge, then Push.
-  const [closing, setClosing] = useState(false);
-  const merges = p.merges ?? [];
-  const goalBusy = isGoal ? busyOf(task, p.allAgents, p.tasks) : 0;
-  const setStatus = (status: TaskStatus): void => {
-    if (isGoal && status === "done" && task.status !== "done" && goalBusy > 0) {
-      setClosing(true);
-      return;
-    }
-    onStatus(task, status);
-  };
-  const merged = isGoal ? latestMerge(merges, task.id) : undefined;
-  return (
-    <article className="task" id={`task-${task.id}`} tabIndex={-1}>
-      {(goal || task.created_by) && (
-        <div className="row small muted">
-          {goal && <span title={goal.title}>sub-task of “{goal.title}”</span>}
-          {task.created_by && <span className="chip role-lead" title={`Created by agent ${task.created_by}`}>by lead</span>}
-        </div>
-      )}
-      <div className="task-title">{task.title}</div>
-      {task.description && <div className="task-desc small muted">{task.description}</div>}
-      <TaskPlanInfo task={task} tasks={p.tasks} agents={agents} onResolve={(t) => p.onResolve?.(t)} />
-      {spec && <PlanPanel spec={spec} roles={p.roles ?? []} onSave={p.onSaveSpec ?? (async () => false)}
-        onApprove={(s) => p.onApproveSpec?.(s)} />}
-      {qa && <QAPanel run={qa} onOpenAgent={onOpenAgent} />}
-      {notes.length > 0 && (
-        <ul className="task-inbox">
-          {notes.map((i) => (
-            <InboxEntry key={i.id} item={i} onRead={(x) => p.onReadInbox?.(x)}
-              onReply={p.onReplyInbox ?? (async () => false)} onOpenAgent={onOpenAgent} />
-          ))}
-        </ul>
-      )}
-      {agents.length > 0 && (
-        <div className="task-agents">
-          {agents.map((a) => (
-            <button key={a.id} className={`chip state-${a.state}`} title={`${a.role} · ${a.name} · ${a.id} · ${a.branch}`}
-              onClick={() => onOpenAgent(a.id)} data-agent={a.id}>
-              {a.kind !== "worker" ? `${a.role} ` : ""}{a.name || a.id.slice(0, 6)}
-            </button>
-          ))}
-        </div>
-      )}
-      <TaskUsage own={p.usageByTask?.get(task.id)} team={isGoal ? p.usageByGoal?.get(task.id) : undefined} />
-      {prs.map((pr) => <PRPanel key={pr.id} pr={pr} {...p} />)}
-      {isGoal && mergeOffered(task, p.qaRuns ?? [], merges) && <MergePanel goal={task} />}
-      {isGoal && merged && (pushOffered(merges, task.id) || merged.pushed_at) && <PushPanel goal={task} merge={merged} />}
-      {closing && (
-        <div className="close-confirm small" role="dialog" aria-label="Mark the goal done">
-          <p className="hint">{closeWarning(goalBusy)}</p>
-          <div className="row">
-            <button className="danger" onClick={() => { setClosing(false); onStatus(task, "done"); }}>Mark done and stop them</button>
-            <button onClick={() => setClosing(false)}>Cancel</button>
-          </div>
-        </div>
-      )}
-      <div className="row">
-        <select value={task.status} onChange={(e) => setStatus(e.target.value as TaskStatus)}>
-          {taskStatuses.map((s) => <option key={s} value={s}>{columnTitle[s]}</option>)}
-        </select>
-        {roles.length > 1 && (
-          <select aria-label="Role" value={role} onChange={(e) => setRole(e.target.value)}
-            title={roles.find((r) => r.name === role)?.description}>
-            {roles.map((r) => <option key={r.name} value={r.name}>{r.name}{r.cli === "codex" ? " · codex" : ""}</option>)}
-          </select>
-        )}
-        <button disabled={!canStart || running || waiting.length > 0}
-          title={running ? "An agent is already working on this task"
-            : waiting.length ? "It starts after the sub-tasks it depends on are reported" : ""}
-          onClick={() => (role === "worker" || !p.onStartRole ? onStart(task) : p.onStartRole(task, role))}>
-          Start agent
-        </button>
-        {isGoal && (
-          <button disabled={!canStart || running || p.architectRunning}
-            title={p.architectRunning ? "An architect is already running"
-              : "An architect agrees a plan with you first (read-only); for small goals start the Tech Lead directly"}
-            onClick={() => p.onStartRole?.(task, "architect")}>
-            Start architect
-          </button>
-        )}
-        {isGoal && (
-          <button disabled={!canStart || running || leadRunning}
-            title={leadRunning ? "A Tech Lead is already running" : "A Tech Lead executes the goal: it assigns sub-tasks to workers"}
-            onClick={() => onStartLead(task)}>
-            Start Tech Lead
-          </button>
-        )}
-        {canOpenPR && (
-          <button onClick={() => p.onOpenPR(task)} title="Push the worker's branch and open a pull request">Open PR</button>
-        )}
-        <button className="link" disabled={running} onClick={() => onDelete(task)} title="Delete task">✕</button>
-      </div>
-      {p.busy && !running && (
-        <p className="small muted goal-busy" role="note">
-          {p.busy.text}{" "}
-          <button className="link" onClick={() => onOpenAgent(p.busy?.agentId ?? "")}>Open it</button>
-        </p>
-      )}
-    </article>
-  );
-}
-
-const prStateLabel: Record<PullRequest["state"], string> = {
-  pending: "not opened", open: "open", merged: "merged", closed: "closed",
-};
-const checksLabel: Record<string, string> = {
-  none: "no checks", pending: "checks running", success: "checks passed", failure: "checks failed",
-  unavailable: "checks unavailable",
-};
-const reviewerLabel: Record<Review["reviewer"], string> = {
-  internal: "reviewer agent", coderabbit: "CodeRabbit", human: "person",
-};
-const verdictLabel: Record<string, string> = {
-  approve: "approves", changes_requested: "requests changes", comment: "comments",
-};
-const followupLabel: Record<string, string> = {
-  started: "sent to the worker (relaunched)",
-  skipped: "not sent: round limit", refused: "could not be sent",
-};
-
-// PRPanel shows a task's pull request, its checks and reviews (ADR 0020-0022).
-// Review text is written by agents, bots or people: rendered as text only.
-function PRPanel({ pr, onRequestReview, onSendToWorker, onAcceptFlagged, onOpenAgent }: CardProps & { pr: PullRequest }): JSX.Element {
-  const busy = pr.reviews.some((r) => r.status === "queued" || r.status === "running");
-  return (
-    <div className="pr small">
-      <div className="row">
-        {pr.url && pr.number
-          ? <a href={pr.url} target="_blank" rel="noreferrer noopener">PR #{pr.number}</a>
-          : <span>Pull request</span>}
-        <span className={`chip pr-${pr.state}`}>{prStateLabel[pr.state]}</span>
-        {pr.checks && <span className={`chip checks-${pr.checks}`} title={pr.failed_checks.join(", ")}>{checksLabel[pr.checks]}</span>}
-        {pr.rounds > 0 && <span className="muted">{pr.rounds} follow-up round{pr.rounds === 1 ? "" : "s"}</span>}
-      </div>
-      {pr.error && <div className="hint">{pr.error}</div>}
-      {pr.flagged.length > 0 && (
-        <div className="hint">
-          {pr.flagged.map((f) => <div key={f.commit} className="mono" title={f.problem}>{f.commit.slice(0, 8)}: {f.problem}</div>)}
-          <button className="danger" onClick={() => onAcceptFlagged(pr)}
-            title="Push these commits even though they lack your identity or the agent trailer">
-            Accept and push
-          </button>
-        </div>
-      )}
-      {pr.reviews.length > 0 && (
-        <details className="events">
-          <summary>{reviewSummary(pr.reviews[0])}</summary>
-          <ul>
-            {pr.reviews.map((r) => (
-              <li key={r.id}>
-                <div className="muted">
-                  {reviewerLabel[r.reviewer]}
-                  {r.agent_id && (
-                    <> <button className="link" onClick={() => onOpenAgent(r.agent_id ?? "")}><AgentName id={r.agent_id} /></button></>
-                  )}
-                  {" · "}{r.status === "done" ? verdictLabel[r.verdict ?? ""] ?? r.verdict : r.status.replace("_", " ")}
-                  {" · "}<span className="mono">{r.head.slice(0, 8)}</span>
-                  {r.url && <> · <a href={r.url} target="_blank" rel="noreferrer noopener">on GitHub</a></>}
-                  {r.followup && <> · {followupLabel[r.followup]}</>}
-                </div>
-                {r.error && <div className="hint">{r.error}</div>}
-                {r.summary && <div className="quote">{r.summary}</div>}
-                {r.comments.map((c, i) => (
-                  <div key={i} className="quote"><span className="mono">{c.path}:{c.line}</span> {c.body}</div>
-                ))}
-                {r.reply && (
-                  <div className="reply">
-                    <span className="muted">Worker: no change needed</span>
-                    {r.reply_url
-                      ? <> · <a href={r.reply_url} target="_blank" rel="noreferrer noopener">on GitHub</a></>
-                      : <span className="hint"> · not posted on GitHub (see the daemon log)</span>}
-                    <div className="quote">{r.reply}</div>
-                  </div>
-                )}
-                {r.status === "done" && pr.state === "open" && r.followup !== "started" && r.followup !== "messaged" &&
-                  r.head === pr.head && (r.verdict !== "approve" || r.comments.length > 0) && (
-                  <button onClick={() => onSendToWorker(pr, r)} title="Give this review to the worker as follow-up work">
-                    Send to worker
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-      {pr.state === "open" && !busy && (
-        <button onClick={() => onRequestReview(pr)}>Request review</button>
-      )}
-    </div>
-  );
-}
-
-function reviewSummary(r: Review): string {
-  const who = reviewerLabel[r.reviewer];
-  if (r.status === "queued") return `Review queued (${who}, waiting for a free slot)`;
-  if (r.status === "running") return `Review running (${who})`;
-  if (r.status !== "done") return `Review ${r.status.replace("_", " ")} (${who})`;
-  return `${who} ${verdictLabel[r.verdict ?? ""] ?? "reviewed"}`;
 }

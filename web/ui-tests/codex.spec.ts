@@ -2,7 +2,7 @@
 // role picker naming a role's CLI, the terminal's resume note, and usage per
 // vendor.
 import { expect, test } from "@playwright/test";
-import { MockDaemon, agent, roles, session, task } from "./daemon";
+import { MockDaemon, agent, roles, session, task, nav, openAgent } from "./daemon";
 
 function codexTeam(): MockDaemon {
   const goal = task("g1", "Add tags", "in_progress");
@@ -25,11 +25,14 @@ function codexTeam(): MockDaemon {
 
 test("a Codex worker shows its CLI; the role picker names a role's CLI", async ({ page }) => {
   const daemon = codexTeam();
+  daemon.world.tasks.push(task("n00000000001", "Archive old links", "todo"));
   await daemon.install(page);
   await page.goto("/");
-  await expect(page.locator('.card[data-agent="c0dex0000001"] .cli-codex')).toHaveText("codex");
-  await expect(page.locator('.card[data-agent="a1ead0000001"] .cli-codex')).toHaveCount(0);
-  await expect(page.getByRole("combobox", { name: "Role" }).first().locator("option", { hasText: "worker" })).toHaveText("worker · codex");
+  await expect((await openAgent(page, "c0dex0000001")).locator(".cli-codex")).toHaveText("codex");
+  await expect((await openAgent(page, "a1ead0000001")).locator(".cli-codex")).toHaveCount(0);
+  await nav(page, "Board");
+  await page.locator("#task-n00000000001").click();
+  await expect(page.getByRole("combobox", { name: "Role" }).locator("option", { hasText: "worker" })).toHaveText("worker · codex");
 });
 
 test("usage shows the vendors of a team that mixes Claude Code and Codex", async ({ page }) => {

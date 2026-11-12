@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
+	"github.com/OzanAlpkaya/agent-office/internal/office"
 )
 
 type projectKey struct{}
@@ -160,7 +163,9 @@ func (s *server) retryProject(w http.ResponseWriter, r *http.Request) {
 
 // hubEventsWS streams the project list: a snapshot, then one message per
 // change ("project", "project_removed"). Each project's own updates come
-// from its events stream.
+// from its events stream. The page says on it whether it is visible
+// ({"type":"presence","visible":bool}); the stream carries the user's
+// presence back (Phase 18, ADR 0058).
 func (s *server) hubEventsWS(w http.ResponseWriter, r *http.Request) {
 	c, err := s.accept(w, r)
 	if err != nil {
@@ -169,7 +174,39 @@ func (s *server) hubEventsWS(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	updates, unsubscribe := s.hub.Subscribe() // before the snapshot, so no update is missed
 	defer unsubscribe()
-	ctx := c.CloseRead(context.WithoutCancel(r.Context()))
+	dev, _ := s.device(r)
+	pageID := randomID()
+	// Not the request's context, as in terminalWS: a revoked device gets StatusSignedOut.
+	ctx, stop := context.WithCancel(context.WithoutCancel(r.Context()))
+	readDone := make(chan struct{})
+	defer func() {
+		// The reader ends before the page is dropped, so a message handled
+		// at the moment of disconnect cannot bring it back (security review).
+		stop()
+		c.CloseNow()
+		<-readDone
+		s.hub.DropPage(pageID)
+	}()
+	c.SetReadLimit(maxPresenceMessage)
+	go func() {
+		defer close(readDone)
+		defer stop() // the page closed the stream or sent something else
+		for {
+			_, b, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var m struct {
+				Type    string `json:"type"`
+				Visible *bool  `json:"visible"`
+			}
+			if json.Unmarshal(b, &m) != nil || m.Type != "presence" || m.Visible == nil {
+				s.log.Debug("hub events: ignoring a message from the page")
+				continue
+			}
+			s.hub.SetPage(pageID, dev.Name, *m.Visible)
+		}
+	}()
 	write := func(v any) error {
 		b, _ := json.Marshal(v)
 		wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -178,6 +215,16 @@ func (s *server) hubEventsWS(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := write(map[string]any{"type": "projects", "projects": s.hub.Projects()}); err != nil {
 		return
+	}
+	if err := write(engine.HubUpdate{Type: "presence", Presence: ptr(s.hub.Presence())}); err != nil {
+		return
+	}
+	if prof, err := s.hub.Profile(r.Context()); err == nil {
+		if err := write(engine.HubUpdate{Type: "profile", Profile: &prof}); err != nil {
+			return
+		}
+	} else {
+		s.log.Warn("hub events: load the profile", "err", err)
 	}
 	for {
 		select {
@@ -198,6 +245,17 @@ func (s *server) hubEventsWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// maxPresenceMessage bounds what a page may send on the hub stream.
+const maxPresenceMessage = 1024
+
+func ptr[T any](v T) *T { return &v }
+
+func randomID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
 // projectErrorStatus maps the registry's errors.
 func projectErrorStatus(err error) (int, bool) {
 	switch {
@@ -208,4 +266,56 @@ func projectErrorStatus(err error) (int, bool) {
 		return http.StatusServiceUnavailable, true
 	}
 	return 0, false
+}
+
+// officeLayouts lists the shipped office layouts (Phase 18, ADR 0057).
+func (s *server) officeLayouts(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, office.Presets())
+}
+
+// layoutCheck is a layout's YAML, parsed for the settings' preview: the
+// layout when it is valid, else every problem.
+type layoutCheck struct {
+	Layout   *office.Layout `json:"layout,omitempty"`
+	Problems []string       `json:"problems"`
+}
+
+// checkOfficeLayout parses a layout without storing it, for the preview.
+func (s *server) checkOfficeLayout(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		YAML string `json:"yaml"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	l, err := office.Parse(body.YAML)
+	if err != nil {
+		writeJSON(w, http.StatusOK, layoutCheck{Problems: office.Problems(err)})
+		return
+	}
+	writeJSON(w, http.StatusOK, layoutCheck{Layout: &l, Problems: []string{}})
+}
+
+// getProfile returns the user's profile (Phase 18 review, ADR 0058).
+func (s *server) getProfile(w http.ResponseWriter, r *http.Request) {
+	p, err := s.hub.Profile(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// putProfile saves the user's name and look; every open page gets it.
+func (s *server) putProfile(w http.ResponseWriter, r *http.Request) {
+	var p engine.Profile
+	if !decodeJSON(w, r, &p) {
+		return
+	}
+	saved, err := s.hub.SetProfile(r.Context(), p)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
 }

@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/OzanAlpkaya/agent-office/internal/git"
+	"github.com/OzanAlpkaya/agent-office/internal/office"
 	"github.com/OzanAlpkaya/agent-office/internal/role"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
@@ -73,13 +74,16 @@ type ProjectInfo struct {
 	Error     string          `json:"error,omitempty"`
 	Default   bool            `json:"default"` // `serve --repo`'s project: the UI opens it first
 	CreatedAt time.Time       `json:"created_at"`
+	Office    OfficeInfo      `json:"office"` // its office layout (Phase 18, ADR 0057)
 }
 
 // HubUpdate is a change of the project list, broadcast to subscribers.
 type HubUpdate struct {
-	Type    string       `json:"type"` // "project" | "project_removed"
-	Project *ProjectInfo `json:"project,omitempty"`
-	ID      string       `json:"id,omitempty"`
+	Type     string       `json:"type"` // "project" | "project_removed" | "presence"
+	Project  *ProjectInfo `json:"project,omitempty"`
+	ID       string       `json:"id,omitempty"`
+	Presence *Presence    `json:"presence,omitempty"`
+	Profile  *Profile     `json:"profile,omitempty"` // "profile": the user's name and look (ADR 0058)
 }
 
 // HubStatus is the daemon-wide state.
@@ -129,6 +133,8 @@ type Hub struct {
 	defaultID string
 	subs      map[chan HubUpdate]struct{}
 	closed    bool
+
+	pages pages // the open UI pages, for the user's presence (ADR 0058)
 }
 
 // NewHub removes the previous run's containers and opens every registered
@@ -342,7 +348,7 @@ func (h *Hub) infoLocked(pe *projectEntry) ProjectInfo {
 	r := pe.row
 	in := ProjectInfo{Project: Project{ID: r.ID, Name: r.Name, RepoPath: r.RepoPath, Slug: r.Slug},
 		Settings: pe.settings, Effective: h.opts.Defaults.Merge(pe.settings), State: ProjectOpen,
-		Default: r.ID == h.defaultID, CreatedAt: r.CreatedAt}
+		Default: r.ID == h.defaultID, CreatedAt: r.CreatedAt, Office: officeOf(pe.settings)}
 	if m := min(*in.Effective.MaxAgents, h.opts.Base.MaxAgents); m != *in.Effective.MaxAgents {
 		in.Effective.MaxAgents = &m
 	}
@@ -481,8 +487,18 @@ func (h *Hub) Update(ctx context.Context, id string, in UpdateProject) (ProjectI
 	}
 	reopen := false
 	if in.Settings != nil {
-		a, _ := pe.settings.encode()
-		b, err := in.Settings.encode()
+		// A new office layout must validate; one already stored is kept as it is
+		// (the office falls back to the default plan if it no longer does).
+		if l := in.Settings.OfficeLayout; l != nil && strings.TrimSpace(*l) != "" &&
+			(pe.settings.OfficeLayout == nil || *pe.settings.OfficeLayout != *l) {
+			if _, err := office.Parse(*l); err != nil {
+				return ProjectInfo{}, fmt.Errorf("%w: %s", ErrInvalid, strings.Join(office.Problems(err), "; "))
+			}
+		}
+		// The layout is the office's look only: changing it alone does not
+		// reopen the project, so it may change while agents run (ADR 0057).
+		a, _ := pe.settings.withoutLayout().encode()
+		b, err := in.Settings.withoutLayout().encode()
 		if err != nil {
 			return ProjectInfo{}, err
 		}
@@ -520,6 +536,7 @@ func (h *Hub) Update(ctx context.Context, id string, in UpdateProject) (ProjectI
 	if !reopen {
 		h.mu.Lock()
 		pe.row = row
+		pe.settings = settings // only the name or the office layout changed
 		info := h.infoLocked(pe)
 		h.mu.Unlock()
 		h.publish(HubUpdate{Type: "project", Project: &info})

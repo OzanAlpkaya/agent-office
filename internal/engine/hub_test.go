@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/hooks"
+	"github.com/OzanAlpkaya/agent-office/internal/office"
 	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 )
@@ -557,5 +558,73 @@ func TestHubWorkerLimitsPerProject(t *testing.T) {
 	}
 	if (&Engine{opts: Options{Sandbox: &SandboxOptions{}}}).workerPids() != sandbox.DefaultPids {
 		t.Fatal("no limit set: the sandbox default")
+	}
+}
+
+// TestHubOfficeLayout: a project's office layout (Phase 18, ADR 0057) is
+// validated when saved, changes without reopening the project (agents may
+// run), and a stored layout that no longer validates falls back to the
+// default plan with its problems instead of stopping the project.
+func TestHubOfficeLayout(t *testing.T) {
+	hf := newHubFixture(t, 4, ProjectSettings{})
+	ctx := context.Background()
+	if hf.b.Office.Source != OfficeDefault || hf.b.Office.Layout != nil {
+		t.Fatalf("default office: %+v", hf.b.Office)
+	}
+	w, err := hf.eb.Start(ctx, StartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preset := office.Presets()[1].YAML // compact
+	p, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{OfficeLayout: &preset}})
+	if err != nil {
+		t.Fatalf("layout change with a running agent: %v", err)
+	}
+	if p.Office.Source != OfficeCustom || p.Office.Layout == nil || p.Office.Layout.Desks != 6 {
+		t.Fatalf("custom office: %+v", p.Office)
+	}
+	if eb, _ := hf.h.Engine(hf.b.ID); eb != hf.eb {
+		t.Fatal("a layout change reopened the project")
+	}
+	if a, _ := hf.eb.Get(w.ID); a.State == string(hooks.Exited) {
+		t.Fatal("a layout change stopped an agent")
+	}
+	// Other settings in the same change still need the agents stopped.
+	if _, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{OfficeLayout: &preset, Model: Ptr("opus")}}); !errors.Is(err, ErrProjectBusy) {
+		t.Fatalf("layout and model change with a running agent: %v", err)
+	}
+	bad := "version: 1\nrooms: []\n"
+	if _, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{OfficeLayout: &bad}}); !errors.Is(err, ErrInvalid) ||
+		!strings.Contains(err.Error(), "room lead is missing") {
+		t.Fatalf("invalid layout: %v", err)
+	}
+	if p, _ := hf.h.Project(hf.b.ID); p.Office.Source != OfficeCustom {
+		t.Fatalf("a refused layout replaced the stored one: %+v", p.Office)
+	}
+	if _, err := hf.h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{OfficeLayout: Ptr(strings.Repeat("#", office.MaxBytes+1))}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("oversized layout: %v", err)
+	}
+
+	// A layout stored by an older daemon or by hand that does not validate:
+	// the project opens, its office uses the default plan and says why.
+	if _, err := hf.f.store.Q.UpdateProject(ctx, db.UpdateProjectParams{Name: "webapp", Settings: `{"office_layout":"version: 1\nrooms: []\n"}`, ID: hf.b.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := hf.eb.Stop(w.ID); err != nil {
+		t.Fatal(err)
+	}
+	hf.h.Shutdown()
+	h := hf.openHub(t)
+	got, err := h.Project(hf.b.ID)
+	if err != nil || got.State != ProjectOpen {
+		t.Fatalf("project with an invalid stored layout: %+v %v", got, err)
+	}
+	if got.Office.Source != OfficeDefault || got.Office.Layout != nil || len(got.Office.Problems) == 0 ||
+		!strings.Contains(got.Office.Problems[0], "room lead is missing") {
+		t.Fatalf("fallback office: %+v", got.Office)
+	}
+	// Clearing it goes back to the default plan, without problems.
+	if p, err := h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{}}); err != nil || p.Office.Source != OfficeDefault || len(p.Office.Problems) != 0 {
+		t.Fatalf("cleared layout: %+v %v", p.Office, err)
 	}
 }

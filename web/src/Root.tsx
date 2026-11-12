@@ -27,7 +27,7 @@ function saveChoice(id: string): void {
 }
 
 export function Root({ session, onSignedOut }: { session: AuthSession; onSignedOut: () => void }): JSX.Element {
-  const { projects, loaded, connection } = useProjects();
+  const { projects, loaded, connection, presence, profile } = useProjects();
   const [status, setStatus] = useState<DaemonStatus>();
   const [chosen, setChosen] = useState<string | undefined>(loadChoice);
   const [openAgent, setOpenAgent] = useState<string>();
@@ -73,6 +73,7 @@ export function Root({ session, onSignedOut }: { session: AuthSession; onSignedO
   }
   return (
     <App key={current.id} session={session} onSignedOut={onSignedOut} project={current} projects={projects}
-      daemon={status} elsewhere={others} initialAgent={openAgent} initialTab={openTab} onSelectProject={select} />
+      daemon={status} elsewhere={others} initialAgent={openAgent} initialTab={openTab} onSelectProject={select} presence={presence}
+      profile={profile} />
   );
 }

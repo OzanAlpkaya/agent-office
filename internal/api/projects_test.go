@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/OzanAlpkaya/agent-office/internal/engine"
+	"github.com/OzanAlpkaya/agent-office/internal/office"
 )
 
 func newGitRepo(t *testing.T) string {
@@ -210,6 +211,12 @@ func TestProjectEventsCarryOnlyTheirProject(t *testing.T) {
 	if m := read(hub); string(m["type"]) != `"projects"` || !strings.Contains(string(m["projects"]), f.pid) {
 		t.Fatalf("daemon snapshot %v", m)
 	}
+	if m := read(hub); string(m["type"]) != `"presence"` {
+		t.Fatalf("presence after the snapshot %v", m)
+	}
+	if m := read(hub); string(m["type"]) != `"profile"` {
+		t.Fatalf("the user's profile after the presence %v", m)
+	}
 	b := f.addProject(t, fmt.Sprintf(`{"repo": %q}`, newGitRepo(t)))
 	if m := read(hub); string(m["type"]) != `"project"` || !strings.Contains(string(m["project"]), b.ID) {
 		t.Fatalf("daemon update %v", m)
@@ -256,4 +263,206 @@ func TestRemoteDevicesCannotWidenProjects(t *testing.T) {
 	// From this machine all of it works.
 	local := map[string]string{"Content-Type": "application/json"}
 	jsonBody(t, f.doBody(t, "POST", "/api/projects", local, fmt.Sprintf(`{"repo": %q}`, repo)), http.StatusCreated, nil)
+}
+
+// TestOfficeLayoutsAPI: the presets, the preview's check, and a project's
+// layout through PATCH (Phase 18, ADR 0057).
+func TestOfficeLayoutsAPI(t *testing.T) {
+	f := newFixture(t)
+	var presets []office.Preset
+	jsonBody(t, f.do(t, "GET", "/api/office-layouts", nil), http.StatusOK, &presets)
+	if len(presets) != 4 || presets[0].Name != "classic" || !strings.Contains(presets[0].YAML, "version: 1") {
+		t.Fatalf("presets %+v", presets)
+	}
+	type check struct {
+		Layout   *office.Layout `json:"layout"`
+		Problems []string       `json:"problems"`
+	}
+	var ok check
+	body, _ := json.Marshal(map[string]string{"yaml": presets[0].YAML})
+	jsonBody(t, f.doBody(t, "POST", "/api/office-layouts/check", jsonCT, string(body)), http.StatusOK, &ok)
+	if ok.Layout == nil || ok.Layout.Desks != 12 || len(ok.Problems) != 0 {
+		t.Fatalf("check of a preset %+v", ok)
+	}
+	var bad check
+	jsonBody(t, f.doBody(t, "POST", "/api/office-layouts/check", jsonCT, `{"yaml": "version: 1\nrooms: []\n"}`), http.StatusOK, &bad)
+	if bad.Layout != nil || len(bad.Problems) != 4 {
+		t.Fatalf("check of an empty layout %+v", bad)
+	}
+	if r := f.doBody(t, "POST", "/api/office-layouts/check", jsonCT, `{"yml": ""}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown field: %d", r.StatusCode)
+	}
+	// Saved through the project's settings; an invalid one is refused with its problems.
+	settings, _ := json.Marshal(map[string]any{"settings": map[string]string{"office_layout": presets[1].YAML}})
+	var p engine.ProjectInfo
+	jsonBody(t, f.doBody(t, "PATCH", "/api/projects/"+f.pid, jsonCT, string(settings)), http.StatusOK, &p)
+	if p.Office.Source != engine.OfficeCustom || p.Office.Layout == nil || p.Office.Layout.Desks != 6 {
+		t.Fatalf("project office %+v", p.Office)
+	}
+	r := f.doBody(t, "PATCH", "/api/projects/"+f.pid, jsonCT, `{"settings": {"office_layout": "version: 1\nrooms: []\n"}}`)
+	b, _ := io.ReadAll(r.Body)
+	if r.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), "room lead is missing") {
+		t.Fatalf("invalid layout: %d %s", r.StatusCode, b)
+	}
+}
+
+// TestPresence: each UI page reports whether it is visible on the hub
+// stream; the stream carries the devices with a visible page (Phase 18, ADR
+// 0058). A hidden or closed page stops counting.
+func TestPresence(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	dial := func() *websocket.Conn {
+		c, _, err := websocket.Dial(ctx, f.ws+"/api/events", f.dialOpts())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.CloseNow() })
+		return c
+	}
+	// next reads until a presence message and returns its devices.
+	next := func(c *websocket.Conn) []string {
+		t.Helper()
+		for {
+			_, data, err := c.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var m struct {
+				Type     string           `json:"type"`
+				Presence *engine.Presence `json:"presence"`
+			}
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatal(err)
+			}
+			if m.Type == "presence" {
+				return m.Presence.Devices
+			}
+		}
+	}
+	send := func(c *websocket.Conn, msg string) {
+		if err := c.Write(ctx, websocket.MessageText, []byte(msg)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := dial()
+	if d := next(a); len(d) != 0 {
+		t.Fatalf("nobody yet: %q", d)
+	}
+	send(a, `{"type":"presence","visible":true}`)
+	d := next(a)
+	if len(d) != 1 || d[0] == "" {
+		t.Fatalf("a visible page: %q", d)
+	}
+	device := d[0]
+	b := dial()
+	if got := next(b); len(got) != 1 || got[0] != device {
+		t.Fatalf("a new page sees the presence: %q", got)
+	}
+	send(b, `{"type":"presence","visible":true}`)  // the same device: no change, no message
+	send(a, `{"type":"presence","visible":false}`) // b still shows it: no change either
+	send(b, `not json`)                            // ignored
+	send(b, `{"type":"presence","visible":false}`) // now nobody
+	if got := next(a); len(got) != 0 {
+		t.Fatalf("every page hidden: %q", got)
+	}
+	send(b, `{"type":"presence","visible":true}`)
+	if got := next(a); len(got) != 1 {
+		t.Fatalf("visible again: %q", got)
+	}
+	b.Close(websocket.StatusNormalClosure, "")
+	if got := next(a); len(got) != 0 {
+		t.Fatalf("the visible page closed: %q", got)
+	}
+}
+
+// TestBranchCleanupAPI: the project-wide preview and delete, and a goal's
+// preview refused until it is done (Phase 18, ADR 0059).
+func TestBranchCleanupAPI(t *testing.T) {
+	f := newFixture(t)
+	repo := f.eng.Project().RepoPath
+	git := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	git("branch", "agent-office/old")
+	var p engine.BranchPreview
+	jsonBody(t, f.do(t, "GET", f.pp+"/branches", nil), http.StatusOK, &p)
+	if len(p.Branches) != 1 || p.Branches[0].Name != "agent-office/old" || p.Branches[0].Class != engine.BranchMerged {
+		t.Fatalf("preview %+v", p)
+	}
+	body := fmt.Sprintf(`{"branches": [{"name": "agent-office/old", "head": %q}], "unmerged": []}`, p.Branches[0].Head)
+	var res engine.BranchDeleteResult
+	jsonBody(t, f.doBody(t, "POST", f.pp+"/branches/delete", jsonCT, body), http.StatusOK, &res)
+	if len(res.Deleted) != 1 || len(res.Refused) != 0 {
+		t.Fatalf("delete %+v", res)
+	}
+	if r := f.doBody(t, "POST", f.pp+"/branches/delete", jsonCT, `{"branches": [], "unmerged": []}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty delete: %d", r.StatusCode)
+	}
+	var task engine.Task
+	jsonBody(t, f.doBody(t, "POST", f.pp+"/tasks", jsonCT, `{"title": "a goal"}`), http.StatusCreated, &task)
+	if r := f.do(t, "GET", f.pp+"/tasks/"+task.ID+"/branches", nil); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("branches of a goal not done: %d", r.StatusCode)
+	}
+}
+
+// TestProfileAPI: the user's profile is saved daemon-wide, validated, and
+// sent to every open page on the hub stream (Phase 18 review, ADR 0058).
+func TestProfileAPI(t *testing.T) {
+	f := newFixture(t)
+	var p engine.Profile
+	jsonBody(t, f.do(t, "GET", "/api/profile", nil), http.StatusOK, &p)
+	if p.Set || p.Name != "" {
+		t.Fatalf("unsaved profile %+v", p)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	hub, _, err := websocket.Dial(ctx, f.ws+"/api/events", f.dialOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.CloseNow()
+	nextProfile := func() engine.Profile {
+		t.Helper()
+		for {
+			_, data, err := hub.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var m engine.HubUpdate
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatal(err)
+			}
+			if m.Type == "profile" {
+				return *m.Profile
+			}
+		}
+	}
+	if got := nextProfile(); got.Set {
+		t.Fatalf("profile after the snapshot %+v", got)
+	}
+	body := `{"name": " Ozan ", "look": {"skin": 2, "hair": 3, "style": 1, "shirt": 9, "pants": 2}}`
+	jsonBody(t, f.doBody(t, "PUT", "/api/profile", jsonCT, body), http.StatusOK, &p)
+	want := engine.Profile{Name: "Ozan", Look: engine.ProfileLook{Skin: 2, Hair: 3, Style: 1, Shirt: 9, Pants: 2}, Set: true}
+	if p != want {
+		t.Fatalf("saved %+v", p)
+	}
+	if got := nextProfile(); got != want {
+		t.Fatalf("pushed %+v", got)
+	}
+	jsonBody(t, f.do(t, "GET", "/api/profile", nil), http.StatusOK, &p)
+	if p != want {
+		t.Fatalf("reloaded %+v", p)
+	}
+	for _, bad := range []string{`{"name": "<script>", "look": {}}`, `{"name": "x", "look": {"skin": 64}}`,
+		`{"name": "x", "look": {"skin": -1}}`, `{"name": "` + strings.Repeat("a", 25) + `", "look": {}}`, `{"name": "x", "colour": 1}`} {
+		if r := f.doBody(t, "PUT", "/api/profile", jsonCT, bad); r.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: %d", bad, r.StatusCode)
+		}
+	}
 }

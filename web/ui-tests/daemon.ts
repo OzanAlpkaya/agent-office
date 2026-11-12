@@ -2,12 +2,38 @@
 // request is answered here, and /api/events plays a snapshot followed by
 // whatever updates a test pushes. Fixtures are typed with the UI's own API
 // types, so a change to them shows up here.
+import { readFileSync } from "node:fs";
 import type { Page, Route, WebSocketRoute } from "@playwright/test";
 import type {
-  AccessGrant, AccessRequest, Agent, AgentState, GoalMerge, GoalRecord, MergePreview, DaemonStatus, DaemonUsage, Device, InboxItem, Kind, MemoryEntry, Message, ModelUsage, Project,
+  AccessGrant, AccessRequest, Agent, AgentState, BranchDelete, BranchInfo, DeletedBranch, GoalMerge, GoalRecord, LayoutPreset, MergePreview,
+  DaemonStatus, DaemonUsage, Device, InboxItem, Kind, MemoryEntry, Message, ModelUsage, OfficeInfo, OfficeLayout, Project,
   ProjectSettings, QARun, RoleInfo, SandboxEvent, SessionUsage, Spec, Status, Task, TaskStatus, Tokens, UsageReport,
 } from "../src/api";
 import { defaultRole } from "../src/api";
+
+// The office layout presets as the daemon ships them (internal/office), and
+// their parsed form; the mock "parses" only these (Phase 18).
+const presetInfo: [string, string, string][] = [
+  ["classic", "Classic", "The default office as a layout: every room, 12 desks."],
+  ["compact", "Compact", "A small team: no planning room, QA lab or review room; 6 desks."],
+  ["open-plan", "Open plan", "Every room around one large workroom of 20 desks."],
+  ["tall", "Tall", "Two narrow columns of rooms, so a phone shows the office larger; 6 desks."],
+];
+export const presets: LayoutPreset[] = presetInfo.map(([name, title, description]) => ({
+  name, title, description, yaml: readFileSync(new URL(`../../internal/office/presets/${name}.yaml`, import.meta.url), "utf8"),
+}));
+const parsed = JSON.parse(readFileSync(new URL("../src/office/presets.gen.json", import.meta.url), "utf8")) as Record<string, OfficeLayout>;
+// The problems the mock reports for any other YAML, like the daemon's for an empty layout.
+export const mockLayoutProblems = ["room lead is missing: every office has the Tech Lead's desk and whiteboard"];
+export function layoutOf(yaml: string): OfficeLayout | undefined {
+  const p = presets.find((x) => x.yaml === yaml);
+  return p ? parsed[p.name] : undefined;
+}
+export function officeOf(s: ProjectSettings): OfficeInfo {
+  if (!s.office_layout?.trim()) return { source: "default" };
+  const l = layoutOf(s.office_layout);
+  return l ? { source: "custom", layout: l } : { source: "default", problems: mockLayoutProblems };
+}
 
 const t0 = Date.parse("2026-11-08T10:00:00Z");
 const iso = (minutes: number): string => new Date(t0 + minutes * 60_000).toISOString();
@@ -52,6 +78,9 @@ export interface World {
   records?: Record<string, GoalRecord>; // by goal id
   previews?: Record<string, MergePreview>; // by goal id
   events?: Record<string, SandboxEvent[]>; // recorded sandbox events by agent id
+  // Phase 18: agent-office branches (the project's; a goal's are those of its agents), and deletions.
+  branches?: BranchInfo[];
+  deleted?: DeletedBranch[];
 }
 
 const role = (name: string, behaviour: Kind, read_only = false): RoleInfo => ({
@@ -208,6 +237,15 @@ export class MockDaemon {
   // gave; addProject adds more, each with its own world and events stream.
   readonly projects: { project: Project; world: World }[];
   private hubEvents?: WebSocketRoute;
+  // Presence (Phase 18): what the page said about its visibility, and the
+  // devices the mock reports: this device while the page is visible, plus
+  // otherDevices (another device with the UI open).
+  readonly visibility: boolean[] = [];
+  otherDevices: string[] = [];
+  private pageVisible = false;
+  // The user's profile (Phase 18 review): unsaved until the page saves one.
+  profile: { name: string; look: { skin: number; hair: number; style: number; shirt: number; pants: number }; set: boolean } =
+    { name: "", look: { skin: 0, hair: 0, style: 0, shirt: 0, pants: 0 }, set: false };
   private readonly projectEvents = new Map<string, WebSocketRoute>();
 
   constructor(readonly world: World) {
@@ -295,6 +333,21 @@ export class MockDaemon {
         const u: DaemonUsage = { prices: report(this.world).prices, projects: per, totals };
         return route.fulfill(json(u));
       }
+      if (p === "/api/office-layouts") return route.fulfill(json(presets));
+      if (p === "/api/profile") {
+        if (method === "PUT") {
+          const body = route.request().postDataJSON() as { name: string; look: MockDaemon["profile"]["look"] };
+          this.requests.push(`PUT /api/profile ${JSON.stringify(body)}`);
+          this.profile = { name: body.name, look: body.look, set: true };
+          this.hubEvents?.send(JSON.stringify({ type: "profile", profile: this.profile }));
+        }
+        return route.fulfill(json(this.profile));
+      }
+      if (p === "/api/office-layouts/check") {
+        const { yaml } = route.request().postDataJSON() as { yaml: string };
+        const l = layoutOf(yaml);
+        return route.fulfill(json(l ? { layout: l, problems: [] } : { problems: mockLayoutProblems }));
+      }
       if (p === "/api/projects") {
         if (method === "POST") {
           const body = route.request().postDataJSON() as { repo: string; name: string; settings: ProjectSettings };
@@ -323,8 +376,13 @@ export class MockDaemon {
         }
         const patch = (route.request().postDataJSON() ?? {}) as { name?: string; settings?: ProjectSettings };
         const cur = this.projects[i].project;
-        const next = { ...cur, name: patch.name ?? cur.name, settings: patch.settings ?? cur.settings,
-          effective: { ...defaults, ...(patch.settings ?? cur.settings) } };
+        const layout = patch.settings?.office_layout;
+        if (layout?.trim() && layout !== cur.settings.office_layout && !layoutOf(layout)) {
+          return route.fulfill({ status: 400, contentType: "application/json",
+            body: JSON.stringify({ error: `invalid: ${mockLayoutProblems.join("; ")}` }) });
+        }
+        const settings = patch.settings ?? cur.settings;
+        const next = { ...cur, name: patch.name ?? cur.name, settings, effective: { ...defaults, ...settings }, office: officeOf(settings) };
         this.projects[i].project = next;
         this.hubEvents?.send(JSON.stringify({ type: "project", project: next }));
         return route.fulfill(json(next));
@@ -371,6 +429,13 @@ export class MockDaemon {
           const a = w.agents.find((x) => x.id === resume[1]);
           return route.fulfill(json({ ...a, state: "starting", resumable: false, session_id: "11111111-0000-4000-8000-000000000001" }));
         }
+        if (p === "/api/tasks" && method === "POST") {
+          const body = route.request().postDataJSON() as { title: string; description: string };
+          const t = task(`n${String(w.tasks.length).padStart(11, "0")}`, body.title, "todo", { description: body.description });
+          w.tasks.push(t);
+          if (w === this.world) this.send({ type: "task", task: t });
+          return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(t) });
+        }
         const patchTask = /^\/api\/tasks\/([^/]+)$/.exec(p);
         if (patchTask && method === "PATCH") {
           const i = w.tasks.findIndex((x) => x.id === patchTask[1]);
@@ -379,6 +444,8 @@ export class MockDaemon {
           if (w === this.world) this.send({ type: "task", task: w.tasks[i] });
           return route.fulfill(json(w.tasks[i]));
         }
+        const del = /^\/api\/(?:tasks\/([^/]+)\/)?branches\/delete$/.exec(p);
+        if (del) return this.deleteBranches(route, w, del[1]);
         const goalOp = /^\/api\/tasks\/([^/]+)\/(merge|push|remove-agents)$/.exec(p);
         if (goalOp) return this.goalOp(route, w, goalOp[1], goalOp[2]);
         const grant = /^\/api\/access-grants\/(\d+)$/.exec(p);
@@ -393,10 +460,25 @@ export class MockDaemon {
         }
       }
       if (p === "/api/goal-merges") return route.fulfill(json(w.merges ?? []));
+      const br = /^\/api\/(?:tasks\/([^/]+)\/)?branches$/.exec(p);
+      if (br) {
+        const goal = br[1] ? w.tasks.find((t) => t.id === br[1]) : undefined;
+        if (br[1] && goal?.status !== "done") {
+          return route.fulfill({ status: 400, contentType: "application/json", body: '{"error":"invalid: mark the goal done first"}' });
+        }
+        return route.fulfill(json({ target: "main", target_head: "2222222222222222222222222222222222222222",
+          branches: this.branchesOf(w, br[1]) }));
+      }
       if (p === "/api/access-grants") return route.fulfill(json(w.grants ?? []));
       const rec = /^\/api\/tasks\/([^/]+)\/(record|merge)$/.exec(p);
       if (rec) {
-        const v = rec[2] === "record" ? w.records?.[rec[1]] : w.previews?.[rec[1]];
+        // A goal without a recorded fixture gets a plain record, as the daemon has one for every goal.
+        const goal = w.tasks.find((t) => t.id === rec[1] && !t.parent_task_id);
+        const plain: GoalRecord | undefined = goal && {
+          goal, sub_tasks: w.tasks.filter((t) => t.parent_task_id === goal.id), agents: [], qa_runs: (w.qaRuns ?? []).filter((r) => r.goal_id === goal.id),
+          merges: (w.merges ?? []).filter((m) => m.goal_id === goal.id), deleted_branches: [],
+        };
+        const v = rec[2] === "record" ? w.records?.[rec[1]] ?? plain : w.previews?.[rec[1]];
         return v ? route.fulfill(json(v)) : route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' });
       }
       const ss = /^\/api\/agents\/([^/]+)\/sessions$/.exec(p);
@@ -427,6 +509,15 @@ export class MockDaemon {
       }
       this.hubEvents = ws;
       ws.send(JSON.stringify({ type: "projects", projects: this.projects.map((x) => x.project) }));
+      ws.send(JSON.stringify({ type: "presence", presence: { devices: this.presentDevices() } }));
+      ws.send(JSON.stringify({ type: "profile", profile: this.profile }));
+      ws.onMessage((m) => {
+        const msg = JSON.parse(String(m)) as { type?: string; visible?: boolean };
+        if (msg.type !== "presence" || typeof msg.visible !== "boolean") return;
+        this.visibility.push(msg.visible);
+        this.pageVisible = msg.visible;
+        ws.send(JSON.stringify({ type: "presence", presence: { devices: this.presentDevices() } }));
+      });
     });
     await page.routeWebSocket(/\/api\/projects\/[^/]+\/events$/, (ws) => {
       const pid = /\/api\/projects\/([^/]+)\/events$/.exec(ws.url())?.[1] ?? "";
@@ -455,6 +546,52 @@ export class MockDaemon {
         void ws.close({ code: 1000, reason: "process exited" });
       }
     });
+  }
+
+  private presentDevices(): string[] {
+    return [...new Set([...(this.pageVisible ? [this.devices[0].name] : []), ...this.otherDevices])].sort();
+  }
+
+  // presence sends the devices with the UI open, as when another device opens or closes it.
+  presence(others: string[]): void {
+    this.otherDevices = others;
+    this.hubEvents?.send(JSON.stringify({ type: "presence", presence: { devices: this.presentDevices() } }));
+  }
+
+  // branchesOf is a goal's branches (its agents') or every branch of the project.
+  private branchesOf(w: World, goalId?: string): BranchInfo[] {
+    const all = w.branches ?? [];
+    if (!goalId) return all;
+    const ids = new Set([goalId, ...w.tasks.filter((t) => t.parent_task_id === goalId).map((t) => t.id)]);
+    return all.filter((b) => b.task_id !== undefined && ids.has(b.task_id));
+  }
+
+  // deleteBranches deletes like the daemon: in use, moved, and unmerged-but-not-named are refused.
+  private deleteBranches(route: Route, w: World, goalId?: string): Promise<void> {
+    const req = route.request().postDataJSON() as BranchDelete;
+    const known = this.branchesOf(w, goalId);
+    const deleted: DeletedBranch[] = [];
+    const refused: { name: string; reason: string }[] = [];
+    for (const r of req.branches) {
+      const b = known.find((x) => x.name === r.name);
+      if (!b) refused.push({ name: r.name, reason: "not a branch of this goal (or already deleted)" });
+      else if (b.in_use) refused.push({ name: r.name, reason: b.in_use });
+      else if (b.head !== r.head) refused.push({ name: r.name, reason: "it moved since the preview" });
+      else if (b.class === "unmerged" && !req.unmerged.includes(b.name)) refused.push({ name: r.name, reason: "it is not merged: confirm it by name to delete it" });
+      else {
+        const d: DeletedBranch = { id: (w.deleted?.length ?? 0) + deleted.length + 1, goal_id: goalId, name: b.name, head: b.head, class: b.class,
+          deleted_at: iso(60) };
+        deleted.push(d);
+      }
+    }
+    const gone = new Set(deleted.map((d) => d.name));
+    w.branches = (w.branches ?? []).filter((b) => !gone.has(b.name));
+    w.deleted = [...(w.deleted ?? []), ...deleted];
+    if (goalId && w.records?.[goalId]) {
+      const rec = w.records[goalId];
+      w.records[goalId] = { ...rec, deleted_branches: [...(rec.deleted_branches ?? []), ...deleted] };
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ deleted, refused }) });
   }
 
   // terminalOutput sends program output to an open terminal, unprompted.
@@ -557,4 +694,36 @@ export class MockDaemon {
     this.world.messages.push(m);
     this.send({ type: "message", message: m });
   }
+}
+
+// Phase 18 navigation, shared by the specs.
+// nav clicks a main view (Board, Office, Usage, Settings) in the rail or the phone's tab bar.
+export async function nav(page: Page, name: "Board" | "Office" | "Usage" | "Settings"): Promise<void> {
+  await page.getByRole("navigation", { name: "Main" }).getByRole("button", { name: new RegExp(`^${name}`) }).click();
+}
+// settingsTab opens the app's settings (the rail) at a tab.
+export async function settingsTab(page: Page, tab: "Projects" | "Devices" | "Profile"): Promise<void> {
+  await nav(page, "Settings");
+  await page.getByRole("tablist", { name: "Settings" }).getByRole("tab", { name: new RegExp(`^${tab}`) }).click();
+}
+// projectSettings opens the shown project's settings (the gear by the picker) at a tab.
+export async function projectSettings(page: Page, tab: "General" | "Office" | "Sandbox" | "Memory" = "General"): Promise<void> {
+  await page.getByRole("button", { name: /^Project settings/ }).click();
+  await page.getByRole("tablist", { name: "Project settings" }).getByRole("tab", { name: new RegExp(`^${tab}`) }).click();
+}
+// agentRow is an agent in the rail (or the phone's Agents view).
+export const agentRow = (page: Page, idOrName: string) =>
+  /^[0-9a-z]{12}$/.test(idOrName) && /\d/.test(idOrName) ? page.locator(`.agent-row[data-agent="${idOrName}"]`) : page.locator(".agent-row", { hasText: idOrName });
+// openAgent opens an agent's terminal from the rail; its header is above it.
+export async function openAgent(page: Page, idOrName: string) {
+  const row = agentRow(page, idOrName).first();
+  await row.waitFor({ state: "attached" });
+  if (!(await row.isVisible())) await page.locator(".exited-agents > summary").first().click(); // exited agents are folded
+  await row.getByRole("button").click();
+  return page.locator(".agent-header");
+}
+// openCard opens a board card's modal.
+export async function openCard(page: Page, id: string) {
+  await page.locator(`#task-${id}`).click();
+  return page.locator(".modal.task-detail");
 }

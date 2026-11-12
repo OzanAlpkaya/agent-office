@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/OzanAlpkaya/agent-office/internal/office"
 	"github.com/OzanAlpkaya/agent-office/internal/pack"
 	"github.com/OzanAlpkaya/agent-office/internal/review"
 	"github.com/OzanAlpkaya/agent-office/internal/role"
@@ -57,6 +58,7 @@ type ProjectSettings struct {
 	WorkerMemory          *string           `json:"worker_memory,omitempty"`            // sandboxed workers' memory limit, e.g. 4g (ADR 0051); "": the pack's or --sandbox-memory
 	WorkerPids            *int              `json:"worker_pids,omitempty"`              // sandboxed workers' process limit (Phase 17); 0: the pack's or --sandbox-pids
 	MergeTarget           *string           `json:"merge_target,omitempty"`             // the branch a goal's Merge button squash-merges into (ADR 0055)
+	OfficeLayout          *string           `json:"office_layout,omitempty"`            // the office's floor plan as YAML (Phase 18, ADR 0057); "": the default plan
 }
 
 // Who decides access requests (ADR 0053).
@@ -185,6 +187,12 @@ func (s ProjectSettings) Validate() error {
 	if b := s.MergeTarget; b != nil && !validBranchName(*b) {
 		add("merge_target %q: a branch name such as main", *b)
 	}
+	// Only the size here: a stored layout that does not validate must not stop
+	// the project from opening; the office falls back to the default plan
+	// (ADR 0057). A new layout is validated when it is saved (Hub.Update).
+	if l := s.OfficeLayout; l != nil && len(*l) > office.MaxBytes {
+		add("office_layout: %d bytes; at most %d", len(*l), office.MaxBytes)
+	}
 	for name, v := range map[string]*int64{"budget_session_micro_usd": s.BudgetSessionMicroUSD, "budget_goal_micro_usd": s.BudgetGoalMicroUSD} {
 		if v != nil && (*v < 0 || *v > maxBudgetMicroUSD) {
 			add("%s %d: between 0 (off) and %d", name, *v, int64(maxBudgetMicroUSD))
@@ -216,6 +224,7 @@ func (d ProjectSettings) Merge(o ProjectSettings) ProjectSettings {
 	pick(&out.AccessDecider, o.AccessDecider)
 	pick(&out.WorkerMemory, o.WorkerMemory)
 	pick(&out.MergeTarget, o.MergeTarget)
+	pick(&out.OfficeLayout, o.OfficeLayout)
 	if o.WorkerPids != nil {
 		out.WorkerPids = o.WorkerPids
 	}
@@ -317,4 +326,38 @@ func (s ProjectSettings) SandboxChanges(t ProjectSettings) []string {
 		}
 	}
 	return out
+}
+
+// OfficeInfo is the layout a project's office uses (Phase 18, ADR 0057): the
+// default plan, or the project's own layout. A stored layout that does not
+// validate falls back to the default, with its problems for the UI's warning.
+type OfficeInfo struct {
+	Source   string         `json:"source"` // OfficeDefault | OfficeCustom
+	Layout   *office.Layout `json:"layout,omitempty"`
+	Problems []string       `json:"problems,omitempty"`
+}
+
+// Where an office's layout comes from.
+const (
+	OfficeDefault = "default"
+	OfficeCustom  = "custom"
+)
+
+// officeOf parses a project's office_layout setting.
+func officeOf(s ProjectSettings) OfficeInfo {
+	if s.OfficeLayout == nil || strings.TrimSpace(*s.OfficeLayout) == "" {
+		return OfficeInfo{Source: OfficeDefault}
+	}
+	l, err := office.Parse(*s.OfficeLayout)
+	if err != nil {
+		return OfficeInfo{Source: OfficeDefault, Problems: office.Problems(err)}
+	}
+	return OfficeInfo{Source: OfficeCustom, Layout: &l}
+}
+
+// withoutLayout is s without its office layout: what the project's engine
+// runs with. Only a change of the rest reopens the project.
+func (s ProjectSettings) withoutLayout() ProjectSettings {
+	s.OfficeLayout = nil
+	return s
 }

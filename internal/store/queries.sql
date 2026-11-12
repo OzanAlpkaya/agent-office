@@ -603,3 +603,25 @@ ORDER BY g.id;
 -- name: DeleteAccessGrant :one
 DELETE FROM access_grants WHERE id = ? AND project_id = ?
 RETURNING *;
+
+-- name: ListProjectAgentBranches :many
+-- Every agent of a project with its branch, removed ones included: whose branch is whose (Phase 18).
+SELECT agents.id, agents.name, agents.task_id, agents.kind, agents.removed_at, worktrees.branch AS branch
+FROM agents JOIN worktrees ON worktrees.agent_id = agents.id
+WHERE agents.project_id = ?
+ORDER BY agents.started_at, agents.id;
+
+-- name: InsertDeletedBranch :one
+INSERT INTO deleted_branches (project_id, goal_id, name, head, class, deleted_at) VALUES (?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: ListGoalDeletedBranches :many
+SELECT * FROM deleted_branches WHERE goal_id = ? ORDER BY id;
+
+-- name: GetProfile :one
+SELECT * FROM profile WHERE id = 1;
+
+-- name: SetProfile :one
+INSERT INTO profile (id, name, look, updated_at) VALUES (1, ?, ?, ?)
+ON CONFLICT (id) DO UPDATE SET name = excluded.name, look = excluded.look, updated_at = excluded.updated_at
+RETURNING *;

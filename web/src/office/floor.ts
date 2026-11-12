@@ -50,6 +50,11 @@ export interface FloorPlan {
   readonly columns: number;
   readonly rows: number;
   readonly stacked: boolean; // rooms on top of each other (3 columns, phones)
+  // A project's own layout (Phase 18, ADR 0057): fixed rooms and desks. The
+  // default plan grows with the team; a custom one has capacity desks, and
+  // may lack the optional rooms (their furniture and stations are absent).
+  readonly custom?: boolean;
+  readonly capacity?: number;
   readonly w: number;
   readonly h: number;
   readonly rooms: readonly Room[];
@@ -60,22 +65,28 @@ export interface FloorPlan {
   readonly lead: Point; // the Tech Lead's desk cell
   readonly desks: readonly Point[]; // every regular desk cell, row by row
   readonly whiteboard: Point;
-  readonly screen: Point; // the review room's wall screen
-  readonly table: Rect; // the review room's table
-  readonly counter: Point; // the kitchen counter with the coffee machine
+  readonly screen?: Point; // the review room's wall screen
+  readonly table?: Rect; // the review room's table
+  readonly counter?: Point; // the kitchen counter with the coffee machine
   readonly door: Point; // the front door, in the lobby's back wall
   readonly entrance: Point; // where characters come in and go out
   readonly userDesk: Point; // the user's own desk cell (nobody sits there)
   readonly userDoor: Rect; // the doorway of the user's office
   readonly queueSign: Point; // where the "N waiting" sign goes, by the user's door
-  readonly blueprints: Point; // pinned on the planning room's wall
-  readonly testBoard: Point; // on the QA lab's wall
-  readonly stations: Readonly<Record<StationKind, Station>>;
+  readonly blueprints?: Point; // pinned on the planning room's wall
+  readonly testBoard?: Point; // on the QA lab's wall
+  readonly stations: Readonly<Partial<Record<StationKind, Station>>>;
   readonly cooler: Point;
   readonly plants: readonly Point[];
   readonly furniture: readonly Rect[]; // footprints on the floor, besides desks
   readonly spots: Readonly<Record<Spot, readonly Point[]>>; // feet positions
 }
+
+// FullPlan is the default plan: every room, so every piece of furniture.
+export type FullPlan = FloorPlan & {
+  readonly screen: Point; readonly table: Rect; readonly counter: Point; readonly blueprints: Point; readonly testBoard: Point;
+  readonly stations: Readonly<Record<StationKind, Station>>;
+};
 
 // A desk cell, as in Phase 7: desk, chair and the person behind it.
 export const cell = { w: 64, h: 52 } as const;
@@ -85,16 +96,16 @@ export const deskFootprint: Rect = { x: 10, y: 4, w: 44, h: 32 };
 // Where a character stands up into the aisle right of its desk, relative to the cell.
 export const deskExit: Point = { x: 62, y: 28 };
 
-const face = art.wallHeight; // height of a back wall seen from the front
+export const face = art.wallHeight; // height of a back wall seen from the front
 const bandFloor = 60; // floor depth of the rooms along a back wall
-const wall = 4; // thickness of a wall seen from above
+export const wall = 4; // thickness of a wall seen from above
 const band = face + bandFloor + wall;
-const corridor = 14; // free floor between the workroom's wall and its first row
-const bottom = 10;
-const doorwayW = 20;
-const queueStep = 12;
+export const corridor = 14; // free floor between the workroom's wall and its first row
+export const bottom = 10;
+export const doorwayW = 20;
+export const queueStep = 12;
 
-const snap = (v: number): number => Math.round(v / 4) * 4;
+export const snap = (v: number): number => Math.round(v / 4) * 4;
 
 export const roomInfo: Readonly<Record<RoomId, { name: string; purpose: string; floor: FloorKind }>> = {
   lead: { name: "Tech Lead", purpose: "The Tech Lead's desk and the whiteboard with the goal's sub-tasks; agents report here.", floor: "carpet" },
@@ -162,21 +173,23 @@ function cutX(rects: Rect[], gaps: readonly Rect[]): Rect[] {
   return out;
 }
 
-const cache = new Map<string, FloorPlan>();
+const cache = new Map<string, FullPlan>();
 
 // floorPlan lays out the office for a grid of desks. Three columns give the
 // stacked plan (narrow panes, phones); more give the wide one.
-export function floorPlan(columns: number, rows: number): FloorPlan {
-  const key = `${columns}x${rows}`;
+// extra deepens the workroom below its desks (world pixels), so the office
+// covers a tall pane without empty desks (Phase 18 review).
+export function floorPlan(columns: number, rows: number, extra = 0): FullPlan {
+  const key = `${columns}x${rows}+${extra}`;
   let plan = cache.get(key);
   if (!plan) {
-    plan = build(columns, rows);
+    plan = build(columns, rows, extra);
     cache.set(key, plan);
   }
   return plan;
 }
 
-function build(columns: number, rows: number): FloorPlan {
+function build(columns: number, rows: number, extra: number): FullPlan {
   const stacked = columns <= 3;
   const bands = stacked ? stackedBands : wideBands;
   const W = Math.max(columns * cell.w + 2 * margin, minWidth(stacked));
@@ -194,7 +207,7 @@ function build(columns: number, rows: number): FloorPlan {
   });
   const R = (id: RoomId): Rect => rect[id] as Rect;
   const workTop = bands.length * band;
-  const H = workTop + corridor + rows * cell.h + bottom;
+  const H = workTop + corridor + rows * cell.h + bottom + extra;
   const workRect: Rect = { x: 0, y: workTop, w: W, h: H - workTop };
   const ids: RoomId[] = [...bands.flat().map((s) => s.id), "work"];
   const rooms: Room[] = ids.map((id) => {

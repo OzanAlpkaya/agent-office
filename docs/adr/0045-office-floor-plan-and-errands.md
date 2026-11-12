@@ -128,3 +128,10 @@ Consequences: a desktop pane of 1440×900 draws the office at 2 CSS pixels per w
 3 (a taller office with twice the rooms); a phone keeps about the same scale. With ten characters
 walking a drawn frame stayed at p95 0.7 to 2.0 ms. The front door moved from the kitchen to the
 lobby.
+
+## Amendment (2026-11-12, Phase 18, ADR 0057 and 0058)
+
+A project may have its own layout: the floor plan is then built from its rooms (`office/custom.ts`)
+with the same shape, and optional rooms may be missing (their stations and errands go). The user's
+desk is a desk node: the user's character sits there, drawn still, while a device has the UI open
+and visible.

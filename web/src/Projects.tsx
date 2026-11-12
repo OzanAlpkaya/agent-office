@@ -99,11 +99,13 @@ function SettingsFields({ draft, onChange, defaults, sandboxed }: {
   draft: SettingsDraft; onChange: (d: SettingsDraft) => void; defaults?: ProjectSettings; sandboxed: boolean;
 }): JSX.Element {
   const inh = inherited(defaults);
+  // The inherited value is shown in full under the field (a placeholder was cut off, Phase 18 review).
   const field = (k: Exclude<keyof SettingsDraft, "github" | "accessDecider">, label: string, help: string): JSX.Element => (
     <label className="setting">
       <span>{label}</span>
-      <input value={draft[k]} placeholder={`daemon: ${inh[k] || "none"}`} title={help} aria-label={label}
+      <input value={draft[k]} placeholder="default" title={help} aria-label={label}
         onChange={(e) => onChange({ ...draft, [k]: e.target.value })} />
+      <span className="field-hint" data-testid={`hint-${k}`}>Default: {inh[k] || "none"}</span>
     </label>
   );
   return (
@@ -114,7 +116,7 @@ function SettingsFields({ draft, onChange, defaults, sandboxed }: {
       <label className="setting">
         <span>GitHub</span>
         <select value={draft.github} aria-label="GitHub" onChange={(e) => onChange({ ...draft, github: e.target.value as SettingsDraft["github"] })}>
-          <option value="">daemon: {inh.github}</option>
+          <option value="">default ({inh.github})</option>
           <option value="on">on</option>
           <option value="off">off</option>
         </select>
@@ -130,7 +132,7 @@ function SettingsFields({ draft, onChange, defaults, sandboxed }: {
           <span>Access decisions</span>
           <select value={draft.accessDecider} aria-label="Access decisions" title="who decides the agents' network access requests"
             onChange={(e) => onChange({ ...draft, accessDecider: e.target.value as SettingsDraft["accessDecider"] })}>
-            <option value="">daemon: {inh.accessDecider}</option>
+            <option value="">default ({inh.accessDecider})</option>
             <option value="user">you</option>
             <option value="lead">the Tech Lead, with a recorded reason</option>
             <option value="lead_policy">the Tech Lead, for the hosts below; you for the rest</option>
@@ -148,13 +150,101 @@ const emptyDraft: SettingsDraft = {
   workerPids: "", mergeTarget: "", accessDecider: "", leadHosts: "",
 };
 
-export function ProjectsPanel({ projects, current, status, running, onSelect }: {
+// ProjectForm changes one project's name and settings. Settings left empty
+// inherit the daemon's flags; fields the form does not show are kept.
+export function ProjectForm({ project: p, status, sandboxed, onSaved }: {
+  project: Project; status?: DaemonStatus; sandboxed: boolean; onSaved?: () => void;
+}): JSX.Element {
+  const [edit, setEdit] = useState<SettingsDraft>(() => draftOf(p.settings));
+  const [name, setName] = useState(p.name);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  return (
+    <form className="project-settings" onSubmit={(e) => {
+      e.preventDefault();
+      setError("");
+      setSaved(false);
+      let settings: ProjectSettings;
+      try {
+        settings = settingsOf(edit, p.settings);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return;
+      }
+      api.updateProject(p.id, { name: name.trim(), settings }).then(() => { setSaved(true); onSaved?.(); },
+        (err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+    }}>
+      <label className="setting"><span>Name</span>
+        <input value={name} aria-label="Name" onChange={(e) => setName(e.target.value)} />
+      </label>
+      <SettingsFields draft={edit} onChange={setEdit} defaults={status?.defaults} sandboxed={sandboxed} />
+      <div className="row">
+        <button className="primary" type="submit">Save</button>
+        {saved && <span className="small muted" role="status">Saved.</span>}
+        {error && <p className="error small" role="alert">{error}</p>}
+      </div>
+    </form>
+  );
+}
+
+// AddProjectForm adds a repository as a project (the Projects tab, and
+// "+ New project" in the project picker).
+export function AddProjectForm({ status, onAdded, autoFocus = false }: {
+  status?: DaemonStatus; onAdded: (p: Project) => void; autoFocus?: boolean;
+}): JSX.Element {
+  const [repo, setRepo] = useState("");
+  const [name, setName] = useState("");
+  const [draft, setDraft] = useState<SettingsDraft>(emptyDraft);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const sandboxed = status?.sandbox !== "host";
+  return (
+    <form className="project-add" onSubmit={(e) => {
+      e.preventDefault();
+      setError("");
+      let settings: ProjectSettings;
+      try {
+        settings = settingsOf(draft);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return;
+      }
+      setBusy(true);
+      api.addProject(repo.trim(), name.trim(), settings).then((p) => {
+        setBusy(false);
+        setRepo("");
+        setName("");
+        setDraft(emptyDraft);
+        onAdded(p);
+      }, (err: unknown) => { setBusy(false); setError(err instanceof Error ? err.message : String(err)); });
+    }}>
+      <label className="setting"><span>Repository</span>
+        <input value={repo} required autoFocus={autoFocus} placeholder="/home/you/projects/app" aria-label="Repository path"
+          onChange={(e) => setRepo(e.target.value)} />
+        <span className="field-hint">A git repository on this machine; agents work on branches of it.</span>
+      </label>
+      <label className="setting"><span>Name</span>
+        <input value={name} placeholder="the directory's name" aria-label="Project name" onChange={(e) => setName(e.target.value)} />
+      </label>
+      <p className="small muted">Settings are optional: empty fields use the daemon's.</p>
+      <SettingsFields draft={draft} onChange={setDraft} defaults={status?.defaults} sandboxed={sandboxed} />
+      <div className="row">
+        <button className="primary" type="submit" disabled={repo.trim() === "" || busy}>{busy ? "Adding…" : "Add project"}</button>
+        {error && <p className="error small" role="alert">{error}</p>}
+      </div>
+    </form>
+  );
+}
+
+// ProjectsPanel lists every project: open one, retry one that could not
+// open, remove one, or open its settings; and adds a project.
+export function ProjectsPanel({ projects, current, status, running, onSelect, onSettings }: {
   projects: Project[]; current?: string; status?: DaemonStatus;
   running: number; // agents that have not exited, in every project: live, unlike the status
   onSelect: (id: string) => void;
+  onSettings?: (id: string) => void; // the project's own settings (the gear by the picker)
 }): JSX.Element {
   const [failure, setFailure] = useState<Failure>();
-  // act runs one action of the panel; its error is shown next to the control that asked for it.
   const act = async <T,>(at: string, fn: () => Promise<T>): Promise<T | undefined> => {
     setFailure(undefined);
     try {
@@ -166,24 +256,7 @@ export function ProjectsPanel({ projects, current, status, running, onSelect }: 
   };
   const errorAt = (at: string): JSX.Element | null =>
     failure?.at === at ? <p className="error small" role="alert">{failure.message}</p> : null;
-  const [repo, setRepo] = useState("");
-  const [name, setName] = useState("");
-  const [draft, setDraft] = useState<SettingsDraft>(emptyDraft);
-  const [editing, setEditing] = useState<string>();
-  const [edit, setEdit] = useState<SettingsDraft>(emptyDraft);
-  const [editName, setEditName] = useState("");
   const [removing, setRemoving] = useState<string>();
-  const sandboxed = status?.sandbox !== "host";
-
-  const add = async (): Promise<void> => {
-    const p = await act("add", () => api.addProject(repo.trim(), name.trim(), settingsOf(draft)));
-    if (p) {
-      setRepo("");
-      setName("");
-      setDraft(emptyDraft);
-      onSelect(p.id);
-    }
-  };
   return (
     <section className="side-panel projects-panel" aria-label="Projects">
       <h2>Projects</h2>
@@ -209,11 +282,7 @@ export function ProjectsPanel({ projects, current, status, running, onSelect }: 
             <div className="actions">
               {p.id !== current && p.state === "open" && <button onClick={() => onSelect(p.id)}>Open</button>}
               {p.state === "error" && <button onClick={() => void act(`item:${p.id}`, () => api.retryProject(p.id))}>Retry</button>}
-              <button aria-expanded={editing === p.id} onClick={() => {
-                setEditing(editing === p.id ? undefined : p.id);
-                setEdit(draftOf(p.settings));
-                setEditName(p.name);
-              }}>Settings</button>
+              {onSettings && p.state === "open" && <button onClick={() => onSettings(p.id)}>Settings</button>}
               {removing === p.id ? (
                 <>
                   <span className="small">Remove {p.name}? Its history, branches and worktrees are kept.</span>
@@ -229,47 +298,11 @@ export function ProjectsPanel({ projects, current, status, running, onSelect }: 
               )}
             </div>
             {errorAt(`item:${p.id}`)}
-            {editing === p.id && (
-              <form className="project-settings" onSubmit={(e) => {
-                e.preventDefault();
-                void act(`save:${p.id}`, async () => {
-                  const next = await api.updateProject(p.id, { name: editName.trim(), settings: settingsOf(edit, p.settings) });
-                  setEditing(undefined);
-                  return next;
-                });
-              }}>
-                <label className="setting"><span>Name</span>
-                  <input value={editName} aria-label="Name" onChange={(e) => setEditName(e.target.value)} />
-                </label>
-                <SettingsFields draft={edit} onChange={setEdit} defaults={status?.defaults} sandboxed={sandboxed} />
-                <p className="muted small">New settings restart nothing: they are refused while the project's agents run.</p>
-                <div className="row">
-                  <button className="primary" type="submit">Save</button>
-                  {errorAt(`save:${p.id}`)}
-                </div>
-              </form>
-            )}
           </li>
         ))}
       </ul>
-      <form className="project-add" onSubmit={(e) => {
-        e.preventDefault();
-        void add();
-      }}>
-        <h3>Add a project</h3>
-        <label className="setting"><span>Repository</span>
-          <input value={repo} required placeholder="/home/you/projects/app" aria-label="Repository path"
-            onChange={(e) => setRepo(e.target.value)} />
-        </label>
-        <label className="setting"><span>Name</span>
-          <input value={name} placeholder="the directory's name" aria-label="Project name" onChange={(e) => setName(e.target.value)} />
-        </label>
-        <SettingsFields draft={draft} onChange={setDraft} defaults={status?.defaults} sandboxed={sandboxed} />
-        <div className="row">
-          <button className="primary" type="submit" disabled={repo.trim() === ""}>Add project</button>
-          {errorAt("add")}
-        </div>
-      </form>
+      <h3>Add a project</h3>
+      <AddProjectForm status={status} onAdded={(p) => onSelect(p.id)} />
     </section>
   );
 }

@@ -1,7 +1,7 @@
 // Phase 16 (autonomous team) against a mocked daemon: the grouped inbox, why
 // an agent exited, and approvals for the whole project.
 import { type Page, expect, test } from "@playwright/test";
-import { MockDaemon, type World, agent, task } from "./daemon";
+import { MockDaemon, type World, agent, task, openAgent } from "./daemon";
 
 const screens = "test-results/screens";
 const t = (m: number): string => `2026-11-11T10:${String(m).padStart(2, "0")}:00Z`;
@@ -79,7 +79,8 @@ test("the inbox groups by goal and agent, folds answered items and keeps briefin
 test("an exited agent's card says why it ended", async ({ page }) => {
   const daemon = new MockDaemon(world());
   const errors = await open(page, daemon);
-  const card = page.locator('.card[data-agent="b2c3d4000001"]');
+  // the header above its terminal says why it ended
+  const card = await openAgent(page, "b2c3d4000001");
   await expect(card.getByTestId("exit-detail")).toContainText("Out of memory");
   await expect(card.getByTestId("exit-detail")).toContainText("2g memory limit");
   await expect(card).toContainText("exit code 137 · signal KILL");

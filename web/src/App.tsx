@@ -5,18 +5,21 @@ import {
   api as daemonApi, projectApi,
 } from "./api";
 import { ProjectApiContext } from "./ProjectContext";
-import { ProjectsPanel } from "./Projects";
 import { type Elsewhere, waitingTotal } from "./projects";
 import { AgentName, AgentsContext } from "./AgentName";
 import { AgentSwitcher } from "./AgentSwitcher";
 import { type Tabs, closeTab, keepTabs, labelOf, moveTab, neighbourTab, openTab, parseTabs } from "./agents";
 import { Board } from "./Board";
-import { GrantsPanel } from "./Grants";
 import { backgroundLine, splitEvents } from "./sandboxEvents";
 import { Drawer } from "./Drawer";
-import { DevicesPanel } from "./Devices";
+import { Icon, type IconName } from "./icons";
+import { type Presence } from "./presence";
+import { type AppTab, type ProjectTab, AppSettings, ProjectSettings } from "./Settings";
+import { AddProjectForm } from "./Projects";
+import { Modal } from "./Modal";
+import type { Profile } from "./office/avatar";
 import { narrowQuery, useMedia } from "./useMedia";
-import { InboxPanel, MemoryPanel } from "./Team";
+import { InboxPanel } from "./Team";
 import { unread } from "./workflow";
 import { type Waiting, waitingOnUser } from "./waiting";
 import { TerminalView } from "./TerminalView";
@@ -127,13 +130,12 @@ function typingTarget(t: EventTarget | null): boolean {
   return t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.closest(".xterm") !== null;
 }
 
-// MainTab is a tab of the main pane that every project has.
-export type MainTab = "board" | "office" | "usage";
+// MainTab is a view every project has; a switch to another project keeps it.
+// "settings" is the app's (the rail), "project-settings" the shown project's (the gear).
+export type MainTab = "board" | "office" | "usage" | "settings" | "project-settings";
 
-// "agents" is the phone layout's tab for the agent list (the sidebar on wider screens, ADR 0040).
-type View = { kind: "board" } | { kind: "office" } | { kind: "usage" } | { kind: "agents" } | { kind: "agent"; id: string };
-
-type Panel = "inbox" | "memory" | "devices" | "projects";
+// "agents" is the phone layout's view of the agent list (the rail on wider screens, ADR 0040).
+type View = { kind: MainTab } | { kind: "agents" } | { kind: "agent"; id: string };
 
 export interface AppProps {
   session: AuthSession;
@@ -145,10 +147,12 @@ export interface AppProps {
   initialAgent?: string; // open this agent once it is known (a switch from another project's approval)
   initialTab?: MainTab; // the tab the other project showed, kept across a switch (e.g. the office's floors)
   onSelectProject: (id: string, agentId?: string, tab?: MainTab) => void;
+  presence?: Presence; // the user's devices with the UI open (Phase 18)
+  profile?: Profile; // the user's name and look (Phase 18 review)
 }
 
 export function App({
-  session, onSignedOut, project, projects, daemon, elsewhere, initialAgent, initialTab, onSelectProject,
+  session, onSignedOut, project, projects, daemon, elsewhere, initialAgent, initialTab, onSelectProject, presence, profile,
 }: AppProps): JSX.Element {
   // The project's routes, plus the daemon's (health, devices, projects) under one name.
   const papi = useMemo(() => projectApi(project.id), [project.id]);
@@ -156,18 +160,22 @@ export function App({
   const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, merges, connection } =
     useWorld(papi);
   const [roles, setRoles] = useState<RoleInfo[]>([]);
-  const [panel, setPanel] = useState<Panel>();
   const narrow = useMedia(narrowQuery);
   const [view, setView] = useState<View>({ kind: initialTab ?? "board" });
-  // A switch to another project keeps the main tab (Board, Office, Usage) the user is on.
-  const tab: MainTab = view.kind === "office" || view.kind === "usage" ? view.kind : "board";
+  const [appTab, setAppTab] = useState<AppTab>("projects");
+  const [projectTab, setProjectTab] = useState<ProjectTab>("general");
+  const [newProject, setNewProject] = useState(false);
+  // A switch to another project keeps the main view the user is on.
+  const tab: MainTab = view.kind === "office" || view.kind === "usage" || view.kind === "settings" || view.kind === "project-settings"
+    ? view.kind : "board";
   const [tabs, setTabs] = useState<Tabs>(() => loadTabs(project.id));
   const [switcher, setSwitcher] = useState(false);
   const [approvalsOpen, setApprovalsOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [detail, setDetail] = useState<string>();
   const [dragged, setDragged] = useState<string>();
   const [version, setVersion] = useState("");
   const [status, setStatus] = useState<Status>();
-  const [showPack, setShowPack] = useState(false);
   const [error, setError] = useState<string>();
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -186,7 +194,7 @@ export function App({
     if (connection === "open") void api.roles().then(setRoles, () => setRoles([]));
   }, [connection, api]);
 
-  // Fall back to the board if the open agent disappears, or the agents tab on a wide screen.
+  // Fall back to the board if the open agent disappears, or the agents view on a wide screen.
   useEffect(() => {
     if (view.kind === "agent" && !agents.some((a) => a.id === view.id)) setView({ kind: "board" });
     if (view.kind === "agents" && !narrow) setView({ kind: "board" });
@@ -243,6 +251,7 @@ export function App({
 
   // openAgent shows an agent's terminal and gives it a tab (ADR 0044).
   const openAgent = (id: string): void => {
+    setDetail(undefined);
     setView({ kind: "agent", id });
     setTabs((t) => openTab(t, id));
   };
@@ -274,7 +283,7 @@ export function App({
     run(() =>
       api.removeAgent(id).catch((e: unknown) => {
         // 409 means the worktree has uncommitted changes and was kept; the
-        // card then offers "Discard changes". Not an error worth a banner.
+        // agent's header then offers "Discard changes". Not an error worth a banner.
         if (e instanceof ApiError && e.status === 409) return undefined;
         throw e;
       }),
@@ -284,9 +293,8 @@ export function App({
   const leadRunning = agents.some((a) => a.kind === "lead" && a.state !== "exited");
   const architectRunning = agents.some((a) => a.kind === "architect" && a.state !== "exited");
   const unreadCount = unread(inbox);
-  const proposed = memory.filter((m) => m.status === "proposed").length;
+  const proposedMemory = memory.filter((m) => m.status === "proposed").length;
   const ok = async (fn: () => Promise<unknown>): Promise<boolean> => (await run(fn)) !== undefined;
-  const togglePanel = (p: Panel): void => setPanel((cur) => (cur === p ? undefined : p));
 
   // approveSpec approves a plan (ADR 0031); a Tech Lead that could not start is shown as an error.
   const approveSpec = async (s: Spec): Promise<ApproveResult> => {
@@ -295,22 +303,23 @@ export function App({
     return res;
   };
 
-  // reviewPlan opens the board at the goal's card, whose plan is open while it waits for approval.
+  // reviewPlan opens the goal's card, whose plan is open while it waits for approval.
   const reviewPlan = (goalId: string): void => {
     setView({ kind: "board" });
-    window.setTimeout(() => {
-      const card = document.getElementById(`task-${goalId}`);
-      card?.scrollIntoView({ block: "center" });
-      card?.focus({ preventScroll: true });
-    }, 0);
+    setDetail(goalId);
+  };
+  const go = (kind: MainTab | "agents"): void => {
+    setView({ kind });
+  };
+  const openProjectSettings = (t: ProjectTab): void => {
+    setProjectTab(t);
+    setView({ kind: "project-settings" });
   };
   const current = view.kind === "agent" ? agents.find((a) => a.id === view.id) : undefined;
-  const waitingAgents = new Set(waiting.map((w) => w.agent.id));
+  const waitingAgents = useMemo(() => new Set(waiting.map((w) => w.agent.id)), [waiting]);
   const label = (id: string): string => labelOf(agents, id);
   const byId = new Map(agents.map((a) => [a.id, a]));
   const tabAgents = tabs.order.map((id) => byId.get(id)).filter((a): a is Agent => a !== undefined);
-  // A phone has room for the open agent only; the switcher reaches the others.
-  const shownTabs = narrow ? tabAgents.filter((a) => a.id === current?.id) : tabAgents;
   const activeAgents = agents.filter((a) => a.state !== "exited");
   const exitedAgents = agents.filter((a) => a.state === "exited");
   const moveTabBy = (id: string, delta: number): void => setTabs((t) => moveTab(t, id, t.order.indexOf(id) + delta));
@@ -319,59 +328,103 @@ export function App({
   const usageByAgent = usageBy(sessions, (s) => s.agent_id);
   const usageByTask = usageBy(sessions, (s) => s.task_id);
   const usageByGoal = usageBy(sessions, (s) => s.goal_id);
+  const runningEverywhere = elsewhere.reduce((n, e) => n + e.running, running);
+
+  const navItems: { kind: MainTab; label: string; icon: IconName; count?: number }[] = [
+    { kind: "board", label: "Board", icon: "board" },
+    { kind: "office", label: "Office", icon: "office" },
+    { kind: "usage", label: "Usage", icon: "usage" },
+    { kind: "settings", label: "Settings", icon: "settings" },
+  ];
+
+  const agentList = (
+    <div className="agent-list">
+      <div className="agent-list-head">
+        <span className="eyebrow">Agents</span>
+        <span className="muted small">{running} running</span>
+        <span className="spacer" />
+        <button className="ghost sm" onClick={() => void startAgent()} aria-label="Start agent (no task)"
+          title="Start an agent without a task, e.g. to explore the repository">
+          <Icon name="plus" size={16} />Start
+        </button>
+      </div>
+      {activeAgents.length > 0 && (
+        <ul className="agents">
+          {activeAgents.map((a) => (
+            <AgentRow key={a.id} agent={a} taskTitle={taskTitle(a.task_id)} selected={current?.id === a.id}
+              waiting={waitingAgents.has(a.id)} usage={usageByAgent.get(a.id)} onSelect={() => openAgent(a.id)} />
+          ))}
+        </ul>
+      )}
+      {exitedAgents.length > 0 && (
+        // Exited agents stay reachable here, in the switcher and in Usage (ADR 0044).
+        <details className="exited-agents" open={exitedAgents.some((a) => a.id === current?.id) || undefined}>
+          <summary className="muted small">Exited · {exitedAgents.length}</summary>
+          <ul className="agents">
+            {exitedAgents.map((a) => (
+              <AgentRow key={a.id} agent={a} taskTitle={taskTitle(a.task_id)} selected={current?.id === a.id}
+                waiting={false} usage={usageByAgent.get(a.id)} onSelect={() => openAgent(a.id)} />
+            ))}
+          </ul>
+        </details>
+      )}
+      {agents.length === 0 && <p className="muted small agent-list-empty">No agents yet. Start a Tech Lead from a goal on the board.</p>}
+    </div>
+  );
 
   return (
     <ProjectApiContext.Provider value={papi}>
     <AgentsContext.Provider value={agents}>
-      <div className="app">
-        <header>
-          <h1>agent-office</h1>
-          <ProjectSwitcher project={project} projects={projects} elsewhere={elsewhere} onSelect={(id) => onSelectProject(id, undefined, tab)}
-            onManage={() => togglePanel("projects")} managing={panel === "projects"} />
-          <span className="muted small">{version && `v${version}`}</span>
-          {status?.sandbox === "podman" && (
-            <span className="badge sandboxed" title={status.image ? `worker image ${status.image}` : undefined}>
-              sandboxed · podman
+      <div className={`app ${narrow ? "narrow" : "wide"}`}>
+        <header className="topbar">
+          {!narrow && (
+            <div className="brand" aria-label="agent-office">
+              <span className="brand-mark" aria-hidden="true" />
+              <h1>agent-office</h1>
+            </div>
+          )}
+          <ProjectSwitcher project={project} projects={projects} elsewhere={elsewhere} connection={connection}
+            onSelect={(id) => onSelectProject(id, undefined, tab)} onNew={() => setNewProject(true)} />
+          <button className={`topbar-button icon-button project-gear ${view.kind === "project-settings" ? "active" : ""}`}
+            aria-label={proposedMemory ? `Project settings (${proposedMemory} memory note${proposedMemory === 1 ? "" : "s"} proposed)` : "Project settings"}
+            aria-pressed={view.kind === "project-settings"} title={`Settings of ${project.name}`}
+            onClick={() => openProjectSettings("general")}>
+            <Icon name="settings" />
+            {proposedMemory > 0 && <span className="count tone-warn">{proposedMemory}</span>}
+          </button>
+          {status?.sandbox === "podman" && !narrow && (
+            <button className="pill sandboxed" onClick={() => openProjectSettings("sandbox")}
+              title={`Agents run in rootless Podman${status.image ? `; worker image ${status.image}` : ""}. Opens the sandbox settings.`}>
+              <span className="dot" />sandboxed{status.pack ? ` · ${status.pack.name}` : ""}
+            </button>
+          )}
+          {status?.sandbox === "host" && (
+            <span className="pill unsandboxed" title="Agents run on this machine with permission prompts">
+              <span className="dot" />{narrow ? "host" : "host mode"}
             </span>
           )}
-          {status?.sandbox === "podman" && (
-            <button className="badge pack" onClick={() => setShowPack((v) => !v)} aria-expanded={showPack}
-              title="What sandboxed agents get: image, network, secrets, skills, MCP servers">
-              {status.pack ? `pack · ${status.pack.name}` : "no stack pack"}
-            </button>
-          )}
-          {status?.sandbox === "host" && <span className="badge unsandboxed">unsandboxed · host mode</span>}
-          {status?.github && (
-            <span className="badge github" title={`Pushes to ${status.github.remote}; PRs into ${status.github.base}; ` +
-              `${status.github.rounds} automatic follow-up round(s). agent-office never merges.`}>
-              GitHub · {status.github.repo} · review: {status.github.reviewer}
-            </span>
-          )}
-          <span className="header-actions">
-            <button className={`badge approvals-button ${waitingCount ? "has-pending" : ""}`} aria-expanded={approvalsOpen}
-              aria-label={waitingCount ? `Approvals: ${waitingCount} waiting` : "Approvals: none waiting"}
-              onClick={() => setApprovalsOpen((v) => !v)}
-              title="Agents waiting on you: access requests, permission prompts, questions and plans to approve (ADR 0019, 0044)">
-              Approvals{waitingCount > 0 && <span className="count">{waitingCount}</span>}
-            </button>
-            <button className={`badge inbox-button ${unreadCount ? "has-unread" : ""}`} aria-expanded={panel === "inbox"}
-              onClick={() => togglePanel("inbox")} title="Messages to you from the team (ADR 0030)">
-              Inbox{unreadCount > 0 && ` · ${unreadCount}`}
-            </button>
-            <button className="badge" aria-expanded={panel === "memory"} onClick={() => togglePanel("memory")}
-              title="Notes every agent starts with (ADR 0034)">
-              Memory{proposed > 0 && ` · ${proposed} proposed`}
-            </button>
-            <button className="badge" aria-expanded={panel === "devices"} onClick={() => togglePanel("devices")}
-              title={`Paired browsers and phones${session.device ? `; this one: ${session.device.name}` : ""} (ADR 0039)`}>
-              Devices
-            </button>
-            <button className="badge" title="Ask the assistant for a briefing (starts it if needed)"
-              onClick={() => void run(async () => { await api.askBriefing(); setPanel("inbox"); return true; })}>
-              Briefing
-            </button>
-          </span>
-          <span className={`conn conn-${connection}`}>{connection === "open" ? "connected" : connection}</span>
+          <span className="spacer" />
+          <button className="topbar-button switcher-button" onClick={() => setSwitcher(true)} aria-haspopup="dialog"
+            aria-label={`Find an agent (${running} running)`} title="Find an agent by name, id, role, task or branch ( / )">
+            <Icon name="search" />
+            {!narrow && <span className="switcher-label">Find agent</span>}
+            {!narrow && <kbd>/</kbd>}
+          </button>
+          <button className={`topbar-button approvals-button ${waitingCount ? "has-pending" : ""}`} aria-expanded={approvalsOpen}
+            aria-label={waitingCount ? `Approvals: ${waitingCount} waiting` : "Approvals: none waiting"}
+            onClick={() => setApprovalsOpen((v) => !v)}
+            title="Agents waiting on you: access requests, permission prompts, questions and plans to approve (ADR 0019, 0044)">
+            <Icon name="approvals" />
+            {!narrow && <span>Approvals</span>}
+            {waitingCount > 0 && <span className="count">{waitingCount}</span>}
+          </button>
+          <button className={`topbar-button inbox-button ${unreadCount ? "has-unread" : ""}`} aria-expanded={inboxOpen}
+            aria-label={unreadCount ? `Inbox: ${unreadCount} unread` : "Inbox"}
+            onClick={() => setInboxOpen((v) => !v)} title="Messages to you from the team (ADR 0030)">
+            <Icon name="inbox" />
+            {!narrow && <span>Inbox</span>}
+            {unreadCount > 0 && <span className="count">{unreadCount}</span>}
+          </button>
         </header>
         {status?.sandbox === "host" && (
           <div className="banner warn">
@@ -379,49 +432,201 @@ export function App({
             using tools. Restart the daemon with <span className="mono">--sandbox podman</span> to isolate them.
           </div>
         )}
-        {showPack && status?.sandbox === "podman" && (
-          <>
-            <PackPanel status={status} />
-            <div className="pack-panel"><GrantsPanel api={api} requests={accessRequests} /></div>
-          </>
-        )}
-        {panel === "inbox" && (
-          <InboxPanel items={inbox} tasks={tasks} specs={specs} onOpenAgent={openAgent}
-            onRead={(i) => void run(() => api.readInbox(i.id))}
-            onReply={(i, body) => ok(() => api.replyInbox(i.id, body))}
-            onReviewPlan={reviewPlan}
-            onApprovePlan={(s, i) => void run(async () => {
-              const res = await approveSpec(s);
-              if (!i.read_at) await api.readInbox(i.id);
-              return res;
-            })} />
-        )}
-        {panel === "memory" && (
-          <MemoryPanel entries={memory}
-            onAdd={(d) => ok(() => api.addMemory(d))}
-            onEdit={(m, patch) => ok(() => api.editMemory(m.id, patch))}
-            onAccept={(m) => void run(() => api.acceptMemory(m.id))}
-            onDelete={(m) => void run(async () => { await api.deleteMemory(m.id); return true; })} />
-        )}
-        {panel === "projects" && (
-          <ProjectsPanel projects={projects} current={project.id} status={daemon}
-            running={elsewhere.reduce((n, e) => n + e.running, running)}
-            onSelect={(id) => onSelectProject(id, undefined, tab)} />
-        )}
-        {panel === "devices" && (
-          <DevicesPanel remoteHosts={status?.remote_hosts ?? []} run={run} onSignedOut={onSignedOut} />
-        )}
         {status?.warnings.map((w) => <div key={w} className="banner warn">{w}</div>)}
+        {error && (
+          <div className="banner danger" role="alert">
+            <span className="error-text">{error}</span>
+            <span className="spacer" />
+            <button className="ghost sm" onClick={() => setError(undefined)} aria-label="Dismiss the error">Dismiss</button>
+          </div>
+        )}
+        <div className="shell">
+          {!narrow && (
+            <nav className="rail" aria-label="Main">
+              <ul className="nav-list">
+                {navItems.map((n) => (
+                  <li key={n.kind}>
+                    <button className={`nav-item ${view.kind === n.kind ? "active" : ""}`} aria-current={view.kind === n.kind ? "page" : undefined}
+                      aria-label={n.count ? `${n.label} (${n.count} memory note${n.count === 1 ? "" : "s"} proposed)` : n.label}
+                      onClick={() => go(n.kind)}>
+                      <Icon name={n.icon} /><span>{n.label}</span>
+                      {n.count !== undefined && <span className="count tone-warn">{n.count}</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {agentList}
+            </nav>
+          )}
+          <main className="main-pane">
+            {view.kind === "agents" ? (
+              <div className="agents-pane">{agentList}</div>
+            ) : view.kind === "office" ? (
+              <Suspense fallback={<div className="empty">Loading the office…</div>}>
+                <Office agents={agents} tasks={tasks} messages={messages} waiting={waiting}
+                  onOpenAgent={openAgent} layout={project.office} presence={presence}
+                  floors={[{ id: project.id, name: project.name, waiting: waiting.length, running, current: true },
+                    ...elsewhere.filter((e) => e.project.state === "open").map((e) => ({ id: e.project.id, name: e.project.name,
+                      waiting: e.waiting.length, running: e.running, current: false }))]
+                    .sort((a, b) => projects.findIndex((p) => p.id === a.id) - projects.findIndex((p) => p.id === b.id))}
+                  onFloor={(id) => onSelectProject(id, undefined, "office")} profile={profile}
+                  onLayoutSettings={() => openProjectSettings("office")} />
+              </Suspense>
+            ) : view.kind === "usage" ? (
+              <Suspense fallback={<div className="empty">Loading usage…</div>}>
+                <Usage usage={usage} agents={agents} tasks={tasks} status={status}
+                  onOpenAgent={openAgent} />
+              </Suspense>
+            ) : view.kind === "settings" ? (
+              <AppSettings tab={appTab} onTab={setAppTab} project={project} projects={projects} daemon={daemon}
+                remoteHosts={status?.remote_hosts ?? []} version={version} deviceName={session.device?.name} running={runningEverywhere}
+                profile={profile} run={run} onSignedOut={onSignedOut}
+                onSelectProject={(id) => onSelectProject(id, undefined, "board")}
+                onProjectSettings={(id) => (id === project.id ? openProjectSettings("general") : onSelectProject(id, undefined, "project-settings"))} />
+            ) : view.kind === "project-settings" ? (
+              <ProjectSettings tab={projectTab} onTab={setProjectTab} project={project} status={status} daemon={daemon} api={papi}
+                accessRequests={accessRequests} memory={memory} run={run} />
+            ) : view.kind === "board" || !current ? (
+              <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask}
+                usageByGoal={usageByGoal}
+                onStartLead={(t) => void startAgent(t.id, "lead")}
+                onCreate={async (title, description) => (await run(() => api.createTask(title, description))) !== undefined}
+                onStatus={(t: Task, s: TaskStatus) => void run(() => api.updateTask(t.id, { status: s }))}
+                onStart={(t) => void startAgent(t.id)}
+                onDelete={(t) => void run(() => api.deleteTask(t.id))}
+                onOpenAgent={openAgent}
+                pullRequests={pullRequests} github={status?.github !== undefined}
+                onOpenPR={(t) => void run(() => api.openPullRequest(t.id))}
+                onRequestReview={(pr) => void run(() => api.requestReview(pr.id))}
+                onSendToWorker={(pr, r) => void run(() => api.sendToWorker(pr.id, r.id))}
+                onAcceptFlagged={(pr) => void run(() => api.acceptFlagged(pr.id, pr.flagged.map((f) => f.commit)))}
+                roles={roles} specs={specs} qaRuns={qaRuns} inbox={inbox} architectRunning={architectRunning}
+                merges={merges} projectId={project.id} key={project.id}
+                detail={detail} onDetail={setDetail} waitingAgents={waitingAgents}
+                onStartRole={(t, role) => void startAgent(t.id, role)}
+                onSaveSpec={(s, plan) => ok(() => api.editSpec(s.id, plan))}
+                onApproveSpec={(s) => void run(() => approveSpec(s))}
+                onResolve={(t) => void run(async () => { await api.resolveConflict(t.id); return true; })}
+                onReadInbox={(i) => void run(() => api.readInbox(i.id))}
+                onReplyInbox={(i, body) => ok(() => api.replyInbox(i.id, body))}
+              />
+            ) : (
+              <div className="agent-view">
+                {!narrow && tabAgents.length > 0 && (
+                  <div className={`agent-tabs ${tabAgents.length > crowdedTabs ? "crowded" : ""}`} role="tablist" aria-label="Open agents">
+                    {tabAgents.map((a) => (
+                      <span key={a.id} role="presentation"
+                        className={`agent-tab ${current.id === a.id ? "active" : ""} ${dragged === a.id ? "dragging" : ""}`}
+                        draggable
+                        onDragStart={(e) => {
+                          setDragged(a.id);
+                          e.dataTransfer.effectAllowed = "move";
+                          e.dataTransfer.setData("text/plain", a.id);
+                        }}
+                        onDragEnd={() => setDragged(undefined)}
+                        onDragOver={(e) => {
+                          if (dragged && dragged !== a.id) e.preventDefault();
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (dragged) setTabs((t) => moveTab(t, dragged, t.order.indexOf(a.id)));
+                          setDragged(undefined);
+                        }}>
+                        <button role="tab" aria-selected={current.id === a.id} data-agent={a.id}
+                          title={`${a.name} · ${a.role} · ${a.id}${taskTitle(a.task_id) ? `\n${taskTitle(a.task_id)}` : ""}` +
+                            "\nDrag or Alt+←/→ to move; middle-click to close"}
+                          onClick={() => openAgent(a.id)}
+                          onAuxClick={(e) => {
+                            if (e.button === 1) closeAgentTab(a.id);
+                          }}
+                          onKeyDown={(e) => {
+                            if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+                            e.preventDefault();
+                            moveTabBy(a.id, e.key === "ArrowLeft" ? -1 : 1);
+                          }}>
+                          <span className={`dot state-${a.state}`} />
+                          <span className="agent-tab-name">{a.name || a.id.slice(0, 6)}</span>
+                          {taskTitle(a.task_id) && <span className="agent-tab-task">{taskTitle(a.task_id)}</span>}
+                        </button>
+                        <button className="agent-tab-close" aria-label={`Close ${a.name || a.id.slice(0, 6)}`}
+                          onClick={() => closeAgentTab(a.id)}>×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <AgentHeader agent={current} taskTitle={taskTitle(current.task_id)} nowMs={nowMs} label={label} narrow={narrow}
+                  waiting={waiting.find((w) => w.agent.id === current.id)}
+                  onApprovals={() => setApprovalsOpen(true)}
+                  onBack={() => setView({ kind: narrow ? "agents" : "board" })}
+                  onClose={() => closeAgentTab(current.id)}
+                  onStop={() => void run(() => api.stopAgent(current.id))}
+                  onRemove={() => void removeAgent(current.id)}
+                  onDiscard={() => void run(() => api.discardAgent(current.id))}
+                  onImport={() => void run(() => api.importAgent(current.id))}
+                  onSaveWork={() => void run(() => api.saveWork(current.id))}
+                  onResume={() => void run(() => api.resumeAgent(current.id))}
+                  events={events[current.id] ?? []}
+                  messages={messages[current.id] ?? []}
+                  usage={usageByAgent.get(current.id)} />
+                {/* Live while it runs, else its saved sessions (ADR 0036). */}
+                <TerminalView key={`${current.id}-${current.session_id ?? ""}`} agent={current}
+                  onResume={() => void run(() => api.resumeAgent(current.id))} />
+              </div>
+            )}
+          </main>
+        </div>
+        {narrow && (
+          <nav className="tabbar" aria-label="Main">
+            {[navItems[0], navItems[1]].map((n) => (
+              <button key={n.kind} className={view.kind === n.kind ? "active" : ""} aria-current={view.kind === n.kind ? "page" : undefined}
+                onClick={() => go(n.kind)}>
+                <Icon name={n.icon} /><span>{n.label}</span>
+              </button>
+            ))}
+            <button className={view.kind === "agents" || view.kind === "agent" ? "active" : ""} aria-label={`Agents · ${running}`}
+              title="Agents and their actions" onClick={() => go("agents")}>
+              <Icon name="agents" /><span>Agents</span>{running > 0 && <span className="count">{running}</span>}
+            </button>
+            {[navItems[2], navItems[3]].map((n) => (
+              <button key={n.kind} className={view.kind === n.kind ? "active" : ""} aria-current={view.kind === n.kind ? "page" : undefined}
+                aria-label={n.count ? `${n.label} (${n.count} memory note${n.count === 1 ? "" : "s"} proposed)` : n.label}
+                onClick={() => go(n.kind)}>
+                <Icon name={n.icon} /><span>{n.label}</span>
+                {n.count !== undefined && <span className="count tone-warn">{n.count}</span>}
+              </button>
+            ))}
+          </nav>
+        )}
+        {inboxOpen && (
+          <Drawer label="Inbox" onClose={() => setInboxOpen(false)} className="inbox-drawer"
+            title={<>Inbox{unreadCount > 0 && <span className="count">{unreadCount}</span>}</>}
+            actions={
+              <button className="sm" title="Ask the assistant for a briefing (starts it if needed); it arrives here"
+                onClick={() => void run(async () => { await api.askBriefing(); return true; })}>
+                Briefing
+              </button>
+            }>
+            <InboxPanel items={inbox} tasks={tasks} specs={specs} onOpenAgent={(id) => { setInboxOpen(false); openAgent(id); }}
+              onRead={(i) => void run(() => api.readInbox(i.id))}
+              onReply={(i, body) => ok(() => api.replyInbox(i.id, body))}
+              onReviewPlan={(goalId) => { setInboxOpen(false); reviewPlan(goalId); }}
+              onApprovePlan={(s, i) => void run(async () => {
+                const res = await approveSpec(s);
+                if (!i.read_at) await api.readInbox(i.id);
+                return res;
+              })} />
+          </Drawer>
+        )}
         {approvalsOpen && (
-          <Drawer label="Approvals" onClose={() => setApprovalsOpen(false)}
-            title={<>Waiting for you{waitingCount > 0 && <span className="muted"> · {waitingCount}</span>}</>}>
+          <Drawer label="Approvals" onClose={() => setApprovalsOpen(false)} className="approvals-drawer"
+            title={<>Waiting for you{waitingCount > 0 && <span className="count">{waitingCount}</span>}</>}>
             <Approvals waiting={waiting} elsewhere={waitingCount - waiting.length} taskTitle={taskTitle} onOpenAgent={(id) => {
               setApprovalsOpen(false);
               openAgent(id);
             }}
               onOpenInbox={() => {
                 setApprovalsOpen(false);
-                setPanel("inbox");
+                setInboxOpen(true);
               }}
               onReviewPlan={(goalId) => {
                 setApprovalsOpen(false);
@@ -436,6 +641,11 @@ export function App({
             }} />
           </Drawer>
         )}
+        {newProject && (
+          <Modal title="New project" label="New project" onClose={() => setNewProject(false)} className="narrow">
+            <AddProjectForm status={daemon} autoFocus onAdded={(p) => { setNewProject(false); onSelectProject(p.id, undefined, "board"); }} />
+          </Modal>
+        )}
         {switcher && (
           <AgentSwitcher agents={agents} tasks={tasks} current={current?.id} waiting={waitingAgents}
             onClose={() => setSwitcher(false)}
@@ -444,174 +654,48 @@ export function App({
               openAgent(id);
             }} />
         )}
-        <main>
-          {(!narrow || view.kind === "agents") && <aside className={narrow ? "agents-pane" : undefined}>
-            <button className="primary" onClick={() => void startAgent()}>Start agent (no task)</button>
-            <p className="muted small">{running} running</p>
-            {error && <p className="error">{error}</p>}
-            {[activeAgents, exitedAgents].map((list, i) => {
-              const cards = (
-                <ul className="agents">
-                  {list.map((a) => (
-                    <AgentCard key={a.id} agent={a} taskTitle={taskTitle(a.task_id)} nowMs={nowMs}
-                      selected={current?.id === a.id} label={label}
-                      waiting={waiting.find((w) => w.agent.id === a.id)}
-                      onApprovals={() => setApprovalsOpen(true)}
-                      onSelect={() => openAgent(a.id)}
-                      onStop={() => void run(() => api.stopAgent(a.id))}
-                      onRemove={() => void removeAgent(a.id)}
-                      onDiscard={() => void run(() => api.discardAgent(a.id))}
-                      onImport={() => void run(() => api.importAgent(a.id))}
-                      onSaveWork={() => void run(() => api.saveWork(a.id))}
-                      onResume={() => void run(() => api.resumeAgent(a.id))}
-                      events={events[a.id] ?? []}
-                      messages={messages[a.id] ?? []}
-                      usage={usageByAgent.get(a.id)}
-                    />
-                  ))}
-                </ul>
-              );
-              if (i === 0) return <div key="active">{cards}</div>;
-              if (list.length === 0) return null;
-              // Exited agents stay reachable here, in the switcher and in Usage (ADR 0044).
-              return (
-                <details key="exited" className="exited-agents" open={list.some((a) => a.id === current?.id) || undefined}>
-                  <summary className="muted small">Exited · {list.length}</summary>
-                  {cards}
-                </details>
-              );
-            })}
-            {agents.length === 0 && <p className="muted">No agents yet.</p>}
-            {narrow && <AgentsTabNav onBoard={() => setView({ kind: "board" })} />}
-          </aside>}
-          {(!narrow || view.kind !== "agents") && <section className="main-pane">
-            <nav className="tabs">
-              {narrow && (
-                <button onClick={() => setView({ kind: "agents" })} title="Agents and their actions">
-                  Agents · {running}
-                </button>
-              )}
-              <button className={view.kind === "board" ? "active" : ""} onClick={() => setView({ kind: "board" })}>
-                Board
-              </button>
-              <button className={view.kind === "office" ? "active" : ""} onClick={() => setView({ kind: "office" })}>
-                Office
-              </button>
-              <button className={view.kind === "usage" ? "active" : ""} onClick={() => setView({ kind: "usage" })}>
-                Usage
-              </button>
-              <span className={`agent-tabs ${shownTabs.length > crowdedTabs ? "crowded" : ""}`} role="tablist" aria-label="Open agents">
-                {shownTabs.map((a) => (
-                  <span key={a.id} role="presentation"
-                    className={`agent-tab ${current?.id === a.id ? "active" : ""} ${dragged === a.id ? "dragging" : ""}`}
-                    draggable={!narrow}
-                    onDragStart={(e) => {
-                      setDragged(a.id);
-                      e.dataTransfer.effectAllowed = "move";
-                      e.dataTransfer.setData("text/plain", a.id);
-                    }}
-                    onDragEnd={() => setDragged(undefined)}
-                    onDragOver={(e) => {
-                      if (dragged && dragged !== a.id) e.preventDefault();
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      if (dragged) setTabs((t) => moveTab(t, dragged, t.order.indexOf(a.id)));
-                      setDragged(undefined);
-                    }}>
-                    <button role="tab" aria-selected={current?.id === a.id} data-agent={a.id}
-                      title={`${a.name} · ${a.role} · ${a.id}${taskTitle(a.task_id) ? `\n${taskTitle(a.task_id)}` : ""}` +
-                        "\nDrag or Alt+←/→ to move; middle-click to close"}
-                      onClick={() => openAgent(a.id)}
-                      onAuxClick={(e) => {
-                        if (e.button === 1) closeAgentTab(a.id);
-                      }}
-                      onKeyDown={(e) => {
-                        if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
-                        e.preventDefault();
-                        moveTabBy(a.id, e.key === "ArrowLeft" ? -1 : 1);
-                      }}>
-                      <span className={`dot state-${a.state}`} />
-                      <span className="agent-tab-name">{a.name || a.id.slice(0, 6)}</span>
-                      {taskTitle(a.task_id) && <span className="agent-tab-task">{taskTitle(a.task_id)}</span>}
-                    </button>
-                    <button className="agent-tab-close" aria-label={`Close ${a.name || a.id.slice(0, 6)}`}
-                      onClick={() => closeAgentTab(a.id)}>×</button>
-                  </span>
-                ))}
-              </span>
-              <button className="switcher-button" onClick={() => setSwitcher(true)} aria-haspopup="dialog"
-              aria-label={`Find an agent (${running} running)`}
-                title="Find an agent by name, id, role, task or branch ( / )">
-                <span aria-hidden="true">⌕</span><span className="switcher-label"> Agents</span>
-                <span className="count">{running}</span>
-              </button>
-            </nav>
-            {view.kind === "office" ? (
-              <Suspense fallback={<div className="empty">Loading the office…</div>}>
-                <Office agents={agents} tasks={tasks} messages={messages} waiting={waiting}
-                  onOpenAgent={openAgent}
-                  floors={[{ id: project.id, name: project.name, waiting: waiting.length, running, current: true },
-                    ...elsewhere.filter((e) => e.project.state === "open").map((e) => ({ id: e.project.id, name: e.project.name,
-                      waiting: e.waiting.length, running: e.running, current: false }))]
-                    .sort((a, b) => projects.findIndex((p) => p.id === a.id) - projects.findIndex((p) => p.id === b.id))}
-                  onFloor={(id) => onSelectProject(id, undefined, "office")} />
-              </Suspense>
-            ) : view.kind === "usage" ? (
-              <Suspense fallback={<div className="empty">Loading usage…</div>}>
-                <Usage usage={usage} agents={agents} tasks={tasks} status={status}
-                  onOpenAgent={openAgent} />
-              </Suspense>
-            ) : view.kind === "board" || !current ? (
-              <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask}
-                usageByGoal={usageByGoal}
-                onStartLead={(t) => void startAgent(t.id, "lead")}
-                onCreate={async (title, description) => (await run(() => api.createTask(title, description))) !== undefined}
-                onStatus={(t: Task, status: TaskStatus) => void run(() => api.updateTask(t.id, { status }))}
-                onStart={(t) => void startAgent(t.id)}
-                onDelete={(t) => void run(() => api.deleteTask(t.id))}
-                onOpenAgent={openAgent}
-                pullRequests={pullRequests} github={status?.github !== undefined}
-                onOpenPR={(t) => void run(() => api.openPullRequest(t.id))}
-                onRequestReview={(pr) => void run(() => api.requestReview(pr.id))}
-                onSendToWorker={(pr, r) => void run(() => api.sendToWorker(pr.id, r.id))}
-                onAcceptFlagged={(pr) => void run(() => api.acceptFlagged(pr.id, pr.flagged.map((f) => f.commit)))}
-                roles={roles} specs={specs} qaRuns={qaRuns} inbox={inbox} architectRunning={architectRunning}
-                merges={merges} projectId={project.id} key={project.id}
-                onStartRole={(t, role) => void startAgent(t.id, role)}
-                onSaveSpec={(s, plan) => ok(() => api.editSpec(s.id, plan))}
-                onApproveSpec={(s) => void run(() => approveSpec(s))}
-                onResolve={(t) => void run(async () => { await api.resolveConflict(t.id); return true; })}
-                onReadInbox={(i) => void run(() => api.readInbox(i.id))}
-                onReplyInbox={(i, body) => ok(() => api.replyInbox(i.id, body))}
-              />
-            ) : (
-              // Live while it runs, else its saved sessions (ADR 0036).
-              <TerminalView key={`${current.id}-${current.session_id ?? ""}`} agent={current}
-                onResume={() => void run(() => api.resumeAgent(current.id))} />
-            )}
-          </section>}
-        </main>
       </div>
     </AgentsContext.Provider>
     </ProjectApiContext.Provider>
   );
 }
 
-// AgentsTabNav leads back from the phone layout's agent list.
-function AgentsTabNav({ onBoard }: { onBoard: () => void }): JSX.Element {
-  return <button className="link" onClick={onBoard}>← Board</button>;
+// AgentRow is an agent in the rail (or the phone's Agents view): state, name,
+// role, task and cost. Its details and actions are above its terminal.
+function AgentRow({ agent: a, taskTitle, selected, waiting, usage, onSelect }: {
+  agent: Agent; taskTitle?: string; selected: boolean; waiting: boolean; usage?: UsageRow; onSelect: () => void;
+}): JSX.Element {
+  return (
+    <li className={`card agent-row ${selected ? "selected" : ""}`} data-agent={a.id}>
+      <button className="agent-row-button" onClick={onSelect} aria-current={selected ? "true" : undefined}
+        title={`${a.name} · ${a.role} · ${stateLabel[a.state]}${taskTitle ? `\n${taskTitle}` : ""}`}>
+        <span className={`dot state-${a.state}`} aria-hidden="true" />
+        <span className="agent-row-main">
+          <span className="agent-row-line">
+            <span className="agent-first">{a.name || a.id.slice(0, 6)}</span>
+            <span className={`agent-row-role role-${a.kind}`}>{a.role}</span>
+          </span>
+          <span className="agent-row-task">{taskTitle ?? (a.state === "exited" ? exitLabel[a.exit_reason ?? ""] ?? "exited" : "no task")}</span>
+        </span>
+        <span className="agent-row-side">
+          {waiting && <span className="chip small tone-warn">needs you</span>}
+          {usage && usage.costMicroUSD > 0 && <span className="agent-row-cost">{formatMoney(usage.costMicroUSD)}</span>}
+        </span>
+      </button>
+    </li>
+  );
 }
 
-interface CardProps {
+interface HeaderProps {
   agent: Agent;
   taskTitle?: string;
   nowMs: number;
-  selected: boolean;
   label: (id: string) => string; // another agent's name
+  narrow: boolean;
   waiting?: Waiting; // what of this agent waits on the user
   onApprovals: () => void;
-  onSelect: () => void;
+  onBack: () => void;
+  onClose: () => void;
   onStop: () => void;
   onRemove: () => void;
   onDiscard: () => void;
@@ -623,38 +707,74 @@ interface CardProps {
   usage?: UsageRow; // all of the agent's sessions (ADR 0026)
 }
 
-function AgentCard({
-  agent: a, taskTitle, nowMs, selected, label, waiting, onApprovals, onSelect, onStop, onRemove, onDiscard, onImport, onSaveWork,
+// AgentHeader sits above an agent's terminal: who it is, what it does, its
+// actions, and its details (branch, model, imports, events, messages).
+function AgentHeader({
+  agent: a, taskTitle, nowMs, label, narrow, waiting, onApprovals, onBack, onClose, onStop, onRemove, onDiscard, onImport, onSaveWork,
   onResume, events, messages, usage,
-}: CardProps): JSX.Element {
+}: HeaderProps): JSX.Element {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const stuck = a.state === "starting" && nowMs - Date.parse(a.started_at) > stuckAfterMs;
   const sandboxed = a.sandbox === "podman";
   const repoLabel = sandboxed ? "Agent repository" : "Worktree";
   return (
-    <li className={`card ${selected ? "selected" : ""}`} onClick={onSelect} data-agent={a.id}>
-      <div className="card-head">
-        <AgentName agent={a} />
-        <span className={`badge state-${a.state}`}>{stateLabel[a.state]}</span>
+    <section className="agent-header card" data-agent={a.id} aria-label={`Agent ${a.name || a.id}`}>
+      <div className="agent-header-top">
+        {narrow && <button className="ghost icon-button" onClick={onBack} aria-label="Back to the agents"><Icon name="back" /></button>}
+        <div className="agent-header-title">
+          <div className="card-head row">
+            <AgentName agent={a} />
+            <span className={`chip role-${a.kind}`} title={kindHelp[a.kind]}>{a.role}</span>
+            <span className={`badge status-chip state-${a.state}`}>{stateLabel[a.state]}</span>
+            {sandboxed
+              ? <span className="chip sandboxed" title="Rootless Podman worker; permission prompts off inside it">sandboxed</span>
+              : <span className="chip unsandboxed" title="Runs on the host with permission prompts on">unsandboxed</span>}
+            {a.cli === "codex" && (
+              <span className="chip cli-codex" title="Runs on the Codex CLI with your ChatGPT plan; the login stays on this machine (ADR 0049)">codex</span>
+            )}
+          </div>
+          <div className="small muted agent-header-sub">
+            {taskTitle ?? "No task"}
+            {a.activity && <> · tool <span className="mono">{a.activity}</span></>}
+            {usage && <> · <UsageLine usage={usage} inline /></>}
+          </div>
+        </div>
+        <div className="card-actions row">
+          {a.state !== "exited" && <button onClick={onStop}>Stop</button>}
+          {a.resumable && !confirmDiscard && (
+            <button className="primary" onClick={onResume} title="Continue this agent's conversation in its workspace (claude --resume, in agent-office)">
+              Resume
+            </button>
+          )}
+          {sandboxed && a.worktree_status !== "removed" && (
+            <button onClick={onImport} title="Bring the agent's commits into your repository now">Import now</button>
+          )}
+          {sandboxed && a.state === "exited" && a.worktree_status === "kept" && !confirmDiscard && (
+            <button onClick={onSaveWork} title="Commit uncommitted changes as one WIP commit and import it">Save work</button>
+          )}
+          {a.state === "exited" && a.worktree_status !== "kept" && <button onClick={onRemove}>Remove</button>}
+          {a.state === "exited" && a.worktree_status === "kept" && !confirmDiscard && (
+            <>
+              <button onClick={onRemove}>Retry remove</button>
+              <button className="danger" onClick={() => setConfirmDiscard(true)}>Discard changes…</button>
+            </>
+          )}
+          {confirmDiscard && (
+            <>
+              <span className="small">Delete uncommitted work in this {sandboxed ? "agent repository" : "worktree"}?</span>
+              <button className="danger" onClick={() => { setConfirmDiscard(false); onDiscard(); }}>Yes, discard</button>
+              <button onClick={() => setConfirmDiscard(false)}>Cancel</button>
+            </>
+          )}
+          {!narrow && <button className="ghost icon-button" onClick={onClose} aria-label="Close this terminal" title="Close this terminal's tab">
+            <Icon name="close" /></button>}
+        </div>
       </div>
       {waiting && waiting.requests.length > 0 && (
-        <button className="approval-link" onClick={(e) => {
-          e.stopPropagation();
-          onApprovals();
-        }}>
-          {waiting.requests.length === 1 ? "1 request waits for your approval"
-            : `${waiting.requests.length} requests wait for your approval`}
+        <button className="approval-link" onClick={onApprovals}>
+          {waiting.requests.length === 1 ? "1 request waits for your approval" : `${waiting.requests.length} requests wait for your approval`}
         </button>
       )}
-      <div className="row">
-        <span className={`chip role-${a.kind}`} title={kindHelp[a.kind]}>{a.role}</span>
-        {sandboxed
-          ? <span className="chip sandboxed" title="Rootless Podman worker; permission prompts off inside it">sandboxed</span>
-          : <span className="chip unsandboxed" title="Runs on the host with permission prompts on">unsandboxed</span>}
-      </div>
-      {taskTitle && <div className="small">{taskTitle}</div>}
-      {a.activity && <div className="small">Tool: <span className="mono">{a.activity}</span></div>}
-      {usage && <UsageLine usage={usage} />}
       {a.state === "starting" && (
         <div className={`small hint ${stuck ? "stuck" : ""}`}>
           {stuck ? "⚠ Still starting after 20 s. " : "Still starting? "}
@@ -662,23 +782,6 @@ function AgentCard({
           Answer it there; agent-office never accepts it for you.
         </div>
       )}
-      <div className="small muted mono"
-        title={sandboxed
-          ? `Agent repository: ${a.worktree_path}\nDo not cd into or open it; use the branch in your repository.`
-          : a.worktree_path}>
-        {a.branch}
-      </div>
-      <div className="small muted">
-        {a.cli === "codex" && (
-          <><span className="badge small cli-codex" title="Runs on the Codex CLI with your ChatGPT plan; the login stays on this machine (ADR 0049)">
-            codex</span>{" "}</>
-        )}
-        {a.model ? `model ${a.model}` : "default model"} ·{" "}
-        {sandboxed
-          ? <span title={`Sandboxed agents get a clean ${a.cli === "codex" ? "Codex" : "Claude Code"} config; your own settings never apply.`}>
-            sandbox config</span>
-          : `user settings ${a.inherit_user_settings ? "on" : "off"}`}
-      </div>
       {a.state === "exited" && (
         <div className="small muted">
           {exitLabel[a.exit_reason ?? ""] ?? a.exit_reason ?? "exited"}
@@ -689,44 +792,34 @@ function AgentCard({
       {a.state === "exited" && a.exit_detail && (
         <div className={`small exit-detail ${a.oom_killed ? "oom" : ""}`} data-testid="exit-detail">{a.exit_detail}</div>
       )}
-      {a.last_import && <ImportLine imp={a.last_import} branch={a.branch} />}
       {a.worktree_status === "kept" && (
         <div className="small hint">
           {repoLabel} has uncommitted changes and was kept.
           {sandboxed && " Save work commits them to the branch; discard deletes them."}
         </div>
       )}
-      {events.length > 0 && <EventList events={events} />}
-      {messages.length > 0 && <MessageList agentId={a.id} messages={messages} label={label} />}
-      <div className="card-actions row" onClick={(e) => e.stopPropagation()}>
-        {a.state !== "exited" && <button onClick={onStop}>Stop</button>}
-        {a.resumable && !confirmDiscard && (
-          <button onClick={onResume} title="Continue this agent's conversation in its workspace (claude --resume, in agent-office)">
-            Resume
-          </button>
-        )}
-        {sandboxed && a.worktree_status !== "removed" && (
-          <button onClick={onImport} title="Bring the agent's commits into your repository now">Import now</button>
-        )}
-        {sandboxed && a.state === "exited" && a.worktree_status === "kept" && !confirmDiscard && (
-          <button onClick={onSaveWork} title="Commit uncommitted changes as one WIP commit and import it">Save work</button>
-        )}
-        {a.state === "exited" && a.worktree_status !== "kept" && <button onClick={onRemove}>Remove</button>}
-        {a.state === "exited" && a.worktree_status === "kept" && !confirmDiscard && (
-          <>
-            <button onClick={onRemove}>Retry remove</button>
-            <button className="danger" onClick={() => setConfirmDiscard(true)}>Discard changes…</button>
-          </>
-        )}
-        {confirmDiscard && (
-          <>
-            <span className="small">Delete uncommitted work in this {sandboxed ? "agent repository" : "worktree"}?</span>
-            <button className="danger" onClick={() => { setConfirmDiscard(false); onDiscard(); }}>Yes, discard</button>
-            <button onClick={() => setConfirmDiscard(false)}>Cancel</button>
-          </>
-        )}
+      <div className="agent-header-details">
+        <details className="events small">
+          <summary className="muted">Details · <span className="mono">{a.branch}</span></summary>
+          <div className="small muted mono"
+            title={sandboxed
+              ? `Agent repository: ${a.worktree_path}\nDo not cd into or open it; use the branch in your repository.`
+              : a.worktree_path}>
+            {a.branch}
+          </div>
+          <div className="small muted">
+            {a.model ? `model ${a.model}` : "default model"} ·{" "}
+            {sandboxed
+              ? <span title={`Sandboxed agents get a clean ${a.cli === "codex" ? "Codex" : "Claude Code"} config; your own settings never apply.`}>
+                sandbox config</span>
+              : `user settings ${a.inherit_user_settings ? "on" : "off"}`}
+          </div>
+          {a.last_import && <ImportLine imp={a.last_import} branch={a.branch} />}
+        </details>
+        {events.length > 0 && <EventList events={events} />}
+        {messages.length > 0 && <MessageList agentId={a.id} messages={messages} label={label} />}
       </div>
-    </li>
+    </section>
   );
 }
 
@@ -770,7 +863,7 @@ function EventList({ events }: { events: SandboxEvent[] }): JSX.Element {
   return (
     <>
       {problems.length > 0 && (
-        <details className="events small" onClick={(e) => e.stopPropagation()}>
+        <details className="events small">
           <summary className="hint">
             {problems.length === 1 ? "1 sandbox event" : `${problems.length} sandbox events`}
             {` · latest: ${eventLabel[problems[0].kind] ?? problems[0].kind}`}
@@ -779,7 +872,7 @@ function EventList({ events }: { events: SandboxEvent[] }): JSX.Element {
         </details>
       )}
       {background.length > 0 && (
-        <details className="events small background-events" onClick={(e) => e.stopPropagation()}>
+        <details className="events small background-events">
           <summary className="muted" data-testid="background-events">{backgroundLine(background.length)}</summary>
           <ul>{background.map(item)}</ul>
         </details>
@@ -788,16 +881,14 @@ function EventList({ events }: { events: SandboxEvent[] }): JSX.Element {
   );
 }
 
-// Approvals lists every agent waiting on the user (ADR 0019, 0044). Access
-// requests are decided here: nothing is granted until a button is pressed,
-// and the reason is the agent's own text. A permission prompt can only be
-// answered in the agent's terminal, a question in the inbox and a plan on its
-// goal's card, so those entries lead there.
 // ProjectSwitcher chooses the project the UI shows (ADR 0048); each other
-// project says how many of its agents run and wait on the user.
-function ProjectSwitcher({ project, projects, elsewhere, onSelect, onManage, managing }: {
-  project: Project; projects: Project[]; elsewhere: Elsewhere[]; onSelect: (id: string) => void; onManage: () => void;
-  managing: boolean;
+// project says how many of its agents run and wait on the user. The dot is
+// the connection to the daemon.
+// newProjectValue is the picker's "+ New project" entry: it opens the add form, it is never selected.
+const newProjectValue = "__new_project__";
+
+function ProjectSwitcher({ project, projects, elsewhere, connection, onSelect, onNew }: {
+  project: Project; projects: Project[]; elsewhere: Elsewhere[]; connection: string; onSelect: (id: string) => void; onNew: () => void;
 }): JSX.Element {
   const other = new Map(elsewhere.map((e) => [e.project.id, e]));
   const label = (p: Project): string => {
@@ -809,12 +900,15 @@ function ProjectSwitcher({ project, projects, elsewhere, onSelect, onManage, man
   };
   return (
     <span className="project-switcher">
-      <select aria-label="Project" value={project.id} title={project.repo_path} onChange={(e) => onSelect(e.target.value)}>
+      <span className={`conn conn-${connection}`} role="img" aria-label={connection === "open" ? "connected" : connection}
+        title={connection === "open" ? "Connected to the daemon" : `Daemon connection: ${connection}`}>
+        <span className="dot" />
+      </span>
+      <select aria-label="Project" value={project.id} title={project.repo_path}
+        onChange={(e) => (e.target.value === newProjectValue ? onNew() : onSelect(e.target.value))}>
         {projects.map((p) => <option key={p.id} value={p.id}>{label(p)}</option>)}
+        <option value={newProjectValue}>+ New project…</option>
       </select>
-      <button className="badge" aria-expanded={managing} onClick={onManage} title="Add, change or remove projects (ADR 0046)">
-        Projects
-      </button>
     </span>
   );
 }
@@ -869,6 +963,11 @@ function OtherProjects({ elsewhere, run, onSwitch }: {
   );
 }
 
+// Approvals lists every agent waiting on the user (ADR 0019, 0044). Access
+// requests are decided here: nothing is granted until a button is pressed,
+// and the reason is the agent's own text. A permission prompt can only be
+// answered in the agent's terminal, a question in the inbox and a plan on its
+// goal's card, so those entries lead there.
 function Approvals({ waiting, elsewhere = 0, taskTitle, onOpenAgent, onOpenInbox, onReviewPlan, onApprove, onDeny }: {
   waiting: Waiting[];
   elsewhere?: number; // agents waiting in other projects
@@ -896,7 +995,7 @@ function Approvals({ waiting, elsewhere = 0, taskTitle, onOpenAgent, onOpenInbox
           <li key={a.id} className="waiting-entry" data-agent={a.id}>
             <div>
               <button className="link agent-link" onClick={() => onOpenAgent(a.id)}><AgentName agent={a} /></button>
-              {" "}({a.role}{taskTitle(a.task_id) ? `, “${taskTitle(a.task_id)}”` : ""})
+              {" "}<span className="muted">({a.role}{taskTitle(a.task_id) ? `, “${taskTitle(a.task_id)}”` : ""})</span>
             </div>
             {permission && (
               <div className="waiting-item permission">
@@ -922,7 +1021,7 @@ function Approvals({ waiting, elsewhere = 0, taskTitle, onOpenAgent, onOpenInbox
               <div key={`p${plan.id}`} className="waiting-item plan">
                 <div>Its plan for “{taskTitle(plan.goal_id) ?? plan.goal_id}” waits for your approval (version {plan.version}).</div>
                 <div className="row">
-                  <button onClick={() => onReviewPlan(plan.goal_id)} title="The plan is open on the goal's card">Review plan</button>
+                  <button onClick={() => onReviewPlan(plan.goal_id)} title="The plan is in the goal's card">Review plan</button>
                   <span className="small muted">Proposed {timeOf(plan.created_at)}</span>
                 </div>
               </div>
@@ -967,7 +1066,7 @@ function MessageList({ agentId, messages, label }: {
 }): JSX.Element {
   const waiting = messages.filter((m) => m.to === agentId && !m.delivered_at).length;
   return (
-    <details className="events small" onClick={(e) => e.stopPropagation()}>
+    <details className="events small">
       <summary className="muted">
         {messages.length === 1 ? "1 message" : `${messages.length} messages`}
         {waiting > 0 && ` · ${waiting} waiting for delivery`}
@@ -990,68 +1089,13 @@ function MessageList({ agentId, messages, label }: {
   );
 }
 
-// PackPanel shows what the stack pack gives sandboxed agents (ADR 0023).
-function PackPanel({ status }: { status: Status }) {
-  const p = status.pack;
-  const list = (xs: string[] | undefined) => (xs && xs.length > 0 ? xs.join(", ") : "none");
-  return (
-    <div className="pack-panel">
-      {p ? (
-        <p>
-          <span className="strong">Stack pack {p.name}</span>{" "}
-          <span className="muted">({p.source === "builtin" ? "built in" : p.source})</span>: {p.description}
-        </p>
-      ) : (
-        <p>
-          No stack pack: agents get the base image (no language toolchain) and the default allowlist. Start the
-          daemon with <span className="mono">--pack &lt;name&gt;</span>; <span className="mono">agent-office pack list</span>{" "}
-          shows the packs.
-        </p>
-      )}
-      <dl>
-        <dt>Image</dt>
-        <dd className="mono">{status.image}</dd>
-        <dt>Network</dt>
-        <dd className="mono">{list(status.egress)}</dd>
-        <dt>Worker limits</dt>
-        <dd className="mono">{status.worker_memory ?? "default"} memory · {status.worker_pids ?? "default"} processes</dd>
-        {p && (
-          <>
-            <dt>Secrets</dt>
-            <dd>
-              {p.secrets.length === 0
-                ? "none"
-                : p.secrets.map((s) => (
-                    <span key={s.name} className={`secret ${s.present ? "present" : "missing"}`}
-                      title={s.problem ?? s.description ?? undefined}>
-                      <span className="mono">{s.name}</span>{" "}
-                      {s.present ? "set" : s.problem ? "file not usable" : s.required ? "missing (required)" : "not set"}
-                    </span>
-                  ))}
-            </dd>
-            <dt>Skills</dt>
-            <dd className="mono">{list(p.skills)}</dd>
-            <dt>MCP servers</dt>
-            <dd className="mono">{list(p.mcp_servers)}</dd>
-          </>
-        )}
-      </dl>
-      {p && p.secrets.length > 0 && (
-        <p className="muted small">
-          Workers and reviewers get the secrets in their environment and could leak them through an allowed host:
-          give agents test or read-only credentials only.
-        </p>
-      )}
-    </div>
-  );
-}
-
 // UsageLine is an agent's or task's tokens and estimated cost (ADR 0026).
-export function UsageLine({ usage: u }: { usage: UsageRow }): JSX.Element {
+export function UsageLine({ usage: u, inline = false }: { usage: UsageRow; inline?: boolean }): JSX.Element {
+  const Tag = inline ? "span" : "div";
   return (
-    <div className="small muted usage-line" title="estimated from token counts; see the Usage tab">
+    <Tag className="small muted usage-line" title="estimated from token counts; see the Usage tab">
       {formatTokens(totalTokens(u.tokens))} tokens · {formatMoney(u.costMicroUSD)}
       {u.unpricedTokens > 0 && <span className="hint"> + unpriced</span>}
-    </div>
+    </Tag>
   );
 }

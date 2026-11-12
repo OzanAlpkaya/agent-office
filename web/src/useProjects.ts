@@ -2,13 +2,19 @@ import { useEffect, useState } from "react";
 import { type Project, api, parseEventMessage, parseProjectsMessage, projectApi, signalUnauthorized, statusSignedOut, wsURL } from "./api";
 import type { Connection } from "./useAgents";
 import { type LightWorld, applyProjects, emptyLight, reduceLight } from "./projects";
+import { type Presence, visibilityMessage } from "./presence";
+import type { Profile } from "./office/avatar";
 
 const backoff = (retry: number): number => Math.min(5000, 500 * 2 ** retry);
 
 // useProjects keeps the project list in sync with the daemon's /api/events
-// (ADR 0046). loaded turns true with the first snapshot.
-export function useProjects(): { projects: Project[]; loaded: boolean; connection: Connection } {
+// (ADR 0046). loaded turns true with the first snapshot. The page tells the
+// daemon on the same socket whether it is visible, and gets the user's
+// presence back (Phase 18): the devices with a visible page.
+export function useProjects(): { projects: Project[]; loaded: boolean; connection: Connection; presence?: Presence; profile?: Profile } {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [presence, setPresence] = useState<Presence>();
+  const [profile, setProfile] = useState<Profile>();
   const [loaded, setLoaded] = useState(false);
   const [connection, setConnection] = useState<Connection>("connecting");
   useEffect(() => {
@@ -18,22 +24,33 @@ export function useProjects(): { projects: Project[]; loaded: boolean; connectio
     let disposed = false;
     const connect = (): void => {
       setConnection("connecting");
-      ws = new WebSocket(wsURL("/api/events"));
-      ws.onopen = () => {
+      const sock = new WebSocket(wsURL("/api/events"));
+      ws = sock;
+      sock.onopen = () => {
         retry = 0;
         setConnection("open");
+        sock.send(visibilityMessage(document.visibilityState === "visible"));
       };
-      ws.onmessage = (e) => {
+      sock.onmessage = (e) => {
         const m = parseProjectsMessage(String(e.data));
         if (!m) {
           console.warn("agent-office: ignoring malformed project message");
           return;
         }
+        if (m.type === "presence") {
+          setPresence(m.presence);
+          return;
+        }
+        if (m.type === "profile") {
+          setProfile(m.profile);
+          return;
+        }
         setProjects((prev) => applyProjects(prev, m));
         if (m.type === "projects") setLoaded(true);
       };
-      ws.onclose = (e) => {
+      sock.onclose = (e) => {
         setConnection("closed");
+        setPresence(undefined);
         if (disposed) return;
         if (e.code === statusSignedOut) signalUnauthorized();
         else if (e.code === 1006) {
@@ -42,14 +59,19 @@ export function useProjects(): { projects: Project[]; loaded: boolean; connectio
         timer = window.setTimeout(connect, backoff(retry++));
       };
     };
+    const onVisibility = (): void => {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(visibilityMessage(document.visibilityState === "visible"));
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     connect();
     return () => {
       disposed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
       window.clearTimeout(timer);
       ws?.close();
     };
   }, []);
-  return { projects, loaded, connection };
+  return { projects, loaded, connection, presence, profile };
 }
 
 // useWatchers follows every open project but the shown one, lightly: only

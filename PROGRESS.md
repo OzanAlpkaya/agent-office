@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** none in progress. Phase 17 (Daily use) is merged into `main`.
+**Current phase:** none in progress. Phase 18 (UI and office polish) is merged into `main`.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -27,6 +27,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 15: Codex adapter
 - [x] Phase 16: Autonomous team
 - [x] Phase 17: Daily use
+- [x] Phase 18: UI and office polish
 
 ## Log
 
@@ -380,3 +381,34 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - 2026-11-12: Phase 17 review: all decisions approved. Ozan tested it by hand on the real daemon (a goal on
   the playground, Merge and Push from the goal card, closing the goal, the archive view, removing exited
   agents). Merged into `main` (`--no-ff`).
+- 2026-11-12: Phase 18 "UI and office polish" added to `docs/plan.md` by Ozan and done on `phase-18/ui-polish`
+  with the recommended options (`docs/plans/phase-18.md`). One design system (`theme.css`,
+  `docs/design-system.md`); a top bar with Approvals and Inbox, a left rail with the views and compact agent
+  rows, a bottom tab bar on a phone; an agent's actions in a header above its terminal; Settings as a page
+  with tabs and Inbox as a drawer, so nothing pushes the board down (ADR 0056). Board cards show a title, a
+  status chip, the agent on it and the cost, and open a modal with everything else; a successful Merge
+  offers to mark the goal done. Office layouts per project in YAML (`office_layout`), parsed and validated by
+  `internal/office` with four presets, a live preview in the settings, hot desks for agents beyond the desks,
+  and the default office with a warning for a stored layout that no longer validates (ADR 0057). The user's
+  character sits at their desk while a device has the UI open and visible (ADR 0058). Branch clean-up of a
+  done goal and of a project: merged, squashed or unmerged against the merge target, compare-and-swap
+  deletes, unmerged only when named again, every head recorded (migration 0017, ADR 0059). Before and after
+  screenshots in `docs/screenshots/phase-18/`. No new dependencies. A security review led to 3 fixes and a
+  code review to 3 more. `make check` (328 Vitest tests), `make ui-test` (101), `make sandbox-test` and
+  `make e2e` (host, sandbox, team, workflow, multi-project, Codex team, autonomy) pass; the GitHub e2e was not run.
+- 2026-11-12: Phase 18 review changes, on `phase-18/ui-polish` before the merge: the shown project's settings
+  behind a gear by the picker (General, Office, Sandbox, Memory) and the app's in the rail (Projects,
+  Devices, Profile); "+ New project" in the picker; Settings → Profile with a name for the user's nameplate
+  and an avatar creator drawn with the office's art, saved daemon-wide (migration 0018, `/api/profile`);
+  the modal shows only the actions that fit the task's state; the office fills the pane's width at a
+  whole-pixel scale and covers a tall pane with workroom floor; names only on a phone, the task on a tap;
+  inherited values in full under each setting; settings tabs that fit a phone. ADR 0056-0058 amended.
+  `make check` (407 Vitest tests), `make ui-test` (106), `make sandbox-test` and `make e2e` pass (GitHub e2e
+  not run).
+- 2026-11-12: Phase 18 second review change: the office fits the pane in width and height by default (the
+  largest sharp scale with the whole floor visible) and Zoom + draws it about a third larger, remembered per
+  browser (ADR 0057 amended). `make check` (409 Vitest tests) and `make ui-test` (106) pass; the daemon did
+  not change since `make sandbox-test` and `make e2e` passed.
+- 2026-11-12: Phase 18 review: approved. Ozan tested it by hand (the settings split, + New project, the
+  avatar, the card modal, the office's Fit and Zoom). Merged into `main` (`--no-ff`).
+

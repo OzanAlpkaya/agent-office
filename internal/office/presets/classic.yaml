@@ -1,0 +1,22 @@
+# Classic: the default office as a layout to start from. Decision makers
+# along the back wall, the rooms they open into below, the workroom at the
+# bottom with 12 desks. Tiles are 16 pixels; every room has its back wall at
+# its top.
+version: 1
+rooms:
+  - { id: planning, x: 0,  y: 0, w: 7,  h: 7 }
+  - { id: lead,     x: 7,  y: 0, w: 10, h: 7 }
+  - { id: user,     x: 17, y: 0, w: 9,  h: 7 }
+  - { id: qa,       x: 0,  y: 7, w: 6,  h: 7 }
+  - { id: review,   x: 6,  y: 7, w: 8,  h: 7 }
+  - { id: kitchen,  x: 14, y: 7, w: 5,  h: 7 }
+  - { id: lobby,    x: 19, y: 7, w: 7,  h: 7 }
+  - { id: work,     x: 0,  y: 14, w: 26, h: 11, desks: 12 }
+doors:
+  - [planning, qa]
+  - [lead, review]
+  - [user, lobby]
+  - [qa, work]
+  - [review, work]
+  - [kitchen, work]
+  - [lobby, work]

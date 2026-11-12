@@ -101,6 +101,10 @@ func (s *server) routes() []route {
 		{pattern: "PATCH /api/projects/{project}", handler: s.updateProject},
 		{pattern: "DELETE /api/projects/{project}", handler: s.removeProject},
 		{pattern: "POST /api/projects/{project}/retry", handler: s.retryProject},
+		{pattern: "GET /api/office-layouts", handler: s.officeLayouts},
+		{pattern: "GET /api/profile", handler: s.getProfile},
+		{pattern: "PUT /api/profile", handler: s.putProfile},
+		{pattern: "POST /api/office-layouts/check", handler: s.checkOfficeLayout},
 		{pattern: "GET /api/projects/{project}/status", handler: s.getStatus, project: true},
 		{pattern: "GET /api/projects/{project}/usage", handler: s.getUsage, project: true},
 		{pattern: "GET /api/projects/{project}/roles", handler: s.listRoles, project: true},
@@ -124,6 +128,10 @@ func (s *server) routes() []route {
 		{pattern: "POST /api/projects/{project}/tasks/{id}/merge", handler: s.mergeGoal, project: true},
 		{pattern: "POST /api/projects/{project}/tasks/{id}/push", handler: s.pushGoal, project: true},
 		{pattern: "GET /api/projects/{project}/goal-merges", handler: s.listGoalMerges, project: true},
+		{pattern: "GET /api/projects/{project}/tasks/{id}/branches", handler: s.goalBranches, project: true},
+		{pattern: "POST /api/projects/{project}/tasks/{id}/branches/delete", handler: s.deleteBranches(true), project: true},
+		{pattern: "GET /api/projects/{project}/branches", handler: s.projectBranches, project: true},
+		{pattern: "POST /api/projects/{project}/branches/delete", handler: s.deleteBranches(false), project: true},
 		{pattern: "GET /api/projects/{project}/access-requests", handler: s.listAccess, project: true},
 		{pattern: "POST /api/projects/{project}/access-requests/{id}/approve", handler: s.decideAccess(true), project: true},
 		{pattern: "POST /api/projects/{project}/access-requests/{id}/deny", handler: s.decideAccess(false), project: true},
@@ -660,6 +668,49 @@ func (s *server) mergePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
+}
+
+// goalBranches previews the clean-up of a done goal's branches (Phase 18, ADR 0059).
+func (s *server) goalBranches(w http.ResponseWriter, r *http.Request) {
+	p, err := eng(r).GoalBranches(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// projectBranches previews the clean-up of every agent-office branch of the project.
+func (s *server) projectBranches(w http.ResponseWriter, r *http.Request) {
+	p, err := eng(r).ProjectBranches(r.Context())
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// deleteBranches deletes the branches the user confirmed, of a goal or of
+// the project; each is checked again and refused rather than forced.
+func (s *server) deleteBranches(ofGoal bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req engine.BranchDelete
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		var res engine.BranchDeleteResult
+		var err error
+		if ofGoal {
+			res, err = eng(r).DeleteGoalBranches(r.Context(), r.PathValue("id"), req)
+		} else {
+			res, err = eng(r).DeleteProjectBranches(r.Context(), req)
+		}
+		if err != nil {
+			s.engineError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	}
 }
 
 // mergeGoal squash-merges a goal's QA-passed work after the user confirmed

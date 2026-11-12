@@ -72,6 +72,13 @@ async function open(page: Page, daemon: MockDaemon): Promise<string[]> {
 }
 
 const card = (page: Page, id: string) => page.locator(`#task-${id}`);
+// detail opens a card's modal (Phase 18): everything about the task and every action.
+async function detail(page: Page, id: string, title: string) {
+  await card(page, id).click();
+  const m = page.getByRole("dialog", { name: title });
+  await expect(m).toBeVisible();
+  return m;
+}
 
 test("the board shows active goals, one goal on request, and done goals in the archive", async ({ page }) => {
   const daemon = new MockDaemon(world());
@@ -118,18 +125,19 @@ test("the board shows active goals, one goal on request, and done goals in the a
 test("marking a goal done asks first while its agents run", async ({ page }) => {
   const daemon = new MockDaemon(world());
   const errors = await open(page, daemon);
-  const c = card(page, "g00000000002");
-  await c.locator("select").first().selectOption("done");
+  const c = await detail(page, "g00000000002", "Export links");
+  await c.getByLabel("Status").selectOption("done");
   const confirm = c.getByRole("dialog", { name: "Mark the goal done" });
   await expect(confirm).toContainText("2 agents of this goal are still working");
   await expect(confirm).toContainText("sub-tasks are marked done too");
   await confirm.getByRole("button", { name: "Cancel" }).click();
   expect(daemon.requests.filter((r) => r.startsWith("PATCH"))).toEqual([]);
-  await c.locator("select").first().selectOption("done");
+  await c.getByLabel("Status").selectOption("done");
   await c.getByRole("button", { name: "Mark done and stop them" }).click();
   await expect.poll(() => daemon.requests).toContain('PATCH /api/tasks/g00000000002 {"status":"done"}');
+  await page.keyboard.press("Escape");
   // A goal whose only agent is its idle Tech Lead is marked done at once.
-  await card(page, "g00000000001").locator("select").first().selectOption("done");
+  await (await detail(page, "g00000000001", "Add tags to saved links")).getByLabel("Status").selectOption("done");
   await expect.poll(() => daemon.requests).toContain('PATCH /api/tasks/g00000000001 {"status":"done"}');
   expect(errors).toEqual([]);
 });
@@ -137,8 +145,10 @@ test("marking a goal done asks first while its agents run", async ({ page }) => 
 test("Merge and Push run after a confirmation that shows the branch, the target and the message", async ({ page }) => {
   const daemon = new MockDaemon(world());
   const errors = await open(page, daemon);
-  const c = card(page, "g00000000001");
-  await expect(card(page, "g00000000002").getByRole("button", { name: "Merge…" })).toHaveCount(0); // not reported
+  await expect(card(page, "g00000000001").getByTestId("card-status")).toHaveText("QA passed");
+  await expect((await detail(page, "g00000000002", "Export links")).getByRole("button", { name: "Merge…" })).toHaveCount(0); // not reported
+  await page.keyboard.press("Escape");
+  const c = await detail(page, "g00000000001", "Add tags to saved links");
   await c.getByRole("button", { name: "Merge…" }).click();
   const dlg = c.getByRole("dialog", { name: "Confirm the merge" });
   await expect(dlg).toContainText("agent-office/qa-tags-a1b2c3");
@@ -160,6 +170,13 @@ test("Merge and Push run after a confirmation that shows the branch, the target 
   await expect(c).toContainText("Merged into main as abcdef01");
   await expect(c).toContainText("not pushed");
   await expect(c.getByRole("button", { name: "Merge…" })).toHaveCount(0);
+  // The same dialog offers to mark the goal done (Phase 18); not now.
+  const merged = c.getByRole("dialog", { name: "Merged" });
+  await expect(merged).toContainText("into main as abcdef01");
+  await expect(merged.getByRole("button", { name: "Mark goal done" })).toBeVisible();
+  await merged.getByRole("button", { name: "Not now" }).click();
+  await expect(merged).toHaveCount(0);
+  await expect(card(page, "g00000000001").getByTestId("card-status")).toHaveText("Merged");
 
   await c.getByRole("button", { name: "Push…" }).click();
   const push = c.getByRole("dialog", { name: "Confirm the push" });
@@ -180,13 +197,13 @@ test("a refused merge says why", async ({ page }) => {
   if (!pv) throw new Error("fixture");
   const daemon = new MockDaemon(w);
   const errors = await open(page, daemon);
-  const c = card(page, "g00000000001");
+  const c = await detail(page, "g00000000001", "Add tags to saved links");
   // Refused in the preview: no Merge button in the confirmation.
   w.previews = { g00000000001: { ...pv, ready: false, reason: "main is checked out with uncommitted changes: commit or stash them first" } };
   await c.getByRole("button", { name: "Merge…" }).click();
   await expect(c.getByTestId("merge-refused")).toContainText("uncommitted changes");
   await expect(c.getByRole("button", { name: "Merge into main" })).toHaveCount(0);
-  await c.getByRole("button", { name: "Close" }).click();
+  await c.locator(".merge-confirm").getByRole("button", { name: "Close" }).click();
   // Refused at the click: the target moved since the confirmation.
   w.previews = { g00000000001: pv };
   daemon.mergeRefusal = "merge refused: main moved since the confirmation (now at 33333333): review it again";
@@ -203,7 +220,9 @@ test("access grants can be revoked, and background requests are shown quietly", 
   const daemon = new MockDaemon(w);
   const errors = await open(page, daemon);
   w.events = {}; // set before the page loads the recorded events
-  await page.locator(".badge.pack").click();
+  // The sandbox badge opens Settings → Sandbox (Phase 18).
+  await page.locator(".pill.sandboxed").click();
+  await expect(page.getByRole("tab", { name: "Sandbox", selected: true })).toBeVisible();
   const grants = page.getByTestId("grants");
   await expect(grants.locator("li")).toHaveCount(2);
   await expect(grants.locator("li").first()).toContainText("storage.googleapis.com");
@@ -225,7 +244,8 @@ test("Claude Code's background requests are apart from sandbox problems, and qui
   ] };
   const daemon = new MockDaemon(w);
   const errors = await open(page, daemon);
-  const ben = page.locator(".card", { hasText: "Ben" }).first();
+  await page.locator('.agent-row[data-agent="c3d4e5000002"] button').click();
+  const ben = page.locator('.agent-header[data-agent="c3d4e5000002"]');
   await expect(ben.getByText("1 sandbox event · latest: Network blocked")).toBeVisible();
   const quiet = ben.getByTestId("background-events");
   await expect(quiet).toHaveText("2 background requests of Claude Code refused (expected)");
@@ -234,3 +254,66 @@ test("Claude Code's background requests are apart from sandbox problems, and qui
   await expect(ben.getByText("downloads.claude.ai:443")).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test("after a merge, the same dialog marks the goal done, and its branches can be cleaned up", async ({ page }) => {
+  const w = world();
+  w.branches = [
+    { name: "agent-office/tags-table-b2c3d4", head: "4".repeat(40), class: "squashed", ahead: 2, agent_name: "Ada", task_id: "t00000000001" },
+    { name: "agent-office/qa-tags-a1b2c3", head: qaHead, class: "squashed", ahead: 3, agent_name: "Quinn", task_id: "g00000000001" },
+    { name: "agent-office/spike-tags-c3d4e5", head: "5".repeat(40), class: "unmerged", ahead: 1, agent_name: "Lena", task_id: "g00000000001" },
+    { name: "agent-office/export-csv-c3d4e5", head: "6".repeat(40), class: "unmerged", ahead: 1, task_id: "t00000000002" }, // another goal's
+  ];
+  w.records = { ...w.records, g00000000001: {
+    goal: w.tasks[0], sub_tasks: [], agents: [], qa_runs: [], merges: [], report: { summary: "tags shipped", created_at: t(3) },
+  } };
+  const daemon = new MockDaemon(w);
+  const errors = await open(page, daemon);
+  const c = await detail(page, "g00000000001", "Add tags to saved links");
+  await c.getByRole("button", { name: "Merge…" }).click();
+  await c.getByRole("button", { name: "Merge into main" }).click();
+  const merged = c.getByRole("dialog", { name: "Merged" });
+  await expect(merged).toContainText("Mark the goal done?");
+  await merged.getByRole("button", { name: "Mark goal done" }).click();
+  await expect.poll(() => daemon.requests).toContain('PATCH /api/tasks/g00000000001 {"status":"done"}');
+  // The goal is done: the modal stays, says so, and offers the branch clean-up.
+  await expect(merged.getByTestId("merge-goal-done")).toBeVisible();
+  await expect(c.getByTestId("detail-status")).toHaveText("Merged");
+  await c.getByRole("button", { name: "Clean up branches…" }).click();
+  const clean = c.getByRole("dialog", { name: "Clean up branches" });
+  await expect(clean.locator(".branch-item")).toHaveCount(3); // this goal's only
+  const box = (name: string) => clean.getByRole("checkbox", { name: `Delete ${name}` });
+  await expect(box("agent-office/tags-table-b2c3d4")).toBeChecked();
+  await expect(box("agent-office/qa-tags-a1b2c3")).toBeChecked();
+  await expect(box("agent-office/spike-tags-c3d4e5")).not.toBeChecked(); // unmerged: never preselected
+  await expect(clean.locator('[data-branch="agent-office/spike-tags-c3d4e5"]')).toContainText("1 commit only here");
+  await page.screenshot({ path: `${screens}/branch-cleanup.png` });
+  // Choosing an unmerged branch asks again, naming it.
+  await box("agent-office/spike-tags-c3d4e5").check();
+  await clean.getByRole("button", { name: "Delete 3 branches" }).click();
+  await expect(clean.getByTestId("confirm-unmerged")).toContainText("agent-office/spike-tags-c3d4e5 (55555555)");
+  expect(daemon.requests.filter((r) => r.includes("branches/delete"))).toEqual([]);
+  await clean.getByRole("button", { name: "Back" }).click();
+  await box("agent-office/spike-tags-c3d4e5").uncheck();
+  await clean.getByRole("button", { name: "Delete 2 branches" }).click();
+  await expect.poll(() => daemon.requests.find((r) => r.includes("branches/delete")))
+    .toBe(`POST /api/tasks/g00000000001/branches/delete {"branches":[{"name":"agent-office/tags-table-b2c3d4","head":"${"4".repeat(40)}"},` +
+      `{"name":"agent-office/qa-tags-a1b2c3","head":"${qaHead}"}],"unmerged":[]}`);
+  await expect(c.getByTestId("branch-result")).toHaveText("Deleted 2 branches.");
+  expect(errors).toEqual([]);
+});
+
+test("the archive lists a goal's deleted branches with how to restore them", async ({ page }) => {
+  const w = world();
+  const rec = w.records?.g00000000003;
+  if (!rec) throw new Error("fixture");
+  rec.deleted_branches = [{ id: 1, goal_id: "g00000000003", name: "agent-office/search-index-b2c3d4", head: "7".repeat(40),
+    class: "squashed", deleted_at: t(9) }];
+  const errors = await open(page, new MockDaemon(w));
+  await page.getByRole("button", { name: "Archive (2)" }).click();
+  await page.getByRole("button", { name: /Sprint 3: search/ }).click();
+  const del = page.getByTestId("deleted-branches");
+  await expect(del).toContainText("agent-office/search-index-b2c3d4 at 77777777");
+  await expect(del).toContainText(`git branch agent-office/search-index-b2c3d4 ${"7".repeat(40)}`);
+  expect(errors).toEqual([]);
+});
+

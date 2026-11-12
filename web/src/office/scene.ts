@@ -7,13 +7,15 @@
 // replaces its generated shader and uniform code with eval-free versions.
 import "pixi.js/unsafe-eval";
 import { Application, Container, Graphics, Rectangle, Sprite, type Texture, TilingSprite } from "pixi.js";
-import type { Kind, TaskStatus } from "../api";
+import type { Agent, Kind, TaskStatus } from "../api";
 import * as art from "./art";
+import { armRects } from "./arms";
 import { type Capacity, Director, type Errand, type Place } from "./errands";
 import { type FloorKind, type FloorPlan, type Point, type Station, deskExit, roomAt, stationKinds } from "./floor";
-import { type Grid, type Slot, fitGrid, gridFor, inCell, planOf, slotOrigin, worldSize } from "./layout";
+import { type Grid, type Slot, type Zoom, fitGrid, gridFor, inCell, planOf, sameGrid, slotOrigin, worldSize } from "./layout";
 import type { Note, OfficeModel, Seat } from "./model";
 import { along, length, route } from "./paths";
+import { type AvatarLook, avatarPalette, defaultLook, lookKey, sceneLook } from "./avatar";
 import { type Look, type Pose, shirtOf } from "./pose";
 import { TextureCache } from "./textures";
 
@@ -95,6 +97,10 @@ export class OfficeScene {
   private furniture: Sprite[] = []; // furniture in the sorted layer, rebuilt with the floor plan
   private readonly flying = new Container();
   private readonly nodes: DeskNode[] = [];
+  private userNode?: DeskNode; // the user's own desk (Phase 18): they sit there while a device has the UI open
+  private userPresent = false;
+  private zoom: Zoom = "fit";
+  private userSeat?: Seat;
   private readonly envelopes: { sprite: Sprite; from: Point; to: Point; start: number }[] = [];
   private readonly chars = new Map<string, Character>();
   private readonly director = new Director();
@@ -233,14 +239,14 @@ export class OfficeScene {
     // vanishing under their feet would cut the walk short.
     const want = this.model?.desks ?? 0;
     this.shownDesks = this.leaving() ? Math.max(want, this.shownDesks) : want;
-    const { grid, k } = fitGrid(w, h, dpr, this.shownDesks);
-    if (grid.columns !== this.grid.columns || grid.rows !== this.grid.rows || this.nodes.length === 0) this.setGrid(grid);
+    const { grid, k } = fitGrid(w, h, dpr, this.shownDesks, this.model?.layout, this.zoom);
+    if (!sameGrid(grid, this.grid) || this.nodes.length === 0) this.setGrid(grid);
     const { w: W, h: H } = worldSize(grid);
     const scale = k / dpr;
     const width = Math.max(w, Math.ceil(W * scale));
     const height = Math.max(h, Math.ceil(H * scale));
     const x = Math.round(((width - W * scale) / 2) * dpr) / dpr;
-    const y = Math.round(((height - H * scale) / 2) * dpr) / dpr;
+    const y = 0; // from the top: a shorter office leaves no band above it (Phase 18 review)
     this.app.renderer.resize(width, height, dpr);
     this.world.scale.set(scale);
     this.world.position.set(x, y);
@@ -279,7 +285,7 @@ export class OfficeScene {
           // no desk to sit at: placed at its station by its first errand
           c.mode = "standing";
           c.goal = "";
-          c.pos = this.plan.stations[s.slot.station].seat;
+          c.pos = this.plan.stations[s.slot.station]?.seat ?? this.plan.entrance;
         }
         this.chars.set(c.id, c);
         if (!first && !this.opts.reducedMotion) {
@@ -328,7 +334,27 @@ export class OfficeScene {
     // Draw now, not on the next tick: Pixi hit-tests against the transforms
     // of the last render, so a click right after a change must see it.
     this.draw(performance.now());
-    return t.grid.columns !== before.columns || t.grid.rows !== before.rows ? t : undefined;
+    return sameGrid(t.grid, before) ? undefined : t;
+  }
+
+  // setZoom fits the whole floor, or draws it one step larger (Phase 18 review).
+  setZoom(zoom: Zoom): Transform | undefined {
+    if (this.zoom === zoom) return undefined;
+    this.zoom = zoom;
+    const t = this.layout();
+    this.draw(performance.now());
+    return t;
+  }
+
+  // setPresence seats the user's character at their desk, in their look, or
+  // empties it (Phase 18).
+  setPresence(present: boolean, look: AvatarLook = defaultLook): void {
+    const seat = present ? userSeat(look) : undefined;
+    if (this.userPresent === present && this.userSeat?.paletteKey === seat?.paletteKey) return;
+    this.userPresent = present;
+    this.userSeat = seat;
+    this.userNode?.setSeat(seat);
+    this.dirty = true;
   }
 
   // sendEnvelope flies a letter from one agent to another, wherever they
@@ -371,10 +397,12 @@ export class OfficeScene {
   }
 
   private setGrid(grid: Grid): void {
-    const sameColumns = grid.columns === this.grid.columns && this.nodes.length > 0;
+    const sameColumns = grid.columns === this.grid.columns && planOf(grid).custom === this.plan.custom &&
+      (!grid.layout || planOf(grid) === this.plan) && this.nodes.length > 0;
     this.grid = grid;
     this.plan = planOf(grid);
-    const want = 1 + grid.rows * grid.columns;
+    // A custom layout has its own number of desks; the default plan a full grid.
+    const want = 1 + (grid.layout ? this.plan.desks.length : grid.rows * grid.columns);
     while (this.nodes.length < want) {
       const i = this.nodes.length;
       const slot: Slot = i === 0 ? { kind: "lead" } : { kind: "desk", index: i - 1 };
@@ -384,6 +412,14 @@ export class OfficeScene {
     }
     while (this.nodes.length > want) this.nodes.pop()?.root.destroy({ children: true });
     for (const n of this.nodes) n.place(grid);
+    if (!this.userNode) {
+      // Drawn still: the user is there whenever the office is looked at, and
+      // an office where no agent moves must not redraw (ADR 0024).
+      this.userNode = new DeskNode(this, this.textures, { kind: "user" }, true, false);
+      this.sorted.addChild(this.userNode.root);
+      this.userNode.setSeat(this.userSeat);
+    }
+    this.userNode.place(grid);
     this.buildRooms();
     // With the same columns, rooms and desks stay where they were and only
     // rows come or go: walkers find a new way from where they are. Otherwise
@@ -454,10 +490,11 @@ export class OfficeScene {
     put(this.rooms, t.get("whiteboard", art.whiteboardMap, art.basePalette), p.whiteboard.x, p.whiteboard.y);
     this.notes.position.set(p.whiteboard.x + art.noteGrid.x, p.whiteboard.y + art.noteGrid.y);
     this.rooms.addChild(this.notes);
-    put(this.rooms, t.get("wall-screen", art.wallScreen, art.wallScreenPalette), p.screen.x, p.screen.y);
+    // A custom layout may lack the review room, the planning room and the QA lab (ADR 0057).
+    if (p.screen) put(this.rooms, t.get("wall-screen", art.wallScreen, art.wallScreenPalette), p.screen.x, p.screen.y);
     put(this.rooms, t.get("door", art.door, art.basePalette), p.door.x, p.door.y);
-    put(this.rooms, t.get("wall-blueprint", art.wallBlueprint, art.blueprintPalette), p.blueprints.x, p.blueprints.y);
-    put(this.rooms, t.get("test-board", art.testBoard, art.basePalette), p.testBoard.x, p.testBoard.y);
+    if (p.blueprints) put(this.rooms, t.get("wall-blueprint", art.wallBlueprint, art.blueprintPalette), p.blueprints.x, p.blueprints.y);
+    if (p.testBoard) put(this.rooms, t.get("test-board", art.testBoard, art.basePalette), p.testBoard.x, p.testBoard.y);
 
     // Furniture, depth-sorted with desks and characters by its front edge.
     const fur = (tex: Texture, x: number, y: number, z: number): void => {
@@ -468,15 +505,19 @@ export class OfficeScene {
       this.furniture.push(s);
     };
     const chair = t.get("chair", art.chair, art.basePalette);
-    for (const s of p.spots.review) fur(chair, s.x - 8, p.table.y - 12, p.table.y - 2);
-    fur(t.get(`table-${p.table.w}`, () => art.table(p.table.w), art.basePalette), p.table.x, p.table.y, p.table.y + p.table.h);
-    fur(t.get("counter", art.counter, art.basePalette), p.counter.x, p.counter.y, p.counter.y + art.counter.h);
+    const table = p.table;
+    if (table) {
+      for (const s of p.spots.review) fur(chair, s.x - 8, table.y - 12, table.y - 2);
+      fur(t.get(`table-${table.w}`, () => art.table(table.w), art.basePalette), table.x, table.y, table.y + table.h);
+    }
+    if (p.counter) fur(t.get("counter", art.counter, art.basePalette), p.counter.x, p.counter.y, p.counter.y + art.counter.h);
     fur(t.get("cooler", art.waterCooler, art.basePalette), p.cooler.x, p.cooler.y, p.cooler.y + art.waterCooler.h);
     const plant = t.get("plant", art.plant, art.basePalette);
     for (const pl of p.plants) fur(plant, pl.x, pl.y, pl.y + art.plant.h);
     // Stations (ADR 0045): their agents sit behind the furniture, drawn by figures.
     for (const k of stationKinds) {
       const st = p.stations[k];
+      if (!st) continue;
       const f = st.furniture;
       fur(chair, st.seat.x - 8, f.y - 12, f.y - 2);
       if (k === "architect") fur(t.get("drafting", art.draftingTable, art.blueprintPalette), f.x, f.y, f.y + f.h);
@@ -486,14 +527,7 @@ export class OfficeScene {
       }
       if (k === "assistant") fur(t.get(`reception-${f.w}`, () => art.reception(f.w), art.basePalette), f.x, f.y, f.y + f.h);
     }
-    // The user's own desk: a chair nobody sits in, a monitor with the prompt.
-    const u = p.userDesk;
-    fur(t.get("chair-user", art.chair, { ...art.basePalette, a: 0x3d5a80, A: 0x2a4060 }), u.x + inCell.chair.x, u.y + inCell.chair.y, u.y + inCell.chair.y + 12);
-    fur(t.get("desk", art.desk, art.basePalette), u.x + inCell.desk.x, u.y + inCell.desk.y, u.y + inCell.desk.y + art.desk.h);
-    fur(t.get("monitor", art.monitor, art.basePalette), u.x + inCell.monitor.x, u.y + inCell.monitor.y, u.y + inCell.desk.y + art.desk.h + 1);
-    fur(t.get("screen-user", () => art.screenPrompt()[0], art.screenPalette),
-      u.x + inCell.monitor.x + art.screenRect.x, u.y + inCell.monitor.y + art.screenRect.y, u.y + inCell.desk.y + art.desk.h + 2);
-    fur(t.get("mug", art.mug, art.basePalette), u.x + inCell.mug.x, u.y + inCell.mug.y, u.y + inCell.desk.y + art.desk.h + 2);
+    // The user's own desk is a desk node (setPresence): empty, or with them at it.
   }
 
   private drawNotes(notes: readonly Note[]): void {
@@ -586,7 +620,8 @@ export class OfficeScene {
     if (goal === "out" || !e) return p.entrance;
     if (e.place === "desk") {
       const st = stationOf(c);
-      if (st) return p.stations[st].seat;
+      const station = st ? p.stations[st] : undefined;
+      if (station) return station.seat;
       const o = c.seat ? slotOrigin(c.seat.slot, this.grid) : p.lead;
       return { x: o.x + deskExit.x, y: o.y + deskExit.y };
     }
@@ -655,7 +690,7 @@ export class OfficeScene {
       const st = stationOf(c);
       if (st) {
         // home is a station: sitting behind its furniture, drawn as a figure
-        c.pos = this.plan.stations[st].seat;
+        c.pos = this.plan.stations[st]?.seat ?? this.plan.entrance;
         c.mode = "standing";
         c.place = "desk";
         this.ensureFigure(c).root.alpha = 1;
@@ -703,6 +738,7 @@ export class OfficeScene {
     if (this.model) this.errands(now, false);
     let changed = this.envelopes.length > 0;
     for (const n of this.nodes) changed = n.tick(t) || changed;
+    if (this.userNode) changed = this.userNode.tick(t) || changed;
     for (const c of [...this.chars.values()]) {
       if (c.mode === "walking" && c.route) {
         changed = true;
@@ -748,7 +784,7 @@ export class OfficeScene {
     if (this.model && this.shownDesks > this.model.desks && !this.leaving()) {
       const before = this.grid;
       const t = this.layout();
-      if (t.grid.rows !== before.rows || t.grid.columns !== before.columns) this.opts.onTransform?.(t);
+      if (!sameGrid(t.grid, before)) this.opts.onTransform?.(t);
       changed = true;
     }
     this.publishPlaces();
@@ -761,7 +797,14 @@ const envelopeSeconds = 1.4;
 // tab was in the background).
 const maxEnvelopes = 20;
 
-const slotKey = (s: Slot): string => (s.kind === "lead" ? "lead" : s.kind === "station" ? `station-${s.station}` : `desk-${s.index}`);
+// The user's character (Phase 18): its own look and shirt, at work while present.
+const userAgent = { id: "you", name: "You", kind: "worker", role: "you", state: "working" } as Agent;
+const userSeat = (l: AvatarLook): Seat => ({
+  slot: { kind: "user" }, agent: userAgent, pose: "typing", look: sceneLook(l), palette: avatarPalette(l), paletteKey: lookKey(l),
+});
+
+const slotKey = (s: Slot): string =>
+  s.kind === "lead" ? "lead" : s.kind === "user" ? "user" : s.kind === "station" ? `station-${s.station}` : `desk-${s.index}`;
 // stationOf is the station a character's home is, if it has one.
 const stationOf = (c: { seat?: Seat }): Station["kind"] | undefined =>
   c.seat?.slot.kind === "station" ? c.seat.slot.station : undefined;
@@ -876,7 +919,7 @@ class Figure {
       frame = pose === "typing" ? `type${Math.floor(t * 6) % 2}`
         : pose === "reviewing" ? `review${Math.floor(t * 1.5) % 2}`
         : "rest0"; // idle, booting: still, so a quiet station draws nothing
-    } else if (place === "review") {
+    } else if (place === "review" && plan.table) {
       // seated behind the table, which hides the legs
       moved = this.placeAt(p.x - art.body.w / 2, plan.table.y - 15, plan.table.y + 1);
       frame = `review${Math.floor(t * 1.5) % 2}`;
@@ -938,13 +981,16 @@ class DeskNode {
     private readonly textures: TextureCache,
     readonly slot: Slot,
     private readonly still: boolean,
+    private readonly interactive = true, // the user's own desk opens nothing
   ) {
     const t = textures;
     const at = (s: Sprite, p: { x: number; y: number }): Sprite => {
       s.position.set(p.x, p.y);
       return s;
     };
-    this.chair = at(new Sprite(t.get("chair", art.chair, art.basePalette)), inCell.chair);
+    this.chair = at(new Sprite(slot.kind === "user"
+      ? t.get("chair-user", art.chair, { ...art.basePalette, a: 0x3d5a80, A: 0x2a4060 })
+      : t.get("chair", art.chair, art.basePalette)), inCell.chair);
     at(this.body, inCell.person);
     at(this.hair, inCell.person);
     const desk = at(new Sprite(t.get("desk", art.desk, art.basePalette)), inCell.desk);
@@ -1023,17 +1069,18 @@ class DeskNode {
   setSeat(seat: Seat | undefined): void {
     const prev = this.seat;
     this.seat = seat;
-    this.root.eventMode = seat ? "static" : "none";
-    this.root.cursor = seat ? "pointer" : "default";
-    this.root.alpha = seat ? 1 : 0.8;
+    this.root.eventMode = seat && this.interactive ? "static" : "none";
+    this.root.cursor = seat && this.interactive ? "pointer" : "default";
+    this.root.alpha = seat || !this.interactive ? 1 : 0.8;
     this.magnifier.visible = false;
     this.mug.visible = seat !== undefined;
     this.bubble.visible = false;
     if (!seat) this.setHover(false);
-    if (seat && (prev?.agent.id !== seat.agent.id || prev.agent.kind !== seat.agent.kind || prev.agent.role !== seat.agent.role)) {
+    if (seat && (prev?.agent.id !== seat.agent.id || prev.agent.kind !== seat.agent.kind || prev.agent.role !== seat.agent.role ||
+      prev.paletteKey !== seat.paletteKey)) {
       const l = seat.look;
-      const palette = art.personPalette(art.skins[l.skin], art.hairColors[l.hair], shirtOf(seat.agent));
-      const key = `${l.skin}-${l.hair}-${seat.agent.kind}-${seat.agent.role}`;
+      const palette = seat.palette ?? art.personPalette(art.skins[l.skin], art.hairColors[l.hair], shirtOf(seat.agent));
+      const key = seat.paletteKey ?? `${l.skin}-${l.hair}-${seat.agent.kind}-${seat.agent.role}`;
       this.bodyTextures = [
         this.textures.get(`body-${key}`, art.body, palette),
         this.textures.get(`blink-${key}`, art.bodyBlink, palette),
@@ -1110,96 +1157,8 @@ class DeskNode {
   }
 }
 
-// drawArms draws sleeves and hands for a pose frame, in coordinates relative
-// to the person sprite (shoulders at y 12, desk top at y 15, keyboard at
-// x 2..13, y 18..20; a standing figure's legs start at y 16).
+// drawArms draws sleeves and hands for a pose frame (armRects).
 function drawArms(g: Graphics, frame: string, p: art.Palette): void {
-  const shirt = p.c, shade = p.C, skin = p.s, line = p.k;
   g.clear();
-  const r = (x: number, y: number, w: number, h: number, color: number): void => {
-    g.rect(x, y, w, h).fill(color);
-  };
-  const leftResting = (lift: number): void => {
-    r(1, 13, 2, 3, shade);
-    r(2, 16, 3, 1, shirt);
-    r(4, 17 - lift, 2, 2, skin);
-    r(4, 19 - lift, 2, 1, line);
-  };
-  const rightResting = (lift: number): void => {
-    r(13, 13, 2, 3, shade);
-    r(11, 16, 3, 1, shirt);
-    r(10, 17 - lift, 2, 2, skin);
-    r(10, 19 - lift, 2, 1, line);
-  };
-  // Arms hanging beside a standing figure; swing moves one hand forward.
-  const hanging = (side: "left" | "right", swing: number): void => {
-    const x = side === "left" ? 0 : 14;
-    r(x, 12, 2, 4 - swing, shade);
-    r(x, 16 - swing, 2, 2, skin);
-    r(x, 18 - swing, 2, 1, line);
-  };
-  const raised = (dx: number): void => {
-    r(14, 4, 4, 10, line);
-    r(15, 5, 2, 9, shirt);
-    r(16, 5, 1, 9, shade);
-    r(13 + dx, -1, 5, 6, line);
-    r(14 + dx, 0, 3, 4, skin);
-    r(14 + dx, 4, 3, 1, shirt);
-  };
-  switch (frame) {
-    case "type0":
-      leftResting(1);
-      rightResting(0);
-      break;
-    case "type1":
-      leftResting(0);
-      rightResting(1);
-      break;
-    case "raise0":
-    case "raise1":
-      // the right arm straight up beside the head, the hand waving
-      leftResting(0);
-      raised(frame === "raise1" ? 1 : 0);
-      break;
-    case "review0":
-    case "review1": {
-      const up = frame === "review1" ? 1 : 0;
-      r(-1, 13, 3, 2, shade);
-      r(-3, 14 - up, 2, 2, skin);
-      rightResting(0);
-      break;
-    }
-    case "sip":
-      leftResting(0);
-      r(13, 13, 2, 2, shade);
-      r(11, 11, 2, 2, shirt);
-      r(10, 10, 2, 2, skin);
-      break;
-    case "walk0":
-    case "walk1": {
-      const s = frame === "walk1" ? 1 : 0;
-      hanging("left", s);
-      hanging("right", 1 - s);
-      break;
-    }
-    case "point":
-      // at the whiteboard: one arm up to the board, a red marker in the hand
-      hanging("left", 0);
-      r(14, 3, 3, 10, line);
-      r(15, 4, 1, 9, shirt);
-      r(14, 0, 3, 4, line);
-      r(15, 1, 1, 2, skin);
-      r(15, -2, 1, 2, 0xe05a5a);
-      break;
-    case "hold":
-      // a mug held in front
-      hanging("left", 0);
-      r(13, 12, 2, 3, shade);
-      r(11, 14, 3, 1, shirt);
-      r(10, 14, 2, 2, skin);
-      break;
-    default:
-      leftResting(0);
-      rightResting(0);
-  }
+  for (const r of armRects(frame, p)) g.rect(r.x, r.y, r.w, r.h).fill(r.color);
 }

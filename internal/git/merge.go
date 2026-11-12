@@ -134,3 +134,46 @@ func (g Git) PushCommit(ctx context.Context, repo, remote, src, branch string) e
 		src+":refs/heads/"+branch)
 	return err
 }
+
+// Branch is a local branch and its commit.
+type Branch struct {
+	Name string
+	Head string
+}
+
+// AgentBranches lists the local branches under BranchPrefix (Phase 18).
+func (g Git) AgentBranches(ctx context.Context, repo string) ([]Branch, error) {
+	// The full ref, trimmed here: the short form is ambiguous when a tag has the same name.
+	out, err := g.run(ctx, repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"+BranchPrefix)
+	if err != nil {
+		return nil, err
+	}
+	var list []Branch
+	for _, line := range strings.Split(out, "\n") {
+		ref, head, ok := strings.Cut(strings.TrimSpace(line), " ")
+		name := strings.TrimPrefix(ref, "refs/heads/")
+		if ok && name != ref && strings.HasPrefix(name, BranchPrefix) && shaRe.MatchString(head) {
+			list = append(list, Branch{Name: name, Head: head})
+		}
+	}
+	return list, nil
+}
+
+// DeleteBranchAt deletes an agent-office branch only if it still points at
+// head: a compare-and-swap (ErrBranchMoved otherwise). It does not check
+// worktrees: callers refuse branches that are checked out first.
+func (g Git) DeleteBranchAt(ctx context.Context, repo, branch, head string) error {
+	if !strings.HasPrefix(branch, BranchPrefix) || !g.ValidBranch(ctx, branch) {
+		return fmt.Errorf("git: refusing to delete branch %q outside %s", branch, BranchPrefix)
+	}
+	if !shaRe.MatchString(head) {
+		return errors.New("git: DeleteBranchAt needs a full commit hash")
+	}
+	if _, err := g.run(ctx, repo, "update-ref", "-d", "refs/heads/"+branch, head); err != nil {
+		if cur, rerr := g.RevParse(ctx, repo, "refs/heads/"+branch); rerr == nil && cur != head {
+			return ErrBranchMoved
+		}
+		return err
+	}
+	return nil
+}

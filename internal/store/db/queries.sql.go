@@ -1031,6 +1031,22 @@ func (q *Queries) GetMemory(ctx context.Context, id int64) (Memory, error) {
 	return i, err
 }
 
+const getProfile = `-- name: GetProfile :one
+SELECT id, name, look, updated_at FROM profile WHERE id = 1
+`
+
+func (q *Queries) GetProfile(ctx context.Context) (Profile, error) {
+	row := q.db.QueryRowContext(ctx, getProfile)
+	var i Profile
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Look,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getProject = `-- name: GetProject :one
 SELECT id, name, repo_path, slug, created_at, settings, removed_at FROM projects WHERE id = ?
 `
@@ -1308,6 +1324,42 @@ func (q *Queries) InsertAccessRequest(ctx context.Context, arg InsertAccessReque
 		&i.DeciderAgentID,
 		&i.DecisionReason,
 		&i.Scope,
+	)
+	return i, err
+}
+
+const insertDeletedBranch = `-- name: InsertDeletedBranch :one
+INSERT INTO deleted_branches (project_id, goal_id, name, head, class, deleted_at) VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, goal_id, name, head, class, deleted_at
+`
+
+type InsertDeletedBranchParams struct {
+	ProjectID string
+	GoalID    sql.NullString
+	Name      string
+	Head      string
+	Class     string
+	DeletedAt time.Time
+}
+
+func (q *Queries) InsertDeletedBranch(ctx context.Context, arg InsertDeletedBranchParams) (DeletedBranch, error) {
+	row := q.db.QueryRowContext(ctx, insertDeletedBranch,
+		arg.ProjectID,
+		arg.GoalID,
+		arg.Name,
+		arg.Head,
+		arg.Class,
+		arg.DeletedAt,
+	)
+	var i DeletedBranch
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.GoalID,
+		&i.Name,
+		&i.Head,
+		&i.Class,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -2306,6 +2358,41 @@ func (q *Queries) ListGoalAgents(ctx context.Context, arg ListGoalAgentsParams) 
 	return items, nil
 }
 
+const listGoalDeletedBranches = `-- name: ListGoalDeletedBranches :many
+SELECT id, project_id, goal_id, name, head, class, deleted_at FROM deleted_branches WHERE goal_id = ? ORDER BY id
+`
+
+func (q *Queries) ListGoalDeletedBranches(ctx context.Context, goalID sql.NullString) ([]DeletedBranch, error) {
+	rows, err := q.db.QueryContext(ctx, listGoalDeletedBranches, goalID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeletedBranch{}
+	for rows.Next() {
+		var i DeletedBranch
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.GoalID,
+			&i.Name,
+			&i.Head,
+			&i.Class,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGoalQARuns = `-- name: ListGoalQARuns :many
 SELECT id, goal_id, agent_id, status, branch, head, merged, summary, bugs, error, created_at, updated_at FROM qa_runs WHERE goal_id = ? ORDER BY id DESC
 `
@@ -2653,6 +2740,53 @@ func (q *Queries) ListProjectAccessGrants(ctx context.Context, projectID string)
 			&i.DecidedBy,
 			&i.DeciderAgentID,
 			&i.DecisionReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectAgentBranches = `-- name: ListProjectAgentBranches :many
+SELECT agents.id, agents.name, agents.task_id, agents.kind, agents.removed_at, worktrees.branch AS branch
+FROM agents JOIN worktrees ON worktrees.agent_id = agents.id
+WHERE agents.project_id = ?
+ORDER BY agents.started_at, agents.id
+`
+
+type ListProjectAgentBranchesRow struct {
+	ID        string
+	Name      string
+	TaskID    sql.NullString
+	Kind      string
+	RemovedAt sql.NullTime
+	Branch    string
+}
+
+// Every agent of a project with its branch, removed ones included: whose branch is whose (Phase 18).
+func (q *Queries) ListProjectAgentBranches(ctx context.Context, projectID string) ([]ListProjectAgentBranchesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listProjectAgentBranches, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectAgentBranchesRow{}
+	for rows.Next() {
+		var i ListProjectAgentBranchesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.TaskID,
+			&i.Kind,
+			&i.RemovedAt,
+			&i.Branch,
 		); err != nil {
 			return nil, err
 		}
@@ -3764,6 +3898,30 @@ type SetAgentNameParams struct {
 func (q *Queries) SetAgentName(ctx context.Context, arg SetAgentNameParams) error {
 	_, err := q.db.ExecContext(ctx, setAgentName, arg.Name, arg.ID)
 	return err
+}
+
+const setProfile = `-- name: SetProfile :one
+INSERT INTO profile (id, name, look, updated_at) VALUES (1, ?, ?, ?)
+ON CONFLICT (id) DO UPDATE SET name = excluded.name, look = excluded.look, updated_at = excluded.updated_at
+RETURNING id, name, look, updated_at
+`
+
+type SetProfileParams struct {
+	Name      string
+	Look      string
+	UpdatedAt time.Time
+}
+
+func (q *Queries) SetProfile(ctx context.Context, arg SetProfileParams) (Profile, error) {
+	row := q.db.QueryRowContext(ctx, setProfile, arg.Name, arg.Look, arg.UpdatedAt)
+	var i Profile
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Look,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const setPullRequestFlagged = `-- name: SetPullRequestFlagged :one

@@ -1,10 +1,11 @@
 // The office as data: who sits where, in which pose, and what the lead's
 // whiteboard shows. The scene draws this; the HTML nameplates label it. Pure.
-import type { Agent, Message, Task, TaskStatus } from "../api";
+import type { Agent, Message, OfficeLayout, Task, TaskStatus } from "../api";
 import type { Waiting } from "../waiting";
-import { noteGrid } from "./art";
+import { type Palette, noteGrid } from "./art";
 import { stationKinds } from "./floor";
-import { type Assignment, type Slot, assignDesks } from "./layout";
+import { customPlan } from "./custom";
+import { type Assignment, type Slot, assignDesks, ownPlaces, placesOf } from "./layout";
 import { type Look, type Pose, lookOf, poseOf } from "./pose";
 
 export interface Seat {
@@ -13,6 +14,9 @@ export interface Seat {
   pose: Pose;
   look: Look;
   taskTitle?: string;
+  // The user's own colours (Phase 18 review): their saved look, not a kind's shirt.
+  palette?: Palette;
+  paletteKey?: string;
 }
 
 export interface Note {
@@ -31,6 +35,8 @@ export interface OfficeModel {
   waiting: number; // agents waiting on the user: the Approvals count, and the queue at the user's door
   waitingSince: Record<string, number>; // ms: how long each has waited, the queue's order (as in the drawer)
   taskStatus: Record<string, TaskStatus | undefined>; // every agent's task status, for errands (ADR 0045)
+  deskless: Agent[]; // with a custom layout, agents beyond its desks: not drawn, listed in the office bar (ADR 0057)
+  layout?: OfficeLayout; // the project's own layout; absent: the default plan
 }
 
 // The whiteboard has room for this many notes, as many as the sub-tasks a
@@ -44,10 +50,14 @@ export function buildOffice(
   agents: readonly Agent[],
   tasks: readonly Task[],
   waitingList: readonly Waiting[],
+  opts: { layout?: OfficeLayout } = {},
 ): OfficeModel {
   // An exited agent leaves: its desk is free for the next agent (ADR 0024).
   const present = agents.filter((a) => a.state !== "exited");
-  const assignment = assignDesks(prev, present);
+  // A custom layout has its own rooms and a fixed number of desks (ADR 0057).
+  const plan = opts.layout ? customPlan(opts.layout) : undefined;
+  const capacity = plan?.capacity;
+  const assignment = assignDesks(prev, present, plan ? placesOf(plan) : ownPlaces, capacity);
   const listed = waitingList.filter((w) => w.agent.state !== "exited");
   const waiting = new Set(listed.map((w) => w.agent.id));
   const waitingSince: Record<string, number> = {};
@@ -65,9 +75,12 @@ export function buildOffice(
     const a = assignment[k] !== undefined ? byId.get(assignment[k] as string) : undefined;
     if (a) seats.push(seat({ kind: "station", station: k }, a));
   }
+  const deskless: Agent[] = [];
   assignment.desks.forEach((id, index) => {
     const a = id !== undefined ? byId.get(id) : undefined;
-    if (a) seats.push(seat({ kind: "desk", index }, a));
+    if (!a) return;
+    if (capacity !== undefined && index >= capacity) deskless.push(a);
+    else seats.push(seat({ kind: "desk", index }, a));
   });
 
   let goal: OfficeModel["goal"];
@@ -83,7 +96,8 @@ export function buildOffice(
   const taskStatus: Record<string, TaskStatus | undefined> = {};
   for (const a of agents) taskStatus[a.id] = tasks.find((t) => t.id === a.task_id)?.status;
   const gone = agents.filter((a) => a.state === "exited").map((a) => a.id);
-  return { assignment, desks: assignment.desks.length, seats, goal, exited: gone.length, gone, taskStatus, waiting: waiting.size, waitingSince };
+  const desks = capacity !== undefined ? Math.min(assignment.desks.length, capacity) : assignment.desks.length;
+  return { assignment, desks, seats, goal, exited: gone.length, gone, taskStatus, waiting: waiting.size, waitingSince, deskless, layout: opts.layout };
 }
 
 // freshMessages returns the messages not seen before that were created at or

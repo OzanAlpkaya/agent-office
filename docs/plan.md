@@ -5,7 +5,7 @@ approved plan and ends with an updated `PROGRESS.md` and a plain-language summar
 intentionally coarser; their DoD is refined at the start of the phase.
 
 **Order** (decided 2026-11-08): phases run 0–8, then 12, 9, 10, 11, 13, then 14 and 15
-(added 2026-11-11), then 16 and 17. Numbers are kept, so references in ADRs and plans stay valid.
+(added 2026-11-11), then 16, 17 and 18. Numbers are kept, so references in ADRs and plans stay valid.
 
 ---
 
@@ -742,3 +742,52 @@ closing it, merging it) take one click, and what looks like a problem is one.
   then runs (recorded in ADR 0055; host agents already run as the user).
 - A done goal whose closed sub-task's branch moved after QA cannot be merged without a new QA run.
 - Show how many commits a Push sends when the remote is behind by more than the merge.
+
+---
+
+## Phase 18: UI and office polish
+
+Added by Ozan after Phase 17 was merged (2026-11-12).
+
+**Goal:** The UI is calm and roomy on a desktop and a phone, with one design system; cards show what
+matters and open into a modal with everything else; the office can be laid out per project and shows the
+user at their desk; a done goal is merged, closed and cleaned up from the same dialogs.
+
+**Scope** (see `docs/plans/phase-18.md`)
+1. UI overhaul: a simple, modern, dark design with one design system (spacing, type scale, colours,
+   buttons) used by every screen. The panels that push the page down (Devices, Projects, Memory, Briefing)
+   move to a Settings page with tabs. A clean navigation; the Approvals and Inbox badges stay visible. It
+   works on a phone (the installed PWA). The office keeps its pixel-art style.
+2. Compact cards (title, status chip, the agent on it, cost) and a detail modal with the description,
+   acceptance criteria, QA result, agents, report and every action.
+3. Office layout per project in YAML: rooms, their place on a grid and size, the workroom's desks.
+   Validated (required rooms, every room reachable through doorways); an invalid layout falls back to the
+   default with a visible warning. Presets and a preview in the project settings. A decision on more
+   workers than desks.
+4. The user's own character sits at their desk while a device has the UI open; the desk is empty when
+   none does.
+5. After a successful Merge, the same dialog offers to mark the goal done.
+6. Branch clean-up: when a goal is done, offer to delete its merged `agent-office/*` branches (sub-task
+   and QA branches); never an unmerged one without an explicit confirmation; the names stay in the
+   archive. A one-time clean-up of old merged `agent-office/*` branches of a project.
+
+**Definition of Done**
+- [x] Before and after screenshots of the main screens (board, card modal, settings, office, archive,
+      phone width; after the review also project settings, app settings and the avatar creator) in
+      `docs/screenshots/phase-18/` (`before/`, `after/`; the Playwright tour `screens.spec.ts`).
+- [x] Each item has tests:
+      1. UI overhaul: Playwright `polish.spec.ts` (Settings tabs, drawers that move nothing, badges on every
+         view, the phone layout without sideways scrolling) and every earlier spec on the new navigation;
+      2. compact cards and the modal: Vitest `cards.test.ts`, Playwright `polish.spec.ts`, `daily.spec.ts`,
+         `team.spec.ts`;
+      3. office layouts: Go `TestParseValid`, `TestParseInvalid`, `TestPresetsAreValid`, `TestDeskCapacity`,
+         `TestHubOfficeLayout`, `TestOfficeLayoutsAPI`; Vitest `custom.test.ts` (every preset walkable from every
+         desk, the queue at the door, deskless agents); Playwright (presets, check, save, fallback warning,
+         deskless agents);
+      4. the user at their desk: `TestPresence`, Playwright (visible, hidden, another device);
+      5. Merge then Done: Playwright `daily.spec.ts`;
+      6. branch clean-up: `TestGoalBranchCleanup`, `TestProjectBranchCleanup`, `TestAgentBranchesAndDeleteBranchAt`,
+         `TestBranchCleanupAPI`, Vitest `branches.test.ts`, Playwright (a goal's and the project's).
+- [x] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass: 407 Vitest tests, 106 Playwright tests (after the review); every e2e
+      but the GitHub one (not run, as in Phase 17).
+

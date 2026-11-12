@@ -58,6 +58,16 @@ type Agent struct {
 	AutoResumes         int64
 }
 
+type DeletedBranch struct {
+	ID        int64
+	ProjectID string
+	GoalID    sql.NullString
+	Name      string
+	Head      string
+	Class     string
+	DeletedAt time.Time
+}
+
 type Device struct {
 	ID         string
 	Name       string
@@ -156,6 +166,13 @@ type Message struct {
 	DeliveredAt sql.NullTime
 	Delivery    string
 	FromUser    bool
+}
+
+type Profile struct {
+	ID        int64
+	Name      string
+	Look      string
+	UpdatedAt time.Time
 }
 
 type Project struct {

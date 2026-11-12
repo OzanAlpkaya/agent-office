@@ -1,7 +1,7 @@
 // Several projects in one UI (ADR 0046, 0048): the switcher, the Approvals
 // badge across projects, the Projects panel, the office's floors and usage.
 import { type Page, expect, test } from "@playwright/test";
-import { MockDaemon, type World, agent, project, session, task, team, teamUsage } from "./daemon";
+import { MockDaemon, type World, agent, project, session, task, team, teamUsage, openAgent, settingsTab } from "./daemon";
 
 const iso = (minutes: number): string => new Date(Date.parse("2026-11-08T10:00:00Z") + minutes * 60_000).toISOString();
 
@@ -90,10 +90,10 @@ test("Approvals counts every project; another project's request is decided in th
 test("a project is added from the Projects panel with its own pack, and removed after a confirmation", async ({ page }) => {
   const daemon = twoProjects();
   const errors = await open(page, daemon);
-  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  await settingsTab(page, "Projects");
   const panel = page.getByRole("region", { name: "Projects" });
   await expect(panel.locator(".project-item")).toHaveCount(2);
-  await expect(panel.getByLabel("Stack pack").first()).toHaveAttribute("placeholder", "daemon: go");
+  await expect(panel.getByTestId("hint-pack")).toHaveText("Default: go");
   const add = panel.locator(".project-add");
   await add.getByLabel("Repository path").fill("/home/dev/api-server");
   await add.getByLabel("Stack pack").fill("node");
@@ -102,28 +102,35 @@ test("a project is added from the Projects panel with its own pack, and removed 
   await expect.poll(() => daemon.requests.find((r) => r.startsWith("POST /api/projects"))).toContain(
     '{"repo":"/home/dev/api-server","name":"","settings":{"pack":"node","max_agents":2}}');
   await expect(switcher(page)).toHaveValue("p3");
-  await expect(switcher(page).locator("option")).toHaveText(["linkshelf · 9 running · 2 waiting", "webapp · 2 running · 1 waiting", "api-server"]);
+  await expect(switcher(page).locator("option")).toHaveText(["linkshelf · 9 running · 2 waiting", "webapp · 2 running · 1 waiting", "api-server",
+    "+ New project…"]);
 
-  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  await settingsTab(page, "Projects");
   const item = page.getByRole("region", { name: "Projects" }).locator(".project-item").filter({ hasText: "webapp" });
   await item.getByRole("button", { name: "Remove…" }).click();
   await expect(item).toContainText("Its history, branches and worktrees are kept.");
   await item.getByRole("button", { name: "Remove", exact: true }).click();
   await expect.poll(() => daemon.requests).toContain("DELETE /api/projects/p2");
-  await expect(switcher(page).locator("option")).toHaveText(["linkshelf · 9 running · 2 waiting", "api-server"]);
+  await expect(switcher(page).locator("option")).toHaveText(["linkshelf · 9 running · 2 waiting", "api-server", "+ New project…"]);
   expect(errors).toEqual([]);
 });
 
 test("a project's settings are changed in the panel; empty fields inherit the daemon's", async ({ page }) => {
   const daemon = twoProjects();
   await open(page, daemon);
-  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  // From the app's project list, Settings opens that project's own settings (Phase 18 review).
+  await settingsTab(page, "Projects");
   const item = page.getByRole("region", { name: "Projects" }).locator(".project-item").filter({ hasText: "webapp" });
   await item.getByRole("button", { name: "Settings" }).click();
-  await item.getByLabel("Model").fill("sonnet");
-  await item.getByLabel("Goal budget ($)").fill("1.5");
-  await item.getByLabel("GitHub").selectOption("off");
-  await item.getByRole("button", { name: "Save" }).click();
+  await expect(switcher(page)).toHaveValue("p2");
+  const form = page.locator(".project-settings-page");
+  await expect(form.getByRole("heading", { level: 1 })).toHaveText("webapp");
+  // the inherited value is shown in full under each field
+  await expect(form.getByTestId("hint-workerPids")).toHaveText("Default: pack's or --sandbox-pids");
+  await form.getByLabel("Model").fill("sonnet");
+  await form.getByLabel("Goal budget ($)").fill("1.5");
+  await form.getByLabel("GitHub").selectOption("off");
+  await form.getByRole("button", { name: "Save" }).click();
   await expect.poll(() => daemon.requests.find((r) => r.startsWith("PATCH /api/projects/p2"))).toContain(
     '"settings":{"model":"sonnet","github":false,"budget_goal_micro_usd":1500000}');
 });
@@ -174,14 +181,15 @@ test("with no project yet, the UI asks for the first one", async ({ page }) => {
 test("each project keeps its own open agent tabs across switches", async ({ page }) => {
   const errors = await open(page, twoProjects());
   const tabs = page.getByRole("tablist", { name: "Open agents" }).getByRole("tab");
-  await page.locator('.card[data-agent="b2c3d4000001"] .agent-name').first().click();
+  await openAgent(page, "b2c3d4000001");
   await expect(tabs).toHaveCount(1);
   await expect(tabs.first()).toContainText("Emma");
   await switcher(page).selectOption("p2");
-  await expect(tabs).toHaveCount(0);
-  await page.locator('.card[data-agent="bbbb00000002"] .agent-name').first().click();
+  await openAgent(page, "bbbb00000002");
+  await expect(tabs).toHaveCount(1);
   await expect(tabs.first()).toContainText("Theo");
   await switcher(page).selectOption("p1");
+  await openAgent(page, "b2c3d4000001"); // already open: its tab, the only one of this project
   await expect(tabs).toHaveCount(1);
   await expect(tabs.first()).toContainText("Emma");
   expect(errors).toEqual([]);
@@ -200,21 +208,21 @@ test("a refused settings change is shown next to its Save button, not in the sid
   const daemon = twoProjects();
   daemon.refuseProjectUpdate = "the project has running agents; stop them first";
   await open(page, daemon);
-  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  await settingsTab(page, "Projects");
   const item = page.getByRole("region", { name: "Projects" }).locator(".project-item").filter({ hasText: "webapp" });
   await item.getByRole("button", { name: "Settings" }).click();
-  await item.getByLabel("Model").fill("sonnet");
-  await item.getByRole("button", { name: "Save" }).click();
-  const form = item.locator(".project-settings");
+  const form = page.locator(".project-settings-page .project-settings");
+  await form.getByLabel("Model").fill("sonnet");
+  await form.getByRole("button", { name: "Save" }).click();
   await expect(form.getByRole("alert")).toHaveText("the project has running agents; stop them first");
   await expect(form.getByRole("button", { name: "Save" })).toBeVisible(); // the form stays open
-  await expect(page.locator("aside .error")).toHaveCount(0);
+  await expect(page.locator(".banner.danger")).toHaveCount(0);
 });
 
 test("the Projects panel counts the agents running in every project, live", async ({ page }) => {
   const daemon = twoProjects();
   await open(page, daemon);
-  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  await settingsTab(page, "Projects");
   const panel = page.getByRole("region", { name: "Projects" });
   // linkshelf runs nine (one has exited), webapp two
   await expect(panel).toContainText("At most 8 agents run across all projects (11 now).");
