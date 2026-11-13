@@ -63,7 +63,7 @@ worker-image: build
 # tests: make worker-image PACK=go; make worker-image PACK=node). AO_SANDBOX_NET=1 adds HTTPS
 # through the egress proxy, which needs internet access.
 sandbox-test: build
-	go test -tags sandbox -race -count=1 -v ./internal/sandbox/ ./internal/engine/
+	go test -tags sandbox -race -count=1 -v ./internal/sandbox/ ./internal/engine/ ./cmd/agent-office/
 
 # Opt-in browser tests of the UI against a mocked daemon (Playwright, ADR 0025); no daemon, no
 # tokens. Screenshots land in web/test-results/screens. Needs the browser once:

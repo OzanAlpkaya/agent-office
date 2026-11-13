@@ -10,6 +10,7 @@
 //	agent-office role list|check       list team roles, validate a role directory (ADR 0029)
 //	agent-office pair [--token <name>]  pair a browser with the running daemon (ADR 0039)
 //	agent-office service install|uninstall|status  run serve as a systemd user service (ADR 0060)
+//	agent-office check-claude          check the installed Claude Code in a sandboxed worker (no tokens)
 //	agent-office version               print the version
 package main
 
@@ -84,6 +85,8 @@ func main() {
 		os.Exit(pairCommand(os.Args[2:], os.Stdout, os.Stderr))
 	case "service":
 		os.Exit(serviceCommand(os.Args[2:], os.Stdout, os.Stderr))
+	case "check-claude":
+		os.Exit(checkClaudeCommand(os.Args[2:], os.Stdout, os.Stderr))
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -124,6 +127,9 @@ commands:
             run serve as a systemd user service with these flags (restarts on failure, logs to the journal)
   service uninstall       stop, disable and remove the service
   service status          show the service, whether it runs, and where its logs are
+  check-claude [--data-dir <dir>]
+            start the installed Claude Code in a sandboxed worker without a prompt or a token and check
+            that no first-run dialog blocks it; a pass records the version as verified in the data dir
   version   print the version
 `)
 }
@@ -621,8 +627,11 @@ func serve(args []string) error {
 		log.Warn("host mode: agents run unsandboxed on this machine, with permission prompts on; they run as you, so " +
 			"they can read every project's files (ADR 0046)")
 	}
-	warnings := append(versionWarnings(ci, cfg.sandbox), codexWarn...)
-	for _, w := range warnings {
+	warnings := codexWarn
+	// The version warning is read at every status request: `agent-office
+	// check-claude` may verify the installed version while the daemon runs.
+	liveWarnings := func() []string { return versionWarnings(ci, cfg.sandbox, verifiedVersion(cfg.dataDir)) }
+	for _, w := range append(liveWarnings(), warnings...) {
 		log.Warn(w)
 	}
 
@@ -647,7 +656,7 @@ func serve(args []string) error {
 			ClaudeBin: claudeBin, HookCommand: agent.ShellQuote(self) + " hook",
 			RuntimeDir: runtimeDir, BaseEnv: os.Environ(),
 			TermSize: terminal.Size{Cols: 120, Rows: 36}, Logger: log,
-			Sandbox: sb, Warnings: warnings, AgentOfficeBin: self, Version: version,
+			Sandbox: sb, Warnings: warnings, LiveWarnings: liveWarnings, AgentOfficeBin: self, Version: version,
 			Roles: roles, QA: cfg.qa, RestoreAgents: cfg.restoreAgents, StallAfter: stallOption(cfg.stallAfter), HistoryDir: filepath.Join(cfg.dataDir, "terminals"),
 			Prices: prices, EventRetention: time.Duration(cfg.eventRetentionDays) * 24 * time.Hour,
 		},

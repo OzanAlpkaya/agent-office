@@ -438,4 +438,13 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - 2026-11-13: Phase 19 review: approved. Ozan tested the service install, Request changes and one-click
   Approve, the Architect exiting, QA round cards, the Runs section and changing Max agents while agents run.
   Merged into `main` (`--no-ff`).
+- 2026-11-13: Claude Code 2.1.323: Spike F's interactive check re-run with a placeholder token (no prompt,
+  no request): the pre-seed still suppresses every first-run dialog, each key its own; tested version bumped
+  to 2.1.323. New `agent-office check-claude` runs the same check through the daemon's sandboxed worker
+  setup, in a throwaway engine with a placeholder token, prints the result, and on a pass records the
+  version in `<data-dir>/claude-verified.json`; the daemon's version warning is read at every status
+  request, so it goes away without a restart (ADR 0016 amended). Checked against the installed 2.1.323
+  (pass, 0.4 s, nothing left behind). `make check`, `make ui-test` and `make sandbox-test` (now also
+  `./cmd/agent-office`) pass; no agent behaviour changed, so `make e2e` was not run. Merged into `main`
+  (`--no-ff`).
 

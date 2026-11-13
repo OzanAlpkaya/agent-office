@@ -84,13 +84,23 @@ func TestSandboxFlagsFromEnv(t *testing.T) {
 }
 
 func TestVersionWarnings(t *testing.T) {
-	if w := versionWarnings(claudeInfo{version: agent.TestedClaudeCodeVersion}, modePodman); len(w) != 0 {
+	if w := versionWarnings(claudeInfo{version: agent.TestedClaudeCodeVersion}, modePodman, ""); len(w) != 0 {
 		t.Fatalf("tested version warned: %q", w)
 	}
-	if w := versionWarnings(claudeInfo{version: "9.9.9"}, modePodman); len(w) != 1 || !strings.Contains(w[0], "9.9.9") {
+	if w := versionWarnings(claudeInfo{version: "9.9.9"}, modePodman, ""); len(w) != 1 || !strings.Contains(w[0], "9.9.9") ||
+		!strings.Contains(w[0], "agent-office check-claude") {
 		t.Fatalf("untested version: %q", w)
 	}
-	if w := versionWarnings(claudeInfo{version: "9.9.9"}, modeHost); len(w) != 0 {
+	if w := versionWarnings(claudeInfo{version: "9.9.9"}, modePodman, "9.9.9"); len(w) != 0 {
+		t.Fatalf("a version check-claude passed warned: %q", w)
+	}
+	if w := versionWarnings(claudeInfo{version: "9.9.10"}, modePodman, "9.9.9"); len(w) != 1 {
+		t.Fatalf("a newer version than the verified one: %q", w)
+	}
+	if w := versionWarnings(claudeInfo{}, modePodman, ""); len(w) != 1 || !strings.Contains(w[0], "Could not read") {
+		t.Fatalf("no version: %q", w)
+	}
+	if w := versionWarnings(claudeInfo{version: "9.9.9"}, modeHost, ""); len(w) != 0 {
 		t.Fatalf("host mode does not use the seeded config: %q", w)
 	}
 }
