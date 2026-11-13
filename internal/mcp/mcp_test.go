@@ -123,6 +123,17 @@ func (f *fakeTeam) DecideCommand(_ context.Context, caller string, in DecideComm
 	return DecideCommandOutput{RequestID: in.RequestID}, nil
 }
 
+func (f *fakeTeam) ListFiles(_ context.Context, caller string, in ListFilesInput) (ListFilesOutput, error) {
+	return ListFilesOutput{Source: in.Source, Entries: []FileEntry{{Path: "a.png", Type: "file", Size: 8}}}, nil
+}
+
+func (f *fakeTeam) ReadFile(_ context.Context, caller string, in ReadFileInput) (FileContent, error) {
+	if in.Path == "a.png" {
+		return FileContent{Source: in.Source, Path: in.Path, Size: 8, MIMEType: "image/png", Image: []byte("\x89PNG\r\n\x1a\n")}, nil
+	}
+	return FileContent{Source: in.Source, Path: in.Path, Size: 2, Text: "hi"}, nil
+}
+
 func (f *fakeTeam) ProposeMemory(_ context.Context, caller string, in ProposeMemoryInput) (ProposeMemoryOutput, error) {
 	f.record(caller, ToolProposeMemory, in)
 	return ProposeMemoryOutput{ID: 1, Status: "proposed"}, f.err
@@ -490,5 +501,40 @@ func TestBridgeDaemonDown(t *testing.T) {
 	err := Bridge(context.Background(), filepath.Join(shortDir(t), "missing.sock"), strings.NewReader(""), io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "agent-office daemon") {
 		t.Fatalf("err %v", err)
+	}
+}
+
+// read_file returns an image as image content, so the model sees it, and
+// text as text (Phase 20, ADR 0066).
+func TestReadFileContent(t *testing.T) {
+	ctx := context.Background()
+	st, ct := sdk.NewInMemoryTransports()
+	ss, err := NewServer(&fakeTeam{}, "l1", []string{ToolListFiles, ToolReadFile}, "test", quiet).Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, err := sdk.NewClient(&sdk.Implementation{Name: "test-client", Version: "1"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cs.Close(); ss.Close() })
+	img := call(t, cs, ToolReadFile, map[string]any{"source": "qa", "path": "a.png"})
+	if img.IsError || len(img.Content) != 2 {
+		t.Fatalf("image result %+v", img)
+	}
+	ic, ok := img.Content[1].(*sdk.ImageContent)
+	if !ok || ic.MIMEType != "image/png" || string(ic.Data) != "\x89PNG\r\n\x1a\n" {
+		t.Fatalf("image content %#v", img.Content[1])
+	}
+	if h, ok := img.Content[0].(*sdk.TextContent); !ok || !strings.Contains(h.Text, "a.png at qa") {
+		t.Fatalf("header %#v", img.Content[0])
+	}
+	txt := call(t, cs, ToolReadFile, map[string]any{"source": "t1", "path": "notes.txt"})
+	if tc, ok := txt.Content[1].(*sdk.TextContent); txt.IsError || !ok || tc.Text != "hi" {
+		t.Fatalf("text result %+v", txt)
+	}
+	list := call(t, cs, ToolListFiles, map[string]any{"source": "qa"})
+	if list.IsError || !strings.Contains(text(list), "a.png") {
+		t.Fatalf("list %s", text(list))
 	}
 }
