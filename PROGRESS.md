@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 19 (Lessons from the game factory) is done on `phase-19/game-factory-lessons`, waiting for Ozan's review.
+**Current phase:** none in progress. Phase 19 (Lessons from the game factory) is merged into `main`.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -28,7 +28,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 16: Autonomous team
 - [x] Phase 17: Daily use
 - [x] Phase 18: UI and office polish
-- [x] Phase 19: Lessons from the game factory (in review)
+- [x] Phase 19: Lessons from the game factory
 
 ## Log
 
@@ -430,4 +430,12 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   first e2e run led to one more (QA's criteria after a merge). `make check` (424 Vitest tests), `make
   ui-test` (112), `make sandbox-test` and `make e2e` (host, sandbox, team, workflow with the follow-up after
   the squash merge, multi-project, Codex team, autonomy) pass; the GitHub e2e was not run.
+- 2026-11-13: Phase 19 review change, on `phase-19/game-factory-lessons` before the merge: the daemon-wide agent
+  cap changes from this machine only, like the sandbox settings (`PUT /api/daemon` from a remote device is
+  refused; the app's cap field is read-only there); project settings stay changeable from paired devices
+  (ADR 0061 amended). `make check` (424 Vitest tests) and `make ui-test` (113) pass; the change is API and UI
+  only, so `make sandbox-test` and `make e2e` were not rerun.
+- 2026-11-13: Phase 19 review: approved. Ozan tested the service install, Request changes and one-click
+  Approve, the Architect exiting, QA round cards, the Runs section and changing Max agents while agents run.
+  Merged into `main` (`--no-ff`).
 
