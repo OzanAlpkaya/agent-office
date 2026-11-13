@@ -54,6 +54,10 @@ type HubOptions struct {
 	// It edits o, a copy of Base with the project's models, budgets and cap
 	// already applied (o.Sandbox is a copy too). nil: nothing to add.
 	Configure func(ctx context.Context, p Project, s ProjectSettings, o *Options) error
+	// Check validates a project's effective settings with its roles, when they
+	// change while its agents run (ADR 0061); Configure checks them too. nil:
+	// nothing more to check.
+	Check func(s ProjectSettings, roles *role.Set) error
 	// Containers, when set, are this daemon instance's sandbox containers to
 	// remove once at start, before any project opens (the previous run died).
 	Containers *SandboxInstance
@@ -79,21 +83,24 @@ type ProjectInfo struct {
 
 // HubUpdate is a change of the project list, broadcast to subscribers.
 type HubUpdate struct {
-	Type     string       `json:"type"` // "project" | "project_removed" | "presence"
+	Type     string       `json:"type"` // "project" | "project_removed" | "presence" | "profile" | "daemon"
 	Project  *ProjectInfo `json:"project,omitempty"`
 	ID       string       `json:"id,omitempty"`
 	Presence *Presence    `json:"presence,omitempty"`
 	Profile  *Profile     `json:"profile,omitempty"` // "profile": the user's name and look (ADR 0058)
+	Status   *HubStatus   `json:"status,omitempty"`  // "daemon": the daemon-wide state, e.g. its agent cap (ADR 0061)
 }
 
 // HubStatus is the daemon-wide state.
 type HubStatus struct {
-	Sandbox   string          `json:"sandbox"`    // SandboxHost | SandboxPodman, for every project
-	MaxAgents int             `json:"max_agents"` // the daemon-wide cap (ADR 0047)
-	Running   int             `json:"running"`    // agents running or starting in every project
-	Warnings  []string        `json:"warnings"`   // daemon-wide
-	Defaults  ProjectSettings `json:"defaults"`   // the daemon's flags
-	Default   string          `json:"default_project,omitempty"`
+	Sandbox        string          `json:"sandbox"`          // SandboxHost | SandboxPodman, for every project
+	MaxAgents      int             `json:"max_agents"`       // the daemon-wide cap (ADR 0047): the saved value, else --max-agents
+	MaxAgentsFlag  int             `json:"max_agents_flag"`  // --max-agents
+	MaxAgentsSaved bool            `json:"max_agents_saved"` // the cap was set in the app and wins over the flag (ADR 0061)
+	Running        int             `json:"running"`          // agents running or starting in every project
+	Warnings       []string        `json:"warnings"`         // daemon-wide
+	Defaults       ProjectSettings `json:"defaults"`         // the daemon's flags
+	Default        string          `json:"default_project,omitempty"`
 }
 
 // AddProject describes a repository to register.
@@ -135,6 +142,8 @@ type Hub struct {
 	closed    bool
 
 	pages pages // the open UI pages, for the user's presence (ADR 0058)
+
+	capSaved bool // the daemon-wide cap comes from daemon_settings, not --max-agents (ADR 0061); guarded by mu
 }
 
 // NewHub removes the previous run's containers and opens every registered
@@ -162,6 +171,14 @@ func NewHub(ctx context.Context, opts HubOptions) (*Hub, error) {
 	}
 	h := &Hub{opts: opts, log: opts.Base.Logger, q: opts.Base.Store.Q, slots: newSlotPool(opts.Base.MaxAgents),
 		projects: map[string]*projectEntry{}, subs: map[chan HubUpdate]struct{}{}}
+	if ds, err := h.q.GetDaemonSettings(ctx); err == nil && ds.MaxAgents.Valid {
+		n := int(ds.MaxAgents.Int64)
+		h.slots.setMax(n)
+		h.capSaved = true
+		h.log.Info("daemon-wide agent cap set in the app", "max_agents", n, "flag", opts.Base.MaxAgents)
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("engine: daemon settings: %w", err)
+	}
 	if c := opts.Containers; c != nil {
 		removeOrphanContainers(ctx, c.Podman, c.Instance, h.log)
 	}
@@ -231,7 +248,6 @@ func (h *Hub) options(ctx context.Context, row db.Project, s ProjectSettings) (O
 		return o, invalid("secrets_dir %s: must be %s or a directory inside it, e.g. %s", *eff.SecretsDir, d,
 			filepath.Join(d, row.Slug))
 	}
-	o.Model, o.CodexModel = *eff.Model, *eff.CodexModel
 	if len(eff.RoleCLIs) > 0 {
 		if o.Roles == nil {
 			o.Roles = role.MustBuiltins()
@@ -242,31 +258,79 @@ func (h *Hub) options(ctx context.Context, row db.Project, s ProjectSettings) (O
 		}
 		o.Roles = roles
 	}
-	o.MaxAgents = min(*eff.MaxAgents, h.opts.Base.MaxAgents)
-	o.Budgets = Budgets{SessionMicroUSD: *eff.BudgetSessionMicroUSD, GoalMicroUSD: *eff.BudgetGoalMicroUSD}
-	if len(eff.RoleModels) > 0 {
-		if o.Roles == nil {
-			o.Roles = role.MustBuiltins()
-		}
-		roles, err := o.Roles.WithModels(eff.RoleModels)
-		if err != nil {
-			return o, fmt.Errorf("%w: role_models: %v", ErrInvalid, err)
-		}
-		o.Roles = roles
+	baseRoles := o.Roles
+	if err := h.liveSettings(&o, baseRoles, eff); err != nil {
+		return o, err
 	}
-	o.AccessDecider, o.LeadAccessHosts = *eff.AccessDecider, slices.Clone(eff.LeadAccessHosts)
-	o.MergeTarget, o.PushRemote = *eff.MergeTarget, *eff.GitHubRemote // ADR 0055
 	if h.opts.Configure != nil {
 		p := Project{ID: row.ID, Name: row.Name, RepoPath: row.RepoPath, Slug: row.Slug}
 		if err := h.opts.Configure(ctx, p, eff, &o); err != nil {
 			return o, err
 		}
 	}
-	if m := eff.WorkerMemory; m != nil && *m != "" && o.Sandbox != nil {
-		o.Sandbox.Memory = *m // the project's own copy (above); over the pack's and --sandbox-memory (ADR 0051)
+	o.baseRoles = baseRoles
+	if o.Sandbox != nil {
+		o.packMemory, o.packPids = o.Sandbox.Memory, o.Sandbox.Pids // the pack's or the daemon's
+		overrideLimits(o.Sandbox, eff)
 	}
-	if n := eff.WorkerPids; n != nil && *n != 0 && o.Sandbox != nil {
-		o.Sandbox.Pids = *n // over the pack's and --sandbox-pids, like memory (Phase 17)
+	return o, nil
+}
+
+// liveSettings sets the fields of o a project may change while its agents run
+// (ADR 0061) from its effective settings. roles are the project's roles
+// before role models (the CLIs are applied already).
+func (h *Hub) liveSettings(o *Options, roles *role.Set, eff ProjectSettings) error {
+	o.Model, o.CodexModel = *eff.Model, *eff.CodexModel
+	o.MaxAgents, o.MaxSubTasks = *eff.MaxAgents, *eff.MaxSubTasks // the daemon-wide cap applies at each start
+	o.Budgets = Budgets{SessionMicroUSD: *eff.BudgetSessionMicroUSD, GoalMicroUSD: *eff.BudgetGoalMicroUSD}
+	o.Roles = roles
+	if len(eff.RoleModels) > 0 {
+		if o.Roles == nil {
+			o.Roles = role.MustBuiltins()
+		}
+		rs, err := o.Roles.WithModels(eff.RoleModels)
+		if err != nil {
+			return fmt.Errorf("%w: role_models: %v", ErrInvalid, err)
+		}
+		o.Roles = rs
+	}
+	o.AccessDecider, o.LeadAccessHosts = *eff.AccessDecider, slices.Clone(eff.LeadAccessHosts)
+	o.MergeTarget, o.PushRemote = *eff.MergeTarget, *eff.GitHubRemote // ADR 0055
+	if h.opts.Check != nil {
+		if err := h.opts.Check(eff, o.Roles); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
+	}
+	return nil
+}
+
+// overrideLimits applies the project's worker limits over the pack's and the
+// daemon's (ADR 0051, Phase 17).
+func overrideLimits(sb *SandboxOptions, eff ProjectSettings) {
+	if m := eff.WorkerMemory; m != nil && *m != "" {
+		sb.Memory = *m
+	}
+	if n := eff.WorkerPids; n != nil && *n != 0 {
+		sb.Pids = *n
+	}
+}
+
+// liveOptions is an open engine's options with new live settings (ADR
+// 0061), checked; the engine takes them with applyLive.
+func (h *Hub) liveOptions(eng *Engine, settings ProjectSettings) (Options, error) {
+	eff := h.opts.Defaults.Merge(settings)
+	o := eng.opts
+	if err := h.liveSettings(&o, eng.opts.baseRoles, eff); err != nil {
+		return o, err
+	}
+	if o.Sandbox != nil {
+		sb := *o.Sandbox
+		sb.Memory, sb.Pids = eng.opts.packMemory, eng.opts.packPids
+		overrideLimits(&sb, eff)
+		o.Sandbox = &sb
+	}
+	if _, err := liveFrom(o); err != nil {
+		return o, err
 	}
 	return o, nil
 }
@@ -333,13 +397,14 @@ func (h *Hub) Engine(id string) (*Engine, error) {
 
 // Status is the daemon-wide state.
 func (h *Hub) Status() HubStatus {
-	st := HubStatus{Sandbox: SandboxHost, MaxAgents: h.opts.Base.MaxAgents, Running: h.slots.total(),
+	st := HubStatus{Sandbox: SandboxHost, MaxAgents: h.slots.cap(), MaxAgentsFlag: h.opts.Base.MaxAgents, Running: h.slots.total(),
 		Warnings: append([]string{}, h.opts.Base.Warnings...), Defaults: h.opts.Defaults}
 	if h.opts.Base.Sandbox != nil {
 		st.Sandbox = SandboxPodman
 	}
 	h.mu.Lock()
 	st.Default = h.defaultID
+	st.MaxAgentsSaved = h.capSaved
 	h.mu.Unlock()
 	return st
 }
@@ -349,7 +414,7 @@ func (h *Hub) infoLocked(pe *projectEntry) ProjectInfo {
 	in := ProjectInfo{Project: Project{ID: r.ID, Name: r.Name, RepoPath: r.RepoPath, Slug: r.Slug},
 		Settings: pe.settings, Effective: h.opts.Defaults.Merge(pe.settings), State: ProjectOpen,
 		Default: r.ID == h.defaultID, CreatedAt: r.CreatedAt, Office: officeOf(pe.settings)}
-	if m := min(*in.Effective.MaxAgents, h.opts.Base.MaxAgents); m != *in.Effective.MaxAgents {
+	if m := min(*in.Effective.MaxAgents, h.slots.cap()); m != *in.Effective.MaxAgents {
 		in.Effective.MaxAgents = &m
 	}
 	if pe.eng == nil {
@@ -485,7 +550,8 @@ func (h *Hub) Update(ctx context.Context, id string, in UpdateProject) (ProjectI
 	if in.Name != nil {
 		name = *in.Name
 	}
-	reopen := false
+	reopen, live := false, false
+	var reopenFields []string
 	if in.Settings != nil {
 		// A new office layout must validate; one already stored is kept as it is
 		// (the office falls back to the default plan if it no longer does).
@@ -495,14 +561,17 @@ func (h *Hub) Update(ctx context.Context, id string, in UpdateProject) (ProjectI
 				return ProjectInfo{}, fmt.Errorf("%w: %s", ErrInvalid, strings.Join(office.Problems(err), "; "))
 			}
 		}
-		// The layout is the office's look only: changing it alone does not
-		// reopen the project, so it may change while agents run (ADR 0057).
+		// Settings read at each agent start apply to the running engine (ADR
+		// 0061); only those the engine is built from reopen the project, which
+		// needs its agents stopped. The layout is the office's look only (ADR 0057).
 		a, _ := pe.settings.withoutLayout().encode()
 		b, err := in.Settings.withoutLayout().encode()
 		if err != nil {
 			return ProjectInfo{}, err
 		}
-		reopen = a != b || pe.eng == nil
+		reopenFields = h.opts.Defaults.Merge(pe.settings).ReopenChanges(h.opts.Defaults.Merge(*in.Settings))
+		reopen = len(reopenFields) > 0 || pe.eng == nil
+		live = !reopen && a != b
 		settings = *in.Settings
 	}
 	enc, err := settings.encode()
@@ -520,9 +589,17 @@ func (h *Hub) Update(ctx context.Context, id string, in UpdateProject) (ProjectI
 			return ProjectInfo{}, fmt.Errorf("%w: %v", ErrProjectUnavailable, err)
 		}
 	}
+	var liveOpts Options
+	if live {
+		var lerr error
+		if liveOpts, lerr = h.liveOptions(pe.eng, settings); lerr != nil {
+			return ProjectInfo{}, fmt.Errorf("%w: %v", ErrProjectUnavailable, lerr)
+		}
+	}
 	if reopen && pe.eng != nil {
 		if !pe.eng.closeIdle() {
-			return ProjectInfo{}, ErrProjectBusy
+			return ProjectInfo{}, fmt.Errorf("%w (%s %s what the project's agents run with)", ErrProjectBusy,
+				strings.Join(reopenFields, ", "), plural(len(reopenFields), "changes", "change"))
 		}
 		pe.eng.Shutdown()
 	}
@@ -534,9 +611,15 @@ func (h *Hub) Update(ctx context.Context, id string, in UpdateProject) (ProjectI
 		return ProjectInfo{}, fmt.Errorf("engine: %w", err)
 	}
 	if !reopen {
+		if live {
+			if err := pe.eng.applyLive(liveOpts); err != nil {
+				h.log.Error("live settings not applied", "project", row.Slug, "err", err)
+			}
+			h.log.Info("project settings changed while open", "project", row.Slug, "from", pe.row.Settings, "to", row.Settings)
+		}
 		h.mu.Lock()
 		pe.row = row
-		pe.settings = settings // only the name or the office layout changed
+		pe.settings = settings // the name, the office layout or live settings changed
 		info := h.infoLocked(pe)
 		h.mu.Unlock()
 		h.publish(HubUpdate{Type: "project", Project: &info})
@@ -838,4 +921,55 @@ func satAdd(a, b int64) int64 {
 		return math.MaxInt64
 	}
 	return a + b
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// SetMaxAgents changes the daemon-wide agent cap without a restart and saves
+// it, so it holds after one (ADR 0061); nil goes back to --max-agents.
+// Lowering it stops nobody: new starts wait until agents exit.
+func (h *Hub) SetMaxAgents(ctx context.Context, n *int) (HubStatus, error) {
+	if n != nil && (*n < 1 || *n > MaxProjectAgents) {
+		return HubStatus{}, invalid("max_agents %d: between 1 and %d", *n, MaxProjectAgents)
+	}
+	h.op.Lock()
+	defer h.op.Unlock()
+	if err := h.closedErr(); err != nil {
+		return HubStatus{}, err
+	}
+	v, eff := sql.NullInt64{}, h.opts.Base.MaxAgents
+	if n != nil {
+		v, eff = sql.NullInt64{Int64: int64(*n), Valid: true}, *n
+	}
+	if _, err := h.q.SetDaemonMaxAgents(ctx, db.SetDaemonMaxAgentsParams{MaxAgents: v, UpdatedAt: now()}); err != nil {
+		return HubStatus{}, fmt.Errorf("engine: %w", err)
+	}
+	h.slots.setMax(eff)
+	h.mu.Lock()
+	h.capSaved = n != nil
+	var infos []ProjectInfo
+	var engs []*Engine
+	for _, id := range h.order {
+		pe := h.projects[id]
+		infos = append(infos, h.infoLocked(pe))
+		if pe.eng != nil {
+			engs = append(engs, pe.eng)
+		}
+	}
+	h.mu.Unlock()
+	h.log.Info("daemon-wide agent cap changed", "max_agents", eff, "saved", n != nil, "flag", h.opts.Base.MaxAgents)
+	for i := range infos {
+		h.publish(HubUpdate{Type: "project", Project: &infos[i]})
+	}
+	for _, e := range engs {
+		e.publishCaps()
+	}
+	st := h.Status()
+	h.publish(HubUpdate{Type: "daemon", Status: &st})
+	return st, nil
 }

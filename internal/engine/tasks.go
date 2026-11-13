@@ -50,7 +50,8 @@ type Task struct {
 	Acceptance         []string   `json:"acceptance"` // criteria QA tests (ADR 0033)
 	Role               string     `json:"role,omitempty"`
 	SpecKey            string     `json:"spec_key,omitempty"`
-	Conflicts          []Conflict `json:"conflicts"` // the last merge-tree check of its branch
+	SupersededBy       string     `json:"superseded_by,omitempty"` // closed as replaced: a task id or "spec:<version>" (ADR 0062)
+	Conflicts          []Conflict `json:"conflicts"`               // the last merge-tree check of its branch
 	ConflictsCheckedAt *time.Time `json:"conflicts_checked_at,omitempty"`
 }
 
@@ -86,7 +87,7 @@ func taskFromRow(t db.Task) Task {
 	v := Task{ID: t.ID, Title: t.Title, Description: t.Description, Status: t.Status,
 		ParentTaskID: t.ParentTaskID.String, CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 		DependsOn: jsonList(t.DependsOn), Files: jsonList(t.Files), Acceptance: jsonList(t.Acceptance), Role: t.Role,
-		SpecKey: t.SpecKey, Conflicts: []Conflict{}}
+		SpecKey: t.SpecKey, SupersededBy: t.SupersededBy, Conflicts: []Conflict{}}
 	if t.Conflicts != "" {
 		_ = json.Unmarshal([]byte(t.Conflicts), &v.Conflicts)
 	}

@@ -93,6 +93,7 @@ func (s *server) routes() []route {
 	return []route{
 		{pattern: "GET /api/health", handler: s.health, public: true},
 		{pattern: "GET /api/status", handler: s.daemonStatus},
+		{pattern: "PUT /api/daemon", handler: s.putDaemon},
 		{pattern: "GET /api/usage", handler: s.daemonUsage},
 		{pattern: "GET /api/events", handler: s.hubEventsWS},
 		{pattern: "GET /api/projects", handler: s.listProjects},
@@ -123,6 +124,7 @@ func (s *server) routes() []route {
 		{pattern: "PATCH /api/projects/{project}/tasks/{id}", handler: s.updateTask, project: true},
 		{pattern: "DELETE /api/projects/{project}/tasks/{id}", handler: s.deleteTask, project: true},
 		{pattern: "GET /api/projects/{project}/tasks/{id}/record", handler: s.goalRecord, project: true},
+		{pattern: "GET /api/projects/{project}/tasks/{id}/runs", handler: s.taskRuns, project: true},
 		{pattern: "POST /api/projects/{project}/tasks/{id}/remove-agents", handler: s.removeGoalAgents, project: true},
 		{pattern: "GET /api/projects/{project}/tasks/{id}/merge", handler: s.mergePreview, project: true},
 		{pattern: "POST /api/projects/{project}/tasks/{id}/merge", handler: s.mergeGoal, project: true},
@@ -159,6 +161,7 @@ func (s *server) routes() []route {
 		{pattern: "POST /api/projects/{project}/assistant/briefing", handler: s.askBriefing, project: true},
 		{pattern: "PUT /api/projects/{project}/specs/{id}", handler: s.specAction(false), project: true},
 		{pattern: "POST /api/projects/{project}/specs/{id}/approve", handler: s.specAction(true), project: true},
+		{pattern: "POST /api/projects/{project}/specs/{id}/changes", handler: s.requestSpecChanges, project: true},
 		{pattern: "POST /api/projects/{project}/inbox/{id}/read", handler: s.inboxAction(false), project: true},
 		{pattern: "POST /api/projects/{project}/inbox/{id}/reply", handler: s.inboxAction(true), project: true},
 		{pattern: "GET /api/projects/{project}/events", handler: s.eventsWS, project: true},
@@ -578,6 +581,38 @@ func (s *server) specAction(approve bool) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusCreated, spec)
 	}
+}
+
+// taskRuns is the run info of a task's agents, for its modal (Phase 19).
+func (s *server) taskRuns(w http.ResponseWriter, r *http.Request) {
+	runs, err := eng(r).TaskRuns(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, runs)
+}
+
+// requestSpecChanges is the user's "request changes" on a plan version: the
+// Architect revises the plan (Phase 19).
+func (s *server) requestSpecChanges(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		writeError(w, http.StatusBadRequest, "invalid spec id")
+		return
+	}
+	var body struct {
+		Changes string `json:"changes"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	spec, err := eng(r).RequestSpecChanges(r.Context(), id, body.Changes)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, spec)
 }
 
 func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {

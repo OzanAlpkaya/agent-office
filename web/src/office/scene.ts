@@ -1015,6 +1015,7 @@ class DeskNode {
       typing: t.frames("screen-code", art.codeMap, sp, art.screenRect.h),
       reviewing: t.list("screen-diff", art.screenDiff, sp),
       waiting: t.list("screen-dialog", art.screenDialog, sp),
+      background: t.frames("screen-code", art.codeMap, sp, art.screenRect.h), // its command runs on screen (ADR 0064)
     };
     this.bubbles = {
       dots: art.bubbleDots.map((m, i) => t.get(`bubble-dots-${i}`, m, art.basePalette)),

@@ -64,8 +64,35 @@ func (e *Engine) mergeConflicts(ctx context.Context, a, b string) ([]string, err
 func (e *Engine) checkConflicts(ctx context.Context, task db.Task, branch, head string) []Conflict {
 	log := e.log.With("task_id", task.ID, "branch", branch)
 	out := []Conflict{}
-	if name, base, err := e.baseHead(ctx); err == nil {
-		if files, err := e.mergeConflicts(ctx, base, head); err != nil {
+	// After the goal's squash merge, work built on the pre-squash history is
+	// compared as the port QA would merge (ADR 0063): the squash itself is no
+	// conflict.
+	var cut *mergedCut
+	if task.ParentTaskID.Valid {
+		cut, _ = e.cutOf(ctx, task.ParentTaskID.String)
+	}
+	comparable := func(h string) (string, []string) {
+		if !e.needsPort(ctx, cut, h) {
+			return h, nil
+		}
+		res, err := e.portTree(ctx, cut, cut.targetHead, h)
+		if err != nil {
+			return h, nil
+		}
+		if !res.Clean {
+			return "", res.Conflicts
+		}
+		p, err := e.git.CommitTree(ctx, e.project.RepoPath, res.Tree, []string{cut.targetHead}, "agent-office: conflict check\n")
+		if err != nil {
+			return h, nil
+		}
+		return p, nil
+	}
+	mine, portConflicts := comparable(head)
+	if name, base, err := e.baseHead(ctx); err == nil && len(portConflicts) > 0 {
+		out = append(out, Conflict{Branch: name, Files: portConflicts})
+	} else if err == nil && mine != "" {
+		if files, err := e.mergeConflicts(ctx, base, mine); err != nil {
 			log.Warn("conflict check against the base branch", "err", err)
 		} else if len(files) > 0 {
 			out = append(out, Conflict{Branch: name, Files: files})
@@ -89,17 +116,21 @@ func (e *Engine) checkConflicts(ctx context.Context, task db.Task, branch, head 
 			if err != nil {
 				continue // no work in the repository yet
 			}
-			files, err := e.mergeConflicts(ctx, otherHead, head)
+			theirs, _ := comparable(otherHead)
+			if mine == "" || theirs == "" {
+				continue // one does not port onto the target: reported against the base branch
+			}
+			files, err := e.mergeConflicts(ctx, theirs, mine)
 			if err != nil {
 				log.Warn("conflict check against a sub-task", "other", s.ID, "err", err)
 				continue
 			}
-			var mine *Conflict
+			var theirConflict *Conflict
 			if len(files) > 0 {
 				out = append(out, Conflict{With: s.ID, Branch: otherBranch, Files: files})
-				mine = &Conflict{With: task.ID, Branch: branch, Files: files}
+				theirConflict = &Conflict{With: task.ID, Branch: branch, Files: files}
 			}
-			e.setConflictWith(ctx, s, task.ID, mine)
+			e.setConflictWith(ctx, s, task.ID, theirConflict)
 		}
 	}
 	if _, err := e.saveConflicts(ctx, task.ID, out); err != nil {

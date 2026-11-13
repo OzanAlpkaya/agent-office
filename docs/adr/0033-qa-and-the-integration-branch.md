@@ -72,3 +72,12 @@ Option 2 in each group.
   `--qa=false` is there for small projects and quick experiments.
 - QA's tests do not reach the default branch through the worker PRs. Until there is a PR for the
   integration branch, the user merges it by hand if they want them.
+
+## Amendment (Phase 19, 2026-11-12): QA rounds on the board
+
+A goal card showed only the latest run's state ("QA running", "QA failed"). Each QA run of a shown goal now
+has its own board card, "QA round n" (n counts the goal's runs from the first). It sits in In progress while
+running and in Review once it ended, and moves to Done with its goal. It shows a chip (QA running, Passed,
+Failed with the number of bugs, No result), its QA agent and its own cost (the QA agent's usage). Its modal
+shows the summary, the bugs linked to the sub-tasks they became, what it merged (a ported branch is marked,
+ADR 0063) and the integration branch. The goal card keeps its QA chip.

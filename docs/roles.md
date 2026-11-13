@@ -75,7 +75,7 @@ prompt: |                     # required; <= 12 000 characters
 - **`prompt`** comes first in the agent's first prompt. agent-office then adds what is protocol or
   safety: the goal or task, the plan, how to report, the network rule, how messages are framed, and
   the accepted project memory. A role cannot change how work is reported. The lead's prompt may use
-  `{max_sub_tasks}` and `{max_workers}`.
+  `{max_sub_tasks}` (the project's limit of open sub-tasks per goal, ADR 0062) and `{max_workers}`.
 
 ## Models per role
 

@@ -466,3 +466,80 @@ func TestProfileAPI(t *testing.T) {
 		}
 	}
 }
+
+// TestDaemonCapAPI: the daemon-wide agent cap changes without a restart and
+// goes back to --max-agents with null (ADR 0061); the project's status shows
+// its effective cap.
+func TestDaemonCapAPI(t *testing.T) {
+	f := newFixture(t)
+	var st engine.HubStatus
+	jsonBody(t, f.doBody(t, "PUT", "/api/daemon", jsonCT, `{"max_agents": 2}`), http.StatusOK, &st)
+	if st.MaxAgents != 2 || !st.MaxAgentsSaved {
+		t.Fatalf("set %+v", st)
+	}
+	jsonBody(t, f.do(t, "GET", "/api/status", nil), http.StatusOK, &st)
+	if st.MaxAgents != 2 || st.MaxAgentsFlag == 2 {
+		t.Fatalf("status %+v", st)
+	}
+	var ps struct {
+		Caps engine.Caps `json:"caps"`
+	}
+	jsonBody(t, f.do(t, "GET", f.pp+"/status", nil), http.StatusOK, &ps)
+	if ps.Caps.DaemonMax != 2 || ps.Caps.Effective > 2 || ps.Caps.MaxSubTasks != engine.DefaultMaxSubTasks {
+		t.Fatalf("project caps %+v", ps.Caps)
+	}
+	for _, bad := range []string{`{"max_agents": 0}`, `{"max_agents": 33}`, `{"max_agents": "4"}`, `{"cap": 1}`, `{}`} {
+		if r := f.doBody(t, "PUT", "/api/daemon", jsonCT, bad); r.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: %d", bad, r.StatusCode)
+		}
+	}
+	jsonBody(t, f.doBody(t, "PUT", "/api/daemon", jsonCT, `{"max_agents": null}`), http.StatusOK, &st)
+	if st.MaxAgentsSaved || st.MaxAgents != st.MaxAgentsFlag {
+		t.Fatalf("back to the flag %+v", st)
+	}
+}
+
+// TestTaskRunsAPI: a task's run info (Phase 19); an unknown task is 404.
+func TestTaskRunsAPI(t *testing.T) {
+	f := newFixture(t)
+	var task engine.Task
+	jsonBody(t, f.doBody(t, "POST", f.pp+"/tasks", jsonCT, `{"title": "Runs"}`), http.StatusCreated, &task)
+	var runs []engine.AgentRun
+	jsonBody(t, f.do(t, "GET", f.pp+"/tasks/"+task.ID+"/runs", nil), http.StatusOK, &runs)
+	if len(runs) != 0 {
+		t.Fatalf("runs of a task nobody worked on: %+v", runs)
+	}
+	if r := f.do(t, "GET", f.pp+"/tasks/nope/runs", nil); r.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown task: %d", r.StatusCode)
+	}
+}
+
+// The daemon-wide cap changes from this machine only; a project's Max agents
+// from any paired device (Phase 19 review).
+func TestRemoteDevicesCannotChangeTheDaemonCap(t *testing.T) {
+	f := remoteFixture(t)
+	viaServe := map[string]string{"Host": tailnetHost, "Tailscale-User-Login": "ozan@github", "Content-Type": "application/json",
+		"Origin": "https://" + tailnetHost}
+	for _, body := range []string{`{"max_agents": 32}`, `{"max_agents": null}`} {
+		r := f.doBody(t, "PUT", "/api/daemon", viaServe, body)
+		b, _ := io.ReadAll(r.Body)
+		if r.StatusCode != http.StatusForbidden || !strings.Contains(string(b), "needs this machine") {
+			t.Errorf("remote %s: %d %s", body, r.StatusCode, b)
+		}
+	}
+	var st engine.HubStatus
+	jsonBody(t, f.do(t, "GET", "/api/status", nil), http.StatusOK, &st)
+	if st.MaxAgentsSaved {
+		t.Fatalf("a refused remote change was saved: %+v", st)
+	}
+	var p engine.ProjectInfo
+	jsonBody(t, f.doBody(t, "PATCH", "/api/projects/"+f.pid, viaServe, `{"settings": {"max_agents": 2}}`), http.StatusOK, &p)
+	if *p.Settings.MaxAgents != 2 {
+		t.Fatalf("remote project cap: %+v", p.Settings)
+	}
+	local := map[string]string{"Content-Type": "application/json"}
+	jsonBody(t, f.doBody(t, "PUT", "/api/daemon", local, `{"max_agents": 3}`), http.StatusOK, &st)
+	if st.MaxAgents != 3 || !st.MaxAgentsSaved {
+		t.Fatalf("local change %+v", st)
+	}
+}

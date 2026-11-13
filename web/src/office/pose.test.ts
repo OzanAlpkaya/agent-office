@@ -13,6 +13,7 @@ describe("poseOf", () => {
     ["idle", "reviewer", false, "idle"],
     ["waiting_permission", "worker", false, "waiting"],
     ["waiting_permission", "reviewer", false, "waiting"],
+    ["waiting_background", "worker", false, "background"], // its command runs: at the desk, not idle (ADR 0064)
     // an agent on the waiting list (waiting.ts) waits for the user, whatever the state
     ["working", "worker", true, "waiting"],
     ["idle", "lead", true, "waiting"],

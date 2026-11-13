@@ -26,6 +26,8 @@ const PackNone = "none"
 // Limits of project settings.
 const (
 	MaxProjectAgents   = 32    // --max-agents has the same range
+	MaxProjectSubTasks = 100   // max_sub_tasks's range is 1-100 (ADR 0062)
+	DefaultMaxSubTasks = 20    // open sub-tasks per goal unless a project sets max_sub_tasks
 	maxProjectEgress   = 50    // extra egress names per project
 	maxProjectName     = 60    // display name
 	maxBudgetMicroUSD  = 1e12  // $1,000,000, as the --budget-* flags
@@ -47,6 +49,7 @@ type ProjectSettings struct {
 	RoleCLIs              map[string]string `json:"role_clis,omitempty"`                // merged over --role-cli (ADR 0050)
 	CodexModel            *string           `json:"codex_model,omitempty"`              // Codex agents' default model; "": Codex's (--codex-model)
 	MaxAgents             *int              `json:"max_agents,omitempty"`               // at most the daemon's --max-agents
+	MaxSubTasks           *int              `json:"max_sub_tasks,omitempty"`            // open sub-tasks per goal (ADR 0062); default 20
 	GitHub                *bool             `json:"github,omitempty"`                   // --github
 	GitHubRemote          *string           `json:"github_remote,omitempty"`            // --github-remote
 	Reviewer              *string           `json:"reviewer,omitempty"`                 // --reviewer
@@ -161,6 +164,9 @@ func (s ProjectSettings) Validate() error {
 	if n := s.MaxAgents; n != nil && (*n < 1 || *n > MaxProjectAgents) {
 		add("max_agents %d: between 1 and %d", *n, MaxProjectAgents)
 	}
+	if n := s.MaxSubTasks; n != nil && (*n < 1 || *n > MaxProjectSubTasks) {
+		add("max_sub_tasks %d: between 1 and %d", *n, MaxProjectSubTasks)
+	}
 	if r := s.GitHubRemote; r != nil && !remoteRe.MatchString(*r) {
 		add("github_remote %q: a git remote name, e.g. origin", *r)
 	}
@@ -234,6 +240,9 @@ func (d ProjectSettings) Merge(o ProjectSettings) ProjectSettings {
 	if o.MaxAgents != nil {
 		out.MaxAgents = o.MaxAgents
 	}
+	if o.MaxSubTasks != nil {
+		out.MaxSubTasks = o.MaxSubTasks
+	}
 	if o.GitHub != nil {
 		out.GitHub = o.GitHub
 	}
@@ -265,7 +274,7 @@ func (d ProjectSettings) complete() error {
 	var missing []string
 	for name, set := range map[string]bool{"pack": d.Pack != nil, "secrets_dir": d.SecretsDir != nil, "model": d.Model != nil,
 		"codex_model": d.CodexModel != nil,
-		"max_agents":  d.MaxAgents != nil, "github": d.GitHub != nil, "github_remote": d.GitHubRemote != nil,
+		"max_agents":  d.MaxAgents != nil, "max_sub_tasks": d.MaxSubTasks != nil, "github": d.GitHub != nil, "github_remote": d.GitHubRemote != nil,
 		"reviewer": d.Reviewer != nil, "review_rounds": d.ReviewRounds != nil,
 		"budget_session_micro_usd": d.BudgetSessionMicroUSD != nil, "budget_goal_micro_usd": d.BudgetGoalMicroUSD != nil,
 		"access_decider": d.AccessDecider != nil, "worker_memory": d.WorkerMemory != nil,
@@ -298,7 +307,7 @@ func Ptr[T any](v T) *T { return &v }
 func NeutralDefaults() ProjectSettings {
 	return ProjectSettings{Pack: Ptr(PackNone), SecretsDir: Ptr("/"), Model: Ptr(""), RoleModels: map[string]string{},
 		RoleCLIs: map[string]string{}, CodexModel: Ptr(""),
-		MaxAgents: Ptr(MaxProjectAgents), GitHub: Ptr(false), GitHubRemote: Ptr("origin"), Reviewer: Ptr(review.NameInternal),
+		MaxAgents: Ptr(MaxProjectAgents), MaxSubTasks: Ptr(DefaultMaxSubTasks), GitHub: Ptr(false), GitHubRemote: Ptr("origin"), Reviewer: Ptr(review.NameInternal),
 		ReviewRounds: Ptr(2), BudgetSessionMicroUSD: Ptr(int64(0)), BudgetGoalMicroUSD: Ptr(int64(0)),
 		AccessDecider: Ptr(DeciderUser), WorkerMemory: Ptr(""), WorkerPids: Ptr(0), MergeTarget: Ptr(DefaultMergeTarget)}
 }
@@ -356,8 +365,34 @@ func officeOf(s ProjectSettings) OfficeInfo {
 }
 
 // withoutLayout is s without its office layout: what the project's engine
-// runs with. Only a change of the rest reopens the project.
+// runs with.
 func (s ProjectSettings) withoutLayout() ProjectSettings {
 	s.OfficeLayout = nil
 	return s
+}
+
+// ReopenChanges names the settings that differ between s and t and change
+// what a project's engine is built from (its pack, network, secrets, GitHub
+// client and roles' CLIs): only those reopen the project, which needs its
+// agents stopped. Every other setting is read when an agent starts or a tool
+// runs and applies to the running engine at once (ADR 0061).
+func (s ProjectSettings) ReopenChanges(t ProjectSettings) []string {
+	same := func(a, b any) bool {
+		x, _ := json.Marshal(a)
+		y, _ := json.Marshal(b)
+		return bytes.Equal(x, y)
+	}
+	var out []string
+	for _, f := range []struct {
+		name string
+		a, b any
+	}{{"pack", s.Pack, t.Pack}, {"secrets_dir", s.SecretsDir, t.SecretsDir}, {"egress_allow", s.EgressAllow, t.EgressAllow},
+		{"github", s.GitHub, t.GitHub}, {"github_remote", s.GitHubRemote, t.GitHubRemote},
+		{"reviewer", s.Reviewer, t.Reviewer}, {"review_rounds", s.ReviewRounds, t.ReviewRounds},
+		{"role_clis", s.RoleCLIs, t.RoleCLIs}} {
+		if !same(f.a, f.b) {
+			out = append(out, f.name)
+		}
+	}
+	return out
 }

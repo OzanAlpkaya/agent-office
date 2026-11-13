@@ -80,7 +80,7 @@ func (e *Engine) leadResume(ctx context.Context, caller string, in mcp.ResumeAge
 	info, err := e.relaunchWith(ctx, a.info.ID, relaunchSpec{prompt: prompt, resume: true})
 	if errors.Is(err, ErrTooManyAgents) {
 		return mcp.AgentActionOutput{}, fmt.Errorf("%w (at most %d agents run at once, you included): wait for a "+
-			"report, or stop a worker, then resume this one", ErrTooManyAgents, e.opts.MaxAgents)
+			"report, or stop a worker, then resume this one", ErrTooManyAgents, e.maxAgents())
 	}
 	if err != nil {
 		return mcp.AgentActionOutput{}, err

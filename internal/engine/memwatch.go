@@ -36,6 +36,7 @@ func (e *Engine) watchMemory(a *agentProc, res *sandboxRes) {
 		cancel()
 		if err == nil && strings.HasPrefix(cg, "/") && !strings.Contains(cg, "..") {
 			events = filepath.Join(cgroupRoot, cg, "memory.events")
+			res.cgroupDir.Store(filepath.Join(cgroupRoot, cg))
 			break
 		}
 		select {

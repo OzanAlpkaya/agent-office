@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -146,13 +147,33 @@ type MergeResult struct {
 // MergeTree computes the merge of a and b without a working tree (git
 // merge-tree --write-tree, git 2.38+). Nothing changes but new objects.
 func (g Git) MergeTree(ctx context.Context, repo, a, b string) (MergeResult, error) {
+	return g.mergeTree(ctx, repo, "", a, b)
+}
+
+// MergeTreeBase is MergeTree with an explicit merge base (git merge-tree
+// --merge-base, git 2.40+): the changes from base to b applied onto a, like
+// a cherry-pick of base..b without a working tree (Phase 19, ADR 0063).
+func (g Git) MergeTreeBase(ctx context.Context, repo, base, a, b string) (MergeResult, error) {
+	if base == "" {
+		return MergeResult{}, errors.New("git: MergeTreeBase needs a base")
+	}
+	return g.mergeTree(ctx, repo, base, a, b)
+}
+
+func (g Git) mergeTree(ctx context.Context, repo, base, a, b string) (MergeResult, error) {
 	for _, r := range []string{a, b} {
 		if strings.HasPrefix(r, "-") || r == "" {
 			return MergeResult{}, fmt.Errorf("git: invalid revision %q", r)
 		}
 	}
-	out, code, err := g.runFull(ctx, repo, nil, nil, []int{1}, "merge-tree", "--write-tree", "--name-only",
-		"--no-messages", "-z", a, b)
+	if strings.HasPrefix(base, "-") {
+		return MergeResult{}, fmt.Errorf("git: invalid revision %q", base)
+	}
+	args := []string{"merge-tree", "--write-tree", "--name-only", "--no-messages", "-z"}
+	if base != "" {
+		args = append(args, "--merge-base="+base)
+	}
+	out, code, err := g.runFull(ctx, repo, nil, nil, []int{1}, append(args, a, b)...)
 	if err != nil {
 		return MergeResult{}, err
 	}
@@ -171,6 +192,24 @@ func (g Git) MergeTree(ctx context.Context, repo, a, b string) (MergeResult, err
 		return MergeResult{}, errors.New("git: merge-tree reported a conflict without files")
 	}
 	return res, nil
+}
+
+// MergeBase returns the best common ancestor of a and b, or "" when they have
+// none.
+func (g Git) MergeBase(ctx context.Context, repo, a, b string) (string, error) {
+	for _, r := range []string{a, b} {
+		if strings.HasPrefix(r, "-") || r == "" {
+			return "", fmt.Errorf("git: invalid revision %q", r)
+		}
+	}
+	out, code, err := g.runFull(ctx, repo, nil, nil, []int{1}, "merge-base", a, b)
+	if err != nil {
+		return "", err
+	}
+	if code == 1 {
+		return "", nil
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // FetchBranch fetches branch from remote into refs/remotes/<remote>/<branch>
@@ -194,4 +233,65 @@ func (g Git) FetchBranch(ctx context.Context, repo, remote, branch string) (stri
 // IsAncestor reports whether a is an ancestor of b (or equal) in repo.
 func (g Git) IsAncestor(ctx context.Context, repo, a, b string) (bool, error) {
 	return g.isAncestor(ctx, repo, a, b)
+}
+
+// DiffStat is how much changed between two commits.
+type DiffStat struct {
+	Files   int `json:"files"`
+	Added   int `json:"added"`   // lines; binary files count as 0
+	Removed int `json:"removed"` // lines
+}
+
+// DiffStat counts the files and lines changed from base to head (git diff
+// --numstat), without a working tree.
+func (g Git) DiffStat(ctx context.Context, repo, base, head string) (DiffStat, error) {
+	for _, r := range []string{base, head} {
+		if strings.HasPrefix(r, "-") || r == "" {
+			return DiffStat{}, fmt.Errorf("git: invalid revision %q", r)
+		}
+	}
+	out, err := g.run(ctx, repo, "diff", "--numstat", "-z", "--no-renames", base, head, "--")
+	if err != nil {
+		return DiffStat{}, err
+	}
+	var st DiffStat
+	for _, rec := range strings.Split(out, "\x00") {
+		f := strings.SplitN(rec, "\t", 3)
+		if len(f) != 3 {
+			continue
+		}
+		st.Files++
+		a, _ := strconv.Atoi(f[0]) // "-" for a binary file: 0
+		r, _ := strconv.Atoi(f[1])
+		st.Added += a
+		st.Removed += r
+	}
+	return st, nil
+}
+
+// CommitInfo is a commit's hash, subject and committer time.
+type CommitInfo struct {
+	SHA     string    `json:"sha"`
+	Subject string    `json:"subject"`
+	At      time.Time `json:"at"`
+}
+
+// LastCommit describes the commit rev points at.
+func (g Git) LastCommit(ctx context.Context, repo, rev string) (CommitInfo, error) {
+	if strings.HasPrefix(rev, "-") || rev == "" {
+		return CommitInfo{}, fmt.Errorf("git: invalid revision %q", rev)
+	}
+	out, err := g.run(ctx, repo, "log", "-1", "--no-show-signature", "--format=%H%x00%s%x00%cI", rev, "--")
+	if err != nil {
+		return CommitInfo{}, err
+	}
+	f := strings.SplitN(strings.TrimSpace(out), "\x00", 3)
+	if len(f) != 3 || !shaRe.MatchString(f[0]) {
+		return CommitInfo{}, errors.New("git: unexpected log output")
+	}
+	at, err := time.Parse(time.RFC3339, f[2])
+	if err != nil {
+		return CommitInfo{}, err
+	}
+	return CommitInfo{SHA: f[0], Subject: f[1], At: at.UTC()}, nil
 }

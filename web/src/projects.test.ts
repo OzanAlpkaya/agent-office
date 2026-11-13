@@ -59,7 +59,7 @@ describe("projects", () => {
 
 describe("project settings form", () => {
   it("turns empty fields into inherited settings and dollars into micro-USD", () => {
-    const s = settingsOf({ pack: " node ", model: "", maxAgents: "2", github: "off", budgetSessionUSD: "0.25",
+    const s = settingsOf({ pack: " node ", model: "", maxAgents: "2", maxSubTasks: "", github: "off", budgetSessionUSD: "0.25",
       budgetGoalUSD: "", egress: "registry.npmjs.org, , example.com", workerMemory: "", workerPids: "", mergeTarget: "",
       accessDecider: "", leadHosts: "" });
     expect(s).toEqual({ pack: "node", max_agents: 2, github: false, budget_session_micro_usd: 250000,

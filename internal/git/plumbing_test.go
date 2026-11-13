@@ -122,3 +122,77 @@ func TestMergeTree(t *testing.T) {
 		t.Fatal("an option as a revision")
 	}
 }
+
+// After a squash merge, a branch built on the squashed work conflicts with
+// the target on every line it changed again (history-only conflicts); with
+// the squashed work as the merge base, only its new changes move (ADR 0063).
+func TestMergeTreeBaseAfterSquash(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t)
+	gitOut(t, repo, "config", "user.name", "t")
+	gitOut(t, repo, "config", "user.email", "t@example.com")
+	writeCommit(t, repo, "game.go", "speed 1\njump 1\nscore 1\n")
+	gitOut(t, repo, "branch", "goal")
+	gitOut(t, repo, "checkout", "-q", "goal")
+	g1 := writeCommit(t, repo, "game.go", "speed 2\njump 2\nscore 1\n")
+	gitOut(t, repo, "checkout", "-q", "-b", "polish")
+	f1 := writeCommit(t, repo, "game.go", "speed 3\njump 2\nscore 1\n")
+	gitOut(t, repo, "checkout", "-q", "main")
+	gitOut(t, repo, "merge", "-q", "--squash", "goal")
+	gitOut(t, repo, "commit", "-q", "-m", "squash")
+	s := gitOut(t, repo, "rev-parse", "HEAD")
+
+	g := Git{}
+	if res, err := g.MergeTree(ctx, repo, s, f1); err != nil || res.Clean {
+		t.Fatalf("plain merge of the polish branch should conflict: %+v %v", res, err)
+	}
+	mb, err := g.MergeBase(ctx, repo, f1, g1)
+	if err != nil || mb != g1 {
+		t.Fatalf("merge base %q %v, want %s", mb, err, g1)
+	}
+	res, err := g.MergeTreeBase(ctx, repo, mb, s, f1)
+	if err != nil || !res.Clean {
+		t.Fatalf("port: %+v %v", res, err)
+	}
+	c, err := g.CommitTree(ctx, repo, res.Tree, []string{s}, "port")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gitOut(t, repo, "show", c+":game.go"); got != "speed 3\njump 2\nscore 1" {
+		t.Fatalf("ported content %q", got)
+	}
+	// A real conflict is still one: main changed the line the polish changes.
+	writeCommit(t, repo, "game.go", "speed 9\njump 2\nscore 1\n")
+	s2 := gitOut(t, repo, "rev-parse", "HEAD")
+	if res, err := g.MergeTreeBase(ctx, repo, mb, s2, f1); err != nil || res.Clean || !slices.Equal(res.Conflicts, []string{"game.go"}) {
+		t.Fatalf("real conflict: %+v %v", res, err)
+	}
+	if base, err := g.MergeBase(ctx, repo, s, gitOut(t, repo, "commit-tree", gitOut(t, repo, "rev-parse", s+"^{tree}"), "-m", "orphan")); err != nil || base != "" {
+		t.Fatalf("no common ancestor: %q %v", base, err)
+	}
+	if _, err := g.MergeTreeBase(ctx, repo, "", s, f1); err == nil {
+		t.Fatal("MergeTreeBase without a base accepted")
+	}
+}
+
+func TestDiffStatAndLastCommit(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t)
+	gitOut(t, repo, "config", "user.name", "t")
+	gitOut(t, repo, "config", "user.email", "t@example.com")
+	base := writeCommit(t, repo, "a.go", "1\n2\n3\n")
+	writeCommit(t, repo, "a.go", "1\ntwo\n3\n4\n")
+	head := writeCommit(t, repo, "b.go", "x\n")
+	g := Git{}
+	st, err := g.DiffStat(ctx, repo, base, head)
+	if err != nil || st != (DiffStat{Files: 2, Added: 3, Removed: 1}) {
+		t.Fatalf("diff stat %+v %v", st, err)
+	}
+	c, err := g.LastCommit(ctx, repo, head)
+	if err != nil || c.SHA != head || c.Subject == "" || c.At.IsZero() {
+		t.Fatalf("last commit %+v %v", c, err)
+	}
+	if _, err := g.DiffStat(ctx, repo, "-x", head); err == nil {
+		t.Fatal("option-like revision accepted")
+	}
+}

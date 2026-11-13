@@ -19,8 +19,11 @@ import (
 
 // Limits (ADR 0017, 0018).
 const (
-	MaxSubTasks   = 20   // sub-tasks per goal
-	MaxSummaryLen = 2000 // report_done summary
+	// MaxTotalSubTasks bounds every sub-task a goal ever has, done ones
+	// included, against a runaway loop; the project's max_sub_tasks bounds the
+	// open ones (ADR 0062).
+	MaxTotalSubTasks = 200
+	MaxSummaryLen    = 2000 // report_done summary
 	// MaxCommitMessageLen bounds the Tech Lead's merge message (ADR 0055).
 	MaxCommitMessageLen = 4000
 )
@@ -91,7 +94,8 @@ func (e *Engine) agentRefLocked(a *agentProc) mcp.AgentRef {
 func (e *Engine) taskInfoLocked(t db.Task) mcp.TaskInfo {
 	v := taskFromRow(t)
 	ti := mcp.TaskInfo{ID: t.ID, Title: t.Title, Description: t.Description, Status: t.Status,
-		ParentTaskID: t.ParentTaskID.String, DependsOn: v.DependsOn, Files: v.Files, Acceptance: v.Acceptance, Role: v.Role}
+		ParentTaskID: t.ParentTaskID.String, DependsOn: v.DependsOn, Files: v.Files, Acceptance: v.Acceptance, Role: v.Role,
+		SupersededBy: t.SupersededBy}
 	for _, c := range v.Conflicts {
 		ti.Conflicts = append(ti.Conflicts, mcp.ConflictInfo{With: c.With, Branch: c.Branch, Files: c.Files})
 	}
@@ -131,22 +135,30 @@ func (t team) CreateTask(ctx context.Context, caller string, in mcp.CreateTaskIn
 	if err != nil {
 		return mcp.TaskInfo{}, userErr(err)
 	}
-	n, err := e.q.CountChildTasks(ctx, nullString(goal.ID))
+	replaced, err := e.supersedable(ctx, goal, in.Supersedes)
 	if err != nil {
-		return mcp.TaskInfo{}, err
+		return mcp.TaskInfo{}, userErr(err)
 	}
-	if n >= MaxSubTasks {
-		return mcp.TaskInfo{}, userErr(fmt.Errorf("%w: a goal has at most %d sub-tasks", ErrLimit, MaxSubTasks))
+	if err := e.subTaskRoom(ctx, goal.ID, len(replaced)); err != nil {
+		return mcp.TaskInfo{}, userErr(err)
 	}
 	ti, err := e.subTaskInput(ctx, goal, in)
 	if err != nil {
+		return mcp.TaskInfo{}, userErr(err)
+	}
+	if ti.DependsOn, err = e.dependsWithout(ctx, ti.DependsOn, replaced); err != nil {
 		return mcp.TaskInfo{}, userErr(err)
 	}
 	task, err := e.createTask(ctx, ti, goal.ID, caller)
 	if err != nil {
 		return mcp.TaskInfo{}, userErr(err)
 	}
-	e.log.Info("sub-task created", "agent_id", caller, "task_id", task.ID, "goal", goal.ID)
+	e.log.Info("sub-task created", "agent_id", caller, "task_id", task.ID, "goal", goal.ID, "supersedes", replaced)
+	for _, old := range replaced {
+		if err := e.supersede(ctx, old, task.ID); err != nil {
+			e.log.Warn("close a superseded sub-task", "task_id", old, "by", task.ID, "err", err)
+		}
+	}
 	return mcp.TaskInfo{ID: task.ID, Title: task.Title, Description: task.Description, Status: task.Status,
 		ParentTaskID: task.ParentTaskID, DependsOn: task.DependsOn, Files: task.Files, Acceptance: task.Acceptance,
 		Role: task.Role}, nil
@@ -219,7 +231,7 @@ func (t team) AssignTask(ctx context.Context, caller string, in mcp.AssignTaskIn
 	a, err := e.Start(ctx, StartRequest{TaskID: task.ID, Role: roleName})
 	if errors.Is(err, ErrTooManyAgents) {
 		return mcp.AssignTaskOutput{}, userErr(fmt.Errorf("%w (at most %d agents run at once, you included): "+
-			"wait for a worker's report, then assign this task", ErrTooManyAgents, e.opts.MaxAgents))
+			"wait for a worker's report, then assign this task", ErrTooManyAgents, e.maxAgents()))
 	}
 	if err != nil {
 		return mcp.AssignTaskOutput{}, userErr(err)
@@ -415,14 +427,25 @@ func (t team) ReportNoChange(ctx context.Context, caller string, in mcp.ReportNo
 }
 
 func (t team) ReportDone(ctx context.Context, caller string, in mcp.ReportDoneInput) (mcp.ReportDoneOutput, error) {
-	out, err := t.e.reportDone(ctx, caller, in.Summary, in.CommitMessage)
+	out, err := t.e.reportDoneWith(ctx, caller, in.Summary, in.CommitMessage, in.Verification)
 	return out, userErr(err)
 }
 
 func (e *Engine) reportDone(ctx context.Context, caller, summary, commitMessage string) (mcp.ReportDoneOutput, error) {
+	return e.reportDoneWith(ctx, caller, summary, commitMessage, "")
+}
+
+// MaxVerificationLen bounds report_done's verification (Phase 19).
+const MaxVerificationLen = 2000
+
+func (e *Engine) reportDoneWith(ctx context.Context, caller, summary, commitMessage, verification string) (mcp.ReportDoneOutput, error) {
 	summary, err := normalizeText(summary, MaxSummaryLen, "summary")
 	if err != nil {
 		return mcp.ReportDoneOutput{}, err
+	}
+	verification = strings.TrimSpace(verification)
+	if len([]rune(verification)) > MaxVerificationLen {
+		return mcp.ReportDoneOutput{}, invalid("verification: at most %d characters", MaxVerificationLen)
 	}
 	e.mu.Lock()
 	a, err := e.callerLocked(caller)
@@ -520,6 +543,11 @@ func (e *Engine) reportDone(ctx context.Context, caller, summary, commitMessage 
 	}
 	if _, err := e.setTaskStatus(ctx, task, StatusReview); err != nil {
 		return out, err
+	}
+	// The worker's report, for the task modal's run info (Phase 19).
+	if _, err := e.q.InsertTaskReport(ctx, db.InsertTaskReportParams{TaskID: task.ID, AgentID: nullString(info.ID),
+		Summary: summary, Verification: verification, CreatedAt: now()}); err != nil {
+		e.log.Warn("store the worker's report", "agent_id", info.ID, "err", err)
 	}
 	// ADR 0032: will it merge? Against the base branch and the goal's other open
 	// sub-tasks, in the main repository. Shown, never a refusal.
@@ -667,7 +695,8 @@ func truncateRunes(s string, max int) string {
 // workerRules is the part of a worker's prompt about reporting, its lead and
 // the network; also used by follow-ups (ADR 0022).
 func (e *Engine) workerRules(task *db.Task) string {
-	p := "\n\nWhen the task is done and committed, call the agent-office report_done tool with a short summary."
+	p := "\n\nWhen the task is done and committed, call the agent-office report_done tool with a short summary, and in " +
+		"verification the checks you ran (tests, linters, the build) and their result."
 	if task.ParentTaskID.Valid {
 		p += " This task is part of a goal led by another agent. If you are blocked or need a decision," +
 			` use the agent-office send_message tool with to="lead", then end your turn: the answer is delivered` +

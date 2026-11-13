@@ -136,6 +136,7 @@ type sandboxRes struct {
 	grants    *sandbox.Grants // hosts approved at run time (ADR 0019)
 	memory    string          // the worker's memory limit, e.g. "2g" (ADR 0051)
 	pids      int             // the worker's process limit (Phase 17)
+	cgroupDir atomic.Value    // string: the container's cgroup directory, once known (ADR 0064)
 	oomKills  atomic.Int64    // the worker cgroup's oom_kill count when the running watch last read it
 	oomTold   atomic.Int64    // OOM kills the watch told the agent about: processes it ran, not itself
 	pidsHits  atomic.Int64    // the worker cgroup's pids.events max count when the running watch last read it
@@ -479,7 +480,7 @@ func (e *Engine) launchSandboxed(l launchInfo, prep sandboxPrep) (AgentInfo, err
 
 // workerPids is a worker's process limit (Phase 17).
 func (e *Engine) workerPids() int {
-	if n := e.opts.Sandbox.Pids; n > 0 {
+	if n := e.lv().Pids; n > 0 {
 		return n
 	}
 	return sandbox.DefaultPids
@@ -487,7 +488,7 @@ func (e *Engine) workerPids() int {
 
 // workerMemory is a worker's memory limit (ADR 0051).
 func (e *Engine) workerMemory() string {
-	if m := e.opts.Sandbox.Memory; m != "" {
+	if m := e.lv().Memory; m != "" {
 		return m
 	}
 	return sandbox.DefaultMemory

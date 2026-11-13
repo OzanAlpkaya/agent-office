@@ -1,8 +1,9 @@
 // Projects panel (ADR 0046, 0048): add a repository, change a project's
 // settings, retry or remove it. Settings left empty inherit the daemon's
 // flags, shown as placeholders.
-import { type JSX, useState } from "react";
-import { type AccessDecider, type DaemonStatus, type Project, type ProjectSettings, api } from "./api";
+import { type JSX, useEffect, useState } from "react";
+import { type AccessDecider, type Caps, type DaemonStatus, type Project, type ProjectSettings, api } from "./api";
+import { capNote, needsStop } from "./caps";
 import { formatMoney } from "./usage";
 
 // Failure is the last action's error, shown where that action was asked for.
@@ -16,6 +17,7 @@ export interface SettingsDraft {
   pack: string;
   model: string;
   maxAgents: string;
+  maxSubTasks: string; // open sub-tasks per goal (ADR 0062)
   github: "" | "on" | "off";
   budgetSessionUSD: string;
   budgetGoalUSD: string;
@@ -32,6 +34,7 @@ const usd = (micro: number | undefined): string => (micro === undefined ? "" : S
 export function draftOf(s: ProjectSettings): SettingsDraft {
   return {
     pack: s.pack ?? "", model: s.model ?? "", maxAgents: s.max_agents === undefined ? "" : String(s.max_agents),
+    maxSubTasks: s.max_sub_tasks === undefined ? "" : String(s.max_sub_tasks),
     github: s.github === undefined ? "" : s.github ? "on" : "off",
     budgetSessionUSD: usd(s.budget_session_micro_usd), budgetGoalUSD: usd(s.budget_goal_micro_usd),
     egress: (s.egress_allow ?? []).join(", "),
@@ -63,6 +66,11 @@ export function settingsOf(d: SettingsDraft, base: ProjectSettings = {}): Projec
   const max = d.maxAgents.trim();
   if (max !== "" && !/^\d+$/.test(max)) throw new Error("Max agents: a whole number");
   set("max_agents", max === "" ? undefined : Number(max));
+  const subs = d.maxSubTasks.trim();
+  if (subs !== "" && (!/^\d+$/.test(subs) || Number(subs) < 1 || Number(subs) > 100)) {
+    throw new Error("Open sub-tasks per goal: a whole number between 1 and 100");
+  }
+  set("max_sub_tasks", subs === "" ? undefined : Number(subs));
   set("github", d.github === "" ? undefined : d.github === "on");
   set("budget_session_micro_usd", microUSD("Session budget", d.budgetSessionUSD));
   set("budget_goal_micro_usd", microUSD("Goal budget", d.budgetGoalUSD));
@@ -87,6 +95,7 @@ function inherited(d: ProjectSettings | undefined): Record<keyof SettingsDraft, 
   const money = (m: number | undefined): string => (m ? formatMoney(m) : "off");
   return {
     pack: d?.pack ?? "", model: d?.model || "CLI default", maxAgents: String(d?.max_agents ?? ""),
+    maxSubTasks: String(d?.max_sub_tasks ?? 20),
     github: d?.github ? "on" : "off", budgetSessionUSD: money(d?.budget_session_micro_usd),
     budgetGoalUSD: money(d?.budget_goal_micro_usd), egress: (d?.egress_allow ?? []).join(", ") || "none",
     workerMemory: d?.worker_memory || "pack's or --sandbox-memory", accessDecider: d?.access_decider ?? "user",
@@ -95,8 +104,9 @@ function inherited(d: ProjectSettings | undefined): Record<keyof SettingsDraft, 
   };
 }
 
-function SettingsFields({ draft, onChange, defaults, sandboxed }: {
+function SettingsFields({ draft, onChange, defaults, sandboxed, caps }: {
   draft: SettingsDraft; onChange: (d: SettingsDraft) => void; defaults?: ProjectSettings; sandboxed: boolean;
+  caps?: Caps; // an open project's caps now (ADR 0061)
 }): JSX.Element {
   const inh = inherited(defaults);
   // The inherited value is shown in full under the field (a placeholder was cut off, Phase 18 review).
@@ -112,7 +122,13 @@ function SettingsFields({ draft, onChange, defaults, sandboxed }: {
     <div className="settings-grid">
       {sandboxed && field("pack", "Stack pack", "go, node, one of yours, or none (agent-office pack list)")}
       {field("model", "Model", "default model of its agents, e.g. haiku; a role's own model wins")}
-      {field("maxAgents", "Max agents", "its agents at the same time; never more than the daemon's cap")}
+      <div className="setting-group">
+        {field("maxAgents", "Max agents", "its agents at the same time; never more than the daemon's cap")}
+        <span className="field-hint" data-testid="cap-note">
+          {caps ? capNote(caps) : "Never more than the daemon's cap. The Tech Lead, Architect and QA count too."}
+        </span>
+      </div>
+      {field("maxSubTasks", "Open sub-tasks per goal", "sub-tasks to do, in progress or blocked; reported, done and superseded ones do not count")}
       <label className="setting">
         <span>GitHub</span>
         <select value={draft.github} aria-label="GitHub" onChange={(e) => onChange({ ...draft, github: e.target.value as SettingsDraft["github"] })}>
@@ -146,14 +162,14 @@ function SettingsFields({ draft, onChange, defaults, sandboxed }: {
 }
 
 const emptyDraft: SettingsDraft = {
-  pack: "", model: "", maxAgents: "", github: "", budgetSessionUSD: "", budgetGoalUSD: "", egress: "", workerMemory: "",
+  pack: "", model: "", maxAgents: "", maxSubTasks: "", github: "", budgetSessionUSD: "", budgetGoalUSD: "", egress: "", workerMemory: "",
   workerPids: "", mergeTarget: "", accessDecider: "", leadHosts: "",
 };
 
 // ProjectForm changes one project's name and settings. Settings left empty
 // inherit the daemon's flags; fields the form does not show are kept.
-export function ProjectForm({ project: p, status, sandboxed, onSaved }: {
-  project: Project; status?: DaemonStatus; sandboxed: boolean; onSaved?: () => void;
+export function ProjectForm({ project: p, status, sandboxed, caps, running = 0, onSaved }: {
+  project: Project; status?: DaemonStatus; sandboxed: boolean; caps?: Caps; running?: number; onSaved?: () => void;
 }): JSX.Element {
   const [edit, setEdit] = useState<SettingsDraft>(() => draftOf(p.settings));
   const [name, setName] = useState(p.name);
@@ -177,7 +193,21 @@ export function ProjectForm({ project: p, status, sandboxed, onSaved }: {
       <label className="setting"><span>Name</span>
         <input value={name} aria-label="Name" onChange={(e) => setName(e.target.value)} />
       </label>
-      <SettingsFields draft={edit} onChange={setEdit} defaults={status?.defaults} sandboxed={sandboxed} />
+      <SettingsFields draft={edit} onChange={setEdit} defaults={status?.defaults} sandboxed={sandboxed} caps={caps} />
+      {(() => {
+        let next: ProjectSettings | undefined;
+        try {
+          next = settingsOf(edit, p.settings);
+        } catch {
+          next = undefined;
+        }
+        const stop = next ? needsStop(p.settings, next) : [];
+        return running > 0 && stop.length > 0 ? (
+          <p className="hint small" data-testid="needs-stop">
+            {stop.join(", ")} {stop.length === 1 ? "changes" : "change"} what the agents run with: saving needs this project's agents stopped.
+          </p>
+        ) : null;
+      })()}
       <div className="row">
         <button className="primary" type="submit">Save</button>
         {saved && <span className="small muted" role="status">Saved.</span>}
@@ -238,8 +268,9 @@ export function AddProjectForm({ status, onAdded, autoFocus = false }: {
 
 // ProjectsPanel lists every project: open one, retry one that could not
 // open, remove one, or open its settings; and adds a project.
-export function ProjectsPanel({ projects, current, status, running, onSelect, onSettings }: {
+export function ProjectsPanel({ projects, current, status, running, remote = false, onSelect, onSettings }: {
   projects: Project[]; current?: string; status?: DaemonStatus;
+  remote?: boolean; // a remote device: the daemon-wide cap is shown, changed on this machine only
   running: number; // agents that have not exited, in every project: live, unlike the status
   onSelect: (id: string) => void;
   onSettings?: (id: string) => void; // the project's own settings (the gear by the picker)
@@ -264,6 +295,7 @@ export function ProjectsPanel({ projects, current, status, running, onSelect, on
         Each project is one repository with its own team, board, inbox, memory and office floor.
         {status && ` At most ${status.max_agents} agents run across all projects (${running} now).`}
       </p>
+      {status && <DaemonCap status={status} remote={remote} />}
       <ul className="project-list">
         {projects.map((p) => (
           <li key={p.id} className={`project-item ${p.id === current ? "current" : ""}`}>
@@ -304,5 +336,46 @@ export function ProjectsPanel({ projects, current, status, running, onSelect, on
       <h3>Add a project</h3>
       <AddProjectForm status={status} onAdded={(p) => onSelect(p.id)} />
     </section>
+  );
+}
+
+// DaemonCap changes the daemon-wide agent cap without a restart (ADR 0061):
+// saved, it wins over --max-agents; "Use --max-agents" clears it.
+function DaemonCap({ status, remote }: { status: DaemonStatus; remote: boolean }): JSX.Element {
+  const [value, setValue] = useState(String(status.max_agents));
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  // Another device's change arrives with the daemon's status.
+  useEffect(() => setValue(String(status.max_agents)), [status.max_agents]);
+  const save = (n: number | null): void => {
+    setError("");
+    setSaved(false);
+    api.setDaemonMaxAgents(n).then((st) => { setValue(String(st.max_agents)); setSaved(true); },
+      (err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  };
+  return (
+    <form className="daemon-cap row" aria-label="Daemon-wide agent cap" onSubmit={(e) => {
+      e.preventDefault();
+      const n = Number(value.trim());
+      if (!/^\d+$/.test(value.trim()) || n < 1 || n > 32) {
+        setError("Max agents (all projects): a whole number between 1 and 32");
+        return;
+      }
+      save(n);
+    }}>
+      <label className="setting"><span>Max agents (all projects)</span>
+        <input value={value} inputMode="numeric" aria-label="Max agents (all projects)" disabled={remote}
+          onChange={(e) => setValue(e.target.value)} />
+        <span className="field-hint" data-testid="cap-hint">
+          {remote ? "Changed on this machine only (the UI on localhost). A project's Max agents can be changed here." : status.max_agents_saved
+            ? `Set here; --max-agents is ${status.max_agents_flag ?? "?"}. Applies at once; running agents keep running.`
+            : "From --max-agents. A value saved here wins over the flag and holds after a restart."}
+        </span>
+      </label>
+      {!remote && <button type="submit">Save</button>}
+      {!remote && status.max_agents_saved && <button type="button" className="link" onClick={() => save(null)}>Use --max-agents</button>}
+      {saved && <span className="small muted" role="status">Saved.</span>}
+      {error && <p className="error small" role="alert">{error}</p>}
+    </form>
   );
 }

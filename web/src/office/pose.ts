@@ -2,7 +2,7 @@
 import { type Agent, defaultRole } from "../api";
 import { type HairStyle, type Swatch, hairColors, hairStyles, roleShirts, shirts, skins } from "./art";
 
-export type Pose = "booting" | "idle" | "typing" | "reviewing" | "waiting" | "away";
+export type Pose = "booting" | "idle" | "typing" | "reviewing" | "waiting" | "background" | "away";
 
 export const poseLabel: Record<Pose, string> = {
   booting: "Starting",
@@ -10,6 +10,7 @@ export const poseLabel: Record<Pose, string> = {
   typing: "Working",
   reviewing: "Reviewing",
   waiting: "Waiting for you",
+  background: "Waiting on a background task",
   away: "Exited",
 };
 
@@ -24,6 +25,8 @@ export function poseOf(a: Pick<Agent, "state" | "kind">, waiting: boolean): Pose
       return "booting";
     case "idle":
       return "idle";
+    case "waiting_background":
+      return "background"; // sits at its desk like idle (ADR 0064)
     case "working":
       return a.kind === "reviewer" ? "reviewing" : "typing";
   }

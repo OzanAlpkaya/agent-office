@@ -292,7 +292,7 @@ func TestBudgets(t *testing.T) {
 	if err := e.allowRequest(solo); !errors.Is(err, errUnpriced) {
 		t.Fatalf("unpriced: %v", err)
 	}
-	e.opts.Budgets = Budgets{}
+	e.setLiveForTest(func(l *liveOptions) { l.Budgets = Budgets{} })
 	if err := e.allowRequest(w1); err != nil {
 		t.Fatalf("budgets off: %v", err)
 	}

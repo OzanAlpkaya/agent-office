@@ -273,6 +273,7 @@ type CreateTaskInput struct {
 	Files       []string `json:"files,omitempty" jsonschema:"Files it changes: repository-relative paths, directories ending in /, or globs. Sub-tasks with overlapping files cannot run at the same time unless one depends on the other."`
 	Acceptance  []string `json:"acceptance,omitempty" jsonschema:"Acceptance criteria QA tests, one per item."`
 	Role        string   `json:"role,omitempty" jsonschema:"The worker role that builds it (agent-office lists them in list_tasks); empty: worker."`
+	Supersedes  []string `json:"supersedes,omitempty" jsonschema:"Ids of sub-tasks of your goal this one replaces: they are closed as superseded (none may have a running agent; stop_agent first). Use it instead of leaving a replaced sub-task open."`
 }
 
 // AgentRef is an agent as the tools show it.
@@ -296,6 +297,7 @@ type TaskInfo struct {
 	Files        []string       `json:"files,omitempty"`
 	Acceptance   []string       `json:"acceptance,omitempty"`
 	Role         string         `json:"role,omitempty"`
+	SupersededBy string         `json:"superseded_by,omitempty"` // closed because this sub-task (or plan version) replaced it
 	Conflicts    []ConflictInfo `json:"conflicts,omitempty"`
 	Agents       []AgentRef     `json:"agents,omitempty"`
 }
@@ -348,6 +350,8 @@ type SendMessageOutput struct {
 // ReportDoneInput is report_done's input.
 type ReportDoneInput struct {
 	Summary string `json:"summary" jsonschema:"What you did and anything the reader must know (1-2000 characters)."`
+	// Phase 19: what the worker checked, shown to the user with its run.
+	Verification string `json:"verification,omitempty" jsonschema:"Workers: the checks you ran and their result, e.g. 'make check: pass (42 tests)' or 'go test ./...: 1 failure in store, unrelated' (up to 2000 characters). Leave it out if you ran none."`
 	// The Tech Lead's squash-merge message for the goal (ADR 0055).
 	CommitMessage string `json:"commit_message,omitempty" jsonschema:"Tech Lead only: the commit message for squash-merging the goal's tested work into the target branch, in the repository's style (a subject line, a blank line, a short body; up to 4000 characters). The user reviews it before merging. Workers leave it out."`
 }

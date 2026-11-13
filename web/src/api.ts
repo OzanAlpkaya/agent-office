@@ -3,10 +3,12 @@
 // InboxItem, Spec, QARun, MemoryEntry, RoleInfo, ApproveResult), internal/mcp (Plan),
 // internal/sandbox (Event), internal/usage (Tokens) and the API in internal/api.
 // Written by hand for now (ADR 0005); keep them in sync.
+import { type AgentRun, isAgentRun } from "./runs";
 import { type Presence, isPresence } from "./presence";
 import { type AvatarLook, type Profile, isProfile } from "./office/avatar";
 
-export type AgentState = "starting" | "idle" | "working" | "waiting_permission" | "exited";
+// waiting_background: idle, with a background command still running (Phase 19, ADR 0064)
+export type AgentState = "starting" | "idle" | "working" | "waiting_permission" | "waiting_background" | "exited";
 export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "blocked";
 export type WorktreeStatus = "active" | "kept" | "removed";
 export type SandboxMode = "host" | "podman";
@@ -22,7 +24,7 @@ export const defaultRole: Record<Kind, Role> = {
 };
 
 export const taskStatuses: readonly TaskStatus[] = ["todo", "in_progress", "review", "done", "blocked"];
-const agentStates: readonly string[] = ["starting", "idle", "working", "waiting_permission", "exited"];
+const agentStates: readonly string[] = ["starting", "idle", "working", "waiting_permission", "waiting_background", "exited"];
 
 // AgentCLI is the agent CLI an agent runs on (ADR 0050).
 export type AgentCLI = "claude" | "codex";
@@ -102,7 +104,17 @@ export interface Status {
   prices?: PriceInfo;
   budgets?: Budgets;
   qa?: boolean; // goals need a passing QA run (ADR 0033)
+  caps?: Caps; // agent and sub-task caps (ADR 0061, 0062)
   remote_hosts?: string[]; // tailnet names tailscale serve forwards to the daemon (ADR 0038)
+}
+
+// Caps is what limits a project's agents and sub-tasks (ADR 0061, 0062).
+export interface Caps {
+  max_agents: number; // the project's own setting
+  daemon_max: number; // the daemon-wide cap
+  effective: number; // the smaller one: what a start meets
+  running: number; // the project's agents running or starting
+  max_sub_tasks: number; // open sub-tasks per goal
 }
 
 // Paired devices (ADR 0039). A device never carries its token.
@@ -287,6 +299,7 @@ export interface Task {
   acceptance?: string[];
   role?: string;
   spec_key?: string;
+  superseded_by?: string; // closed as replaced: a task id, or "spec:<version>" (ADR 0062)
   conflicts?: Conflict[];
   conflicts_checked_at?: string;
 }
@@ -359,6 +372,8 @@ export interface Spec {
   path?: string;
   created_at: string;
   approved_at?: string;
+  change_request?: string; // the user's request to change this version (Phase 19)
+  change_requested_at?: string;
 }
 
 export interface ApproveResult {
@@ -379,7 +394,8 @@ export interface QARun {
   status: "running" | "passed" | "failed" | "error";
   branch: string;
   head?: string;
-  merged: { task_id: string; title: string; branch: string; head: string }[];
+  // head: the sub-task's; merge and port: a port onto the target after the goal's squash merge (Phase 19)
+  merged: { task_id: string; title: string; branch: string; head: string; merge?: string; port?: boolean }[];
   summary?: string;
   bugs: { title: string; description: string; task_id?: string; bug_task_id?: string }[];
   error?: string;
@@ -590,7 +606,9 @@ export interface ProjectSettings {
   egress_allow?: string[];
   model?: string; // "": the CLI default
   role_models?: Record<string, string>;
+  role_clis?: Record<string, string>; // agent CLI per role (ADR 0050)
   max_agents?: number;
+  max_sub_tasks?: number; // open sub-tasks per goal (to do, in progress, blocked); default 20 (ADR 0062)
   github?: boolean;
   github_remote?: string;
   reviewer?: string;
@@ -672,7 +690,9 @@ export function isProject(v: unknown): v is Project {
 // The daemon-wide state (GET /api/status).
 export interface DaemonStatus {
   sandbox: SandboxMode;
-  max_agents: number; // the cap across all projects (ADR 0047)
+  max_agents: number; // the cap across all projects (ADR 0047): the saved value, else --max-agents
+  max_agents_flag?: number; // --max-agents (ADR 0061)
+  max_agents_saved?: boolean; // the cap was set in the app and wins over the flag
   running: number;
   warnings: string[];
   defaults: ProjectSettings; // the daemon's flags, every field set
@@ -711,7 +731,8 @@ export type ProjectsMessage =
   | { type: "project"; project: Project }
   | { type: "project_removed"; id: string }
   | { type: "presence"; presence: Presence } // the user's devices with a visible page (Phase 18)
-  | { type: "profile"; profile: Profile }; // the user's name and look (Phase 18 review)
+  | { type: "profile"; profile: Profile } // the user's name and look (Phase 18 review)
+  | { type: "daemon"; status: DaemonStatus }; // the daemon-wide state changed, e.g. its agent cap (ADR 0061)
 
 export function parseProjectsMessage(raw: string): ProjectsMessage | undefined {
   let m: unknown;
@@ -732,6 +753,8 @@ export function parseProjectsMessage(raw: string): ProjectsMessage | undefined {
       return isPresence(m.presence) ? { type: "presence", presence: m.presence } : undefined;
     case "profile":
       return isProfile(m.profile) ? { type: "profile", profile: m.profile } : undefined;
+    case "daemon":
+      return isObj(m.status) && isCount(m.status.max_agents) ? { type: "daemon", status: m.status as unknown as DaemonStatus } : undefined;
     default:
       return undefined;
   }
@@ -766,7 +789,8 @@ export type EventMessage =
   | { type: "access_request"; request: AccessRequest }
   | { type: "pull_request"; pullRequest: PullRequest }
   | { type: "usage"; usage: SessionUsage }
-  | { type: "goal_merge"; merge: GoalMerge };
+  | { type: "goal_merge"; merge: GoalMerge }
+  | { type: "caps"; caps: Caps }; // the project's agent and sub-task caps changed (ADR 0061)
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null;
@@ -957,9 +981,16 @@ export function parseEventMessage(raw: string): EventMessage | undefined {
       return isPullRequest(m.pull_request) ? { type: "pull_request", pullRequest: m.pull_request } : undefined;
     case "usage":
       return isSessionUsage(m.usage) ? { type: "usage", usage: m.usage } : undefined;
+    case "caps":
+      return isCaps(m.caps) ? { type: "caps", caps: m.caps } : undefined;
     default:
       return undefined;
   }
+}
+
+export function isCaps(v: unknown): v is Caps {
+  return isObj(v) && isCount(v.max_agents) && isCount(v.daemon_max) && isCount(v.effective) && isCount(v.running) &&
+    isCount(v.max_sub_tasks);
 }
 
 // ApiError carries the HTTP status and the parsed error body.
@@ -1014,6 +1045,8 @@ export const api = {
   checkOfficeLayout: (yaml: string): Promise<LayoutCheck> => request("POST", "/api/office-layouts/check", { yaml }),
   profile: (): Promise<Profile> => request("GET", "/api/profile"),
   setProfile: (p: { name: string; look: AvatarLook }): Promise<Profile> => request("PUT", "/api/profile", p),
+  // Phase 19 (ADR 0061): the daemon-wide agent cap; null goes back to --max-agents.
+  setDaemonMaxAgents: (n: number | null): Promise<DaemonStatus> => request("PUT", "/api/daemon", { max_agents: n }),
 };
 
 
@@ -1067,6 +1100,11 @@ export function projectApi(projectId: string) {
     },
     revokeGrant: (id: number): Promise<AccessGrant> => request("DELETE", `${base}/access-grants/${id}`),
     goalRecord: (goalId: string): Promise<GoalRecord> => request("GET", `${base}/tasks/${goalId}/record`),
+    taskRuns: async (taskId: string): Promise<AgentRun[]> => {
+      const v: unknown = await request("GET", `${base}/tasks/${taskId}/runs`);
+      if (!Array.isArray(v) || !v.every(isAgentRun)) throw new ApiError("unexpected run info", 200, undefined);
+      return v;
+    },
     removeGoalAgents: (goalId: string): Promise<GoalCleanup> => request("POST", `${base}/tasks/${goalId}/remove-agents`),
     mergePreview: (goalId: string): Promise<MergePreview> => request("GET", `${base}/tasks/${goalId}/merge`),
     mergeGoal: (goalId: string, confirm: { target_head: string; source_head: string; message: string }): Promise<GoalMerge> =>
@@ -1100,6 +1138,7 @@ export function projectApi(projectId: string) {
     messageAgent: (id: string, body: string): Promise<Message> => request("POST", `${base}/agents/${id}/message`, { body }),
     editSpec: (id: number, plan: Plan): Promise<Spec> => request("PUT", `${base}/specs/${id}`, plan),
     approveSpec: (id: number): Promise<ApproveResult> => request("POST", `${base}/specs/${id}/approve`),
+    requestSpecChanges: (id: number, changes: string): Promise<Spec> => request("POST", `${base}/specs/${id}/changes`, { changes }),
     resolveConflict: (taskId: string): Promise<void> => request("POST", `${base}/tasks/${taskId}/resolve-conflict`),
     addMemory: (d: MemoryDraft): Promise<MemoryEntry> => request("POST", `${base}/memory`, d),
     editMemory: (id: number, patch: Partial<MemoryDraft>): Promise<MemoryEntry> => request("PATCH", `${base}/memory/${id}`, patch),

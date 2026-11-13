@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/OzanAlpkaya/agent-office/internal/agent"
@@ -21,7 +22,6 @@ import (
 	"github.com/OzanAlpkaya/agent-office/internal/mcp"
 	"github.com/OzanAlpkaya/agent-office/internal/pack"
 	"github.com/OzanAlpkaya/agent-office/internal/role"
-	"github.com/OzanAlpkaya/agent-office/internal/sandbox"
 	"github.com/OzanAlpkaya/agent-office/internal/store"
 	"github.com/OzanAlpkaya/agent-office/internal/store/db"
 	"github.com/OzanAlpkaya/agent-office/internal/terminal"
@@ -108,6 +108,7 @@ type Options struct {
 	Store               *store.Store  // required
 	Git                 git.Git       // git CLI wrapper
 	MaxAgents           int           // this project's running agents at once; default 4 (ADR 0047)
+	MaxSubTasks         int           // open sub-tasks per goal; default 20 (ADR 0062)
 	Model               string        // optional default model; a role's own model wins (ADR 0029)
 	CodexModel          string        // Codex agents' default model; "": Codex's own (ADR 0050)
 	Roles               *role.Set     // team roles (ADR 0029); nil: the built-in roles
@@ -147,6 +148,12 @@ type Options struct {
 	// has a pool of its own.
 	project *db.Project
 	slots   *slotPool // the daemon-wide cap
+
+	// Set by the hub for a live settings change (ADR 0061): the roles before
+	// the project's role models, and the worker limits before its own.
+	baseRoles  *role.Set
+	packMemory string
+	packPids   int
 }
 
 // Status is the daemon-wide state the UI shows next to the board.
@@ -162,6 +169,7 @@ type Status struct {
 	Prices   PriceInfo     `json:"prices"`  // cost estimates (ADR 0026)
 	Budgets  Budgets       `json:"budgets"` // enforced for sandboxed agents only (ADR 0027)
 	QA       bool          `json:"qa"`      // goals need a passing QA run (ADR 0033)
+	Caps     Caps          `json:"caps"`    // agent and sub-task caps (ADR 0061, 0062)
 }
 
 // PackStatus is what the daemon's stack pack gives sandboxed agents. Secrets
@@ -234,6 +242,7 @@ type Update struct {
 	QARun         *QARun         `json:"qa_run,omitempty"`     // a QA run (ADR 0033)
 	GoalMerge     *GoalMerge     `json:"goal_merge,omitempty"` // a goal's merge or push (ADR 0055)
 	Memory        *MemoryEntry   `json:"memory,omitempty"`     // a project memory entry (ADR 0034)
+	Caps          *Caps          `json:"caps,omitempty"`       // the project's agent and sub-task caps (ADR 0061)
 }
 
 type agentProc struct {
@@ -266,13 +275,21 @@ type agentProc struct {
 	historyDone    chan struct{} // closed after the session's terminal was saved for the last time (ADR 0036); nil for agents of a previous run
 
 	// Message delivery (ADR 0018) and report_done (ADR 0017); guarded by Engine.mu.
-	hasPrompt     bool        // started with an initial prompt
-	turns         int         // turns finished (Stop or StopFailure of the main agent)
-	lastInput     time.Time   // last terminal input from the user
-	deliverTimer  *time.Timer // pending idle delivery
-	delivering    bool        // a message is being typed into the PTY
-	stopAfterTurn bool        // report_done: end the session when the turn ends
-	reporting     bool        // a report_done call is running
+	hasPrompt    bool        // started with an initial prompt
+	turns        int         // turns finished (Stop or StopFailure of the main agent)
+	lastInput    time.Time   // last terminal input from the user
+	deliverTimer *time.Timer // pending idle delivery
+	delivering   bool        // a message is being typed into the PTY
+	endCheck     bool        // an idle Architect's end check is scheduled (Phase 19)
+	// The background wait state (ADR 0064): a background Bash started in this
+	// session, the agent's processes before it, and whether it is waited on.
+	bgSeen        bool
+	bgBaseline    map[int]bool
+	bgWaiting     bool
+	bgGen         int          // the current wait; a poller of an older one ends
+	bgKnown       map[int]bool // processes counted as background work at the last check
+	stopAfterTurn bool         // report_done: end the session when the turn ends
+	reporting     bool         // a report_done call is running
 }
 
 // Engine owns agent and task lifecycles. All state changes go through it.
@@ -306,10 +323,11 @@ type Engine struct {
 	ids      *sessionIDs        // running agents' sessions, for log lines (ADR 0028)
 	closing  bool               // Shutdown began: no agent starts any more; guarded by mu
 
-	leadHosts      sandbox.Allowlist      // Options.LeadAccessHosts, parsed (ADR 0053)
-	stalls         map[string]*stallState // the stall watchdog's goals (ADR 0052); guarded by mu
-	restartImports sync.WaitGroup         // sandbox imports after a restart; a restore waits for them
-	noRestore      map[string]string      // agent id -> why a restore leaves it exited (set before the restore runs)
+	live           atomic.Pointer[liveOptions] // settings a project may change while agents run (ADR 0061)
+	readProcs      procReader                  // the process table (ADR 0064); nil: /proc
+	stalls         map[string]*stallState      // the stall watchdog's goals (ADR 0052); guarded by mu
+	restartImports sync.WaitGroup              // sandbox imports after a restart; a restore waits for them
+	noRestore      map[string]string           // agent id -> why a restore leaves it exited (set before the restore runs)
 }
 
 // New validates opts, registers the repository as a project, reconciles state
@@ -360,22 +378,14 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	if opts.Roles == nil {
 		opts.Roles = role.MustBuiltins()
 	}
-	if b := opts.Budgets; b.SessionMicroUSD < 0 || b.GoalMicroUSD < 0 {
-		return nil, fmt.Errorf("engine: budgets must not be negative, got %+v", b)
-	}
 	if opts.Sandbox != nil {
 		if err := opts.Sandbox.validate(); err != nil {
 			return nil, err
 		}
 	}
-	switch opts.AccessDecider {
-	case "", DeciderUser, DeciderLead, DeciderLeadPolicy:
-	default:
-		return nil, fmt.Errorf("engine: AccessDecider %q", opts.AccessDecider)
-	}
-	leadHosts, err := sandbox.ParseAllowlist(opts.LeadAccessHosts)
+	live, err := liveFrom(opts)
 	if err != nil {
-		return nil, fmt.Errorf("engine: LeadAccessHosts: %w", err)
+		return nil, err
 	}
 	for _, d := range []string{opts.RuntimeDir, opts.WorktreeRoot} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -414,9 +424,9 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		startingKind: map[string]bool{},
 		naming:       map[string]bool{},
 		noRestore:    map[string]string{},
-		leadHosts:    leadHosts,
 		stalls:       map[string]*stallState{},
 	}
+	e.live.Store(live)
 	if opts.Sandbox != nil {
 		if err := e.prepareSandbox(); err != nil {
 			return nil, err
@@ -532,12 +542,13 @@ func (e *Engine) Status() Status {
 		}
 	}
 	p := e.prices()
-	st.Prices, st.Budgets = PriceInfo{AsOf: p.AsOf, Source: p.Source, File: p.File}, e.opts.Budgets
+	st.Prices, st.Budgets = PriceInfo{AsOf: p.AsOf, Source: p.Source, File: p.File}, e.lv().Budgets
 	st.QA = e.opts.QA
 	if g := e.opts.GitHub; g != nil {
 		st.GitHub = &GitHubStatus{Repo: g.Client.Repo().String(), Base: g.Base, Remote: g.Remote, Reviewer: e.gh.reviewer.Name(),
 			Rounds: g.Rounds}
 	}
+	st.Caps = e.Caps()
 	return st
 }
 
@@ -945,7 +956,7 @@ func (e *Engine) watch(a *agentProc) {
 		alog.Error("persist agent exit", "err", err)
 	}
 	e.recordExitDetailLocked(ctx, a, x, alog)
-	_ = e.q.EndSessions(ctx, db.EndSessionsParams{EndedAt: nullTime(t), AgentID: a.info.ID})
+	_ = e.q.EndSessions(ctx, db.EndSessionsParams{EndedAt: nullTime(t), ExitReason: reason, AgentID: a.info.ID})
 	if reason == ExitResumeFailed {
 		// It never ran: a later resume continues the session before it (ADR 0035).
 		if err := e.q.DeleteSession(ctx, a.info.SessionID); err != nil {
@@ -1491,6 +1502,9 @@ func (a *agentProc) logger(e *Engine) *slog.Logger {
 func (a *agentProc) view() AgentInfo {
 	v := a.info
 	v.State, v.Activity = string(a.status.State), a.status.Activity
+	if a.bgWaiting && a.status.State == hooks.Idle {
+		v.State, v.Activity = StateWaitingBackground, "background task" // ADR 0064
+	}
 	v.HasTerminal = a.term != nil
 	v.Resumable = a.status.State == hooks.Exited && !a.busy && resumable(v.Kind) && v.WorktreeStatus != WorktreeRemoved
 	return v

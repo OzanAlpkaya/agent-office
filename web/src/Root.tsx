@@ -27,8 +27,12 @@ function saveChoice(id: string): void {
 }
 
 export function Root({ session, onSignedOut }: { session: AuthSession; onSignedOut: () => void }): JSX.Element {
-  const { projects, loaded, connection, presence, profile } = useProjects();
+  const { projects, loaded, connection, presence, profile, daemon } = useProjects();
   const [status, setStatus] = useState<DaemonStatus>();
+  // A daemon-wide change (its agent cap, ADR 0061) arrives on the hub stream.
+  useEffect(() => {
+    if (daemon) setStatus((s) => (s ? { ...s, ...daemon } : s));
+  }, [daemon]);
   const [chosen, setChosen] = useState<string | undefined>(loadChoice);
   const [openAgent, setOpenAgent] = useState<string>();
   const [openTab, setOpenTab] = useState<MainTab>();

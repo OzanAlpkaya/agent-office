@@ -274,3 +274,23 @@ func TestShellQuote(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+// A Bash call's run_in_background is the one tool input read (ADR 0064).
+func TestParseClaudeHookBackgroundBash(t *testing.T) {
+	for _, c := range []struct {
+		payload string
+		want    bool
+	}{
+		{`{"hook_event_name":"PreToolUse","session_id":"s","tool_name":"Bash","tool_input":{"command":"./check.sh","run_in_background":true}}`, true},
+		{`{"hook_event_name":"PreToolUse","session_id":"s","tool_name":"Bash","tool_input":{"command":"ls"}}`, false},
+		{`{"hook_event_name":"PreToolUse","session_id":"s","tool_name":"Bash","tool_input":{"run_in_background":"yes"}}`, false},
+		{`{"hook_event_name":"PreToolUse","session_id":"s","tool_name":"Task","tool_input":{"run_in_background":true}}`, false},
+		{`{"hook_event_name":"PostToolUse","session_id":"s","tool_name":"Bash","tool_input":{"run_in_background":true}}`, false},
+		{`{"hook_event_name":"PreToolUse","session_id":"s","tool_name":"Bash","tool_input":"odd"}`, false},
+	} {
+		ev, err := ParseClaudeHook([]byte(c.payload))
+		if err != nil || ev.Background != c.want {
+			t.Errorf("%s: background %v, err %v; want %v", c.payload, ev.Background, err, c.want)
+		}
+	}
+}

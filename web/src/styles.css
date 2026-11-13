@@ -84,11 +84,13 @@ button.pill { min-height: 24px; padding: 0 var(--space-2); font-size: var(--text
 .state-idle { color: var(--ok); }
 .state-working { color: var(--accent); }
 .state-waiting_permission { color: var(--warn); }
+.state-waiting_background { color: var(--role-qa, #9b8cff); } /* idle, a command still runs (ADR 0064) */
 .state-exited { color: var(--faint); }
 .badge.state-starting, .badge.state-exited { background: var(--surface-3); }
 .badge.state-idle { background: var(--ok-bg); }
 .badge.state-working { background: var(--accent-bg); }
 .badge.state-waiting_permission { background: var(--warn-bg); }
+.badge.state-waiting_background { background: var(--surface-3); }
 .role-lead { color: var(--role-lead); }
 .role-worker { color: var(--muted); }
 .role-reviewer { color: var(--role-reviewer); }
@@ -186,6 +188,16 @@ button.task.goal { box-shadow: inset 3px 0 0 var(--accent), var(--shadow-1); }
 
 /* The card's modal. */
 .task-detail .modal-head h2 { flex-wrap: wrap; }
+/* Phase 19: a wider task modal with run info. */
+.modal.task-detail { width: min(1100px, 96vw); }
+@media (pointer: coarse), (max-width: 760px) { .modal.task-detail { width: 100%; } } /* a full sheet on a phone (theme.css) */
+.runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+.run { border: 1px solid var(--border); border-radius: var(--radius-md, 10px); padding: var(--space-3); }
+.run-head { align-items: baseline; flex-wrap: wrap; }
+.run-facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-3); margin: var(--space-2) 0 0; }
+.run-facts dt { color: var(--faint); }
+.run-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.run-sessions { margin: 0; padding-left: var(--space-4); }
 .detail-title { overflow-wrap: anywhere; }
 .detail-meta { gap: var(--space-1); }
 .task-desc { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); }
@@ -211,6 +223,12 @@ button.task.goal { box-shadow: inset 3px 0 0 var(--accent), var(--shadow-1); }
 .plan > * + *, .qa > * + * { margin-top: var(--space-2); }
 .plan-tasks { margin: var(--space-2) 0; padding-left: var(--space-5); display: flex; flex-direction: column; gap: var(--space-2); }
 .plan-tasks ul { margin: 2px 0 0; padding-left: var(--space-4); }
+/* Phase 19: light plan edits and the change request box. */
+.plan-task-actions { display: inline-flex; gap: var(--space-2); margin-left: var(--space-2); align-items: baseline; }
+.plan-actions { align-items: center; }
+.change-request { border-top: 1px solid var(--border); padding-top: var(--space-2); }
+.change-request textarea { width: 100%; }
+.sub-task-editor { margin: var(--space-1) 0; }
 .quote.pre { font-family: inherit; }
 .plan-editor { display: flex; flex-direction: column; gap: var(--space-2); }
 .plan-editor label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }

@@ -698,7 +698,7 @@ func (r runner) StartReviewer(ctx context.Context, pr review.PR) error {
 		taskID = task.ID
 	}
 	a, err := e.Start(ctx, StartRequest{TaskID: taskID, Role: RoleReviewer, base: pr.Head, reviewPR: pr.Number,
-		reviewID: rv.ID, prompt: reviewPrompt(e.opts.Roles.Default(role.Reviewer).Prompt, row, task, workerBase)})
+		reviewID: rv.ID, prompt: reviewPrompt(e.lv().Roles.Default(role.Reviewer).Prompt, row, task, workerBase)})
 	if errors.Is(err, ErrTooManyAgents) {
 		return review.ErrNoSlot
 	}

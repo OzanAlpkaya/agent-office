@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  type AccessRequest, type Agent, type InboxItem, type MemoryEntry, type Message, type PullRequest, type QARun,
+  type AccessRequest, type Agent, type Caps, type InboxItem, type MemoryEntry, type Message, type PullRequest, type QARun,
   type GoalMerge, type ProjectApi, type SandboxEvent, type SessionUsage, type Spec, type Task, api as daemonApi, parseEventMessage,
   signalUnauthorized, statusSignedOut, wsURL,
 } from "./api";
@@ -21,6 +21,7 @@ export interface World {
   specs: Spec[]; // every version of every goal's plan (ADR 0031)
   qaRuns: QARun[]; // newest first (ADR 0033)
   memory: MemoryEntry[]; // newest first (ADR 0034)
+  caps?: Caps; // the project's caps after a live change (ADR 0061)
   connection: Connection;
 }
 
@@ -105,6 +106,7 @@ export function useWorld(api: ProjectApi): World {
   const [qaRuns, setQARuns] = useState<QARun[]>([]);
   const [memory, setMemory] = useState<MemoryEntry[]>([]);
   const [merges, setMerges] = useState<GoalMerge[]>([]);
+  const [caps, setCaps] = useState<Caps>(); // live changes only; the project's status has the first value
   const [connection, setConnection] = useState<Connection>("connecting");
 
   useEffect(() => {
@@ -175,6 +177,9 @@ export function useWorld(api: ProjectApi): World {
             break;
           case "goal_merge":
             setMerges((prev) => mergeById(prev, [msg.merge]));
+            break;
+          case "caps":
+            setCaps(msg.caps);
             break;
           case "agent_removed":
             setAgents((prev) => prev.filter((a) => a.id !== msg.id));
@@ -264,5 +269,5 @@ export function useWorld(api: ProjectApi): World {
     };
   }, [api]);
 
-  return { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, merges, connection };
+  return { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, merges, caps, connection };
 }

@@ -3,7 +3,7 @@
 // memory), and the app's behind Settings in the rail (projects, devices,
 // the user's profile).
 import { type JSX, type ReactNode, Suspense, lazy, useLayoutEffect, useRef, useState } from "react";
-import type { AccessRequest, DaemonStatus, MemoryDraft, MemoryEntry, Project, ProjectApi, Status } from "./api";
+import type { AccessRequest, Caps, DaemonStatus, MemoryDraft, MemoryEntry, Project, ProjectApi, Status } from "./api";
 import { DevicesPanel } from "./Devices";
 import { BranchCleanup } from "./Goals";
 import { GrantsPanel } from "./Grants";
@@ -68,6 +68,8 @@ export interface ProjectSettingsProps {
   accessRequests: AccessRequest[];
   memory: MemoryEntry[];
   run: <T>(fn: () => Promise<T>) => Promise<T | undefined>;
+  caps?: Caps; // live changes (ADR 0061); the status has the first value
+  running: number; // the project's agents that have not exited
 }
 
 // ProjectSettings is one project's settings, titled with its name.
@@ -88,8 +90,9 @@ export function ProjectSettings(p: ProjectSettingsProps): JSX.Element {
         {tab === "general" && (
           <>
             <Section title="General"
-              lede="Empty fields use the daemon's flags. Changing what agents run with is refused while the project's agents run; the name and the office layout are not.">
-              <ProjectForm project={p.project} status={p.daemon} sandboxed={sandboxed} />
+              lede="Empty fields use the daemon's flags. Models, caps, budgets, worker limits, access decisions and the merge target apply to the next agent start, also while agents run. The stack pack, network, secrets, GitHub, reviewer and role CLIs need the project's agents stopped.">
+              <ProjectForm project={p.project} status={p.daemon} sandboxed={sandboxed} caps={p.caps ?? p.status?.caps}
+                running={p.running} />
             </Section>
             <Section title="Branch clean-up" id="branch-cleanup"
               lede="Delete old agent-office branches whose work is in the merge target. Branches that are not merged are listed apart and deleted only after a second confirmation; every deleted head is recorded.">
@@ -144,6 +147,7 @@ export interface AppSettingsProps {
   version: string;
   deviceName?: string; // this browser's name as paired
   running: number; // agents running in every project
+  remote?: boolean; // this page came through tailscale serve: the daemon-wide cap is this machine's only
   profile?: Profile;
   run: <T>(fn: () => Promise<T>) => Promise<T | undefined>;
   onSignedOut: () => void;
@@ -165,7 +169,7 @@ export function AppSettings(p: AppSettingsProps): JSX.Element {
       <Tabs label="Settings" tabs={tabs} names={appTabLabel} current={p.tab} onTab={p.onTab} />
       <div className="settings-body" role="tabpanel" aria-label={appTabLabel[p.tab]}>
         {p.tab === "projects" && (
-          <ProjectsPanel projects={p.projects} current={p.project.id} status={p.daemon} running={p.running}
+          <ProjectsPanel projects={p.projects} current={p.project.id} status={p.daemon} running={p.running} remote={p.remote}
             onSelect={p.onSelectProject} onSettings={p.onProjectSettings} />
         )}
         {p.tab === "devices" && <DevicesPanel remoteHosts={p.remoteHosts} run={p.run} onSignedOut={p.onSignedOut} />}

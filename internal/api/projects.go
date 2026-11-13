@@ -319,3 +319,40 @@ func (s *server) putProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, saved)
 }
+
+// daemonSettings is what the app's settings change daemon-wide (ADR 0061):
+// max_agents, or null for --max-agents.
+type daemonSettings struct {
+	MaxAgents json.RawMessage `json:"max_agents"` // "null" when given as null; empty when missing
+}
+
+// localOnlyCap is the refusal of a daemon-wide cap change from a remote device
+// (Phase 19 review): it decides how many agents run on this machine.
+const localOnlyCap = "changing the daemon-wide agent cap needs this machine: use the UI on localhost " +
+	"(a project's Max agents can be changed from any paired device)"
+
+func (s *server) putDaemon(w http.ResponseWriter, r *http.Request) {
+	if s.remote(r) {
+		writeError(w, http.StatusForbidden, localOnlyCap)
+		return
+	}
+	var d daemonSettings
+	if !decodeJSON(w, r, &d) {
+		return
+	}
+	if d.MaxAgents == nil {
+		writeError(w, http.StatusBadRequest, "max_agents is required: a number, or null for --max-agents")
+		return
+	}
+	var n *int
+	if err := json.Unmarshal(d.MaxAgents, &n); err != nil {
+		writeError(w, http.StatusBadRequest, "max_agents: a whole number or null")
+		return
+	}
+	st, err := s.hub.SetMaxAgents(r.Context(), n)
+	if err != nil {
+		s.engineError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}

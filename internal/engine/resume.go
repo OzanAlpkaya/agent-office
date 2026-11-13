@@ -179,6 +179,8 @@ func (e *Engine) whyNotRestored(r db.ListVisibleAgentsRow) string {
 		return "it had not started its conversation yet"
 	case e.noRestore[r.ID] != "":
 		return e.noRestore[r.ID]
+	case r.Kind == KindArchitect && r.TaskID.Valid && !e.architectRestorable(context.Background(), r.TaskID.String):
+		return "its plan is approved; it starts again when the Tech Lead escalates or you ask for changes"
 	case (r.Sandbox == SandboxPodman) != (e.opts.Sandbox != nil):
 		return fmt.Sprintf("it ran in %s mode and this daemon runs in the other", r.Sandbox)
 	case r.WorktreeStatus == WorktreeRemoved:

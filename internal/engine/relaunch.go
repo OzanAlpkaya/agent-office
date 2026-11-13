@@ -207,7 +207,7 @@ func (e *Engine) relaunchWith(ctx context.Context, id string, r relaunchSpec) (A
 		bg := context.Background()
 		e.unclaim(bg, held)
 		_ = e.q.MarkAgentExited(bg, db.MarkAgentExitedParams{ExitedAt: nullTime(now()), ExitReason: ExitStartFailed, ID: id})
-		_ = e.q.EndSessions(bg, db.EndSessionsParams{EndedAt: nullTime(now()), AgentID: id})
+		_ = e.q.EndSessions(bg, db.EndSessionsParams{EndedAt: nullTime(now()), ExitReason: ExitStartFailed, AgentID: id})
 		if r.resume {
 			_ = e.q.DeleteSession(bg, sid) // never ran; the next resume continues from.ID again
 		}

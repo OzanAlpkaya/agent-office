@@ -23,6 +23,7 @@ import { InboxPanel } from "./Team";
 import { unread } from "./workflow";
 import { type Waiting, waitingOnUser } from "./waiting";
 import { TerminalView } from "./TerminalView";
+import { capNote, runningLabel } from "./caps";
 import { useWorld } from "./useAgents";
 import { type UsageRow, formatMoney, formatTokens, sessionList, totalTokens, usageBy } from "./usage";
 
@@ -35,6 +36,7 @@ const stateLabel: Record<AgentState, string> = {
   idle: "Idle",
   working: "Working",
   waiting_permission: "Waiting for permission",
+  waiting_background: "Waiting on background task",
   exited: "Exited",
 };
 
@@ -157,8 +159,8 @@ export function App({
   // The project's routes, plus the daemon's (health, devices, projects) under one name.
   const papi = useMemo(() => projectApi(project.id), [project.id]);
   const api = useMemo(() => ({ ...daemonApi, ...papi }), [papi]);
-  const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, merges, connection } =
-    useWorld(papi);
+  const { agents, tasks, events, messages, accessRequests, pullRequests, usage, inbox, specs, qaRuns, memory, merges, caps: liveCaps,
+    connection } = useWorld(papi);
   const [roles, setRoles] = useState<RoleInfo[]>([]);
   const narrow = useMedia(narrowQuery);
   const [view, setView] = useState<View>({ kind: initialTab ?? "board" });
@@ -290,6 +292,7 @@ export function App({
     );
 
   const running = agents.filter((a) => a.state !== "exited").length;
+  const caps = liveCaps ?? status?.caps; // the project's effective cap (ADR 0061)
   const leadRunning = agents.some((a) => a.kind === "lead" && a.state !== "exited");
   const architectRunning = agents.some((a) => a.kind === "architect" && a.state !== "exited");
   const unreadCount = unread(inbox);
@@ -341,7 +344,9 @@ export function App({
     <div className="agent-list">
       <div className="agent-list-head">
         <span className="eyebrow">Agents</span>
-        <span className="muted small">{running} running</span>
+        <span className="muted small" data-testid="running-cap" title={caps ? capNote(caps) : undefined}>
+          {caps ? runningLabel({ ...caps, running }) : `${running} running`}
+        </span>
         <span className="spacer" />
         <button className="ghost sm" onClick={() => void startAgent()} aria-label="Start agent (no task)"
           title="Start an agent without a task, e.g. to explore the repository">
@@ -480,14 +485,16 @@ export function App({
             ) : view.kind === "settings" ? (
               <AppSettings tab={appTab} onTab={setAppTab} project={project} projects={projects} daemon={daemon}
                 remoteHosts={status?.remote_hosts ?? []} version={version} deviceName={session.device?.name} running={runningEverywhere}
+                remote={session.remote}
                 profile={profile} run={run} onSignedOut={onSignedOut}
                 onSelectProject={(id) => onSelectProject(id, undefined, "board")}
                 onProjectSettings={(id) => (id === project.id ? openProjectSettings("general") : onSelectProject(id, undefined, "project-settings"))} />
             ) : view.kind === "project-settings" ? (
               <ProjectSettings tab={projectTab} onTab={setProjectTab} project={project} status={status} daemon={daemon} api={papi}
-                accessRequests={accessRequests} memory={memory} run={run} />
+                accessRequests={accessRequests} memory={memory} run={run} caps={liveCaps}
+                running={running} />
             ) : view.kind === "board" || !current ? (
-              <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask}
+              <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask} usageByAgent={usageByAgent}
                 usageByGoal={usageByGoal}
                 onStartLead={(t) => void startAgent(t.id, "lead")}
                 onCreate={async (title, description) => (await run(() => api.createTask(title, description))) !== undefined}
@@ -506,6 +513,7 @@ export function App({
                 onStartRole={(t, role) => void startAgent(t.id, role)}
                 onSaveSpec={(s, plan) => ok(() => api.editSpec(s.id, plan))}
                 onApproveSpec={(s) => void run(() => approveSpec(s))}
+                onRequestChanges={(s, changes) => ok(() => api.requestSpecChanges(s.id, changes))}
                 onResolve={(t) => void run(async () => { await api.resolveConflict(t.id); return true; })}
                 onReadInbox={(i) => void run(() => api.readInbox(i.id))}
                 onReplyInbox={(i, body) => ok(() => api.replyInbox(i.id, body))}
@@ -679,6 +687,9 @@ function AgentRow({ agent: a, taskTitle, selected, waiting, usage, onSelect }: {
         </span>
         <span className="agent-row-side">
           {waiting && <span className="chip small tone-warn">needs you</span>}
+          {!waiting && a.state === "waiting_background" && (
+            <span className="chip small tone-accent" title="Its turn ended while a command it started still runs">background task</span>
+          )}
           {usage && usage.costMicroUSD > 0 && <span className="agent-row-cost">{formatMoney(usage.costMicroUSD)}</span>}
         </span>
       </button>

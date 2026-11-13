@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { InboxItem, Plan, QARun, Spec, Task } from "./api";
 import {
   currentSpec, fromForm, goalBusy, groupInbox, inboxFor, isOpen, latestQA, needsAnswer, newSubTask, proposedSpec, specsOf, splitList, toForm, unread,
-  waitsFor,
+  waitsFor, withSubTask, withoutSubTask, subTaskForm, fromSubTaskForm, pendingChanges,
 } from "./workflow";
 import { agent } from "./office/testutil";
 
@@ -133,5 +133,36 @@ describe("inbox groups (Phase 16)", () => {
     expect(isOpen(item(1, { read_at: at }))).toBe(true); // a question without an answer
     expect(isOpen(item(1, { kind: "info", read_at: at }))).toBe(false);
     expect(isOpen(item(1, { kind: "info" }))).toBe(true);
+  });
+});
+
+describe("light plan edits (Phase 19)", () => {
+  const plan: Plan = {
+    summary: "s", design: "d", sub_tasks: [
+      { key: "schema", title: "Schema", description: "" },
+      { key: "api", title: "API", description: "", depends_on: ["schema"] },
+    ],
+  };
+  it("replaces one sub-task and renames its key in dependencies", () => {
+    const p = withSubTask(plan, 0, { key: "db", title: "DB schema", description: "x" });
+    expect(p.sub_tasks.map((s) => s.key)).toEqual(["db", "api"]);
+    expect(p.sub_tasks[1].depends_on).toEqual(["db"]);
+    expect(withSubTask(plan, -1, { key: "cli", title: "CLI", description: "" }).sub_tasks).toHaveLength(3);
+    expect(plan.sub_tasks[0].key).toBe("schema"); // the original is not changed
+  });
+  it("removes a sub-task and the dependencies on it", () => {
+    const p = withoutSubTask(plan, "schema");
+    expect(p.sub_tasks).toEqual([{ key: "api", title: "API", description: "" }]);
+  });
+  it("round-trips one sub-task through the inline editor", () => {
+    const s = { key: "api", title: "API", description: "d", files: ["a.go"], acceptance: ["one", "two"], depends_on: ["schema"] };
+    expect(fromSubTaskForm(subTaskForm(s))).toEqual(s);
+  });
+  it("shows a change request until a newer version answers it", () => {
+    const v1 = { id: 1, goal_id: "g", version: 1, status: "proposed", plan, markdown: "", created_at: "", change_request: "split" } as Spec;
+    expect(pendingChanges(v1, [v1])).toBe("split");
+    const v2 = { ...v1, id: 2, version: 2, change_request: undefined };
+    expect(pendingChanges(v1, [v1, v2])).toBeUndefined();
+    expect(pendingChanges({ ...v1, status: "superseded" }, [v1])).toBeUndefined();
   });
 });

@@ -42,6 +42,10 @@ type Event struct {
 	// StopHookActive is set on TurnFinished when the turn already continued
 	// because of a Stop hook (loop guard for message injection).
 	StopHookActive bool
+	// Background is set on a Bash ToolStarted whose command runs in the
+	// background (Claude Code's run_in_background, ADR 0064). One boolean of
+	// the tool input; nothing else of it is read.
+	Background bool
 	// TranscriptPath is the session transcript's path (Claude Code's
 	// transcript_path). Host mode reads token usage from it (ADR 0026). A
 	// local path: never logged or stored.

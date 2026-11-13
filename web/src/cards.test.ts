@@ -27,6 +27,14 @@ describe("cardStatus", () => {
   const s = task("s1", "in_progress", "g1");
   const tasks = [g, s];
 
+  it("says a superseded sub-task was replaced, not that it lingers without an agent (ADR 0062)", () => {
+    const old = task("s0", "done", "g1", { superseded_by: "s1" });
+    const st = cardStatus(old, ctx({ tasks: [...tasks, old] }));
+    expect(st).toMatchObject({ key: "superseded", label: "Superseded", title: "Replaced by “s1”" });
+    const dropped = task("s9", "done", "g1", { superseded_by: "spec:3" });
+    expect(cardStatus(dropped, ctx({ tasks: [...tasks, dropped] })).title).toBe("Dropped by version 3 of the plan after work started");
+  });
+
   it("puts what waits on the user first", () => {
     const spec = { id: 1, goal_id: "g1", version: 1, status: "proposed" } as Spec;
     expect(cardStatus(g, ctx({ tasks, specs: [spec], agents: [agent("w", "s1", "working")] })).key).toBe("plan");
@@ -120,5 +128,14 @@ describe("detailActions", () => {
     const g = task("g", "in_progress");
     expect(detailActions(g, ctx({ tasks: [g] }))).toEqual(["start-lead", "delete"]);
     expect(detailActions(task("x", "done"), ctx())).toEqual(["delete"]);
+  });
+});
+
+describe("the background wait state (ADR 0064)", () => {
+  it("says a background task runs instead of idle", () => {
+    const g = task("g1", "in_progress");
+    const s = task("s1", "in_progress", "g1");
+    const st = cardStatus(s, ctx({ tasks: [g, s], agents: [agent("w", "s1", "waiting_background")] }));
+    expect(st).toMatchObject({ key: "background", label: "Background task" });
   });
 });

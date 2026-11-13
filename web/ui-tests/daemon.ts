@@ -62,6 +62,7 @@ export function task(id: string, title: string, status: TaskStatus, over: Partia
 }
 
 export interface World {
+  runs?: Record<string, unknown[]>; // run info per task id (Phase 19); absent: a plain run per agent
   agents: Agent[];
   tasks: Task[];
   accessRequests: AccessRequest[];
@@ -228,6 +229,7 @@ export class MockDaemon {
   onTerminalInput?: (data: string, reply: (bytes: string) => void) => void;
   private readonly terminalSockets = new Map<string, WebSocketRoute>();
   paired = true; // whether this browser is paired (ADR 0039)
+  remote = false; // the page came through tailscale serve (ADR 0038)
   devices: Device[] = [
     { id: "d1", name: "Chrome on Linux", kind: "browser", paired_via: "local", created_at: iso(0), last_seen_at: iso(30) },
     { id: "d2", name: "Pixel 9", kind: "browser", paired_via: "tailscale:ozan@github", created_at: iso(5), last_seen_at: iso(20) },
@@ -247,9 +249,23 @@ export class MockDaemon {
   profile: { name: string; look: { skin: number; hair: number; style: number; shirt: number; pants: number }; set: boolean } =
     { name: "", look: { skin: 0, hair: 0, style: 0, shirt: 0, pants: 0 }, set: false };
   private readonly projectEvents = new Map<string, WebSocketRoute>();
+  // The daemon-wide agent cap (ADR 0061): --max-agents is 8; one saved in the app wins.
+  maxAgentsSaved?: number;
+  projectMaxAgents = 4; // p1's own cap, for its status's caps
 
   constructor(readonly world: World) {
     this.projects = [{ project: project("p1", "linkshelf", { default: true }), world }];
+  }
+
+  daemonStatus(running: number): DaemonStatus {
+    return { sandbox: "podman", max_agents: this.maxAgentsSaved ?? 8, max_agents_flag: 8, max_agents_saved: this.maxAgentsSaved !== undefined,
+      running, warnings: [], defaults, default_project: "p1", remote_hosts: ["box.tail1234.ts.net"], version: "phase-7-test" };
+  }
+
+  caps(): { max_agents: number; daemon_max: number; effective: number; running: number; max_sub_tasks: number } {
+    const d = this.maxAgentsSaved ?? 8;
+    return { max_agents: this.projectMaxAgents, daemon_max: d, effective: Math.min(this.projectMaxAgents, d),
+      running: this.world.agents.filter((a) => a.state !== "exited").length, max_sub_tasks: 20 };
   }
 
   // addProject registers another project before (or after) install.
@@ -284,7 +300,7 @@ export class MockDaemon {
       const method = route.request().method();
       const me = this.devices[0];
       if (p === "/api/auth/session") {
-        return route.fulfill(json(this.paired ? { authenticated: true, device: me, remote: false } : { authenticated: false, remote: false }));
+        return route.fulfill(json(this.paired ? { authenticated: true, device: me, remote: this.remote } : { authenticated: false, remote: this.remote }));
       }
       if (p === "/api/auth/pair") {
         const body = route.request().postDataJSON() as { code: string; name: string };
@@ -319,9 +335,19 @@ export class MockDaemon {
       if (p === "/api/health") return route.fulfill(json({ status: "ok", version: "phase-7-test" }));
       if (p === "/api/status") {
         const running = this.projects.reduce((n, x) => n + x.world.agents.filter((a) => a.state !== "exited").length, 0);
-        const d: DaemonStatus = { sandbox: "podman", max_agents: 8, running, warnings: [], defaults, default_project: "p1",
-          remote_hosts: ["box.tail1234.ts.net"], version: "phase-7-test" };
-        return route.fulfill(json(d));
+        return route.fulfill(json(this.daemonStatus(running)));
+      }
+      if (p === "/api/daemon" && method === "PUT") {
+        const body = route.request().postDataJSON() as { max_agents: number | null };
+        this.requests.push(`PUT ${p} ${JSON.stringify(body)}`);
+        if (body.max_agents !== null && (body.max_agents < 1 || body.max_agents > 32)) {
+          return route.fulfill({ status: 400, contentType: "application/json", body: '{"error":"invalid input: max_agents 1-32"}' });
+        }
+        this.maxAgentsSaved = body.max_agents ?? undefined;
+        const st = this.daemonStatus(0);
+        this.hubEvents?.send(JSON.stringify({ type: "daemon", status: st }));
+        this.send({ type: "caps", caps: this.caps() });
+        return route.fulfill(json(st));
       }
       if (p === "/api/usage") {
         const per = this.projects.map((x) => ({ project_id: x.project.id, name: x.project.name, state: x.project.state, totals: report(x.world).totals }));
@@ -397,7 +423,7 @@ export class MockDaemon {
         p = `/api${proj[2]}`;
         if (method !== "GET") this.projectRequests.push(`${proj[1]} ${method} ${p}`);
       }
-      if (p === "/api/status") return route.fulfill(json(status));
+      if (p === "/api/status") return route.fulfill(json({ ...status, caps: this.caps() }));
       if (p === "/api/usage") return route.fulfill(json(report(w)));
       if (p === "/api/roles") return route.fulfill(json(this.roles));
       if (method !== "GET") {
@@ -412,6 +438,14 @@ export class MockDaemon {
         if (method === "PUT" && /^\/api\/specs\/\d+$/.test(p)) {
           const s = w.specs?.[0];
           return route.fulfill(json({ ...s, id: 99, version: (s?.version ?? 0) + 1, plan: route.request().postDataJSON() }));
+        }
+        const changes = /^\/api\/specs\/(\d+)\/changes$/.exec(p);
+        if (changes) {
+          const sp = (w.specs ?? []).find((x) => x.id === Number(changes[1]));
+          const body = route.request().postDataJSON() as { changes: string };
+          const next = { ...sp, change_request: body.changes, change_requested_at: iso(40) };
+          if (w === this.world) this.send({ type: "spec", spec: next });
+          return route.fulfill(json(next));
         }
         if (/^\/api\/specs\/\d+\/approve$/.test(p)) {
           return route.fulfill(json({ spec: w.specs?.[0], created: ["t1"], updated: [], deleted: [], kept: [] }));
@@ -460,6 +494,17 @@ export class MockDaemon {
         }
       }
       if (p === "/api/goal-merges") return route.fulfill(json(w.merges ?? []));
+      const runs = /^\/api\/tasks\/([^/]+)\/runs$/.exec(p);
+      if (runs) {
+        // Run info (Phase 19): the world's own, else a plain run per agent of the task.
+        const own = w.runs?.[runs[1]];
+        const plain = w.agents.filter((a) => a.task_id === runs[1]).map((a) => ({
+          agent_id: a.id, name: a.name, kind: a.kind, role: a.role, model: a.model, cli: a.cli ?? "claude", state: a.state,
+          started_at: a.started_at, exited_at: a.exited_at, exit_reason: a.exit_reason, working_seconds: 120, waiting_seconds: 30,
+          branch: a.branch, sessions: [{ id: a.session_id ?? `${a.id}-s1`, started_at: a.started_at, turns: 1, tool_calls: 1 }], reports: [],
+        }));
+        return route.fulfill(json(own ?? plain));
+      }
       const br = /^\/api\/(?:tasks\/([^/]+)\/)?branches$/.exec(p);
       if (br) {
         const goal = br[1] ? w.tasks.find((t) => t.id === br[1]) : undefined;

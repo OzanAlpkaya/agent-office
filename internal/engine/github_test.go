@@ -369,7 +369,7 @@ func TestRunningWorkerIsRelaunched(t *testing.T) {
 
 func TestReviewWaitsForASlot(t *testing.T) {
 	gf := newGHFixture(t, nil)
-	gf.e.opts.MaxAgents = 1
+	gf.e.setLiveForTest(func(l *liveOptions) { l.MaxAgents = 1 })
 	_, w := gf.reportedWorker(t, "Add tags", "done")
 	p := gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return p.State == PROpen })
 	time.Sleep(300 * time.Millisecond)
@@ -653,7 +653,7 @@ func TestAddFlagMergesProblemsOfOneCommit(t *testing.T) {
 
 func TestReviewsOfOldHeadsAreSuperseded(t *testing.T) {
 	gf := newGHFixture(t, nil)
-	gf.e.opts.MaxAgents = 1 // the worker keeps the only slot: the review stays queued
+	gf.e.setLiveForTest(func(l *liveOptions) { l.MaxAgents = 1 }) // the worker keeps the only slot: the review stays queued
 	ctx := context.Background()
 	_, w := gf.reportedWorker(t, "Add tags", "done")
 	p := gf.waitPR(t, 10*time.Second, func(p *PullRequest) bool { return len(p.Reviews) == 1 })

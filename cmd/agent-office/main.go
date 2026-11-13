@@ -9,6 +9,7 @@
 //	agent-office pack list|check       list stack packs, validate a pack directory (ADR 0023)
 //	agent-office role list|check       list team roles, validate a role directory (ADR 0029)
 //	agent-office pair [--token <name>]  pair a browser with the running daemon (ADR 0039)
+//	agent-office service install|uninstall|status  run serve as a systemd user service (ADR 0060)
 //	agent-office version               print the version
 package main
 
@@ -81,6 +82,8 @@ func main() {
 		os.Exit(projectCommand(os.Args[2:], os.Stdout, os.Stderr))
 	case "pair":
 		os.Exit(pairCommand(os.Args[2:], os.Stdout, os.Stderr))
+	case "service":
+		os.Exit(serviceCommand(os.Args[2:], os.Stdout, os.Stderr))
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -117,6 +120,10 @@ commands:
   role check <dir>...     validate role directories and print every problem
   pair [--data-dir <dir>] print a one-time code that pairs a browser or phone with the running daemon
   pair --token <name>     print a device token for scripts (Authorization: Bearer)
+  service install [--no-start] [serve flags]
+            run serve as a systemd user service with these flags (restarts on failure, logs to the journal)
+  service uninstall       stop, disable and remove the service
+  service status          show the service, whether it runs, and where its logs are
   version   print the version
 `)
 }
@@ -278,7 +285,11 @@ type serveConfig struct {
 	codexAuth           string            // the user's Codex login (auth.json)
 }
 
-func parseServe(args []string) (serveConfig, error) {
+func parseServe(args []string) (serveConfig, error) { return parseServeWith(args, nil) }
+
+// parseServeWith parses serve's flags; parsed, if set, sees the flag set
+// right after parsing (`service install` reads the flags that were given).
+func parseServeWith(args []string, parsed func(*flag.FlagSet)) (serveConfig, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	var c serveConfig
 	fs.StringVar(&c.addr, "addr", envOr("AGENT_OFFICE_ADDR", "127.0.0.1:7680"), "listen address; must be loopback [AGENT_OFFICE_ADDR]")
@@ -415,6 +426,12 @@ func parseServe(args []string) (serveConfig, error) {
 		"delete agent activity events older than this; 0 = keep [AGENT_OFFICE_EVENT_RETENTION_DAYS]")
 	if err := fs.Parse(args); err != nil {
 		return c, err
+	}
+	if fs.NArg() > 0 {
+		return c, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if parsed != nil {
+		parsed(fs)
 	}
 	c.codexBinSet = os.Getenv("AGENT_OFFICE_CODEX_BIN") != ""
 	fs.Visit(func(f *flag.Flag) {
@@ -634,8 +651,14 @@ func serve(args []string) error {
 			Roles: roles, QA: cfg.qa, RestoreAgents: cfg.restoreAgents, StallAfter: stallOption(cfg.stallAfter), HistoryDir: filepath.Join(cfg.dataDir, "terminals"),
 			Prices: prices, EventRetention: time.Duration(cfg.eventRetentionDays) * 24 * time.Hour,
 		},
-		Defaults:   defaults,
-		Configure:  configureProject(cfg, g, prices, log),
+		Defaults:  defaults,
+		Configure: configureProject(cfg, g, prices, log),
+		Check: func(s engine.ProjectSettings, roles *role.Set) error {
+			if roles == nil {
+				roles = role.MustBuiltins()
+			}
+			return checkBudgetModels(s, roles, prices)
+		},
 		Containers: containers,
 	})
 	if err != nil {

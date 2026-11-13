@@ -108,6 +108,53 @@ export function newSubTask(f: PlanForm): SubTaskForm {
   return { key: `task-${n}`, title: "", description: "", role: "", dependsOn: "", files: "", acceptance: "" };
 }
 
+// Light plan edits (Phase 19): one sub-task or the summary at a time, each a
+// new version. Pure, so Vitest covers them.
+
+// withSubTask replaces the sub-task at i (or adds one at the end, i = -1).
+// A renamed key is renamed in the other sub-tasks' dependencies too.
+export function withSubTask(p: Plan, i: number, st: PlanSubTask): Plan {
+  const old = i >= 0 ? p.sub_tasks[i]?.key : undefined;
+  const subs = p.sub_tasks.map((s, j) => {
+    if (j === i) return st;
+    if (old && old !== st.key && s.depends_on?.includes(old)) {
+      return { ...s, depends_on: s.depends_on.map((d) => (d === old ? st.key : d)) };
+    }
+    return s;
+  });
+  if (i < 0) subs.push(st);
+  return { ...p, sub_tasks: subs };
+}
+
+// withoutSubTask drops a sub-task and the dependencies on it.
+export function withoutSubTask(p: Plan, key: string): Plan {
+  return {
+    ...p,
+    sub_tasks: p.sub_tasks.filter((s) => s.key !== key).map((s) => {
+      if (!s.depends_on?.includes(key)) return s;
+      const deps = s.depends_on.filter((d) => d !== key);
+      const { depends_on: _old, ...rest } = s;
+      return deps.length > 0 ? { ...rest, depends_on: deps } : rest;
+    }),
+  };
+}
+
+// subTaskForm and fromSubTaskForm convert one sub-task for the inline editor.
+export function subTaskForm(s: PlanSubTask): SubTaskForm {
+  return toForm({ summary: "", design: "", sub_tasks: [s] }).subTasks[0];
+}
+export function fromSubTaskForm(f: SubTaskForm): PlanSubTask {
+  return fromForm({ summary: "", design: "", risks: "", subTasks: [f] }).sub_tasks[0];
+}
+
+// pendingChanges is the change request the Architect still has to answer on
+// a goal's current version: none once a newer version exists.
+export function pendingChanges(spec: Spec, specs: readonly Spec[]): string | undefined {
+  if (!spec.change_request || spec.status === "superseded") return undefined;
+  const newer = specs.some((x) => x.goal_id === spec.goal_id && x.version > spec.version);
+  return newer ? undefined : spec.change_request;
+}
+
 // GoalBusy says why a goal cannot get its own Tech Lead or architect now:
 // one of them runs for another goal of the project (one goal at a time per
 // project, ADR 0017), and which agent to open.

@@ -58,6 +58,12 @@ type Agent struct {
 	AutoResumes         int64
 }
 
+type DaemonSetting struct {
+	ID        int64
+	MaxAgents sql.NullInt64
+	UpdatedAt time.Time
+}
+
 type DeletedBranch struct {
 	ID        int64
 	ProjectID string
@@ -254,21 +260,24 @@ type Session struct {
 	ResumedFrom     string
 	CliSessionID    string
 	Prompted        bool
+	ExitReason      string
 }
 
 type Spec struct {
-	ID         int64
-	GoalID     string
-	Version    int64
-	Status     string
-	Author     string
-	Plan       string
-	Markdown   string
-	Branch     string
-	CommitSha  string
-	Path       string
-	CreatedAt  time.Time
-	ApprovedAt sql.NullTime
+	ID                int64
+	GoalID            string
+	Version           int64
+	Status            string
+	Author            string
+	Plan              string
+	Markdown          string
+	Branch            string
+	CommitSha         string
+	Path              string
+	CreatedAt         time.Time
+	ApprovedAt        sql.NullTime
+	ChangeRequest     string
+	ChangeRequestedAt sql.NullTime
 }
 
 type Task struct {
@@ -288,6 +297,16 @@ type Task struct {
 	SpecKey            string
 	Conflicts          string
 	ConflictsCheckedAt sql.NullTime
+	SupersededBy       string
+}
+
+type TaskReport struct {
+	ID           int64
+	TaskID       string
+	AgentID      sql.NullString
+	Summary      string
+	Verification string
+	CreatedAt    time.Time
 }
 
 type UsageMessage struct {
