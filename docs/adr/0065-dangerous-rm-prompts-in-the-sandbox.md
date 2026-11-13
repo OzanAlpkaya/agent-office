@@ -43,10 +43,14 @@ has no such check).
   assigned a literal earlier in the command, relative paths against the hook's `cwd` and literal `cd`s
   (after `cd x;` both directories must pass, after `cd x &&` the new one), and a glob in the last part
   only, never one that can match a dot file. Directories on the way must not be symlinks, checked with
-  `Lstat` on the host side of the workspace mount. Anything not modelled is a no: substitutions, other
-  variables, `~`, braces, loops, functions, subshells, `eval`, `source`, `sh -c`, `xargs`, `find`, `rm`
-  named in another command's arguments, a command name built from a variable. A fuzz test checks that an
-  approval only ever names targets inside the workspace.
+  `Lstat` on the host side of the workspace mount. Next to `rm` and `cd` only side-effect-free commands
+  may run (`[`, `test`, `true`, `false`, `:`, `echo`, `ls`, `pwd`): anything else could create, move or
+  link the paths rm removes, or set a variable, after the check looked (review finding: `ln -s .git g; rm
+  -rf g/objects`). Anything not modelled is a no: substitutions, unknown variables, special ones (`IFS`,
+  `CDPATH`, `GLOBIGNORE`, `POSIXLY_CORRECT`, `PATH`, ...) and variables set for a command, a variable
+  changed on the conditional side of `&&` or `||`, `..`, `~`, braces, loops, functions, subshells, a
+  command name built from a variable. A fuzz test checks that an approval only ever names targets inside
+  the workspace.
 - **The reply**: `allow` at once. The worker stays as it was (no "needs you"); the event is recorded as
   `permission_auto`.
 - **The Tech Lead**: a worker of a goal whose Tech Lead runs gets its other rm prompts decided by that
@@ -54,8 +58,10 @@ has no such check).
   command (one line, at most 500 characters, quoted as the worker's text) and the directory, and the
   lead answers with `decide_command` (`request_id`, `approve`, `reason`). No answer within 100 s is a
   refusal that tells the worker to use literal paths. Each decision goes to the user's inbox. Requests
-  live in memory only while their hook is held; one per worker. A hook from the worker meanwhile (the
-  user answered in its terminal) ends the request without a reply.
+  live in memory only while their hook is held; one per worker, at most 6 per worker per 10 minutes. A
+  command longer than the 500 characters the lead is shown stays with the user, who sees all of it. A
+  hook of the worker's main agent meanwhile (the user answered in its terminal) ends the request without
+  a reply.
 - **Everyone else** (no lead, the lead itself, the Architect, QA, reviewers, a prompt that is not about
   rm, a session not in bypass mode): no reply; the prompt waits for the user, as before.
 - **Timeouts**: the `PermissionRequest` hook has its own settings entry, `agent-office hook --wait` with a
@@ -74,3 +80,5 @@ has no such check).
   prompt says to refuse what could reach outside the workspace or its `.git`.
 - Claude Code may change its prompts; the spike's checks are the reference, and the hook path fails safe
   (no reply leaves the prompt to the user).
+- A process the worker left running in the background could still change the workspace between the
+  check and the command; the sandbox bounds that, as it bounds every bypass-mode command.

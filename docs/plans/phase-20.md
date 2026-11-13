@@ -107,4 +107,50 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
 
 ## Changes during the phase
 
-(appended during the phase)
+- **The rm rule** (decision 2): `[ ... ]` and `[[ ... ]]` tests are allowed next to an rm; `export`/`declare`
+  are refused like other constructs; a command name built from a variable (`R=rm; $R ...`) is refused even
+  when it resolves; an unquoted brace pattern is refused as unknown. A fuzz test (3 million commands in its
+  first run) checks that an approval only names targets inside the workspace. After the reviews the rule is
+  stricter (below).
+- **While the Tech Lead decides** (decision 4): the worker keeps its state, with the activity "Bash: the
+  Tech Lead decides", so it is not counted in Approvals; Claude Code's permission notification during the
+  hold changes nothing. A hook from the worker meanwhile (the user answered in its terminal, or its turn
+  went on) ends the request without a reply. The daemon holds a hook at most 110 s (the forwarder waits 115).
+- **The lead's file tools** (decision 6): a sub-task's source is its worker's branch in the main repository
+  (`branchOfTask`, as QA finds it), reported or not.
+- **A withdrawn plan version** (decision 7) stays on the goal, labelled "changes requested", until the
+  Architect's next version; the Architect is told the status it had when the user asked ("proposed").
+- **The whiteboard counts** (decision 12) are the digits in each column's colour, without separate swatches:
+  five "99+" with swatches do not fit the whiteboard's 68 pixels.
+- **Windows** (decision 14): the stacked default plan (phones) and the tall preset have no window at all, as
+  their top rooms are filled by the whiteboard and the blueprints. Every other plan has some.
+- **The cap note** (decision 15) shows the daemon's own caps while the Max agents field is unchanged, and the
+  draft's effective value once it is edited.
+- **The caps e2e** (decision 16) drives the real UI with `web/e2e/raise-cap.ts` (Playwright, run with node),
+  through the project settings' link, not Settings → App directly.
+- **The network e2e** (decision 17) passed in 58 s: the cut while text streamed gave "Connection lost
+  mid-response" at once, as in the spike.
+- **Screenshots**: `docs/screenshots/phase-20/` has the after set from `web/ui-tests/phase20.spec.ts`; the
+  Phase 18 `after/` set shows the office before (windows on the review room and the QA lab).
+- **Independent reviews.** A code review and a security review of the phase's diff. Fixed:
+  - the rm rule reasoned about a filesystem and variables that other parts of the same command could change
+    (`ln -s .git g; rm -rf g/objects`, `printf -v a /etc; rm "$a"`, `CDPATH=/ cd etc`, `GLOBIGNORE` and `IFS`
+    assignments, an assignment on the conditional side of `||`, `..` after a symlink): next to rm only `cd`
+    and side-effect-free commands may run (`[`, `test`, `true`, `false`, `:`, `echo`, `ls`, `pwd`), special
+    variables and variables set for a command are refused, a variable changed on a conditional side is
+    unknown, `..` is refused, and options are read as rm reads them; every counterexample is in the tests;
+  - the reason sent to the lead quoted a command name; it quotes nothing now; a command longer than the lead
+    is shown stays with the user; at most 6 requests per worker per 10 minutes reach the lead;
+  - a decision and the timeout are settled under the lock, so `decide_command` never reports a decision nobody
+    used; a subagent's tool finishing no longer ends a held request;
+  - the network probe loop ends with the engine; a failed resume neither leaves a stale wait nor counts; an
+    Architect cut off by the network is resumed, not ended;
+  - a change request decides "withdrawn" from the updated row (it may have been approved meanwhile);
+  - the tree listing's output is bounded (8 MB);
+  - the cap warning clears when the field changes; a count in the office bar no longer changes the Board's
+    remembered goal; the whiteboard keeps its title scribble when no summary is given.
+
+  Recorded, not changed: a background process of the worker could change the workspace between the check and
+  the command (the sandbox bounds it, as it bounds every bypass-mode command); `read_file` returns
+  worker-written text to the lead, like every report and message (ADR 0017); the e2e's cut needs the answer
+  to stream 24 KB first, which a 1500-word answer does.
