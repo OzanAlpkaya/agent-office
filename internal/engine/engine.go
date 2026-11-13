@@ -140,10 +140,11 @@ type Options struct {
 
 	// Message delivery timing (ADR 0018); zero values get the defaults. Tests
 	// shorten them.
-	deliverySettle time.Duration // idle this long before a message is typed
-	typingQuiet    time.Duration // no user input for this long before typing
-	enterDelay     time.Duration // between typing a message and pressing Enter
-	usageThrottle  time.Duration // at most one live usage update per session this often
+	deliverySettle time.Duration               // idle this long before a message is typed
+	typingQuiet    time.Duration               // no user input for this long before typing
+	enterDelay     time.Duration               // between typing a message and pressing Enter
+	usageThrottle  time.Duration               // at most one live usage update per session this often
+	netProbe       func(context.Context) error // the network check (ADR 0067); nil: the Anthropic API
 
 	// Set by the hub (ADR 0046); a standalone engine registers Repo itself and
 	// has a pool of its own.
@@ -284,13 +285,18 @@ type agentProc struct {
 	endCheck     bool        // an idle Architect's end check is scheduled (Phase 19)
 	// The background wait state (ADR 0064): a background Bash started in this
 	// session, the agent's processes before it, and whether it is waited on.
-	bgSeen        bool
-	bgBaseline    map[int]bool
-	bgWaiting     bool
-	bgGen         int          // the current wait; a poller of an older one ends
-	bgKnown       map[int]bool // processes counted as background work at the last check
-	stopAfterTurn bool         // report_done: end the session when the turn ends
-	reporting     bool         // a report_done call is running
+	bgSeen     bool
+	bgBaseline map[int]bool
+	bgWaiting  bool
+	bgGen      int          // the current wait; a poller of an older one ends
+	bgKnown    map[int]bool // processes counted as background work at the last check
+	// Waiting for the network (ADR 0067): its turn ended with a lost
+	// connection; resumed by the engine once the API answers.
+	netWaiting    bool
+	netResumes    []time.Time // automatic resumes, for the hourly limit
+	commandAsks   []time.Time // rm prompts sent to the Tech Lead (ADR 0065), for its rate limit
+	stopAfterTurn bool        // report_done: end the session when the turn ends
+	reporting     bool        // a report_done call is running
 }
 
 // Engine owns agent and task lifecycles. All state changes go through it.
@@ -321,12 +327,16 @@ type Engine struct {
 	gh       *ghState // GitHub integration; nil when off (ADR 0020)
 	stopPoll context.CancelFunc
 	stopBG   context.CancelFunc // retention loop (ADR 0028)
+	bg       context.Context    // cancelled by Shutdown: the background loops end
 	ids      *sessionIDs        // running agents' sessions, for log lines (ADR 0028)
 	closing  bool               // Shutdown began: no agent starts any more; guarded by mu
 
 	live           atomic.Pointer[liveOptions] // settings a project may change while agents run (ADR 0061)
 	readProcs      procReader                  // the process table (ADR 0064); nil: /proc
 	stalls         map[string]*stallState      // the stall watchdog's goals (ADR 0052); guarded by mu
+	commands       map[int64]*commandRequest   // held rm prompts the Tech Lead decides (ADR 0065); guarded by mu
+	commandSeq     int64                       // the last command request's id; guarded by mu
+	netProbing     bool                        // the network probe loop runs (ADR 0067); guarded by mu
 	restartImports sync.WaitGroup              // sandbox imports after a restart; a restore waits for them
 	noRestore      map[string]string           // agent id -> why a restore leaves it exited (set before the restore runs)
 }
@@ -426,6 +436,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		naming:       map[string]bool{},
 		noRestore:    map[string]string{},
 		stalls:       map[string]*stallState{},
+		commands:     map[int64]*commandRequest{},
 	}
 	e.live.Store(live)
 	if opts.Sandbox != nil {
@@ -442,7 +453,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		}
 	}
 	bg, cancel := context.WithCancel(context.Background())
-	e.stopBG = cancel
+	e.stopBG, e.bg = cancel, bg
 	e.wg.Add(1)
 	go e.retentionLoop(bg)
 	e.wg.Add(1)
@@ -1070,6 +1081,13 @@ func (e *Engine) hookHandler(id string, log *slog.Logger) hooks.Handler {
 		if err != nil {
 			return nil, err
 		}
+		if ev.Hook == "PermissionRequest" && cli != role.CLICodex {
+			// Claude Code's own rm prompts in the sandbox (ADR 0065): answered here,
+			// possibly after the Tech Lead decides; the lock is not held meanwhile.
+			if reply, handled := e.sandboxPermission(ctx, id, payload, ev, log); handled {
+				return reply, nil
+			}
+		}
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		a, ok := e.agents[id]
@@ -1078,6 +1096,17 @@ func (e *Engine) hookHandler(id string, log *slog.Logger) hooks.Handler {
 		}
 		if err := e.checkSessionLocked(ctx, a, &ev, log); err != nil {
 			return nil, err
+		}
+		if e.waitingForLeadLocked(id) {
+			switch ev.Kind {
+			case agent.PermissionRequested:
+				// The held prompt's notification: the worker waits for its lead, not the user.
+				ev.Kind, ev.Detail = agent.Other, permissionLeadNote
+			case agent.ToolFinished, agent.ToolFailed, agent.TurnStarted, agent.TurnFinished, agent.SessionEnded:
+				if !ev.Subagent { // a subagent's tools run on meanwhile (code review)
+					e.endCommandsLocked(id) // answered in its terminal: the turn went on
+				}
+			}
 		}
 		if ev.Kind == agent.SessionStarted && !ev.Subagent {
 			a.sessionStarted = true
@@ -1508,6 +1537,9 @@ func (a *agentProc) view() AgentInfo {
 	v.State, v.Activity = string(a.status.State), a.status.Activity
 	if a.bgWaiting && a.status.State == hooks.Idle {
 		v.State, v.Activity = StateWaitingBackground, "background task" // ADR 0064
+	}
+	if a.netWaiting && a.status.State == hooks.Idle {
+		v.State, v.Activity = StateWaitingNetwork, "connection lost" // ADR 0067
 	}
 	v.HasTerminal = a.term != nil
 	v.Resumable = a.status.State == hooks.Exited && !a.busy && resumable(v.Kind) && v.WorktreeStatus != WorktreeRemoved

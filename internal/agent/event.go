@@ -46,6 +46,11 @@ type Event struct {
 	// background (Claude Code's run_in_background, ADR 0064). One boolean of
 	// the tool input; nothing else of it is read.
 	Background bool
+	// NetworkLost is set on a failed TurnFinished (Claude Code's StopFailure)
+	// whose API error was a lost connection (Phase 20, ADR 0067): the turn
+	// can go on once the network is back. Only the class is kept, never the
+	// error's text.
+	NetworkLost bool
 	// TranscriptPath is the session transcript's path (Claude Code's
 	// transcript_path). Host mode reads token usage from it (ADR 0026). A
 	// local path: never logged or stored.

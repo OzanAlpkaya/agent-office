@@ -34,6 +34,7 @@ order they were made; grouped here by topic. New ones start from [0000-template.
 | [0011](0011-data-model-and-restart.md) | Data model and what a restart means |
 | [0035](0035-resume-and-restore.md) | Resume conversations; restore agents after a restart |
 | [0036](0036-session-history.md) | Every session's terminal output saved |
+| [0067](0067-network-loss-and-resume.md) | A turn cut off by a lost connection waits for the network and is resumed by the daemon |
 
 ## Isolation and security
 
@@ -43,6 +44,7 @@ order they were made; grouped here by topic. New ones start from [0000-template.
 | [0014](0014-git-in-the-sandbox.md) | A shared clone per agent; work handed back as a verified git bundle |
 | [0015](0015-agent-credential.md) | The OAuth token in a user-only file |
 | [0016](0016-sandbox-network-and-api-injection.md) | `--network none`; egress allowlist and an API socket that injects the token |
+| [0065](0065-dangerous-rm-prompts-in-the-sandbox.md) | Claude Code's dangerous rm prompts in the sandbox: approved when every target is inside the workspace, else the Tech Lead decides |
 | [0049](0049-codex-agents-and-their-credential.md) | Codex agents, sandboxed, with a placeholder ChatGPT login and the real token added outside |
 | [0019](0019-access-requests.md) | Network access requests approved by a human, per agent |
 | [0041](0041-reproducible-worker-images.md) | Worker images from a pinned Debian snapshot |
@@ -70,6 +72,7 @@ order they were made; grouped here by topic. New ones start from [0000-template.
 | [0033](0033-qa-and-the-integration-branch.md) | QA integrates the branches and gates the goal |
 | [0034](0034-assistant-and-project-memory.md) | Assistant briefings; project memory only once the user accepts it |
 | [0037](0037-relevant-memory.md) | Memory scoped to roles and files |
+| [0066](0066-the-leads-view-of-team-branches.md) | The Tech Lead reads its sub-tasks' and QA's files, images included, through team tools |
 
 ## GitHub and review
 

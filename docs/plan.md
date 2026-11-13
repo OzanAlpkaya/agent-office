@@ -849,3 +849,56 @@ starts from the right base, so it merges without history-only conflicts.
       changes a squash-merged file, with `max_sub_tasks` lowered to 2 while the lead runs; the follow-up starts from main,
       QA merges only it, and the second merge into main has no conflicts.
 - [x] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass (the GitHub e2e was not run, as in Phase 18).
+
+---
+
+## Phase 20: Findings from daily use
+
+Added by Ozan after Phase 19 was merged (2026-11-13), from running Bouncibo and the clinic chatbot.
+
+**Goal:** sandboxed workers are not held up by prompts nobody watches, the Tech Lead can look at its
+team's work, plan approval and caps say what they do, a dropped network heals by itself, and the office
+shows the board and draws windows only where they make sense.
+
+**Scope** (see `docs/plans/phase-20.md`)
+1. Claude Code's own "dangerous rm" permission prompts inside the sandbox (shown even with bypass
+   permissions on) wait for the user in the worker's terminal. Auto-approve them when every target is
+   inside the worker's workspace and not `.git`; let the Tech Lead decide the rest, like access requests.
+2. The Tech Lead can't see its team's output: in Bouncibo Goals 03 and 04 it reported twice that it could
+   not open the renders, because its read-only workspace has no access to other branches. Give the lead
+   read-only access to the files of its sub-task branches and the QA branch, images included.
+3. Requesting changes to an Architect plan rejects that version: its pending approval (Approvals badge,
+   "Approve plan") closes at once, and the Architect doesn't show "needs you" while it revises. Only the
+   new version asks for approval.
+4. When the network drops (e.g. a VPN toggle), an agent whose turn ends with "API Error: Connection lost
+   mid-response" is detected and resumed automatically once the network is back, without the user typing
+   into its terminal.
+5. The office bar shows a small board summary: counts of To do, In progress, Review, Done and Blocked.
+   Each count opens the Board on that column.
+6. The same counts are drawn on the whiteboard in the Tech Lead's room.
+7. Windows only on exterior walls. No window on a wall with a room behind it (e.g. the workroom's back
+   wall), and nothing drawn over a doorway or passage (a lobby window covers the way to the user's
+   office). This must hold for every layout, since layouts are configurable: a test for each preset and
+   for generated layouts.
+8. Agent caps are still confusing: a project's Max agents of 8 saved in two projects never gave more than
+   4 agents in total, because the daemon-wide cap was still 4. When a project's Max agents is higher than
+   the daemon-wide cap, the project settings say so at save time, show the effective value and link to the
+   daemon-wide setting. An end-to-end test shows that raising the daemon-wide cap from the UI lets more
+   than 4 agents run across two projects, without a restart.
+
+**Definition of Done**
+- [x] Each item has tests:
+      1. rm prompts: `internal/rmcheck` (`TestAutoApproved`, `TestLeftToTheLead` with the reviews' counterexamples,
+         `FuzzCheck`), `TestDangerousRmPrompts`, `TestHeldHook`, `TestHookSettings` (ADR 0065);
+      2. the lead's file tools: `TestReadTreeAndBlob`, `TestLeadReadsTeamFiles`, `TestReadFileContent` (image content) (ADR 0066);
+      3. change requests: `TestRequestPlanChanges`, Vitest `workflow.test.ts`, Playwright `factory.spec.ts`;
+      4. network loss: `TestParseClaudeHookNetworkLost`, `TestResumeAfterNetworkLoss`, Vitest, Playwright, and
+         `TestNetworkDropEndToEnd`, which cuts a sandboxed haiku agent's network while its answer streams (ADR 0067);
+      5. board summary: Vitest `summary.test.ts`, Playwright `office.spec.ts` (counts, the Board on a column, a phone);
+      6. whiteboard counts: Vitest `art.test.ts`, Playwright `office.spec.ts` (the counts' colours read from the canvas);
+      7. windows: Vitest `windows.test.ts` over every preset, 40 generated layouts (`TestGeneratedLayouts` writes
+         `generated.gen.json`) and the default plan at every desk grid; it fails on the old placement;
+      8. caps: Vitest `caps.test.ts`, Playwright `factory.spec.ts`, and `TestDaemonCapFromTheUIEndToEnd` (a browser
+         raises the daemon-wide cap; six agents run across two projects in the same daemon process).
+- [x] Updated office screenshots in `docs/screenshots/phase-20/` (`web/ui-tests/phase20.spec.ts`).
+- [x] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass (the GitHub e2e was not run, as in Phase 19).

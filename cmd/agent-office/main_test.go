@@ -126,14 +126,17 @@ func TestInheritUserSettingsFromEnv(t *testing.T) {
 func TestHookExitsZeroWhenDaemonDown(t *testing.T) {
 	t.Setenv("AGENT_OFFICE_SOCKET", t.TempDir()+"/missing.sock")
 	start := time.Now()
-	if code := hook(); code != 0 {
+	if code := hook(nil); code != 0 {
 		t.Fatalf("exit code %d, want 0", code)
 	}
 	if d := time.Since(start); d > time.Second {
 		t.Fatalf("took %v with the daemon down", d)
 	}
+	if code := hook([]string{"--wait"}); code != 0 { // a held PermissionRequest's forwarder (Phase 20)
+		t.Fatalf("--wait: exit code %d with the daemon down", code)
+	}
 	t.Setenv("AGENT_OFFICE_SOCKET", "")
-	if code := hook(); code != 0 {
+	if code := hook(nil); code != 0 {
 		t.Fatalf("exit code %d without socket env, want 0", code)
 	}
 }

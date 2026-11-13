@@ -365,11 +365,14 @@ function build(columns: number, rows: number, extra: number): FullPlan {
     fill(r.x + wall + 2, item.x - 4, r.y - face + 8);
     fill(item.x + itemW + 4, r.x + r.w - wall - 2, r.y - face + 8);
   };
-  wallFill(lead, whiteboard, art.whiteboardSize.w);
-  wallFill(review, screen, art.wallScreenSize.w);
-  wallFill(planning, blueprints, 26);
-  wallFill(qa, testBoard, 28);
-  fill(user.x + wall + 2, user.x + user.w - wall - 2, user.y - face + 8);
+  // Windows only on outside walls (Phase 20): the first band's back walls.
+  // The rooms of the other bands, and the workroom, have rooms behind theirs.
+  const outside = (id: RoomId): boolean => bandOf[id] === 0;
+  if (outside("lead")) wallFill(lead, whiteboard, art.whiteboardSize.w);
+  if (outside("review")) wallFill(review, screen, art.wallScreenSize.w);
+  if (outside("planning")) wallFill(planning, blueprints, 26);
+  if (outside("qa")) wallFill(qa, testBoard, 28);
+  if (outside("user")) fill(user.x + wall + 2, user.x + user.w - wall - 2, user.y - face + 8);
 
   const cooler: Point = { x: W - wall - art.waterCooler.w - 2, y: H - wall - art.waterCooler.h - 2 };
   const plants: Point[] = [

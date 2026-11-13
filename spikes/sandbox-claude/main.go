@@ -56,6 +56,8 @@ func main() {
 		os.Exit(ptyCmd(os.Args[2:]))
 	case "screen":
 		screen(os.Args[2:])
+	case "cutproxy":
+		cutProxy(os.Args[2:])
 	default:
 		os.Exit(2)
 	}
@@ -127,6 +129,31 @@ func host(args []string) {
 		ev, _ := m["hook_event_name"].(string)
 		tool, _ := m["tool_name"].(string)
 		log.Printf("hook: %s tool=%s bytes=%d", ev, tool, len(b))
+		if ev == "StopFailure" || ev == "Stop" {
+			msg, _ := m["last_assistant_message"].(string)
+			if len(msg) > 160 {
+				msg = msg[len(msg)-160:]
+			}
+			log.Printf("  %s error=%v details=%v last_tail=%q", ev, m["error"], m["error_details"], msg)
+		}
+		if ev == "PermissionRequest" || (ev == "PreToolUse" && tool == "Bash") {
+			in, _ := json.Marshal(m["tool_input"])
+			keys := []string{}
+			for k := range m {
+				keys = append(keys, k)
+			}
+			sg, _ := json.Marshal(m["permission_suggestions"])
+			log.Printf("  %s mode=%v input=%s keys=%v suggestions=%s", ev, m["permission_mode"], in, keys, sg)
+		}
+		if ev == "PermissionRequest" && os.Getenv("AO_SPIKE_PERM") != "" {
+			reply := `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"` + os.Getenv("AO_SPIKE_PERM") + `","message":"spike says no"}}}`
+			if d := os.Getenv("AO_SPIKE_PERM_DELAY"); d != "" {
+				dd, _ := time.ParseDuration(d)
+				time.Sleep(dd)
+			}
+			_, _ = c.Write([]byte(reply))
+			log.Printf("  replied %s", os.Getenv("AO_SPIKE_PERM"))
+		}
 	})
 
 	egress := listen(filepath.Join(*run, "egress.sock"))
@@ -521,4 +548,69 @@ func screen(args []string) {
 		lines = lines[len(lines)-40:]
 	}
 	fmt.Println(strings.Join(lines, "\n"))
+}
+
+// ---------- cutproxy (Phase 20: a network drop mid-response) ----------
+
+// cutProxy is a CONNECT proxy for the host's upstream (HTTPS_PROXY). While
+// the file -ctl exists, it closes every tunnel and refuses new ones: the
+// network is down.
+func cutProxy(args []string) {
+	fs := flag.NewFlagSet("cutproxy", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:18080", "listen address")
+	ctl := fs.String("ctl", "", "the network is down while this file exists")
+	_ = fs.Parse(args)
+	down := func() bool { _, err := os.Stat(*ctl); return err == nil }
+	var mu sync.Mutex
+	open := map[net.Conn]bool{}
+	go func() {
+		was := false
+		for range time.Tick(100 * time.Millisecond) {
+			d := down()
+			if d && !was {
+				mu.Lock()
+				log.Printf("cutproxy: network down, closing %d tunnels", len(open))
+				for c := range open {
+					c.Close()
+				}
+				mu.Unlock()
+			}
+			if !d && was {
+				log.Printf("cutproxy: network up")
+			}
+			was = d
+		}
+	}()
+	l, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer c.Close()
+			br := bufio.NewReader(c)
+			req, err := http.ReadRequest(br)
+			if err != nil || req.Method != http.MethodConnect || down() {
+				log.Printf("cutproxy: refused %s", req.Host)
+				return
+			}
+			up, err := net.DialTimeout("tcp", req.Host, 10*time.Second)
+			if err != nil {
+				fmt.Fprint(c, "HTTP/1.1 502 Bad Gateway\r\n\r\n")
+				return
+			}
+			defer up.Close()
+			fmt.Fprint(c, "HTTP/1.1 200 Connection established\r\n\r\n")
+			mu.Lock()
+			open[c], open[up] = true, true
+			mu.Unlock()
+			defer func() { mu.Lock(); delete(open, c); delete(open, up); mu.Unlock() }()
+			log.Printf("cutproxy: tunnel %s", req.Host)
+			splice(c, up)
+		}()
+	}
 }

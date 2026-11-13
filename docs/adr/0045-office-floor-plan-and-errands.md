@@ -135,3 +135,13 @@ A project may have its own layout: the floor plan is then built from its rooms (
 with the same shape, and optional rooms may be missing (their stations and errands go). The user's
 desk is a desk node: the user's character sits there, drawn still, while a device has the UI open
 and visible.
+
+## Amendment (2026-11-13, Phase 20): the board summary and outside windows
+
+- The office bar shows the Board's counts per column for "All active goals" (To do, In progress,
+  Review, Done, Blocked; QA round cards included, as on the Board). Each count opens the Board with all
+  active goals picked and scrolls to and highlights its column. On a phone only the coloured counts show.
+- The Tech Lead's whiteboard draws the same counts on its top line (where the scribbled goal title was),
+  in a 3×5 pixel font in each column's sticky-note colour, up to 99 then "99+"; also without a lead.
+- Windows hang only on outside walls: in the default plan the first band's back walls (planning, Tech
+  Lead, your office), no longer the review room's or the QA lab's, which have rooms behind them.

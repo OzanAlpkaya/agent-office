@@ -27,6 +27,8 @@ export function poseOf(a: Pick<Agent, "state" | "kind">, waiting: boolean): Pose
       return "idle";
     case "waiting_background":
       return "background"; // sits at its desk like idle (ADR 0064)
+    case "waiting_network":
+      return "idle"; // its turn was cut off; it waits for the network (ADR 0067)
     case "working":
       return a.kind === "reviewer" ? "reviewing" : "typing";
   }

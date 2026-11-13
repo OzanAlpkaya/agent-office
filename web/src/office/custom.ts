@@ -235,7 +235,9 @@ function build(l: OfficeLayout): FloorPlan {
     }
   }
 
-  // Windows along the back walls, around what hangs there.
+  // Windows only on outside walls (Phase 20): the stretches of a room's back
+  // wall with no room behind it (the grid's top, or no room in the tile row
+  // above), clear of what hangs there, of doorways and of partitions.
   const windows: Point[] = [];
   const fill = (from: number, to: number, y: number): void => {
     const n = Math.floor((to - from + 8) / 40);
@@ -247,6 +249,8 @@ function build(l: OfficeLayout): FloorPlan {
   const testBoard: Point | undefined = qa ? { x: Math.round(qa.x + qa.w / 2 - 14), y: qa.y - face + 10 } : undefined;
   for (const r of l.rooms) {
     const f = floorOf(r);
+    const top = f.y - face;
+    // what takes room on this back wall: hung items and every doorway that reaches into it
     const items: [number, number][] = [];
     if (r.id === "lead") items.push([whiteboard.x, art.whiteboardSize.w]);
     if (r.id === "review" && screen) items.push([screen.x, art.wallScreenSize.w]);
@@ -254,15 +258,12 @@ function build(l: OfficeLayout): FloorPlan {
     if (r.id === "qa" && testBoard) items.push([testBoard.x, 28]);
     if (r.id === "lobby") items.push([door.x, art.door.w]);
     if (r.id === "kitchen" && counter) items.push([counter.x, art.counter.w]);
-    // doorways through this room's back wall
-    for (const d of doorways) if (d.w > d.h && d.y + d.h === f.y && d.x >= f.x && d.x < f.x + f.w) items.push([d.x, d.w]);
-    items.sort((a, b) => a[0] - b[0]);
-    let from = f.x + wall + 2;
-    for (const [x, w] of items) {
-      fill(from, x - 4, f.y - face + 8);
-      from = x + w + 4;
+    for (const d of doorways) if (d.y < f.y && d.y + d.h > top && d.x < f.x + f.w && d.x + d.w > f.x) items.push([d.x, d.w]);
+    for (const [from, to] of outsideSpans(r, l.rooms)) {
+      for (const [a, b] of freeSpans([Math.max(from, f.x + wall + 2), Math.min(to, f.x + f.w - wall - 2)], items)) {
+        fill(a, b, top + 8);
+      }
     }
-    fill(from, f.x + f.w - wall - 2, f.y - face + 8);
   }
 
   return {
@@ -270,6 +271,33 @@ function build(l: OfficeLayout): FloorPlan {
     whiteboard, screen, table, counter, door, entrance, userDesk, userDoor, queueSign, blueprints, testBoard, stations, cooler, plants,
     furniture, spots: { whiteboard: whiteboardSpots, coffee, review: seats, queue },
   };
+}
+
+// outsideSpans are the x ranges (world pixels) of room r's back wall with no
+// room behind it: at the grid's top, or under no room's bottom tile row.
+export function outsideSpans(r: LayoutRoom, rooms: readonly LayoutRoom[]): [number, number][] {
+  const out: [number, number][] = [];
+  for (let c = r.x; c < r.x + r.w; c++) {
+    const behind = r.y > 0 && rooms.some((o) => o !== r && c >= o.x && c < o.x + o.w && r.y - 1 >= o.y && r.y - 1 < o.y + o.h);
+    if (behind) continue;
+    const last = out[out.length - 1];
+    if (last && last[1] === c * tile) last[1] = (c + 1) * tile;
+    else out.push([c * tile, (c + 1) * tile]);
+  }
+  return out;
+}
+
+// freeSpans is [from, to] without the items ([x, w]) on it, each kept 4 px clear.
+export function freeSpans([from, to]: [number, number], items: readonly [number, number][]): [number, number][] {
+  let spans: [number, number][] = from < to ? [[from, to]] : [];
+  for (const [x, w] of items) {
+    const a = x - 4, b = x + w + 4;
+    spans = spans.flatMap(([s, e]): [number, number][] => {
+      if (b <= s || a >= e) return [[s, e]];
+      return [...(a > s ? [[s, a] as [number, number]] : []), ...(b < e ? [[b, e] as [number, number]] : [])];
+    });
+  }
+  return spans;
 }
 
 // deskCapacity mirrors internal/office.DeskCapacity, for the preview's warning.

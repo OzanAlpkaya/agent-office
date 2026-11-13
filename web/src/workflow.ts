@@ -24,9 +24,18 @@ export function specsOf(specs: readonly Spec[], goalId: string): Spec[] {
 
 // currentSpec is the version the goal card shows: a proposal waiting for the
 // user wins over the approved one; superseded versions are history.
+// A version withdrawn by a change request (Phase 20) is current until the
+// Architect submits the next one.
 export function currentSpec(specs: readonly Spec[], goalId: string): Spec | undefined {
   const own = specsOf(specs, goalId);
+  if (own[0] && withdrawn(own[0])) return own[0];
   return own.find((s) => s.status === "proposed") ?? own.find((s) => s.status === "approved");
+}
+
+// withdrawn reports whether a version was taken back by the user's change
+// request (Phase 20): superseded, with the request on it.
+export function withdrawn(s: Spec): boolean {
+  return s.status === "superseded" && Boolean(s.change_request);
 }
 
 // proposedSpec is the goal's plan version waiting for approval, if any.
@@ -150,7 +159,7 @@ export function fromSubTaskForm(f: SubTaskForm): PlanSubTask {
 // pendingChanges is the change request the Architect still has to answer on
 // a goal's current version: none once a newer version exists.
 export function pendingChanges(spec: Spec, specs: readonly Spec[]): string | undefined {
-  if (!spec.change_request || spec.status === "superseded") return undefined;
+  if (!spec.change_request) return undefined;
   const newer = specs.some((x) => x.goal_id === spec.goal_id && x.version > spec.version);
   return newer ? undefined : spec.change_request;
 }

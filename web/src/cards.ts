@@ -69,6 +69,9 @@ export function cardStatus(task: Task, ctx: CardContext): CardStatus {
       return st("needs-you", "Needs you", "warn", "An agent waits for a permission answer in its terminal");
     }
     if (running.some((a) => a.state === "working")) return st("working", "Working", "accent", "An agent is working on it");
+    if (running.some((a) => a.state === "waiting_network")) {
+      return st("offline", "Connection lost", "warn", "Its agent's turn was cut off by a lost connection; it resumes once the network is back");
+    }
     if (running.some((a) => a.state === "waiting_background")) {
       return st("background", "Background task", "accent", "Its agent's turn ended while a command it started still runs");
     }
@@ -108,7 +111,8 @@ export function supersededTitle(task: Task, tasks: readonly Task[]): string {
 }
 
 const kindOrder: Record<string, number> = { lead: 0, architect: 1, qa: 2, worker: 3, reviewer: 4, assistant: 5 };
-const stateOrder: Record<string, number> = { working: 0, waiting_permission: 1, waiting_background: 2, starting: 3, idle: 4, exited: 5 };
+const stateOrder: Record<string, number> = { working: 0, waiting_permission: 1, waiting_background: 2, waiting_network: 2, starting: 3, idle: 4,
+  exited: 5 };
 
 // CardAgent is the one agent a card names, and how many more work on it.
 export interface CardAgent {

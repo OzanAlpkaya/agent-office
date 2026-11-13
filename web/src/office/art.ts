@@ -1,4 +1,4 @@
-import type { Kind } from "../api";
+import type { Kind, TaskStatus } from "../api";
 // Pixel art for the office view (ADR 0024). Every sprite here is original to
 // this repository: a pixel map is a list of rows, one character per pixel,
 // looked up in a palette; "." is transparent. Some larger pieces (desk, floor,
@@ -453,6 +453,65 @@ export const whiteboardMap = grid(whiteboardSize.w, whiteboardSize.h, (x, y) => 
 export const noteGrid = { x: 4, y: 9, cols: 10, rows: 2, dx: 7, dy: 8 } as const;
 // The goal's "title", scribbled above the notes.
 export const titleLine = { x: 4, y: 4, w: 40 } as const;
+
+// A task status's colours: the whiteboard's sticky notes and counts, and the
+// office bar's summary (Phase 20).
+export const statusColors: Readonly<Record<TaskStatus, Swatch>> = {
+  todo: { base: 0xf2d16b, shade: 0xc9a63c },
+  in_progress: { base: 0x8ab4f8, shade: 0x5a8de0 },
+  review: { base: 0xc49bff, shade: 0x9b6dde },
+  done: { base: 0x8fd694, shade: 0x5cb860 },
+  blocked: { base: 0xf28b82, shade: 0xd05a50 },
+};
+
+// The board summary on the whiteboard (Phase 20): per column its count in a
+// 3×5 pixel font, in the column's colour, on the line where the title was.
+export const countLine = { x: 4, y: 3, w: 68 } as const;
+export const glyphs: Readonly<Record<string, readonly string[]>> = {
+  "0": ["###", "#.#", "#.#", "#.#", "###"],
+  "1": [".#.", "##.", ".#.", ".#.", "###"],
+  "2": ["###", "..#", "###", "#..", "###"],
+  "3": ["###", "..#", ".##", "..#", "###"],
+  "4": ["#.#", "#.#", "###", "..#", "..#"],
+  "5": ["###", "#..", "###", "..#", "###"],
+  "6": ["###", "#..", "###", "#.#", "###"],
+  "7": ["###", "..#", ".#.", ".#.", ".#."],
+  "8": ["###", "#.#", "###", "#.#", "###"],
+  "9": ["###", "#.#", "###", "..#", "###"],
+  "+": ["...", ".#.", "###", ".#.", "..."],
+};
+
+// countText is a count as the whiteboard writes it: up to 99, then "99+".
+export const countText = (n: number): string => (n > 99 ? "99+" : String(Math.max(0, Math.floor(n))));
+
+// countPixels lays out the counts on the count line: the pixels of each
+// count's digits (3×5, 1 apart), groups as far apart as fits, relative to
+// the count line.
+export interface CountPixels {
+  ink: { group: number; x: number; y: number }[];
+  starts: number[]; // x where each group starts
+  width: number;
+}
+export function countPixels(counts: readonly number[]): CountPixels {
+  const texts = counts.map(countText);
+  const used = texts.reduce((n, t) => n + t.length * 4 - 1, 0);
+  const gap = counts.length > 1 ? Math.max(3, Math.min(9, Math.floor((countLine.w - used) / (counts.length - 1)))) : 0;
+  const out: CountPixels = { ink: [], starts: [], width: 0 };
+  let x = 0;
+  texts.forEach((t, group) => {
+    if (group > 0) x += gap;
+    out.starts.push(x);
+    [...t].forEach((ch, k) => {
+      if (k > 0) x += 1;
+      glyphs[ch].forEach((row, y) => {
+        for (let gx = 0; gx < 3; gx++) if (row[gx] === "#") out.ink.push({ group, x: x + gx, y });
+      });
+      x += 3;
+    });
+  });
+  out.width = x;
+  return out;
+}
 
 // A sticky note: "U" is the darker glued strip, "u" the note. The scene
 // recolours both per task status.

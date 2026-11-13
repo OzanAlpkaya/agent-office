@@ -22,6 +22,14 @@ var claudeHookEvents = []string{
 // timeout so it can always exit cleanly first.
 const hookTimeoutSeconds = 10
 
+// permissionHookTimeoutSeconds bounds a PermissionRequest hook, which the
+// daemon may hold while the Tech Lead decides a sandboxed worker's rm
+// prompt (Phase 20, ADR 0065); its forwarder runs with --wait.
+const permissionHookTimeoutSeconds = 120
+
+// WaitFlag makes `agent-office hook` wait as long as a held PermissionRequest.
+const WaitFlag = "--wait"
+
 // SocketEnv is the environment variable that tells `agent-office hook` which
 // per-agent socket to forward to.
 const SocketEnv = "AGENT_OFFICE_SOCKET"
@@ -252,7 +260,11 @@ func settings(hookCommand string, deny []string, extra map[string]any) ([]byte, 
 	}
 	hooks := map[string][]matcher{}
 	for _, e := range claudeHookEvents {
-		hooks[e] = []matcher{{Hooks: []hook{{Type: "command", Command: hookCommand, Timeout: hookTimeoutSeconds}}}}
+		h := hook{Type: "command", Command: hookCommand, Timeout: hookTimeoutSeconds}
+		if e == "PermissionRequest" {
+			h.Command, h.Timeout = hookCommand+" "+WaitFlag, permissionHookTimeoutSeconds
+		}
+		hooks[e] = []matcher{{Hooks: []hook{h}}}
 	}
 	// The team tools are pre-allowed: the daemon authorizes every call itself
 	// (ADR 0017), so a host-mode permission prompt would add nothing. Every
@@ -274,9 +286,10 @@ func ShellQuote(s string) string {
 }
 
 // claudeHook holds only the payload fields state tracking needs. Everything
-// else (prompt, tool_input, tool_response, last_assistant_message, message) is
-// never decoded, but for one boolean of a Bash call's tool_input:
-// run_in_background (ADR 0064).
+// else (prompt, tool_input, tool_response, message) is never decoded, but for
+// one boolean of a Bash call's tool_input, run_in_background (ADR 0064), and
+// StopFailure's error and last_assistant_message, reduced to whether the
+// connection was lost (ADR 0067).
 type claudeHook struct {
 	HookEventName    string          `json:"hook_event_name"`
 	SessionID        string          `json:"session_id"`
@@ -288,6 +301,42 @@ type claudeHook struct {
 	StopHookActive   bool            `json:"stop_hook_active"`
 	TranscriptPath   string          `json:"transcript_path"`
 	ToolInput        json.RawMessage `json:"tool_input"`
+	Error            string          `json:"error"`                  // StopFailure: an enum
+	LastMessage      string          `json:"last_assistant_message"` // StopFailure: the API error's text
+}
+
+// lostConnection reports whether a StopFailure is Claude Code's API error for
+// a lost connection: its own texts for a cut stream ("Connection lost
+// mid-response", measured with 2.1.323), connection errors, and the 502, 503
+// or 504 without a body the daemon's API proxy answers when the upstream is
+// unreachable. Rate limits, authentication, billing and invalid requests are
+// not; neither is any text that is not an API error.
+func lostConnection(errKind, msg string) bool {
+	if errKind != "server_error" && errKind != "unknown" {
+		return false
+	}
+	if len(msg) > 2000 {
+		msg = msg[:2000]
+	}
+	if !strings.HasPrefix(strings.TrimSpace(msg), "API Error:") {
+		return false
+	}
+	m := strings.ToLower(msg)
+	for _, p := range []string{
+		"connection lost", "connection error", "connection refused", "connection reset", "part of the response never arrived",
+		"the response stopped arriving", "the response stalled", "went to sleep", "server error mid-response",
+		"fetch failed", "econnreset", "econnrefused", "etimedout", "socket hang up", "timed out", "network",
+	} {
+		if strings.Contains(m, p) {
+			return true
+		}
+	}
+	for _, code := range []string{"502", "503", "504"} {
+		if strings.Contains(m, code+" status code (no body)") {
+			return true
+		}
+	}
+	return false
 }
 
 // backgroundBash reports whether a Bash tool_input asks to run in the
@@ -300,6 +349,38 @@ func backgroundBash(tool string, input json.RawMessage) bool {
 		RunInBackground bool `json:"run_in_background"`
 	}
 	return json.Unmarshal(input, &in) == nil && in.RunInBackground
+}
+
+// PermissionInput is what a Claude Code PermissionRequest for Bash asks
+// about (Phase 20, ADR 0065): the command, the shell's directory and the
+// permission mode. The command is agent text: it is read to decide the
+// sandbox's rm prompts and shown to the Tech Lead, never stored in events.
+type PermissionInput struct {
+	Command string
+	Cwd     string
+	Mode    string // permission_mode, e.g. bypassPermissions
+}
+
+// maxPermissionCommand bounds the command read from a payload.
+const maxPermissionCommand = 16 << 10
+
+// ClaudePermissionInput reads a PermissionRequest for Bash; ok is false for
+// any other payload.
+func ClaudePermissionInput(raw []byte) (PermissionInput, bool) {
+	var h struct {
+		HookEventName  string `json:"hook_event_name"`
+		ToolName       string `json:"tool_name"`
+		Cwd            string `json:"cwd"`
+		PermissionMode string `json:"permission_mode"`
+		ToolInput      struct {
+			Command string `json:"command"`
+		} `json:"tool_input"`
+	}
+	if err := json.Unmarshal(raw, &h); err != nil || h.HookEventName != "PermissionRequest" || h.ToolName != "Bash" ||
+		h.ToolInput.Command == "" || len(h.ToolInput.Command) > maxPermissionCommand || len(h.Cwd) > 4096 {
+		return PermissionInput{}, false
+	}
+	return PermissionInput{Command: h.ToolInput.Command, Cwd: h.Cwd, Mode: enum(h.PermissionMode)}, true
 }
 
 // ErrInvalidPayload is returned for hook payloads that cannot be used.
@@ -352,6 +433,7 @@ func ParseClaudeHook(raw []byte) (Event, error) {
 		ev.Kind = TurnFinished
 	case "StopFailure":
 		ev.Kind, ev.Detail = TurnFinished, "failure"
+		ev.NetworkLost = lostConnection(h.Error, h.LastMessage)
 	case "SessionEnd":
 		ev.Kind, ev.Detail = SessionEnded, enum(h.Reason)
 	default:

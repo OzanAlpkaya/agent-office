@@ -8,7 +8,7 @@ import { searchAgents, shortId } from "./agents";
 
 const stateText: Record<AgentState, string> = {
   starting: "starting", idle: "idle", working: "working", waiting_permission: "waiting for you",
-  waiting_background: "waiting on background task", exited: "exited",
+  waiting_background: "waiting on background task", waiting_network: "waiting for the network", exited: "exited",
 };
 
 export function AgentSwitcher({ agents, tasks, current, waiting, onPick, onClose }: {

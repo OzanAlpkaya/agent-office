@@ -183,6 +183,9 @@ func fakeClaude() int {
 			send("Stop", `,"agent_id":"sub-1","stop_hook_active":false`)
 		case "stopfailure":
 			send("StopFailure", "")
+		case "netlost": // a turn cut off by a network drop (Claude Code 2.1.323's StopFailure, Phase 20)
+			send("UserPromptSubmit", "")
+			send("StopFailure", `,"error":"server_error","last_assistant_message":"API Error: Connection lost mid-response. The response above may be incomplete."`)
 		case "idlenote":
 			send("Notification", `,"notification_type":"idle_prompt"`)
 		case "commit":

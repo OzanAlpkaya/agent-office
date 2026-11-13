@@ -7,7 +7,7 @@
 // replaces its generated shader and uniform code with eval-free versions.
 import "pixi.js/unsafe-eval";
 import { Application, Container, Graphics, Rectangle, Sprite, type Texture, TilingSprite } from "pixi.js";
-import type { Agent, Kind, TaskStatus } from "../api";
+import { type Agent, type Kind, taskStatuses } from "../api";
 import * as art from "./art";
 import { armRects } from "./arms";
 import { type Capacity, Director, type Errand, type Place } from "./errands";
@@ -60,13 +60,7 @@ export interface SceneOptions {
   onTransform?: (t: Transform) => void;
 }
 
-const noteColors: Record<TaskStatus, art.Swatch> = {
-  todo: { base: 0xf2d16b, shade: 0xc9a63c },
-  in_progress: { base: 0x8ab4f8, shade: 0x5a8de0 },
-  review: { base: 0xc49bff, shade: 0x9b6dde },
-  done: { base: 0x8fd694, shade: 0x5cb860 },
-  blocked: { base: 0xf28b82, shade: 0xd05a50 },
-};
+const noteColors = art.statusColors;
 
 const background = 0x0f1115;
 
@@ -323,10 +317,11 @@ export class OfficeScene {
     if (first) this.errands(now, true);
     this.syncDesks();
     const notes = model.goal?.notes ?? [];
-    const notesKey = `${model.goal !== undefined}|${notes.map((n) => `${n.id}:${n.status}`).join(",")}`;
+    const counts = model.summary ? taskStatuses.map((k) => model.summary?.[k] ?? 0) : [];
+    const notesKey = `${counts.join(",")}|${notes.map((n) => `${n.id}:${n.status}`).join(",")}`;
     if (notesKey !== this.notesKey) {
       this.notesKey = notesKey;
-      this.drawNotes(notes);
+      this.drawNotes(notes, counts);
     }
     this.dirty = true;
     if (this.hovered && !this.chars.has(this.hovered)) this.hover(undefined);
@@ -530,10 +525,20 @@ export class OfficeScene {
     // The user's own desk is a desk node (setPresence): empty, or with them at it.
   }
 
-  private drawNotes(notes: readonly Note[]): void {
+  private drawNotes(notes: readonly Note[], counts: readonly number[]): void {
     this.notes.removeChildren().forEach((c) => c.destroy());
-    if (this.model?.goal) {
-      // The goal's title as a scribbled marker line: dashes of varying length.
+    if (counts.length > 0) {
+      // The board summary (Phase 20): each column's count in its colour, on the top line.
+      const ink = new Graphics();
+      const cl = art.countLine;
+      const px = art.countPixels(counts);
+      for (const d of px.ink) {
+        const status = taskStatuses[d.group];
+        ink.rect(cl.x - art.noteGrid.x + d.x, cl.y - art.noteGrid.y + d.y, 1, 1).fill(noteColors[status].shade);
+      }
+      this.notes.addChild(ink);
+    } else if (this.model?.goal) {
+      // No board summary: the goal's title as a scribbled marker line, as before Phase 20.
       const line = new Graphics();
       const tl = art.titleLine;
       for (let x = 0, i = 0; x < tl.w; i++) {

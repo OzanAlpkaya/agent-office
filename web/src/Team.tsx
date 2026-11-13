@@ -7,7 +7,7 @@ import { AgentName } from "./AgentName";
 import { parseScope, scopeLabel } from "./memory";
 import {
   type SubTaskForm, fromSubTaskForm, groupInbox, needsAnswer, newSubTask, pendingChanges, proposedSpec, subTaskForm, toForm,
-  waitsFor, withSubTask, withoutSubTask,
+  waitsFor, withSubTask, withoutSubTask, withdrawn,
 } from "./workflow";
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleTimeString();
@@ -276,7 +276,7 @@ export function PlanPanel({ spec, specs = [], roles, onSave, onApprove, onReques
   return (
     <details className={`plan small spec-${spec.status}`} open={spec.status === "proposed"} onClick={(e) => e.stopPropagation()}>
       <summary>
-        Plan v{spec.version} · {specLabel[spec.status]} · {p.sub_tasks.length} sub-task{p.sub_tasks.length === 1 ? "" : "s"}
+        Plan v{spec.version} · {withdrawn(spec) ? "changes requested" : specLabel[spec.status]} · {p.sub_tasks.length} sub-task{p.sub_tasks.length === 1 ? "" : "s"}
         {spec.author ? <> · by architect <AgentName id={spec.author} /></> : " · edited by you"}
       </summary>
       {spec.status === "proposed" && (
@@ -340,7 +340,10 @@ export function PlanPanel({ spec, specs = [], roles, onSave, onApprove, onReques
       )}
       {pending && (
         <p className="callout small change-pending" data-testid="change-pending">
-          Changes requested, waiting for the Architect: <span className="quote">{pending}</span>
+          {withdrawn(spec)
+            ? <>Changes requested: the Architect is revising this version; you approve the next one. </>
+            : <>Changes requested, waiting for the Architect: </>}
+          <span className="quote">{pending}</span>
         </p>
       )}
       {live && onRequestChanges && <ChangeRequest spec={spec} onSend={onRequestChanges} />}

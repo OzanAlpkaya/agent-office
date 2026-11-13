@@ -182,6 +182,7 @@ func (e *Engine) onHookLocked(ctx context.Context, a *agentProc, ev agent.Event,
 	e.noteBackgroundLocked(a, ev)
 	e.applyLocked(ctx, a, ev, log)
 	e.afterTurnLocked(ctx, a, ev)
+	e.afterNetworkLocked(ctx, a, ev)
 	switch {
 	case mainStop && a.stopAfterTurn:
 		e.stopAfterReportLocked(a)
@@ -240,8 +241,8 @@ func (e *Engine) claimLocked(ctx context.Context, a *agentProc, via string, log 
 // scheduleDeliveryLocked starts idle delivery for a after the settle delay,
 // if it has undelivered messages and nothing is scheduled yet.
 func (e *Engine) scheduleDeliveryLocked(ctx context.Context, a *agentProc) {
-	if a.deliverTimer != nil || !a.running() || a.stopAfterTurn {
-		return
+	if a.deliverTimer != nil || !a.running() || a.stopAfterTurn || a.netWaiting {
+		return // waiting for the network (ADR 0067): the resumed turn's Stop delivers
 	}
 	if n, err := e.q.CountPendingMessages(ctx, db.CountPendingMessagesParams{ToAgentID: a.info.ID, CreatedAt: a.since}); err != nil || n == 0 {
 		return

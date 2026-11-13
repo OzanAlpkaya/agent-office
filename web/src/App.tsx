@@ -24,6 +24,7 @@ import { unread } from "./workflow";
 import { type Waiting, waitingOnUser } from "./waiting";
 import { TerminalView } from "./TerminalView";
 import { capNote, runningLabel } from "./caps";
+import { boardSummary } from "./summary";
 import { useWorld } from "./useAgents";
 import { type UsageRow, formatMoney, formatTokens, sessionList, totalTokens, usageBy } from "./usage";
 
@@ -37,6 +38,7 @@ const stateLabel: Record<AgentState, string> = {
   working: "Working",
   waiting_permission: "Waiting for permission",
   waiting_background: "Waiting on background task",
+  waiting_network: "Connection lost; resumes when the network is back",
   exited: "Exited",
 };
 
@@ -306,6 +308,22 @@ export function App({
     return res;
   };
 
+  // A project above the daemon-wide cap links to it (Phase 20).
+  const [capFocusAt, setCapFocusAt] = useState<number>();
+  const openDaemonCap = (): void => {
+    setAppTab("projects");
+    setCapFocusAt(Date.now());
+    setView({ kind: "settings" });
+  };
+
+  // The Board's counts per column (Phase 20): the office bar and the whiteboard.
+  const summary = useMemo(() => boardSummary(tasks, qaRuns), [tasks, qaRuns]);
+  const [boardFocus, setBoardFocus] = useState<{ column: TaskStatus; at: number }>();
+  const openColumn = (column: TaskStatus): void => {
+    setBoardFocus({ column, at: Date.now() });
+    setView({ kind: "board" });
+  };
+
   // reviewPlan opens the goal's card, whose plan is open while it waits for approval.
   const reviewPlan = (goalId: string): void => {
     setView({ kind: "board" });
@@ -475,7 +493,8 @@ export function App({
                       waiting: e.waiting.length, running: e.running, current: false }))]
                     .sort((a, b) => projects.findIndex((p) => p.id === a.id) - projects.findIndex((p) => p.id === b.id))}
                   onFloor={(id) => onSelectProject(id, undefined, "office")} profile={profile}
-                  onLayoutSettings={() => openProjectSettings("office")} />
+                  onLayoutSettings={() => openProjectSettings("office")}
+                  summary={summary} onOpenColumn={openColumn} />
               </Suspense>
             ) : view.kind === "usage" ? (
               <Suspense fallback={<div className="empty">Loading usage…</div>}>
@@ -485,16 +504,17 @@ export function App({
             ) : view.kind === "settings" ? (
               <AppSettings tab={appTab} onTab={setAppTab} project={project} projects={projects} daemon={daemon}
                 remoteHosts={status?.remote_hosts ?? []} version={version} deviceName={session.device?.name} running={runningEverywhere}
-                remote={session.remote}
+                remote={session.remote} capFocusAt={capFocusAt}
                 profile={profile} run={run} onSignedOut={onSignedOut}
                 onSelectProject={(id) => onSelectProject(id, undefined, "board")}
                 onProjectSettings={(id) => (id === project.id ? openProjectSettings("general") : onSelectProject(id, undefined, "project-settings"))} />
             ) : view.kind === "project-settings" ? (
               <ProjectSettings tab={projectTab} onTab={setProjectTab} project={project} status={status} daemon={daemon} api={papi}
                 accessRequests={accessRequests} memory={memory} run={run} caps={liveCaps}
-                running={running} />
+                running={running} onDaemonCap={openDaemonCap} />
             ) : view.kind === "board" || !current ? (
               <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask} usageByAgent={usageByAgent}
+                focus={boardFocus}
                 usageByGoal={usageByGoal}
                 onStartLead={(t) => void startAgent(t.id, "lead")}
                 onCreate={async (title, description) => (await run(() => api.createTask(title, description))) !== undefined}
@@ -687,6 +707,9 @@ function AgentRow({ agent: a, taskTitle, selected, waiting, usage, onSelect }: {
         </span>
         <span className="agent-row-side">
           {waiting && <span className="chip small tone-warn">needs you</span>}
+          {!waiting && a.state === "waiting_network" && (
+            <span className="chip small tone-warn" title="Its turn was cut off by a lost connection; agent-office resumes it once the network is back">offline</span>
+          )}
           {!waiting && a.state === "waiting_background" && (
             <span className="chip small tone-accent" title="Its turn ended while a command it started still runs">background task</span>
           )}

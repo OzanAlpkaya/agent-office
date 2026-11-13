@@ -49,14 +49,37 @@ func TestRequestPlanChanges(t *testing.T) {
 		t.Fatalf("long request: %v", err)
 	}
 	s, err := e.RequestSpecChanges(ctx, out.SpecID, "Split the API sub-task in two.")
-	if err != nil || s.ChangeRequest != "Split the API sub-task in two." || s.ChangeRequestedAt == nil || s.Status != SpecProposed {
+	// The proposed version is withdrawn (Phase 20): only the revision asks for approval.
+	if err != nil || s.ChangeRequest != "Split the API sub-task in two." || s.ChangeRequestedAt == nil || s.Status != SpecSuperseded {
 		t.Fatalf("request %+v %v", s, err)
+	}
+	if _, err := e.ApproveSpec(ctx, out.SpecID); err == nil {
+		t.Fatal("a withdrawn version was approved")
+	}
+	items, err := e.Inbox(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		if it.Kind == InboxPlan && it.ReadAt == nil {
+			t.Fatalf("the withdrawn version's notice is still open: %+v", it)
+		}
 	}
 	typeLine(t, e, arch.ID, "stop") // its turn ends: the user's words are delivered on the Stop hook
 	screen(t, e, arch.ID, "Split the API sub-task in two.")
+	screen(t, e, arch.ID, "changes to version 1 of the plan (proposed)")
 	screen(t, e, arch.ID, "submit_plan")
+	// While it revises it does not end, and a restore keeps it.
+	if !e.architectRestorable(ctx, goal.ID) {
+		t.Fatal("a restore would leave out an architect revising a withdrawn version")
+	}
 
-	// Approved: the Architect ends; a request on the approved plan starts it again.
+	// The revision asks for approval; approved, the Architect ends; a request on
+	// the approved plan starts it again.
+	out, err = e.Team().SubmitPlan(ctx, arch.ID, samplePlan())
+	if err != nil || out.Version != 2 {
+		t.Fatalf("revision %+v %v", out, err)
+	}
 	res, err := e.ApproveSpec(ctx, out.SpecID)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +93,7 @@ func TestRequestPlanChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	log.waitFrom(t, startWait, mark, agentState(arch.ID, hooks.Idle))
-	screen(t, e, arch.ID, "The user asks for changes to version 1 of the plan (approved)")
+	screen(t, e, arch.ID, "The user asks for changes to version 2 of the plan (approved)")
 	screen(t, e, arch.ID, "Add a CLI sub-task.")
 	// It does not end while the request waits for a new version (code review), nor is it left out of a restore.
 	typeLine(t, e, arch.ID, "turn")
@@ -85,6 +108,7 @@ func TestRequestPlanChanges(t *testing.T) {
 		t.Fatalf("relaunched architect %+v", a)
 	}
 	// A superseded version cannot be asked about.
+	approved := out.SpecID
 	s2, err := e.Team().SubmitPlan(ctx, arch.ID, samplePlan())
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +116,7 @@ func TestRequestPlanChanges(t *testing.T) {
 	if _, err := e.ApproveSpec(ctx, s2.SpecID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.RequestSpecChanges(ctx, out.SpecID, "again"); !isInvalid(err) {
+	if _, err := e.RequestSpecChanges(ctx, approved, "again"); !isInvalid(err) {
 		t.Fatalf("request on a superseded version: %v", err)
 	}
 }

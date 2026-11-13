@@ -8,7 +8,8 @@ import { type Presence, isPresence } from "./presence";
 import { type AvatarLook, type Profile, isProfile } from "./office/avatar";
 
 // waiting_background: idle, with a background command still running (Phase 19, ADR 0064)
-export type AgentState = "starting" | "idle" | "working" | "waiting_permission" | "waiting_background" | "exited";
+// waiting_network: idle, its turn cut off by a lost connection; resumed once the network is back (Phase 20, ADR 0067)
+export type AgentState = "starting" | "idle" | "working" | "waiting_permission" | "waiting_background" | "waiting_network" | "exited";
 export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "blocked";
 export type WorktreeStatus = "active" | "kept" | "removed";
 export type SandboxMode = "host" | "podman";
@@ -24,7 +25,8 @@ export const defaultRole: Record<Kind, Role> = {
 };
 
 export const taskStatuses: readonly TaskStatus[] = ["todo", "in_progress", "review", "done", "blocked"];
-const agentStates: readonly string[] = ["starting", "idle", "working", "waiting_permission", "waiting_background", "exited"];
+const agentStates: readonly string[] = ["starting", "idle", "working", "waiting_permission", "waiting_background", "waiting_network",
+  "exited"];
 
 // AgentCLI is the agent CLI an agent runs on (ADR 0050).
 export type AgentCLI = "claude" | "codex";

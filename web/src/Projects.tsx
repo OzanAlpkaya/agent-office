@@ -1,9 +1,9 @@
 // Projects panel (ADR 0046, 0048): add a repository, change a project's
 // settings, retry or remove it. Settings left empty inherit the daemon's
 // flags, shown as placeholders.
-import { type JSX, useEffect, useState } from "react";
+import { type JSX, useEffect, useRef, useState } from "react";
 import { type AccessDecider, type Caps, type DaemonStatus, type Project, type ProjectSettings, api } from "./api";
-import { capNote, needsStop } from "./caps";
+import { aboveDaemonCap, capNote, draftCaps, needsStop } from "./caps";
 import { formatMoney } from "./usage";
 
 // Failure is the last action's error, shown where that action was asked for.
@@ -104,10 +104,17 @@ function inherited(d: ProjectSettings | undefined): Record<keyof SettingsDraft, 
   };
 }
 
-function SettingsFields({ draft, onChange, defaults, sandboxed, caps }: {
+function SettingsFields({ draft, onChange, defaults, sandboxed, caps, daemonMax, onDaemonCap, savedMaxAgents }: {
   draft: SettingsDraft; onChange: (d: SettingsDraft) => void; defaults?: ProjectSettings; sandboxed: boolean;
   caps?: Caps; // an open project's caps now (ADR 0061)
+  daemonMax?: number; // the daemon-wide cap now
+  onDaemonCap?: () => void; // Phase 20: where the daemon-wide cap is changed
+  savedMaxAgents?: string; // the field as saved: unchanged, the daemon's own caps are shown
 }): JSX.Element {
+  // The effective cap of what is typed, not only of what was saved (Phase 20).
+  const typed = caps === undefined || draft.maxAgents.trim() !== (savedMaxAgents ?? "").trim();
+  const shown = (typed ? draftCaps(draft.maxAgents, defaults?.max_agents, daemonMax ?? caps?.daemon_max, caps?.running) : undefined) ??
+    (caps && daemonMax !== undefined ? { ...caps, daemon_max: daemonMax, effective: Math.min(caps.max_agents, daemonMax) } : caps);
   const inh = inherited(defaults);
   // The inherited value is shown in full under the field (a placeholder was cut off, Phase 18 review).
   const field = (k: Exclude<keyof SettingsDraft, "github" | "accessDecider">, label: string, help: string): JSX.Element => (
@@ -124,8 +131,11 @@ function SettingsFields({ draft, onChange, defaults, sandboxed, caps }: {
       {field("model", "Model", "default model of its agents, e.g. haiku; a role's own model wins")}
       <div className="setting-group">
         {field("maxAgents", "Max agents", "its agents at the same time; never more than the daemon's cap")}
-        <span className="field-hint" data-testid="cap-note">
-          {caps ? capNote(caps) : "Never more than the daemon's cap. The Tech Lead, Architect and QA count too."}
+        <span className={`field-hint ${shown && aboveDaemonCap(shown) ? "tone-warn" : ""}`} data-testid="cap-note">
+          {shown ? capNote(shown) : "Never more than the daemon's cap. The Tech Lead, Architect and QA count too."}
+          {shown && aboveDaemonCap(shown) && onDaemonCap && (
+            <> <button type="button" className="link sm" onClick={onDaemonCap}>Change the daemon-wide cap</button></>
+          )}
         </span>
       </div>
       {field("maxSubTasks", "Open sub-tasks per goal", "sub-tasks to do, in progress or blocked; reported, done and superseded ones do not count")}
@@ -168,18 +178,21 @@ const emptyDraft: SettingsDraft = {
 
 // ProjectForm changes one project's name and settings. Settings left empty
 // inherit the daemon's flags; fields the form does not show are kept.
-export function ProjectForm({ project: p, status, sandboxed, caps, running = 0, onSaved }: {
+export function ProjectForm({ project: p, status, sandboxed, caps, running = 0, onSaved, onDaemonCap }: {
   project: Project; status?: DaemonStatus; sandboxed: boolean; caps?: Caps; running?: number; onSaved?: () => void;
+  onDaemonCap?: () => void; // Phase 20: Settings → App, where the daemon-wide cap is changed
 }): JSX.Element {
   const [edit, setEdit] = useState<SettingsDraft>(() => draftOf(p.settings));
   const [name, setName] = useState(p.name);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [savedCaps, setSavedCaps] = useState<Caps>(); // what the saved Max agents means, when above the daemon-wide cap
   return (
     <form className="project-settings" onSubmit={(e) => {
       e.preventDefault();
       setError("");
       setSaved(false);
+      setSavedCaps(undefined);
       let settings: ProjectSettings;
       try {
         settings = settingsOf(edit, p.settings);
@@ -187,13 +200,21 @@ export function ProjectForm({ project: p, status, sandboxed, caps, running = 0, 
         setError(err instanceof Error ? err.message : String(err));
         return;
       }
-      api.updateProject(p.id, { name: name.trim(), settings }).then(() => { setSaved(true); onSaved?.(); },
-        (err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+      const after = edit.maxAgents.trim() === draftOf(p.settings).maxAgents.trim() && caps
+        ? { ...caps, daemon_max: status?.max_agents ?? caps.daemon_max }
+        : draftCaps(edit.maxAgents, status?.defaults?.max_agents, status?.max_agents ?? caps?.daemon_max, caps?.running);
+      api.updateProject(p.id, { name: name.trim(), settings }).then(() => {
+        setSaved(true);
+        if (after && aboveDaemonCap(after)) setSavedCaps(after);
+        onSaved?.();
+      }, (err: unknown) => setError(err instanceof Error ? err.message : String(err)));
     }}>
       <label className="setting"><span>Name</span>
         <input value={name} aria-label="Name" onChange={(e) => setName(e.target.value)} />
       </label>
-      <SettingsFields draft={edit} onChange={setEdit} defaults={status?.defaults} sandboxed={sandboxed} caps={caps} />
+      <SettingsFields draft={edit} onChange={(d) => { setEdit(d); setSavedCaps(undefined); }} defaults={status?.defaults}
+        sandboxed={sandboxed} caps={caps}
+        daemonMax={status?.max_agents} onDaemonCap={onDaemonCap} savedMaxAgents={draftOf(p.settings).maxAgents} />
       {(() => {
         let next: ProjectSettings | undefined;
         try {
@@ -210,9 +231,15 @@ export function ProjectForm({ project: p, status, sandboxed, caps, running = 0, 
       })()}
       <div className="row">
         <button className="primary" type="submit">Save</button>
-        {saved && <span className="small muted" role="status">Saved.</span>}
+        {saved && !savedCaps && <span className="small muted" role="status">Saved.</span>}
         {error && <p className="error small" role="alert">{error}</p>}
       </div>
+      {saved && savedCaps && (
+        <p className="callout warn small" role="status" data-testid="cap-saved">
+          Saved. {capNote(savedCaps)}{" "}
+          {onDaemonCap && <button type="button" className="link" onClick={onDaemonCap}>Change the daemon-wide cap</button>}
+        </p>
+      )}
     </form>
   );
 }
@@ -268,8 +295,9 @@ export function AddProjectForm({ status, onAdded, autoFocus = false }: {
 
 // ProjectsPanel lists every project: open one, retry one that could not
 // open, remove one, or open its settings; and adds a project.
-export function ProjectsPanel({ projects, current, status, running, remote = false, onSelect, onSettings }: {
+export function ProjectsPanel({ projects, current, status, running, remote = false, onSelect, onSettings, capFocusAt }: {
   projects: Project[]; current?: string; status?: DaemonStatus;
+  capFocusAt?: number; // Phase 20: focus the daemon-wide cap (from a project's settings)
   remote?: boolean; // a remote device: the daemon-wide cap is shown, changed on this machine only
   running: number; // agents that have not exited, in every project: live, unlike the status
   onSelect: (id: string) => void;
@@ -295,7 +323,7 @@ export function ProjectsPanel({ projects, current, status, running, remote = fal
         Each project is one repository with its own team, board, inbox, memory and office floor.
         {status && ` At most ${status.max_agents} agents run across all projects (${running} now).`}
       </p>
-      {status && <DaemonCap status={status} remote={remote} />}
+      {status && <DaemonCap status={status} remote={remote} focusAt={capFocusAt} />}
       <ul className="project-list">
         {projects.map((p) => (
           <li key={p.id} className={`project-item ${p.id === current ? "current" : ""}`}>
@@ -341,8 +369,15 @@ export function ProjectsPanel({ projects, current, status, running, remote = fal
 
 // DaemonCap changes the daemon-wide agent cap without a restart (ADR 0061):
 // saved, it wins over --max-agents; "Use --max-agents" clears it.
-function DaemonCap({ status, remote }: { status: DaemonStatus; remote: boolean }): JSX.Element {
+function DaemonCap({ status, remote, focusAt }: { status: DaemonStatus; remote: boolean; focusAt?: number }): JSX.Element {
   const [value, setValue] = useState(String(status.max_agents));
+  const input = useRef<HTMLInputElement>(null);
+  // Opened from a project's "Change the daemon-wide cap" (Phase 20).
+  useEffect(() => {
+    if (focusAt === undefined || Date.now() - focusAt > 2000) return;
+    input.current?.scrollIntoView({ block: "center" });
+    input.current?.focus();
+  }, [focusAt]);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   // Another device's change arrives with the daemon's status.
@@ -364,7 +399,7 @@ function DaemonCap({ status, remote }: { status: DaemonStatus; remote: boolean }
       save(n);
     }}>
       <label className="setting"><span>Max agents (all projects)</span>
-        <input value={value} inputMode="numeric" aria-label="Max agents (all projects)" disabled={remote}
+        <input ref={input} value={value} inputMode="numeric" aria-label="Max agents (all projects)" disabled={remote}
           onChange={(e) => setValue(e.target.value)} />
         <span className="field-hint" data-testid="cap-hint">
           {remote ? "Changed on this machine only (the UI on localhost). A project's Max agents can be changed here." : status.max_agents_saved

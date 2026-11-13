@@ -1,7 +1,7 @@
 // The board (Phase 18): a toolbar (active goals or the archive, the goal
 // picker, New task), five columns of compact cards, and the card's modal with
 // everything else (TaskDetail).
-import { type FormEvent, type JSX, useState } from "react";
+import { type FormEvent, type JSX, useEffect, useRef, useState } from "react";
 import {
   type Agent, type GoalMerge, type InboxItem, type Plan, type PullRequest, type QARun, type Review, type RoleInfo, type Spec, type Task,
   type TaskStatus, taskStatuses,
@@ -13,16 +13,11 @@ import { Icon } from "./icons";
 import { Modal } from "./Modal";
 import { QADetail, QARoundCard } from "./QADetail";
 import { qaCards } from "./qaCards";
+import { columnTitle } from "./summary";
 import { TaskDetail } from "./TaskDetail";
 import { type UsageRow, formatMoney } from "./usage";
 
-export const columnTitle: Record<TaskStatus, string> = {
-  todo: "To do",
-  in_progress: "In progress",
-  review: "Review",
-  done: "Done",
-  blocked: "Blocked",
-};
+export { columnTitle };
 
 export interface BoardProps {
   tasks: Task[];
@@ -65,6 +60,9 @@ export interface BoardProps {
   detail?: string;
   onDetail?: (id: string | undefined) => void;
   waitingAgents?: ReadonlySet<string>;
+  // Phase 20: a count in the office's board summary opens the Board on its
+  // column (all active goals); at tells one click from the next.
+  focus?: { column: TaskStatus; at: number };
 }
 
 // The goal picker's choice, per browser and project: a convenience, so
@@ -111,8 +109,27 @@ export function Board(p: BoardProps): JSX.Element {
   const rounds = qaCards(p.qaRuns ?? [], p.tasks, shown);
   const openRound = rounds.find((c) => c.run.id === qaDetail);
   const agentOf = (id?: string): Agent | undefined => (id ? p.agents.find((a) => a.id === id) : undefined);
+  const root = useRef<HTMLDivElement>(null);
+  const [focused, setFocused] = useState<TaskStatus>();
+  const focusAt = p.focus?.at;
+  useEffect(() => {
+    // a Board shown again later does not jump to an old click's column
+    if (!p.focus || Date.now() - p.focus.at > 2000) return;
+    setArchive(false);
+    if (picked !== "all") setPicked("all"); // for this view only: the remembered choice stays (code review)
+    setFocused(p.focus.column);
+    const t = window.setTimeout(() => setFocused(undefined), 2500);
+    return () => window.clearTimeout(t);
+    // only a new click: the summary's counts change all the time
+  }, [focusAt]);
+  useEffect(() => {
+    if (!focused) return;
+    const col = root.current?.querySelector<HTMLElement>(`.column[data-status="${focused}"]`);
+    col?.scrollIntoView({ block: "nearest", inline: "center" });
+    col?.focus({ preventScroll: true });
+  }, [focused, archive, pick]);
   return (
-    <div className="board-view">
+    <div className="board-view" ref={root}>
       <div className="board-toolbar">
         <div className="segmented" role="group" aria-label="Board view">
           <button aria-pressed={!archive} onClick={() => setArchive(false)}>Active</button>
@@ -139,7 +156,8 @@ export function Board(p: BoardProps): JSX.Element {
             const cards = shown.filter((t) => t.status === status);
             const qa = rounds.filter((c) => c.column === status);
             return (
-              <section key={status} className="column" data-status={status} aria-label={columnTitle[status]}>
+              <section key={status} className={`column ${focused === status ? "column-focused" : ""}`} data-status={status}
+                aria-label={columnTitle[status]} tabIndex={-1}>
                 <h2>{columnTitle[status]} <span className="count">{cards.length + qa.length}</span></h2>
                 {cards.map((t) => (
                   <TaskCard key={t.id} task={t} ctx={ctx} onOpen={() => setDetail(t.id)}

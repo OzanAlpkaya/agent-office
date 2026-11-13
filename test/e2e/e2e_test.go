@@ -59,6 +59,7 @@ type daemon struct {
 	t       *testing.T
 	bin     string
 	args    []string
+	env     []string // added to the test's environment (Phase 20: HTTPS_PROXY)
 	base    string
 	logPath string
 	cmd     *exec.Cmd
@@ -72,7 +73,7 @@ func (d *daemon) start() {
 	}
 	d.cmd = exec.Command(d.bin, d.args...)
 	d.cmd.Stdout, d.cmd.Stderr = logf, logf
-	d.cmd.Env = os.Environ()
+	d.cmd.Env = append(os.Environ(), d.env...)
 	if err := d.cmd.Start(); err != nil {
 		d.t.Fatal(err)
 	}
