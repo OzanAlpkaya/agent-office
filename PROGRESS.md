@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** none in progress. Phase 19 (Lessons from the game factory) is merged into `main`.
+**Current phase:** Phase 20 (Findings from daily use) is done on `phase-20/daily-use-2`, waiting for Ozan's review.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -29,6 +29,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 17: Daily use
 - [x] Phase 18: UI and office polish
 - [x] Phase 19: Lessons from the game factory
+- [x] Phase 20: Findings from daily use (review pending)
 
 ## Log
 
@@ -448,3 +449,21 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   `./cmd/agent-office`) pass; no agent behaviour changed, so `make e2e` was not run. Merged into `main`
   (`--no-ff`).
 
+- 2026-11-13: Phase 20 "Findings from daily use" added to `docs/plan.md` by Ozan (from Bouncibo and the clinic
+  chatbot) and done on `phase-20/daily-use-2` with the recommended options (`docs/plans/phase-20.md`). Spike F
+  measured Claude Code 2.1.323 first: its "dangerous rm" prompt in bypass mode raises a `PermissionRequest`
+  hook whose `allow`/`deny` reply it honours, also 40 s late; a network cut while the answer streams ends the
+  turn with a `StopFailure` ("Connection lost mid-response"). Sandboxed workers' rm prompts are approved when
+  every target resolves inside `/workspace` and outside `.git` (`internal/rmcheck`, a bash parser, only
+  side-effect-free commands next to rm, a fuzz test), else held while the goal's Tech Lead decides with
+  `decide_command`, else left to the user (ADR 0065). The Tech Lead reads its sub-tasks' and QA's files with
+  `list_files`/`read_file`, images as MCP image content (ADR 0066). A change request withdraws the proposed plan
+  version at once (ADR 0031 amended). An agent cut off by a lost connection shows `waiting_network` and is
+  resumed by the daemon once the API answers (ADR 0067). The office bar and the Tech Lead's whiteboard show the
+  Board's counts per column, each opening the Board on its column; windows hang only on outside walls, checked
+  for every preset, 40 generated layouts and every default grid (ADR 0045, 0057 amended). A project's Max
+  agents above the daemon-wide cap says so as you type and at save time, with a link to the daemon-wide
+  setting (ADR 0061 amended). New dependency: `mvdan.cc/sh/v3`. No migration. A code review and a security
+  review led to 17 fixes, most of them a stricter rm rule. `make check` (482 Vitest tests), `make ui-test`
+  (125), `make sandbox-test` and `make e2e` (host, sandbox, team, workflow, multi-project, Codex team,
+  autonomy, and the new network drop and daemon cap from the UI) pass; the GitHub e2e was not run.

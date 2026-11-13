@@ -1,6 +1,6 @@
 # Phase 20 plan: Findings from daily use
 
-- **Status:** In progress. Written 2026-11-13 with the recommended option for every choice, as Ozan asked
+- **Status:** Done, waiting for Ozan's review. Written 2026-11-13 with the recommended option for every choice, as Ozan asked
   ("run it like the earlier phases ... with the recommended options, no check-ins, one summary at the end").
 - **Roadmap:** [docs/plan.md](../plan.md), Phase 20. Progress: [PROGRESS.md](../../PROGRESS.md).
 - **Source:** Ozan's runs of Bouncibo (Goals 03 and 04) and the clinic chatbot.

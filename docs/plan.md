@@ -887,6 +887,18 @@ shows the board and draws windows only where they make sense.
    than 4 agents run across two projects, without a restart.
 
 **Definition of Done**
-- [ ] Each item has tests. Item 4 is covered by a test that cuts the network mid-turn.
-- [ ] Updated office screenshots in `docs/screenshots/phase-20/`.
-- [ ] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass.
+- [x] Each item has tests:
+      1. rm prompts: `internal/rmcheck` (`TestAutoApproved`, `TestLeftToTheLead` with the reviews' counterexamples,
+         `FuzzCheck`), `TestDangerousRmPrompts`, `TestHeldHook`, `TestHookSettings` (ADR 0065);
+      2. the lead's file tools: `TestReadTreeAndBlob`, `TestLeadReadsTeamFiles`, `TestReadFileContent` (image content) (ADR 0066);
+      3. change requests: `TestRequestPlanChanges`, Vitest `workflow.test.ts`, Playwright `factory.spec.ts`;
+      4. network loss: `TestParseClaudeHookNetworkLost`, `TestResumeAfterNetworkLoss`, Vitest, Playwright, and
+         `TestNetworkDropEndToEnd`, which cuts a sandboxed haiku agent's network while its answer streams (ADR 0067);
+      5. board summary: Vitest `summary.test.ts`, Playwright `office.spec.ts` (counts, the Board on a column, a phone);
+      6. whiteboard counts: Vitest `art.test.ts`, Playwright `office.spec.ts` (the counts' colours read from the canvas);
+      7. windows: Vitest `windows.test.ts` over every preset, 40 generated layouts (`TestGeneratedLayouts` writes
+         `generated.gen.json`) and the default plan at every desk grid; it fails on the old placement;
+      8. caps: Vitest `caps.test.ts`, Playwright `factory.spec.ts`, and `TestDaemonCapFromTheUIEndToEnd` (a browser
+         raises the daemon-wide cap; six agents run across two projects in the same daemon process).
+- [x] Updated office screenshots in `docs/screenshots/phase-20/` (`web/ui-tests/phase20.spec.ts`).
+- [x] `make check`, `make ui-test`, `make sandbox-test` and `make e2e` pass (the GitHub e2e was not run, as in Phase 19).
