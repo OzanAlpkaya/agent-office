@@ -38,6 +38,7 @@ const stateLabel: Record<AgentState, string> = {
   working: "Working",
   waiting_permission: "Waiting for permission",
   waiting_background: "Waiting on background task",
+  waiting_network: "Connection lost; resumes when the network is back",
   exited: "Exited",
 };
 
@@ -706,6 +707,9 @@ function AgentRow({ agent: a, taskTitle, selected, waiting, usage, onSelect }: {
         </span>
         <span className="agent-row-side">
           {waiting && <span className="chip small tone-warn">needs you</span>}
+          {!waiting && a.state === "waiting_network" && (
+            <span className="chip small tone-warn" title="Its turn was cut off by a lost connection; agent-office resumes it once the network is back">offline</span>
+          )}
           {!waiting && a.state === "waiting_background" && (
             <span className="chip small tone-accent" title="Its turn ended while a command it started still runs">background task</span>
           )}

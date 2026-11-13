@@ -17,7 +17,7 @@ import { currentSpec, goalBusy, inboxFor, latestQA, workerRoles } from "./workfl
 
 const stateLabel: Record<Agent["state"], string> = {
   starting: "starting", idle: "idle", working: "working", waiting_permission: "waiting for permission",
-  waiting_background: "waiting on background task", exited: "exited",
+  waiting_background: "waiting on background task", waiting_network: "waiting for the network", exited: "exited",
 };
 
 export function TaskDetail(p: BoardProps & { task: Task; onClose: () => void }): JSX.Element {

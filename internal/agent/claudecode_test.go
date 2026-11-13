@@ -299,3 +299,33 @@ func TestParseClaudeHookBackgroundBash(t *testing.T) {
 		}
 	}
 }
+
+// A StopFailure for a lost connection is told apart from other API errors
+// (Phase 20, ADR 0067); the error's text is not kept.
+func TestParseClaudeHookNetworkLost(t *testing.T) {
+	for msg, want := range map[[2]string]bool{
+		{"server_error", "API Error: Connection lost mid-response. The response above may be incomplete."}:        true,
+		{"server_error", "API Error: Connection lost before a response was produced. Try again."}:                 true,
+		{"server_error", "API Error: Part of the response never arrived. The response above may be incomplete."}:  true,
+		{"server_error", "API Error: 502 status code (no body). This is a server-side issue, usually temporary."}: true,
+		{"unknown", "API Error: Connection error."}:                                                               true,
+		{"unknown", "API Error: fetch failed"}:                                                                    true,
+		{"server_error", "API Error: 500 Internal server error"}:                                                  false,
+		{"rate_limit", "API Error: Connection lost mid-response."}:                                                false,
+		{"authentication_failed", "API Error: 401"}:                                                               false,
+		{"overloaded", "API Error: 529 Overloaded"}:                                                               false,
+		{"server_error", "The network module is done."}:                                                           false, // not an API error
+		{"server_error", ""}: false,
+	} {
+		raw, _ := json.Marshal(map[string]any{"hook_event_name": "StopFailure", "session_id": "s1", "error": msg[0],
+			"last_assistant_message": msg[1]})
+		ev, err := ParseClaudeHook(raw)
+		if err != nil || ev.Kind != TurnFinished || ev.Detail != "failure" || ev.NetworkLost != want {
+			t.Errorf("%q: %+v %v, want NetworkLost %v", msg, ev, err, want)
+		}
+	}
+	// A plain Stop never is.
+	if ev, _ := ParseClaudeHook([]byte(`{"hook_event_name":"Stop","session_id":"s1","last_assistant_message":"API Error: Connection lost"}`)); ev.NetworkLost {
+		t.Fatal("Stop")
+	}
+}

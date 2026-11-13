@@ -231,6 +231,20 @@ test("an agent whose background command still runs is not shown as idle", async 
   expect(errors).toEqual([]);
 });
 
+// Phase 20 (ADR 0067): an agent cut off by a lost connection says so, and is not shown as idle.
+test("an agent waiting for the network is shown as offline, not idle", async ({ page }) => {
+  const daemon = new MockDaemon(team(4));
+  const errors = await open(page, daemon);
+  const id = "b2c3d4000001";
+  daemon.updateAgent(id, { state: "waiting_network", activity: "connection lost" });
+  await expect(page.locator("#task-t00000000001").getByTestId("card-status")).toHaveText("Connection lost");
+  await expect(page.locator(`.agent-row[data-agent="${id}"]`)).toContainText("offline");
+  daemon.updateAgent(id, { state: "working", activity: undefined });
+  await expect(page.locator("#task-t00000000001").getByTestId("card-status")).toHaveText("Working");
+  await expect(page.locator(`.agent-row[data-agent="${id}"]`)).not.toContainText("offline");
+  expect(errors).toEqual([]);
+});
+
 test("from a remote device the daemon-wide cap is shown but changed on this machine only", async ({ page }) => {
   const daemon = new MockDaemon(team(4));
   daemon.remote = true;

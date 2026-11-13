@@ -208,7 +208,7 @@ func (e *Engine) goalMoving(ctx context.Context, g goalView) (bool, string) {
 		if !a.running() {
 			continue
 		}
-		if a.status.State != hooks.Idle || a.delivering || a.deliverTimer != nil || a.bgWaiting {
+		if a.status.State != hooks.Idle || a.delivering || a.deliverTimer != nil || a.bgWaiting || a.netWaiting {
 			moving = true // a background command still runs: busy, not stalled (ADR 0064)
 		}
 		idle = append(idle, a)

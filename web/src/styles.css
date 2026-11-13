@@ -85,12 +85,14 @@ button.pill { min-height: 24px; padding: 0 var(--space-2); font-size: var(--text
 .state-working { color: var(--accent); }
 .state-waiting_permission { color: var(--warn); }
 .state-waiting_background { color: var(--role-qa, #9b8cff); } /* idle, a command still runs (ADR 0064) */
+.state-waiting_network { color: var(--warn); } /* idle, its turn cut off by a lost connection (ADR 0067) */
 .state-exited { color: var(--faint); }
 .badge.state-starting, .badge.state-exited { background: var(--surface-3); }
 .badge.state-idle { background: var(--ok-bg); }
 .badge.state-working { background: var(--accent-bg); }
 .badge.state-waiting_permission { background: var(--warn-bg); }
 .badge.state-waiting_background { background: var(--surface-3); }
+.badge.state-waiting_network { background: var(--warn-bg); }
 .role-lead { color: var(--role-lead); }
 .role-worker { color: var(--muted); }
 .role-reviewer { color: var(--role-reviewer); }

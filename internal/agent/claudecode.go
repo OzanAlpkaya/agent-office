@@ -286,9 +286,10 @@ func ShellQuote(s string) string {
 }
 
 // claudeHook holds only the payload fields state tracking needs. Everything
-// else (prompt, tool_input, tool_response, last_assistant_message, message) is
-// never decoded, but for one boolean of a Bash call's tool_input:
-// run_in_background (ADR 0064).
+// else (prompt, tool_input, tool_response, message) is never decoded, but for
+// one boolean of a Bash call's tool_input, run_in_background (ADR 0064), and
+// StopFailure's error and last_assistant_message, reduced to whether the
+// connection was lost (ADR 0067).
 type claudeHook struct {
 	HookEventName    string          `json:"hook_event_name"`
 	SessionID        string          `json:"session_id"`
@@ -300,6 +301,42 @@ type claudeHook struct {
 	StopHookActive   bool            `json:"stop_hook_active"`
 	TranscriptPath   string          `json:"transcript_path"`
 	ToolInput        json.RawMessage `json:"tool_input"`
+	Error            string          `json:"error"`                  // StopFailure: an enum
+	LastMessage      string          `json:"last_assistant_message"` // StopFailure: the API error's text
+}
+
+// lostConnection reports whether a StopFailure is Claude Code's API error for
+// a lost connection: its own texts for a cut stream ("Connection lost
+// mid-response", measured with 2.1.323), connection errors, and the 502, 503
+// or 504 without a body the daemon's API proxy answers when the upstream is
+// unreachable. Rate limits, authentication, billing and invalid requests are
+// not; neither is any text that is not an API error.
+func lostConnection(errKind, msg string) bool {
+	if errKind != "server_error" && errKind != "unknown" {
+		return false
+	}
+	if len(msg) > 2000 {
+		msg = msg[:2000]
+	}
+	if !strings.HasPrefix(strings.TrimSpace(msg), "API Error:") {
+		return false
+	}
+	m := strings.ToLower(msg)
+	for _, p := range []string{
+		"connection lost", "connection error", "connection refused", "connection reset", "part of the response never arrived",
+		"the response stopped arriving", "the response stalled", "went to sleep", "server error mid-response",
+		"fetch failed", "econnreset", "econnrefused", "etimedout", "socket hang up", "timed out", "network",
+	} {
+		if strings.Contains(m, p) {
+			return true
+		}
+	}
+	for _, code := range []string{"502", "503", "504"} {
+		if strings.Contains(m, code+" status code (no body)") {
+			return true
+		}
+	}
+	return false
 }
 
 // backgroundBash reports whether a Bash tool_input asks to run in the
@@ -396,6 +433,7 @@ func ParseClaudeHook(raw []byte) (Event, error) {
 		ev.Kind = TurnFinished
 	case "StopFailure":
 		ev.Kind, ev.Detail = TurnFinished, "failure"
+		ev.NetworkLost = lostConnection(h.Error, h.LastMessage)
 	case "SessionEnd":
 		ev.Kind, ev.Detail = SessionEnded, enum(h.Reason)
 	default:

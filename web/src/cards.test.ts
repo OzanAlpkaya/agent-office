@@ -139,3 +139,15 @@ describe("the background wait state (ADR 0064)", () => {
     expect(st).toMatchObject({ key: "background", label: "Background task" });
   });
 });
+
+describe("the network wait state (ADR 0067)", () => {
+  it("says the connection was lost instead of idle", () => {
+    const g = task("g1", "in_progress");
+    const s = task("s1", "in_progress", "g1");
+    const st = cardStatus(s, ctx({ tasks: [g, s], agents: [agent("w", "s1", "waiting_network")] }));
+    expect(st).toMatchObject({ key: "offline", label: "Connection lost", tone: "warn" });
+    // a working agent on the same task wins
+    expect(cardStatus(s, ctx({ tasks: [g, s], agents: [agent("w", "s1", "waiting_network"), agent("v", "s1", "working")] })).key)
+      .toBe("working");
+  });
+});
