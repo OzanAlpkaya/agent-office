@@ -120,6 +120,8 @@ stateDiagram-v2
   idle --> waiting_background: Stop while a run_in_background command runs (shown state, ADR 0064)
   waiting_background --> idle: its processes ended
   waiting_background --> working: UserPromptSubmit / PreToolUse
+  working --> waiting_network: StopFailure, connection lost (shown state, ADR 0067)
+  waiting_network --> working: the daemon types a resume line once the API answers, or the user types
 ```
 
 Events that carry an `agent_id` (subagents, internal background agents) update activity details
@@ -185,7 +187,11 @@ allowlist. The agent gets a message with the decision. Phase 16 (ADR 0053): appr
 `access_grants`, for the agent or the whole project, and loaded into every launch, so they survive a
 resume or a restart; pending requests stay open while their agent can be resumed and expire when it
 is removed. A project's `access_decider` can let the goal's Tech Lead decide (`decide_access`, with a
-recorded reason), optionally only for hosts in `lead_access_hosts`.
+recorded reason), optionally only for hosts in `lead_access_hosts`. Phase 20 (ADR 0065): Claude Code's own
+"dangerous rm" prompts in a sandboxed worker are answered through its `PermissionRequest` hook: approved by
+`internal/rmcheck` when every target resolves inside `/workspace` and outside `.git`, else held while the
+goal's Tech Lead decides with `decide_command` (100 s), else left to the user. The Tech Lead reads its
+sub-tasks' and QA's files with `list_files` and `read_file` (ADR 0066), served from the main repository.
 
 **Autonomous team (Phase 16, ADR 0051–0053).** When an agent's process ends, the engine records why
 (`exit_detail`, `exit_signal`, `oom_killed`): `sandbox-init` writes an exit report from the worker
