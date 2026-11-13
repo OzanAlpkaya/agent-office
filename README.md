@@ -169,6 +169,10 @@ flags (it restarts on failure and logs to the journal; run `install` again to ch
 ./bin/agent-office service uninstall
 ```
 
+When Claude Code updates itself, the UI warns that sandboxed agents were not tested with the new
+version. `./bin/agent-office check-claude` starts it once in a sandboxed worker, without a prompt or a
+token, and checks that no first-run dialog blocks it; a pass records the version and the warning goes away.
+
 More repositories become projects of the same daemon, each with its own settings (flags they do
 not set come from `serve`'s). Add them in the UI's **Projects** panel or from the command line:
 

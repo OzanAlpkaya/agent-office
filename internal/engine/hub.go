@@ -399,6 +399,9 @@ func (h *Hub) Engine(id string) (*Engine, error) {
 func (h *Hub) Status() HubStatus {
 	st := HubStatus{Sandbox: SandboxHost, MaxAgents: h.slots.cap(), MaxAgentsFlag: h.opts.Base.MaxAgents, Running: h.slots.total(),
 		Warnings: append([]string{}, h.opts.Base.Warnings...), Defaults: h.opts.Defaults}
+	if f := h.opts.Base.LiveWarnings; f != nil {
+		st.Warnings = append(st.Warnings, f()...)
+	}
 	if h.opts.Base.Sandbox != nil {
 		st.Sandbox = SandboxPodman
 	}

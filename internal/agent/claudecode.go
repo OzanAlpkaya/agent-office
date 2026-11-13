@@ -107,10 +107,11 @@ func HookSettings(hookCommand string, deny []string) ([]byte, error) {
 
 // TestedClaudeCodeVersion is the Claude Code version the pre-seeded config
 // keys (SandboxSettings, SeedConfig) were last tested with: Spike F with
-// 2.1.319, re-checked with 2.1.322 on 2026-11-11 (each key still suppresses
-// exactly its own dialog, all of them together none). They are undocumented;
-// the daemon warns when the installed version differs.
-const TestedClaudeCodeVersion = "2.1.322"
+// 2.1.319, re-checked with 2.1.322 on 2026-11-11 and 2.1.323 on 2026-11-13
+// (each key still suppresses exactly its own dialog, all of them together
+// none). They are undocumented; the daemon warns when the installed version
+// differs, unless `agent-office check-claude` passed it on this machine.
+const TestedClaudeCodeVersion = "2.1.323"
 
 var versionRe = regexp.MustCompile(`^(\d+\.\d+\.\d+)\b`)
 

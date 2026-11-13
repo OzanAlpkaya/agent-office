@@ -41,20 +41,24 @@ func resolveClaude(bin string) (claudeInfo, error) {
 }
 
 // versionWarnings reports a Claude Code version the pre-seeded config keys
-// were not tested with (ADR 0016).
-func versionWarnings(ci claudeInfo, mode string) []string {
+// were not tested with (ADR 0016): neither the one built in nor the one
+// `agent-office check-claude` passed on this machine (verified).
+func versionWarnings(ci claudeInfo, mode, verified string) []string {
 	if mode != modePodman {
 		return nil
 	}
 	switch ci.version {
-	case agent.TestedClaudeCodeVersion:
-		return nil
+	case agent.TestedClaudeCodeVersion, verified:
+		if ci.version != "" {
+			return nil
+		}
+		return []string{"Could not read the Claude Code version; sandboxed agents may stop at a first-run dialog."}
 	case "":
 		return []string{"Could not read the Claude Code version; sandboxed agents may stop at a first-run dialog."}
 	default:
 		return []string{fmt.Sprintf("Claude Code %s is installed, but the pre-seeded config for sandboxed agents was "+
-			"tested with %s. If agents stay in \"starting\", a first-run dialog may be waiting in the terminal.",
-			ci.version, agent.TestedClaudeCodeVersion)}
+			"tested with %s. Run `agent-office check-claude` to check this version (no prompt, no tokens); if agents stay "+
+			"in \"starting\", a first-run dialog may be waiting in the terminal.", ci.version, agent.TestedClaudeCodeVersion)}
 	}
 }
 

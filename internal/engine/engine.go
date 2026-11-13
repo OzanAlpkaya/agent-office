@@ -122,7 +122,8 @@ type Options struct {
 	StopTimeout         time.Duration // SIGTERM -> SIGKILL grace period
 	Logger              *slog.Logger
 	Sandbox             *SandboxOptions // nil: host mode (permission prompts on)
-	Warnings            []string        // shown in the UI (e.g. an untested Claude Code version)
+	Warnings            []string        // shown in the UI (e.g. a Codex login problem)
+	LiveWarnings        func() []string // shown too, computed at each status read (an untested Claude Code version)
 	AgentOfficeBin      string          // this binary (absolute); host agents run `<bin> mcp` (ADR 0006)
 	Version             string          // reported by the team MCP server
 	GitHub              *GitHubOptions  // nil: no pushes or pull requests (ADR 0020)
@@ -532,6 +533,9 @@ func (e *Engine) Project() Project { return e.project }
 // Status returns the daemon-wide sandbox mode and warnings.
 func (e *Engine) Status() Status {
 	st := Status{Sandbox: SandboxHost, Warnings: append([]string{}, e.opts.Warnings...)}
+	if f := e.opts.LiveWarnings; f != nil {
+		st.Warnings = append(st.Warnings, f()...)
+	}
 	if sb := e.opts.Sandbox; sb != nil {
 		st.Sandbox, st.Image, st.Egress = SandboxPodman, sb.Image, append([]string{}, sb.AllowNames...)
 		st.Memory, st.Pids = e.workerMemory(), e.workerPids()

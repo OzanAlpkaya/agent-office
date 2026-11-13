@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -705,5 +706,33 @@ func TestHubOfficeLayout(t *testing.T) {
 	// Clearing it goes back to the default plan, without problems.
 	if p, err := h.Update(ctx, hf.b.ID, UpdateProject{Settings: &ProjectSettings{}}); err != nil || p.Office.Source != OfficeDefault || len(p.Office.Problems) != 0 {
 		t.Fatalf("cleared layout: %+v %v", p.Office, err)
+	}
+}
+
+// Live warnings are read at each status request: check-claude can verify the
+// installed Claude Code while the daemon runs.
+func TestLiveWarnings(t *testing.T) {
+	f := newFixture(t)
+	warn := []string{"untested Claude Code"}
+	f.opts.LiveWarnings = func() []string { return warn }
+	f.opts.Warnings = []string{"static"}
+	hf := &hubFixture{f: f}
+	h := hf.openHub(t)
+	if _, err := h.Register(context.Background(), f.repo); err != nil {
+		t.Fatal(err)
+	}
+	e, err := h.Engine(h.Projects()[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := e.Status().Warnings; !slices.Equal(w, []string{"static", "untested Claude Code"}) {
+		t.Fatalf("engine warnings %q", w)
+	}
+	warn = nil
+	if w := e.Status().Warnings; !slices.Equal(w, []string{"static"}) {
+		t.Fatalf("after the check passed %q", w)
+	}
+	if w := h.Status().Warnings; !slices.Equal(w, []string{"static"}) {
+		t.Fatalf("hub warnings %q", w)
 	}
 }

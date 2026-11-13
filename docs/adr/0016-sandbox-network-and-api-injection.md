@@ -149,3 +149,19 @@ option, with the exfiltration risk stated in the UI.
 - If Claude Code changes how it authenticates or which endpoints it calls, sessions fail with a
   visible, logged rejection. The fix is a small, evidence-based change to this proxy, or the
   fallback.
+
+## Amendment (2026-11-13): checking a new Claude Code version
+
+Claude Code updates itself, and every update brought the untested-version warning back until the pre-seed
+was checked by hand (Spike F's `./run.sh interactive`). `agent-office check-claude` does that check on its
+own: it starts one sandboxed agent without a task, the way the daemon starts them (the worker image, the
+pre-seeded config, the settings file), in a throwaway engine with a temp data dir, a temp repository and a
+placeholder token, so no request could be billed. It passes when the session's SessionStart hook arrives,
+which Claude Code holds back while a first-run dialog is shown (checked with 2.1.323). It fails after a
+timeout and names the dialog on the screen (`agent.DetectDialog`: trust, bypass warning, theme picker,
+login, welcome/onboarding), with the seed key that should have skipped it. A pass records the version in
+`<data-dir>/claude-verified.json`. The daemon's version warning is read at every status request
+(`Options.LiveWarnings`), so it is gone after a pass without a restart: it warns only when the installed
+version is neither the built-in tested one (now 2.1.323) nor the recorded one. Tests:
+`TestCheckClaudeInAWorker` (real Podman: a CLI that starts and one that stops at the trust dialog),
+`TestCheckClaudeReport`, `TestDetectDialog`, `TestLiveWarnings`, `TestVersionWarnings`.

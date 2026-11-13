@@ -104,6 +104,14 @@ dialogs as 2.1.319. Without `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` the CLI a
 `raw.githubusercontent.com` (denied); the daemon sets that variable, and a full `make e2e` with
 2.1.322 saw only the known `downloads.claude.ai` and `github.com` denials.
 
+**Re-check with Claude Code 2.1.323 (2026-11-13):** the same cases, with a placeholder token (no request
+could be billed, and none was made): the full pre-seed and `FLAG_SETTINGS=1` go straight to the prompt in
+bypass mode, `SessionStart` after 0.4 s, only the `downloads.claude.ai` and `github.com` denials. Without
+`hasTrustDialogAccepted` the trust dialog, without the settings keys the bypass-permissions warning (both
+"No, exit" preselected, and no `SessionStart` while they show), without the onboarding keys or any seed the
+welcome screen and the `platform.claude.com` check. Unchanged. From now on, `agent-office check-claude`
+runs this check through the daemon's own worker setup (ADR 0016 amendment).
+
 ## Findings (authenticated)
 
 - **The token does not have to enter the container.** With a placeholder token, `ANTHROPIC_BASE_URL`
