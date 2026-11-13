@@ -1,6 +1,6 @@
 # Progress
 
-**Current phase:** Phase 20 (Findings from daily use) is done on `phase-20/daily-use-2`, waiting for Ozan's review.
+**Current phase:** none in progress. Phase 20 (Findings from daily use) is merged into `main`.
 
 **Phase order from here on** (decided by Ozan, 2026-11-08): 8, 12, 9, 10, 11, 13, then 14. Phase numbers stay
 as they are, so ADRs and plans that refer to them stay valid.
@@ -29,7 +29,7 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
 - [x] Phase 17: Daily use
 - [x] Phase 18: UI and office polish
 - [x] Phase 19: Lessons from the game factory
-- [x] Phase 20: Findings from daily use (review pending)
+- [x] Phase 20: Findings from daily use
 
 ## Log
 
@@ -467,3 +467,5 @@ See [docs/plan.md](docs/plan.md) for goals and Definitions of Done.
   review led to 17 fixes, most of them a stricter rm rule. `make check` (482 Vitest tests), `make ui-test`
   (125), `make sandbox-test` and `make e2e` (host, sandbox, team, workflow, multi-project, Codex team,
   autonomy, and the new network drop and daemon cap from the UI) pass; the GitHub e2e was not run.
+- 2026-11-13: Phase 20 review: approved. Ozan tested the office bar and whiteboard counts, the windows, the cap
+  warning, a VPN toggle while agents worked, and an rm prompt in a real goal. Merged into `main` (`--no-ff`).

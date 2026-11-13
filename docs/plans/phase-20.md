@@ -1,6 +1,6 @@
 # Phase 20 plan: Findings from daily use
 
-- **Status:** Done, waiting for Ozan's review. Written 2026-11-13 with the recommended option for every choice, as Ozan asked
+- **Status:** Done; reviewed and approved by Ozan, merged into `main` (2026-11-13). Written 2026-11-13 with the recommended option for every choice, as Ozan asked
   ("run it like the earlier phases ... with the recommended options, no check-ins, one summary at the end").
 - **Roadmap:** [docs/plan.md](../plan.md), Phase 20. Progress: [PROGRESS.md](../../PROGRESS.md).
 - **Source:** Ozan's runs of Bouncibo (Goals 03 and 04) and the clinic chatbot.
@@ -154,3 +154,8 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
   the command (the sandbox bounds it, as it bounds every bypass-mode command); `read_file` returns
   worker-written text to the lead, like every report and message (ADR 0017); the e2e's cut needs the answer
   to stream 24 KB first, which a 1500-word answer does.
+
+## Review (2026-11-13)
+
+Ozan's review approved the phase after testing the office bar and whiteboard counts, the windows, the cap
+warning, a VPN toggle while agents worked, and an rm prompt in a real goal. No changes.
