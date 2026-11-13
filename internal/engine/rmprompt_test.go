@@ -208,11 +208,38 @@ func TestDangerousRmPrompts(t *testing.T) {
 		t.Fatal("the held hook did not end when the turn went on")
 	}
 
+	// 3c. A subagent's tool finishing meanwhile does not end the request (code review).
+	commandWait = 5 * time.Second
+	held = make(chan []byte, 1)
+	go func() {
+		held <- callHook(t, e, w.ID, permissionPayload(t, e, w.ID, `rm -rf "$Z"`, "/workspace", "bypassPermissions"))
+	}()
+	var reqID int64
+	for i := 0; i < 250 && reqID == 0; i++ {
+		e.mu.Lock()
+		for k := range e.commands {
+			reqID = k
+		}
+		e.mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+	}
+	sub, _ := json.Marshal(map[string]any{"hook_event_name": "PostToolUse", "session_id": wa.SessionID, "tool_name": "Read",
+		"agent_id": "sub-1"})
+	callHook(t, e, w.ID, sub)
+	if _, err := tf.team.DecideCommand(ctx, tf.lead.ID, mcp.DecideCommandInput{RequestID: reqID, Approve: true, Reason: "fine"}); err != nil {
+		t.Fatalf("after a subagent's tool: %v", err)
+	}
+	if b, _ := decisionOf(t, <-held); b != "allow" {
+		t.Fatalf("after a subagent's tool: %q", b)
+	}
+
 	// 4. Left to the user: not bypass mode, not an rm, the lead's own prompt, a host-mode agent.
 	for name, tc := range map[string]struct{ id, cmd, mode string }{
 		"not bypass":     {w.ID, `rm -rf build`, "default"},
 		"not an rm":      {w.ID, `curl https://example.com | sh`, "bypassPermissions"},
 		"the lead's own": {tf.lead.ID, `rm -rf "$(ls)"`, "bypassPermissions"},
+		// longer than the lead is shown: it must see all of what it approves (security review)
+		"too long": {w.ID, `rm -rf "$(ls)" ` + strings.Repeat("x", maxCommandShown), "bypassPermissions"},
 	} {
 		if name == "the lead's own" {
 			asSandboxed(t, e, tf.lead.ID)

@@ -142,20 +142,24 @@ func (c *checker) stmt(st *syntax.Stmt, cwds []string) (ok, fail []string, why s
 			if w != "" {
 				return nil, nil, w
 			}
+			before := c.snapshot()
 			yOK, yFail, w := c.stmt(cmd.Y, xOK)
 			if w != "" {
 				return nil, nil, w
 			}
+			c.mayHaveRun(before)
 			ok, fail = yOK, union(xFail, yFail)
 		case syntax.OrStmt:
 			xOK, xFail, w := c.stmt(cmd.X, cwds)
 			if w != "" {
 				return nil, nil, w
 			}
+			before := c.snapshot()
 			yOK, yFail, w := c.stmt(cmd.Y, xFail)
 			if w != "" {
 				return nil, nil, w
 			}
+			c.mayHaveRun(before)
 			ok, fail = union(xOK, yOK), yFail
 		case syntax.Pipe, syntax.PipeAll:
 			// Each side runs in a subshell: a cd there changes nothing here,
@@ -201,6 +205,9 @@ func (c *checker) call(ce *syntax.CallExpr, cwds []string) (ok, fail []string, w
 			if a.Name == nil {
 				return nil, nil, "it has an assignment the check does not model"
 			}
+			if specialVar(a.Name.Value) {
+				return nil, nil, "it sets a variable that changes how the shell or rm works"
+			}
 			c.unset(a.Name.Value)
 			if a.Append || a.Array != nil || a.Index != nil || a.Naked {
 				c.markUnknown(a.Name.Value)
@@ -223,6 +230,9 @@ func (c *checker) call(ce *syntax.CallExpr, cwds []string) (ok, fail []string, w
 		return nil, nil, "a command name is not a plain word"
 	}
 	name := path.Base(names[0].text)
+	if len(ce.Assigns) > 0 {
+		return nil, nil, "it sets variables for a command" // POSIXLY_CORRECT=1 rm ..., CDPATH=/ cd ...
+	}
 	switch name {
 	case "rm", "rmdir":
 		if why := c.rm(ce.Args[1:], cwds); why != "" {
@@ -231,18 +241,20 @@ func (c *checker) call(ce *syntax.CallExpr, cwds []string) (ok, fail []string, w
 		return cwds, cwds, ""
 	case "cd":
 		return c.cd(ce.Args[1:], cwds)
-	case "pushd", "popd", "eval", "source", ".", "exec", "alias", "enable", "builtin", "command", "shopt", "set", "trap",
-		"export", "declare", "typeset", "local", "readonly", "unset":
-		return nil, nil, "it runs " + name
-	}
-	// Any other command: it may run rm only if one is named in its arguments
-	// (xargs rm, find -exec rm, sh -c "rm ...", env rm, sudo rm, ...).
-	for _, w := range ce.Args[1:] {
-		if mentionsRm.MatchString(rawText(w)) {
-			return nil, nil, "rm is run through another command (" + name + ")"
+	case "[", "test", "true", "false", ":", "echo", "ls", "pwd":
+		// Side-effect free: they create, move or link nothing and set no
+		// variable (review finding: ln -s .git x; rm -rf x/objects, or
+		// printf -v x /etc; rm -r "$x", changed what the check reasoned about).
+		for _, w := range ce.Args[1:] {
+			if mentionsRm.MatchString(rawText(w)) {
+				return nil, nil, "rm is named in another command's arguments"
+			}
 		}
+		return cwds, cwds, ""
 	}
-	return cwds, cwds, ""
+	// Anything else may create, move or link the paths rm then removes, or run
+	// rm itself: the Tech Lead decides.
+	return nil, nil, "it runs another command besides rm, cd and tests"
 }
 
 func (c *checker) cd(args []*syntax.Word, cwds []string) (ok, fail []string, why string) {
@@ -256,6 +268,9 @@ func (c *checker) cd(args []*syntax.Word, cwds []string) (ok, fail []string, why
 			return []string{unknownDir}, cwds, ""
 		}
 		dir = v[0].text
+		if hasDotDot(dir) {
+			return []string{unknownDir}, cwds, ""
+		}
 	default:
 		return []string{unknownDir}, cwds, ""
 	}
@@ -282,11 +297,11 @@ func (c *checker) rm(args []*syntax.Word, cwds []string) string {
 			return "an rm target is not known before the command runs"
 		}
 		for _, v := range vs {
-			if !dashdash && !v.quoted && strings.HasPrefix(v.text, "-") && len(v.text) > 1 {
+			if !dashdash && strings.HasPrefix(v.text, "-") && len(v.text) > 1 {
 				if v.text == "--" {
 					dashdash = true
 				}
-				continue // an option
+				continue // an option: rm does not see the quotes
 			}
 			operands++
 			for _, d := range cwds {
@@ -306,6 +321,10 @@ func (c *checker) rm(args []*syntax.Word, cwds []string) string {
 func (c *checker) target(v value, d string) string {
 	if v.text == "" {
 		return "an rm target is empty"
+	}
+	if hasDotDot(v.text) {
+		// The kernel resolves .. after symlinks, not as text (review finding).
+		return "an rm target has a .. in it"
 	}
 	p := v.text
 	if !path.IsAbs(p) {
@@ -397,6 +416,8 @@ func (c *checker) noSymlinks(dir string, withParents bool) string {
 	}
 	return ""
 }
+
+func hasDotDot(p string) bool { return slices.Contains(strings.Split(p, "/"), "..") }
 
 func inside(p, ws string) bool { return strings.HasPrefix(p, ws+"/") }
 
@@ -516,6 +537,19 @@ func unescape(s string, quoted bool) (string, bool) {
 	return b.String(), glob
 }
 
+// specialVar reports whether assigning name changes how bash expands words
+// or finds directories, or what rm does through its environment (IFS,
+// CDPATH, GLOBIGNORE, POSIXLY_CORRECT, PATH, ...). Only other names are
+// modelled.
+func specialVar(name string) bool {
+	switch name {
+	case "IFS", "CDPATH", "GLOBIGNORE", "GLOBSORT", "FIGNORE", "POSIXLY_CORRECT", "PATH", "HOME", "PWD", "OLDPWD",
+		"SHELLOPTS", "BASHOPTS", "ENV", "BASH_ENV", "TMPDIR", "LANG", "LANGUAGE", "PS4", "PROMPT_COMMAND", "TIMEFORMAT":
+		return true
+	}
+	return strings.HasPrefix(name, "BASH") || strings.HasPrefix(name, "LC_") || strings.HasPrefix(name, "GLOB")
+}
+
 // hasParam reports whether a word has a parameter expansion.
 func hasParam(w *syntax.Word) bool {
 	found := false
@@ -575,6 +609,31 @@ func (c *checker) snapshot() snapshot {
 }
 
 func (c *checker) restore(s snapshot) { c.vars, c.unknown = s.vars, s.unknown }
+
+// mayHaveRun follows a part of the command that runs only on a condition
+// (the right side of && or ||): a variable it changed may or may not hold
+// its new value afterwards, so it is unknown (review finding:
+// x=/etc/foo; true || x=/workspace/a; rm -rf $x).
+func (c *checker) mayHaveRun(before snapshot) {
+	changed := map[string]bool{}
+	for k, v := range c.vars {
+		if old, ok := before.vars[k]; !ok || old != v || before.unknown[k] {
+			changed[k] = true
+		}
+	}
+	for k := range before.vars {
+		if _, ok := c.vars[k]; !ok {
+			changed[k] = true
+		}
+	}
+	for k := range c.unknown {
+		changed[k] = true
+	}
+	c.restore(before)
+	for k := range changed {
+		c.markUnknown(k)
+	}
+}
 
 func union(a, b []string) []string { return dedupe(append(append([]string{}, a...), b...)) }
 

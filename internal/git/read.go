@@ -25,6 +25,9 @@ type TreeEntry struct {
 	Size int64 // blobs only; -1 otherwise
 }
 
+// maxListing bounds the output of one tree listing.
+const maxListing = 8 << 20
+
 // ErrNotFound is returned for a path a commit does not have.
 var ErrNotFound = errors.New("git: no such path in the commit")
 
@@ -69,11 +72,12 @@ func (g Git) ListTree(ctx context.Context, repo, commit, dir string, recursive b
 		}
 		args = append(args, "--", dir+"/")
 	}
-	out, _, err := g.runFull(ctx, repo, nil, nil, nil, args...)
+	// Bounded: a worker could commit a huge tree (security review).
+	raw, err := g.raw(ctx, repo, maxListing, args...)
 	if err != nil {
 		return nil, false, err
 	}
-	for _, rec := range strings.Split(out, "\x00") {
+	for _, rec := range strings.Split(string(raw), "\x00") {
 		if rec == "" {
 			continue
 		}
@@ -169,7 +173,7 @@ func (g Git) raw(ctx context.Context, dir string, max int64, args ...string) ([]
 	case rerr != nil:
 		return nil, rerr
 	case int64(len(data)) > max:
-		return nil, fmt.Errorf("git: more than %d bytes", max)
+		return nil, fmt.Errorf("more than %d bytes of output: too large to read at once", max)
 	case werr != nil:
 		return nil, &Error{Args: args, Stderr: stderr.String(), Err: werr}
 	}

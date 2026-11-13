@@ -537,6 +537,16 @@ export class OfficeScene {
         ink.rect(cl.x - art.noteGrid.x + d.x, cl.y - art.noteGrid.y + d.y, 1, 1).fill(noteColors[status].shade);
       }
       this.notes.addChild(ink);
+    } else if (this.model?.goal) {
+      // No board summary: the goal's title as a scribbled marker line, as before Phase 20.
+      const line = new Graphics();
+      const tl = art.titleLine;
+      for (let x = 0, i = 0; x < tl.w; i++) {
+        const len = 3 + ((i * 7) % 5);
+        line.rect(tl.x - art.noteGrid.x + x, tl.y - art.noteGrid.y, Math.min(len, tl.w - x), 1).fill(0x4a5060);
+        x += len + 2;
+      }
+      this.notes.addChild(line);
     }
     const g = art.noteGrid;
     notes.forEach((n, i) => {

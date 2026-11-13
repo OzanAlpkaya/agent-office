@@ -663,9 +663,6 @@ type toolset struct {
 	tools  []string // the tools this agent's role lists
 }
 
-// add registers one tool. The SDK validates the arguments against In's JSON
-// schema (unknown or missing fields are refused) before fn runs. Logs carry
-// the tool name, outcome and duration, never arguments or results.
 // addContent is add for a tool whose result is content (an image) rather
 // than structured output.
 func addContent[In any](s *sdk.Server, t toolset, tool *sdk.Tool, fn func(context.Context, In) (*sdk.CallToolResult, error)) {
@@ -690,6 +687,9 @@ func addContent[In any](s *sdk.Server, t toolset, tool *sdk.Tool, fn func(contex
 	})
 }
 
+// add registers one tool. The SDK validates the arguments against In's JSON
+// schema (unknown or missing fields are refused) before fn runs. Logs carry
+// the tool name, outcome and duration, never arguments or results.
 func add[In, Out any](s *sdk.Server, t toolset, tool *sdk.Tool, fn func(context.Context, In) (Out, error)) {
 	if !slices.Contains(t.tools, tool.Name) {
 		return

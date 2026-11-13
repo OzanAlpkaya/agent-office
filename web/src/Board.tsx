@@ -116,7 +116,7 @@ export function Board(p: BoardProps): JSX.Element {
     // a Board shown again later does not jump to an old click's column
     if (!p.focus || Date.now() - p.focus.at > 2000) return;
     setArchive(false);
-    if (picked !== "all") onPick("all");
+    if (picked !== "all") setPicked("all"); // for this view only: the remembered choice stays (code review)
     setFocused(p.focus.column);
     const t = window.setTimeout(() => setFocused(undefined), 2500);
     return () => window.clearTimeout(t);

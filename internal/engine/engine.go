@@ -294,6 +294,7 @@ type agentProc struct {
 	// connection; resumed by the engine once the API answers.
 	netWaiting    bool
 	netResumes    []time.Time // automatic resumes, for the hourly limit
+	commandAsks   []time.Time // rm prompts sent to the Tech Lead (ADR 0065), for its rate limit
 	stopAfterTurn bool        // report_done: end the session when the turn ends
 	reporting     bool        // a report_done call is running
 }
@@ -326,6 +327,7 @@ type Engine struct {
 	gh       *ghState // GitHub integration; nil when off (ADR 0020)
 	stopPoll context.CancelFunc
 	stopBG   context.CancelFunc // retention loop (ADR 0028)
+	bg       context.Context    // cancelled by Shutdown: the background loops end
 	ids      *sessionIDs        // running agents' sessions, for log lines (ADR 0028)
 	closing  bool               // Shutdown began: no agent starts any more; guarded by mu
 
@@ -451,7 +453,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		}
 	}
 	bg, cancel := context.WithCancel(context.Background())
-	e.stopBG = cancel
+	e.stopBG, e.bg = cancel, bg
 	e.wg.Add(1)
 	go e.retentionLoop(bg)
 	e.wg.Add(1)
@@ -1101,7 +1103,9 @@ func (e *Engine) hookHandler(id string, log *slog.Logger) hooks.Handler {
 				// The held prompt's notification: the worker waits for its lead, not the user.
 				ev.Kind, ev.Detail = agent.Other, permissionLeadNote
 			case agent.ToolFinished, agent.ToolFailed, agent.TurnStarted, agent.TurnFinished, agent.SessionEnded:
-				e.endCommandsLocked(id) // answered in its terminal: the turn went on
+				if !ev.Subagent { // a subagent's tools run on meanwhile (code review)
+					e.endCommandsLocked(id) // answered in its terminal: the turn went on
+				}
 			}
 		}
 		if ev.Kind == agent.SessionStarted && !ev.Subagent {

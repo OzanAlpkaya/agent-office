@@ -212,7 +212,8 @@ export function ProjectForm({ project: p, status, sandboxed, caps, running = 0, 
       <label className="setting"><span>Name</span>
         <input value={name} aria-label="Name" onChange={(e) => setName(e.target.value)} />
       </label>
-      <SettingsFields draft={edit} onChange={setEdit} defaults={status?.defaults} sandboxed={sandboxed} caps={caps}
+      <SettingsFields draft={edit} onChange={(d) => { setEdit(d); setSavedCaps(undefined); }} defaults={status?.defaults}
+        sandboxed={sandboxed} caps={caps}
         daemonMax={status?.max_agents} onDaemonCap={onDaemonCap} savedMaxAgents={draftOf(p.settings).maxAgents} />
       {(() => {
         let next: ProjectSettings | undefined;

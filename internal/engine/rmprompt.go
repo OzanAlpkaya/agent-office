@@ -33,10 +33,12 @@ import (
 var commandWait = 100 * time.Second
 
 const (
-	maxCommandShown    = 500
-	maxCommandReason   = 1000
-	permissionAutoNote = "permission_auto"
-	permissionLeadNote = "permission_lead"
+	commandAsksPerWindow = 6
+	commandAskWindow     = 10 * time.Minute
+	maxCommandShown      = 500
+	maxCommandReason     = 1000
+	permissionAutoNote   = "permission_auto"
+	permissionLeadNote   = "permission_lead"
 )
 
 // commandRequest is a held PermissionRequest the Tech Lead decides.
@@ -87,6 +89,12 @@ func (e *Engine) sandboxPermission(ctx context.Context, id string, payload []byt
 	if !rmcheck.MentionsRm(in.Command) {
 		return nil, false // not Claude Code's rm check: the user answers it
 	}
+	if len([]rune(oneLine(in.Command, maxCommandShown+1))) > maxCommandShown {
+		// The lead must see all of what it approves (security review): a longer
+		// command is left to the user, who sees it in the terminal.
+		log.Info("dangerous rm prompt left to the user: the command is too long to show the Tech Lead")
+		return nil, false
+	}
 	req, lead := e.holdForLead(ctx, a, in, ev, log)
 	if req == nil {
 		log.Info("dangerous rm prompt left to the user", "why", r.Why)
@@ -110,6 +118,19 @@ func (e *Engine) sandboxPermission(ctx context.Context, id string, payload []byt
 	case d = <-req.decision:
 	case <-time.After(commandWait):
 	case <-ctx.Done():
+	}
+	// Closed under the lock: a decision sent before this still counts, and
+	// decide_command sees the request gone from now on (code review).
+	e.mu.Lock()
+	delete(e.commands, req.id)
+	if d == (commandDecision{}) {
+		select {
+		case d = <-req.decision:
+		default:
+		}
+	}
+	e.mu.Unlock()
+	if ctx.Err() != nil && d.by == "" {
 		return nil, true // the daemon stops or the hook gave up: the prompt stays for the user
 	}
 	nctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -159,6 +180,21 @@ func (e *Engine) holdForLead(ctx context.Context, a *agentProc, in agent.Permiss
 			return nil, ""
 		}
 	}
+	// At most commandAsksPerWindow requests per worker per window (security
+	// review): a worker cannot flood its lead with crafted commands.
+	cutoff := now().Add(-commandAskWindow)
+	recent := a.commandAsks[:0]
+	for _, t := range a.commandAsks {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+	a.commandAsks = recent
+	if len(recent) >= commandAsksPerWindow {
+		log.Warn("dangerous rm prompt left to the user: too many requests to the Tech Lead", "requests", len(recent))
+		return nil, ""
+	}
+	a.commandAsks = append(a.commandAsks, now())
 	e.commandSeq++
 	req := &commandRequest{id: e.commandSeq, agentID: a.info.ID, leadID: lead.info.ID, taskID: t.ID, goalID: t.ParentTaskID.String,
 		command: oneLine(in.Command, maxCommandShown), cwd: oneLine(in.Cwd, 200), decision: make(chan commandDecision, 1)}
@@ -222,18 +258,23 @@ func (e *Engine) decideCommand(ctx context.Context, caller string, in mcp.Decide
 	}
 	e.mu.Lock()
 	req, ok := e.commands[in.RequestID]
-	e.mu.Unlock()
+	var err2 error
 	switch {
 	case !ok:
-		return mcp.DecideCommandOutput{}, invalid("command request #%d is not waiting: it was decided, answered in the worker's "+
-			"terminal, or timed out", in.RequestID)
+		err2 = invalid("command request #%d is not waiting: it was decided, answered in the worker's terminal, or timed out",
+			in.RequestID)
 	case req.leadID != caller:
-		return mcp.DecideCommandOutput{}, forbidden("command request #%d is not one of your workers'", in.RequestID)
-	}
-	select {
-	case req.decision <- commandDecision{approve: in.Approve, reason: reason, by: caller}:
+		err2 = forbidden("command request #%d is not one of your workers'", in.RequestID)
 	default:
-		return mcp.DecideCommandOutput{}, invalid("command request #%d was already decided", in.RequestID)
+		select {
+		case req.decision <- commandDecision{approve: in.Approve, reason: reason, by: caller}:
+		default:
+			err2 = invalid("command request #%d was already decided", in.RequestID)
+		}
+	}
+	e.mu.Unlock()
+	if err2 != nil {
+		return mcp.DecideCommandOutput{}, err2
 	}
 	status, next := "denied", "The worker is told your reason and goes on without the command."
 	if in.Approve {

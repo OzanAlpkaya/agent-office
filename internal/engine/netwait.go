@@ -101,25 +101,35 @@ func (e *Engine) afterNetworkLocked(ctx context.Context, a *agentProc, ev agent.
 	e.recordStateLocked(ctx, a, StateWaitingNetwork, "network_lost")
 	e.publishAgentLocked(a)
 	log.Info("connection lost mid-turn; waiting for the network")
-	if !e.netProbing {
+	if !e.netProbing && e.bg != nil {
 		e.netProbing = true
 		e.wg.Add(1)
-		go e.netLoop()
+		go e.netLoop(e.bg)
 	}
 }
 
 // netLoop probes while any agent waits for the network, and resumes the
-// waiting agents once the API answers.
-func (e *Engine) netLoop() {
+// waiting agents once the API answers. It ends with the engine.
+func (e *Engine) netLoop(ctx context.Context) {
 	defer e.wg.Done()
 	t := time.NewTicker(netProbeEvery)
 	defer t.Stop()
+	stop := func() {
+		e.mu.Lock()
+		e.netProbing = false
+		e.mu.Unlock()
+	}
 	for {
-		<-t.C
+		select {
+		case <-ctx.Done():
+			stop()
+			return
+		case <-t.C:
+		}
 		e.mu.Lock()
 		var waiting []string
 		for _, id := range e.order {
-			if a := e.agents[id]; a.netWaiting && a.running() {
+			if a, ok := e.agents[id]; ok && a.netWaiting && a.running() {
 				waiting = append(waiting, id)
 			}
 		}
@@ -129,14 +139,19 @@ func (e *Engine) netLoop() {
 			return
 		}
 		e.mu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		err := e.probeNetwork(ctx)
+		pctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err := e.probeNetwork(pctx)
 		cancel()
 		if err != nil {
 			continue
 		}
 		e.log.Info("the network is back; resuming agents", "agents", len(waiting))
-		time.Sleep(netResumeAfter)
+		select {
+		case <-ctx.Done():
+			stop()
+			return
+		case <-time.After(netResumeAfter):
+		}
 		for _, id := range waiting {
 			e.resumeAfterNetwork(id)
 		}
@@ -156,7 +171,6 @@ func (e *Engine) resumeAfterNetwork(id string) {
 		return // the user is typing here: the next probe tries again
 	}
 	a.netWaiting = false
-	a.netResumes = append(a.netResumes, now())
 	a.delivering = true
 	term, log := a.term, a.logger(e)
 	e.publishAgentLocked(a)
@@ -169,8 +183,10 @@ func (e *Engine) resumeAfterNetwork(id string) {
 	}
 	e.mu.Lock()
 	a.delivering = false
-	if err != nil {
-		a.netWaiting = true // try again on the next probe
+	if err == nil {
+		a.netResumes = append(a.netResumes, now())
+	} else if a.running() && a.status.State == hooks.Idle {
+		a.netWaiting = true // nothing reached it and nothing moved it on: try again on the next probe
 		e.publishAgentLocked(a)
 	}
 	e.mu.Unlock()
