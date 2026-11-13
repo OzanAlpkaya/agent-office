@@ -17,8 +17,13 @@ import (
 // inputs and outputs, so this is generous, but it is still a hard limit.
 const MaxPayload = 1 << 20
 
-// connTimeout bounds one request on the daemon side.
+// connTimeout bounds reading a payload and writing a reply on the daemon side.
 const connTimeout = 5 * time.Second
+
+// MaxHold bounds how long a handler may hold one hook: a PermissionRequest
+// waits for the Tech Lead's decision (Phase 20, ADR 0065). It stays below
+// the forwarder's wait (`agent-office hook --wait`), so the reply arrives.
+const MaxHold = 110 * time.Second
 
 // Handler handles one forwarded hook payload and returns the bytes the hook
 // should print to stdout (nil for nothing).
@@ -27,10 +32,12 @@ type Handler func(ctx context.Context, payload []byte) ([]byte, error)
 // Listener serves one agent's hook socket. Which socket a connection arrives
 // on identifies the agent (ADR 0003).
 type Listener struct {
-	path string
-	l    net.Listener
-	wg   sync.WaitGroup
-	log  *slog.Logger
+	path   string
+	l      net.Listener
+	wg     sync.WaitGroup
+	log    *slog.Logger
+	ctx    context.Context // cancelled by Close: held hooks return at once
+	cancel context.CancelFunc
 }
 
 // Listen creates the socket at path. Its directory is created with mode 0700
@@ -54,6 +61,7 @@ func Listen(path string, h Handler, log *slog.Logger) (*Listener, error) {
 		return nil, fmt.Errorf("hooks: chmod socket: %w", err)
 	}
 	ln := &Listener{path: path, l: l, log: log}
+	ln.ctx, ln.cancel = context.WithCancel(context.Background())
 	ln.wg.Add(1)
 	go ln.serve(h)
 	return ln, nil
@@ -79,7 +87,7 @@ func (ln *Listener) serve(h Handler) {
 
 func (ln *Listener) handle(c net.Conn, h Handler) {
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(connTimeout))
+	_ = c.SetReadDeadline(time.Now().Add(connTimeout))
 	payload, err := io.ReadAll(io.LimitReader(c, MaxPayload+1))
 	if err != nil {
 		ln.log.Warn("hook read failed", "err", err)
@@ -89,7 +97,7 @@ func (ln *Listener) handle(c net.Conn, h Handler) {
 		ln.log.Warn("hook payload too large", "limit", MaxPayload)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), connTimeout)
+	ctx, cancel := context.WithTimeout(ln.ctx, MaxHold)
 	defer cancel()
 	reply, err := h(ctx, payload)
 	if err != nil {
@@ -97,6 +105,7 @@ func (ln *Listener) handle(c net.Conn, h Handler) {
 		return
 	}
 	if len(reply) > 0 {
+		_ = c.SetWriteDeadline(time.Now().Add(connTimeout))
 		_, _ = c.Write(reply)
 	}
 }
@@ -104,6 +113,7 @@ func (ln *Listener) handle(c net.Conn, h Handler) {
 // Close stops accepting, waits for in-flight hooks and removes the socket.
 func (ln *Listener) Close() error {
 	err := ln.l.Close()
+	ln.cancel()
 	ln.wg.Wait()
 	_ = os.Remove(ln.path)
 	return err

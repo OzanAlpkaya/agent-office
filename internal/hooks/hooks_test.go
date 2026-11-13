@@ -161,3 +161,51 @@ func TestForwardFailsFastWhenDaemonDown(t *testing.T) {
 		t.Fatalf("took %v; must fail fast", time.Since(start))
 	}
 }
+
+// A handler may hold a hook longer than the payload's read timeout (a
+// PermissionRequest waiting for the Tech Lead, Phase 20), and Close ends a
+// held hook at once instead of waiting for it.
+func TestHeldHook(t *testing.T) {
+	path := filepath.Join(shortTempDir(t), "a1.sock")
+	release := make(chan struct{})
+	ln, err := Listen(path, func(ctx context.Context, p []byte) ([]byte, error) {
+		if string(p) == "hold" {
+			select {
+			case <-release:
+				return []byte("allowed"), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		select {
+		case <-time.After(connTimeout + time.Second): // past the read deadline
+			return []byte("late"), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}, quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*connTimeout)
+	defer cancel()
+	var out bytes.Buffer
+	if err := Forward(ctx, path, strings.NewReader("slow"), &out); err != nil || out.String() != "late" {
+		t.Fatalf("a reply after the read timeout: %q %v", out.String(), err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		var o bytes.Buffer
+		done <- Forward(ctx, path, strings.NewReader("hold"), &o)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	start := time.Now()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("Close waited %v for a held hook", d)
+	}
+	<-done
+	close(release)
+}

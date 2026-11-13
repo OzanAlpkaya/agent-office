@@ -38,6 +38,7 @@ const (
 	ToolStopAgent      = "stop_agent"       // the Tech Lead stops a running worker (ADR 0051)
 	ToolReclaimTask    = "reclaim_task"     // the Tech Lead takes a sub-task back from an exited worker (ADR 0051)
 	ToolDecideAccess   = "decide_access"    // the Tech Lead decides an access request, if the project lets it (ADR 0053)
+	ToolDecideCommand  = "decide_command"   // the Tech Lead decides a worker's held rm prompt (ADR 0065)
 )
 
 // Team is what the tools call. The engine implements it; caller is the agent
@@ -63,6 +64,21 @@ type Team interface {
 	StopAgent(ctx context.Context, caller string, in StopAgentInput) (AgentActionOutput, error)
 	ReclaimTask(ctx context.Context, caller string, in ReclaimTaskInput) (ReclaimTaskOutput, error)
 	DecideAccess(ctx context.Context, caller string, in DecideAccessInput) (DecideAccessOutput, error)
+	DecideCommand(ctx context.Context, caller string, in DecideCommandInput) (DecideCommandOutput, error)
+}
+
+// DecideCommandInput is decide_command's input (ADR 0065).
+type DecideCommandInput struct {
+	RequestID int64  `json:"request_id" jsonschema:"The command request's id, from the message that told you about it."`
+	Approve   bool   `json:"approve" jsonschema:"true to let the worker run the command, false to refuse it."`
+	Reason    string `json:"reason" jsonschema:"Why (1-1000 characters); the worker gets it when you refuse, the user sees it either way."`
+}
+
+// DecideCommandOutput is decide_command's result.
+type DecideCommandOutput struct {
+	RequestID int64  `json:"request_id"`
+	Status    string `json:"status"` // approved | denied
+	Next      string `json:"next"`
 }
 
 // ResumeAgentInput is resume_agent's input (ADR 0051).
@@ -557,6 +573,12 @@ func NewServer(team Team, caller string, tools []string, version string, log *sl
 		"worker's later sessions too; scope project covers every agent of the project."},
 		func(ctx context.Context, in DecideAccessInput) (DecideAccessOutput, error) {
 			return team.DecideAccess(ctx, caller, in)
+		})
+	add(s, t, &sdk.Tool{Name: ToolDecideCommand, Description: "Approve or refuse a worker's command that Claude Code " +
+		"holds because it cannot check what rm removes (Tech Lead only). agent-office sends you the request; the worker " +
+		"waits about 100 seconds for your answer. Give the reason; the worker reads it when you refuse, the user sees it."},
+		func(ctx context.Context, in DecideCommandInput) (DecideCommandOutput, error) {
+			return team.DecideCommand(ctx, caller, in)
 		})
 	add(s, t, &sdk.Tool{Name: ToolRequestAccess, Description: "Ask a human for network access to one more host " +
 		"name (kind \"domain\"). Nothing is granted until a human approves it in the agent-office UI; you get a " +

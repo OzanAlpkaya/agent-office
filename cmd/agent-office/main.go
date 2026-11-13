@@ -65,7 +65,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "hook":
-		os.Exit(hook())
+		os.Exit(hook(os.Args[2:]))
 	case "mcp":
 		os.Exit(mcpBridge())
 	case "sandbox-init":
@@ -213,18 +213,27 @@ func sandboxInit(args []string) int {
 }
 
 // hookTimeout must stay below the hook timeout in the generated settings
-// (10 s), so the forwarder always exits on its own terms.
-const hookTimeout = 8 * time.Second
+// (10 s), so the forwarder always exits on its own terms. With --wait (a
+// PermissionRequest the daemon may hold, ADR 0065) it waits longer than the
+// daemon holds a hook and less than the settings' 120 s.
+const (
+	hookTimeout     = 8 * time.Second
+	hookWaitTimeout = 115 * time.Second
+)
 
 // hook forwards one hook payload. It always exits 0: a broken daemon must not
 // block or alter the agent; the failure is reported on stderr.
-func hook() int {
+func hook(args []string) int {
 	sock := os.Getenv(agent.SocketEnv)
 	if sock == "" {
 		fmt.Fprintln(os.Stderr, "agent-office hook:", agent.SocketEnv, "is not set")
 		return 0
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)
+	timeout := hookTimeout
+	if len(args) == 1 && args[0] == agent.WaitFlag {
+		timeout = hookWaitTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := hooks.Forward(ctx, sock, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "agent-office hook:", err)

@@ -119,6 +119,10 @@ func (f *fakeTeam) DecideAccess(_ context.Context, caller string, in DecideAcces
 	return DecideAccessOutput{RequestID: in.RequestID}, nil
 }
 
+func (f *fakeTeam) DecideCommand(_ context.Context, caller string, in DecideCommandInput) (DecideCommandOutput, error) {
+	return DecideCommandOutput{RequestID: in.RequestID}, nil
+}
+
 func (f *fakeTeam) ProposeMemory(_ context.Context, caller string, in ProposeMemoryInput) (ProposeMemoryOutput, error) {
 	f.record(caller, ToolProposeMemory, in)
 	return ProposeMemoryOutput{ID: 1, Status: "proposed"}, f.err

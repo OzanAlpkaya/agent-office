@@ -78,7 +78,7 @@ var behaviours = map[Behaviour]spec{
 		reportsTo: []string{ToUser}, readOnly: true},
 	Lead: {tools: []string{mcp.ToolCreateTask, mcp.ToolAssignTask, mcp.ToolListTasks, mcp.ToolSendMessage,
 		mcp.ToolMessageUser, mcp.ToolStartQA, mcp.ToolReportDone, mcp.ToolRequestAccess, mcp.ToolListMemory,
-		mcp.ToolResumeAgent, mcp.ToolStopAgent, mcp.ToolReclaimTask, mcp.ToolDecideAccess},
+		mcp.ToolResumeAgent, mcp.ToolStopAgent, mcp.ToolReclaimTask, mcp.ToolDecideAccess, mcp.ToolDecideCommand},
 		reportsTo: []string{ToArchitect, ToUser}, readOnly: true},
 	Worker: {tools: []string{mcp.ToolListTasks, mcp.ToolSendMessage, mcp.ToolMessageUser, mcp.ToolReportDone,
 		mcp.ToolReportNoChange, mcp.ToolRequestAccess, mcp.ToolListMemory}, reportsTo: []string{ToLead}},

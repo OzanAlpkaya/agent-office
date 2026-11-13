@@ -247,8 +247,13 @@ func TestHookSettings(t *testing.T) {
 		if len(h) != 1 || len(h[0].Hooks) != 1 || h[0].Hooks[0].Type != "command" {
 			t.Fatalf("%s: %+v", e, h)
 		}
-		if got := h[0].Hooks[0].Command; got != `'/opt/agent office/agent-office' hook` {
-			t.Fatalf("%s command = %q", e, got)
+		want, timeout := `'/opt/agent office/agent-office' hook`, hookTimeoutSeconds
+		if e == "PermissionRequest" {
+			// held while the Tech Lead decides a dangerous rm prompt (Phase 20)
+			want, timeout = `'/opt/agent office/agent-office' hook --wait`, permissionHookTimeoutSeconds
+		}
+		if got := h[0].Hooks[0]; got.Command != want || got.Timeout != timeout {
+			t.Fatalf("%s hook = %+v", e, got)
 		}
 	}
 	var perms struct {

@@ -306,7 +306,7 @@ func TestBuiltinPromptRules(t *testing.T) {
 			t.Errorf("tech-lead prompt lacks %q", want)
 		}
 	}
-	for _, tool := range []string{mcp.ToolResumeAgent, mcp.ToolStopAgent, mcp.ToolReclaimTask, mcp.ToolDecideAccess} {
+	for _, tool := range []string{mcp.ToolResumeAgent, mcp.ToolStopAgent, mcp.ToolReclaimTask, mcp.ToolDecideAccess, mcp.ToolDecideCommand} {
 		if !slices.Contains(lead.TeamTools, tool) {
 			t.Errorf("tech-lead lacks %s", tool)
 		}

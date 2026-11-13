@@ -22,6 +22,14 @@ var claudeHookEvents = []string{
 // timeout so it can always exit cleanly first.
 const hookTimeoutSeconds = 10
 
+// permissionHookTimeoutSeconds bounds a PermissionRequest hook, which the
+// daemon may hold while the Tech Lead decides a sandboxed worker's rm
+// prompt (Phase 20, ADR 0065); its forwarder runs with --wait.
+const permissionHookTimeoutSeconds = 120
+
+// WaitFlag makes `agent-office hook` wait as long as a held PermissionRequest.
+const WaitFlag = "--wait"
+
 // SocketEnv is the environment variable that tells `agent-office hook` which
 // per-agent socket to forward to.
 const SocketEnv = "AGENT_OFFICE_SOCKET"
@@ -252,7 +260,11 @@ func settings(hookCommand string, deny []string, extra map[string]any) ([]byte, 
 	}
 	hooks := map[string][]matcher{}
 	for _, e := range claudeHookEvents {
-		hooks[e] = []matcher{{Hooks: []hook{{Type: "command", Command: hookCommand, Timeout: hookTimeoutSeconds}}}}
+		h := hook{Type: "command", Command: hookCommand, Timeout: hookTimeoutSeconds}
+		if e == "PermissionRequest" {
+			h.Command, h.Timeout = hookCommand+" "+WaitFlag, permissionHookTimeoutSeconds
+		}
+		hooks[e] = []matcher{{Hooks: []hook{h}}}
 	}
 	// The team tools are pre-allowed: the daemon authorizes every call itself
 	// (ADR 0017), so a host-mode permission prompt would add nothing. Every
@@ -300,6 +312,38 @@ func backgroundBash(tool string, input json.RawMessage) bool {
 		RunInBackground bool `json:"run_in_background"`
 	}
 	return json.Unmarshal(input, &in) == nil && in.RunInBackground
+}
+
+// PermissionInput is what a Claude Code PermissionRequest for Bash asks
+// about (Phase 20, ADR 0065): the command, the shell's directory and the
+// permission mode. The command is agent text: it is read to decide the
+// sandbox's rm prompts and shown to the Tech Lead, never stored in events.
+type PermissionInput struct {
+	Command string
+	Cwd     string
+	Mode    string // permission_mode, e.g. bypassPermissions
+}
+
+// maxPermissionCommand bounds the command read from a payload.
+const maxPermissionCommand = 16 << 10
+
+// ClaudePermissionInput reads a PermissionRequest for Bash; ok is false for
+// any other payload.
+func ClaudePermissionInput(raw []byte) (PermissionInput, bool) {
+	var h struct {
+		HookEventName  string `json:"hook_event_name"`
+		ToolName       string `json:"tool_name"`
+		Cwd            string `json:"cwd"`
+		PermissionMode string `json:"permission_mode"`
+		ToolInput      struct {
+			Command string `json:"command"`
+		} `json:"tool_input"`
+	}
+	if err := json.Unmarshal(raw, &h); err != nil || h.HookEventName != "PermissionRequest" || h.ToolName != "Bash" ||
+		h.ToolInput.Command == "" || len(h.ToolInput.Command) > maxPermissionCommand || len(h.Cwd) > 4096 {
+		return PermissionInput{}, false
+	}
+	return PermissionInput{Command: h.ToolInput.Command, Cwd: h.Cwd, Mode: enum(h.PermissionMode)}, true
 }
 
 // ErrInvalidPayload is returned for hook payloads that cannot be used.
