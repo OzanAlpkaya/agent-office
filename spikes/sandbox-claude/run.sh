@@ -33,8 +33,8 @@ hook_settings() { # Claude Code settings: every event -> agent-office hook
   python3 - "$1" <<'PY'
 import json, os, sys
 ev = ["SessionStart","UserPromptSubmit","PreToolUse","PostToolUse","PostToolUseFailure",
-      "PermissionRequest","Notification","Stop","SubagentStop","SessionEnd"]
-h = {e: [{"hooks": [{"type": "command", "command": "/opt/ao/agent-office hook", "timeout": 10}]}] for e in ev}
+      "PermissionRequest","Notification","Stop","StopFailure","SubagentStop","SessionEnd"]
+h = {e: [{"hooks": [{"type": "command", "command": "/opt/ao/agent-office hook", "timeout": int(os.environ.get("HOOK_TIMEOUT","10"))}]}] for e in ev}
 doc = {"hooks": h}
 if os.environ.get("FLAG_SETTINGS"):  # pre-seed via the daemon's --settings file
     doc.update({"theme": "dark", "skipDangerousModePermissionPrompt": True})
@@ -98,7 +98,7 @@ interactive)
   WRAP="$OUT/spike pty -in $OUT/pty.in -out $OUT/pty.log --" worker -it -e AO_CREDENTIAL=inject \
     -v "$RUN/api.sock:/run/ao/api.sock" -e NO_PROXY=127.0.0.1,localhost -e no_proxy=127.0.0.1,localhost \
     ${NONESSENTIAL:+-e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1} -- \
-    /opt/claude/claude --model haiku --settings /opt/ao/settings.json --dangerously-skip-permissions || echo "exit=$?"
+    /opt/claude/claude --model haiku --settings /opt/ao/settings.json --dangerously-skip-permissions ${PROMPT:+-- "$PROMPT"} || echo "exit=$?"
   echo "--- host log"; cat "$OUT/host.log" ;;
 *) sed -n 2,6p "$0"; exit 2 ;;
 esac

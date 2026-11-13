@@ -162,3 +162,21 @@ container uid 1000 (host: subordinate uid 100999), let git's `safe.directory` ch
 
 Decision recorded in ADR 0014. VS Code's and Dolphin's git integrations were not tested (no
 headless way; Dolphin's plugins are not installed on this machine).
+
+## Phase 20 checks (Claude Code 2.1.323, 2026-11-13)
+
+Additions: `AO_SPIKE_PERM=allow|deny` (with `AO_SPIKE_PERM_DELAY`) makes the host answer
+`PermissionRequest` hooks; `HOOK_TIMEOUT` sets the hooks' timeout; `PROMPT` starts the interactive
+session with a prompt; `spike cutproxy` is a CONNECT proxy for the host's upstream that drops every
+tunnel while a control file exists; `./netcut.sh` (`CUT_AFTER`, `DOWN_FOR`, `AFTER`) cuts the network
+mid-turn. The forwarder for the delayed reply was built with a longer timeout than `agent-office hook`'s 8 s.
+
+| Check | Result |
+|---|---|
+| `rm -rf "$(ls -d dist)"` in bypass mode | "Dangerous rm operation on statically-unresolvable target"; `PermissionRequest` hook (Bash, `tool_input.command`, `cwd`) before the dialog; the dialog blocks the command by itself after 2 minutes |
+| `rm -rf "$(pwd)/build"`, `D=build; rm -rf "$D/out"`, `rm -rf /workspace/build` | no prompt, no `PermissionRequest` |
+| Hook replies `allow` at once / after 40 s with the dialog shown | the command runs, no answer typed |
+| Hook replies `deny` with a `message` | "Denied by PermissionRequest hook"; the model quotes the message |
+| Upstream cut while the answer streams | `StopFailure`, `error: server_error`, "API Error: Connection lost mid-response. The response above may be incomplete."; no retry |
+| Upstream cut before the answer, down 60 s | about 10 retries with backoff; recovered when the network came back |
+| Upstream cut before the answer, down 5 min | retries for 2 min 15 s, then `StopFailure` `server_error`, "API Error: 502 status code (no body)" (the proxy's 502) |
