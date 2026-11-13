@@ -691,6 +691,12 @@ export class MockDaemon {
     this.send({ type: "inbox", inbox: it });
   }
 
+  // spec sends a new or changed plan version (ADR 0031).
+  spec(sp: Spec): void {
+    this.world.specs = [...(this.world.specs ?? []).filter((x) => x.id !== sp.id), sp];
+    this.send({ type: "spec", spec: sp });
+  }
+
   // accessRequest sends a new or decided access request (ADR 0019).
   accessRequest(r: AccessRequest): void {
     this.world.accessRequests = [...this.world.accessRequests.filter((x) => x.id !== r.id), r];

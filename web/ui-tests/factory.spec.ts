@@ -120,7 +120,7 @@ test("requesting changes withdraws the version until the Architect revises it", 
   await expect(page.locator('.agent-row[data-agent="a7c4e1000001"]')).not.toContainText("needs you");
   await expect(page.locator("#task-g00000000001").getByTestId("card-status")).not.toHaveText("Plan to approve");
   // The revision asks for approval again.
-  daemon.send({ type: "spec", spec: { ...workflow().specs![0], id: 2, version: 3, status: "proposed" } });
+  daemon.spec({ ...(workflow().specs ?? [])[0], id: 2, version: 3, status: "proposed" });
   await expect(plan.getByRole("button", { name: "Approve plan" })).toBeVisible();
   await expect(badge).toHaveAccessibleName(/Approvals: 1 waiting/);
   expect(errors).toEqual([]);
