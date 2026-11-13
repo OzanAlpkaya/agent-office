@@ -50,3 +50,11 @@ Option 2.
 - The project settings form says, before saving, when a change needs the agents stopped (`needsStop`
   mirrors `ReopenChanges`).
 - ADR 0047's "the project cap is clamped at open" is replaced by the check at each start.
+
+## Amendment (Phase 19 review, 2026-11-13): the daemon-wide cap is this machine's
+
+Ozan's review: the daemon-wide agent cap decides how many agents run on this machine, so it is changed from
+this machine only, like the sandbox settings (ADR 0046). `PUT /api/daemon` from a remote device (through
+`tailscale serve`, ADR 0038) is refused with 403 and the reason. On a remote device, Settings → Projects shows
+the cap without Save and says so. A project's settings, Max agents included, stay changeable from any
+paired device.

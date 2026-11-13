@@ -229,6 +229,7 @@ export class MockDaemon {
   onTerminalInput?: (data: string, reply: (bytes: string) => void) => void;
   private readonly terminalSockets = new Map<string, WebSocketRoute>();
   paired = true; // whether this browser is paired (ADR 0039)
+  remote = false; // the page came through tailscale serve (ADR 0038)
   devices: Device[] = [
     { id: "d1", name: "Chrome on Linux", kind: "browser", paired_via: "local", created_at: iso(0), last_seen_at: iso(30) },
     { id: "d2", name: "Pixel 9", kind: "browser", paired_via: "tailscale:ozan@github", created_at: iso(5), last_seen_at: iso(20) },
@@ -299,7 +300,7 @@ export class MockDaemon {
       const method = route.request().method();
       const me = this.devices[0];
       if (p === "/api/auth/session") {
-        return route.fulfill(json(this.paired ? { authenticated: true, device: me, remote: false } : { authenticated: false, remote: false }));
+        return route.fulfill(json(this.paired ? { authenticated: true, device: me, remote: this.remote } : { authenticated: false, remote: this.remote }));
       }
       if (p === "/api/auth/pair") {
         const body = route.request().postDataJSON() as { code: string; name: string };

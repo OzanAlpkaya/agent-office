@@ -1,6 +1,6 @@
 # Phase 19 plan: Lessons from the game factory
 
-- **Status:** Done, waiting for Ozan's review. Written 2026-11-12 with the recommended option for every choice, as Ozan asked
+- **Status:** Done; reviewed and approved by Ozan, merged into `main` (2026-11-13). Written 2026-11-12 with the recommended option for every choice, as Ozan asked
   ("run it like the earlier phases ... with the recommended options, no check-ins, one summary at the end").
 - **Roadmap:** [docs/plan.md](../plan.md), Phase 19. Progress: [PROGRESS.md](../../PROGRESS.md).
 - **Source:** Ozan's runs of Bouncibo Goals 01-02.
@@ -157,4 +157,12 @@ Every choice took the recommended option, as Ozan asked; they are the decisions 
   filed waiver sub-tasks. After a merge, QA now gets the criteria of the sub-tasks it merges only (ADR 0063).
   The second run found a bug in the test (it looked for the follow-up by "no dependencies"; the lead made it
   depend on beta). The third run passed. All other e2e tests passed in the first run.
+
+## Review change (2026-11-13)
+
+Ozan's review approved the phase after testing the service install, Request changes and one-click Approve,
+the Architect exiting, QA round cards, the Runs section and changing Max agents while agents run. One change:
+the daemon-wide agent cap can be changed from this machine only, like the sandbox settings; project settings
+stay changeable from paired devices. `PUT /api/daemon` from a remote device is refused (403), and the app's
+cap field is read-only there (ADR 0061 amended; `TestRemoteDevicesCannotChangeTheDaemonCap`, Playwright).
 

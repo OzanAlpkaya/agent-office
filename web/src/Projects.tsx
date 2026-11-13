@@ -268,8 +268,9 @@ export function AddProjectForm({ status, onAdded, autoFocus = false }: {
 
 // ProjectsPanel lists every project: open one, retry one that could not
 // open, remove one, or open its settings; and adds a project.
-export function ProjectsPanel({ projects, current, status, running, onSelect, onSettings }: {
+export function ProjectsPanel({ projects, current, status, running, remote = false, onSelect, onSettings }: {
   projects: Project[]; current?: string; status?: DaemonStatus;
+  remote?: boolean; // a remote device: the daemon-wide cap is shown, changed on this machine only
   running: number; // agents that have not exited, in every project: live, unlike the status
   onSelect: (id: string) => void;
   onSettings?: (id: string) => void; // the project's own settings (the gear by the picker)
@@ -294,7 +295,7 @@ export function ProjectsPanel({ projects, current, status, running, onSelect, on
         Each project is one repository with its own team, board, inbox, memory and office floor.
         {status && ` At most ${status.max_agents} agents run across all projects (${running} now).`}
       </p>
-      {status && <DaemonCap status={status} />}
+      {status && <DaemonCap status={status} remote={remote} />}
       <ul className="project-list">
         {projects.map((p) => (
           <li key={p.id} className={`project-item ${p.id === current ? "current" : ""}`}>
@@ -340,7 +341,7 @@ export function ProjectsPanel({ projects, current, status, running, onSelect, on
 
 // DaemonCap changes the daemon-wide agent cap without a restart (ADR 0061):
 // saved, it wins over --max-agents; "Use --max-agents" clears it.
-function DaemonCap({ status }: { status: DaemonStatus }): JSX.Element {
+function DaemonCap({ status, remote }: { status: DaemonStatus; remote: boolean }): JSX.Element {
   const [value, setValue] = useState(String(status.max_agents));
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
@@ -363,15 +364,16 @@ function DaemonCap({ status }: { status: DaemonStatus }): JSX.Element {
       save(n);
     }}>
       <label className="setting"><span>Max agents (all projects)</span>
-        <input value={value} inputMode="numeric" aria-label="Max agents (all projects)" onChange={(e) => setValue(e.target.value)} />
-        <span className="field-hint">
-          {status.max_agents_saved
+        <input value={value} inputMode="numeric" aria-label="Max agents (all projects)" disabled={remote}
+          onChange={(e) => setValue(e.target.value)} />
+        <span className="field-hint" data-testid="cap-hint">
+          {remote ? "Changed on this machine only (the UI on localhost). A project's Max agents can be changed here." : status.max_agents_saved
             ? `Set here; --max-agents is ${status.max_agents_flag ?? "?"}. Applies at once; running agents keep running.`
             : "From --max-agents. A value saved here wins over the flag and holds after a restart."}
         </span>
       </label>
-      <button type="submit">Save</button>
-      {status.max_agents_saved && <button type="button" className="link" onClick={() => save(null)}>Use --max-agents</button>}
+      {!remote && <button type="submit">Save</button>}
+      {!remote && status.max_agents_saved && <button type="button" className="link" onClick={() => save(null)}>Use --max-agents</button>}
       {saved && <span className="small muted" role="status">Saved.</span>}
       {error && <p className="error small" role="alert">{error}</p>}
     </form>

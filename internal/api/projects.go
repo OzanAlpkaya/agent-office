@@ -326,7 +326,16 @@ type daemonSettings struct {
 	MaxAgents json.RawMessage `json:"max_agents"` // "null" when given as null; empty when missing
 }
 
+// localOnlyCap is the refusal of a daemon-wide cap change from a remote device
+// (Phase 19 review): it decides how many agents run on this machine.
+const localOnlyCap = "changing the daemon-wide agent cap needs this machine: use the UI on localhost " +
+	"(a project's Max agents can be changed from any paired device)"
+
 func (s *server) putDaemon(w http.ResponseWriter, r *http.Request) {
+	if s.remote(r) {
+		writeError(w, http.StatusForbidden, localOnlyCap)
+		return
+	}
 	var d daemonSettings
 	if !decodeJSON(w, r, &d) {
 		return

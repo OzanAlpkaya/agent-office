@@ -147,6 +147,7 @@ export interface AppSettingsProps {
   version: string;
   deviceName?: string; // this browser's name as paired
   running: number; // agents running in every project
+  remote?: boolean; // this page came through tailscale serve: the daemon-wide cap is this machine's only
   profile?: Profile;
   run: <T>(fn: () => Promise<T>) => Promise<T | undefined>;
   onSignedOut: () => void;
@@ -168,7 +169,7 @@ export function AppSettings(p: AppSettingsProps): JSX.Element {
       <Tabs label="Settings" tabs={tabs} names={appTabLabel} current={p.tab} onTab={p.onTab} />
       <div className="settings-body" role="tabpanel" aria-label={appTabLabel[p.tab]}>
         {p.tab === "projects" && (
-          <ProjectsPanel projects={p.projects} current={p.project.id} status={p.daemon} running={p.running}
+          <ProjectsPanel projects={p.projects} current={p.project.id} status={p.daemon} running={p.running} remote={p.remote}
             onSelect={p.onSelectProject} onSettings={p.onProjectSettings} />
         )}
         {p.tab === "devices" && <DevicesPanel remoteHosts={p.remoteHosts} run={p.run} onSignedOut={p.onSignedOut} />}

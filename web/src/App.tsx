@@ -485,6 +485,7 @@ export function App({
             ) : view.kind === "settings" ? (
               <AppSettings tab={appTab} onTab={setAppTab} project={project} projects={projects} daemon={daemon}
                 remoteHosts={status?.remote_hosts ?? []} version={version} deviceName={session.device?.name} running={runningEverywhere}
+                remote={session.remote}
                 profile={profile} run={run} onSignedOut={onSignedOut}
                 onSelectProject={(id) => onSelectProject(id, undefined, "board")}
                 onProjectSettings={(id) => (id === project.id ? openProjectSettings("general") : onSelectProject(id, undefined, "project-settings"))} />

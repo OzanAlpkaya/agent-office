@@ -179,3 +179,18 @@ test("an agent whose background command still runs is not shown as idle", async 
   await expect(page.locator(`#task-t00000000001`).getByTestId("card-status")).not.toHaveText("Background task");
   expect(errors).toEqual([]);
 });
+
+test("from a remote device the daemon-wide cap is shown but changed on this machine only", async ({ page }) => {
+  const daemon = new MockDaemon(team(4));
+  daemon.remote = true;
+  const errors = await open(page, daemon);
+  await settingsTab(page, "Projects");
+  const cap = page.getByRole("form", { name: "Daemon-wide agent cap" });
+  await expect(cap.getByRole("textbox", { name: "Max agents (all projects)" })).toBeDisabled();
+  await expect(cap.getByTestId("cap-hint")).toContainText("Changed on this machine only");
+  await expect(cap.getByRole("button", { name: "Save" })).toHaveCount(0);
+  // A project's Max agents stays changeable from here.
+  await projectSettings(page, "General");
+  await expect(page.getByRole("textbox", { name: "Max agents" })).toBeEnabled();
+  expect(errors).toEqual([]);
+});
