@@ -307,6 +307,14 @@ export function App({
     return res;
   };
 
+  // A project above the daemon-wide cap links to it (Phase 20).
+  const [capFocusAt, setCapFocusAt] = useState<number>();
+  const openDaemonCap = (): void => {
+    setAppTab("projects");
+    setCapFocusAt(Date.now());
+    setView({ kind: "settings" });
+  };
+
   // The Board's counts per column (Phase 20): the office bar and the whiteboard.
   const summary = useMemo(() => boardSummary(tasks, qaRuns), [tasks, qaRuns]);
   const [boardFocus, setBoardFocus] = useState<{ column: TaskStatus; at: number }>();
@@ -495,14 +503,14 @@ export function App({
             ) : view.kind === "settings" ? (
               <AppSettings tab={appTab} onTab={setAppTab} project={project} projects={projects} daemon={daemon}
                 remoteHosts={status?.remote_hosts ?? []} version={version} deviceName={session.device?.name} running={runningEverywhere}
-                remote={session.remote}
+                remote={session.remote} capFocusAt={capFocusAt}
                 profile={profile} run={run} onSignedOut={onSignedOut}
                 onSelectProject={(id) => onSelectProject(id, undefined, "board")}
                 onProjectSettings={(id) => (id === project.id ? openProjectSettings("general") : onSelectProject(id, undefined, "project-settings"))} />
             ) : view.kind === "project-settings" ? (
               <ProjectSettings tab={projectTab} onTab={setProjectTab} project={project} status={status} daemon={daemon} api={papi}
                 accessRequests={accessRequests} memory={memory} run={run} caps={liveCaps}
-                running={running} />
+                running={running} onDaemonCap={openDaemonCap} />
             ) : view.kind === "board" || !current ? (
               <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask} usageByAgent={usageByAgent}
                 focus={boardFocus}

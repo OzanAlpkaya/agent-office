@@ -70,6 +70,7 @@ export interface ProjectSettingsProps {
   run: <T>(fn: () => Promise<T>) => Promise<T | undefined>;
   caps?: Caps; // live changes (ADR 0061); the status has the first value
   running: number; // the project's agents that have not exited
+  onDaemonCap?: () => void; // Phase 20: open Settings → App at the daemon-wide cap
 }
 
 // ProjectSettings is one project's settings, titled with its name.
@@ -92,7 +93,7 @@ export function ProjectSettings(p: ProjectSettingsProps): JSX.Element {
             <Section title="General"
               lede="Empty fields use the daemon's flags. Models, caps, budgets, worker limits, access decisions and the merge target apply to the next agent start, also while agents run. The stack pack, network, secrets, GitHub, reviewer and role CLIs need the project's agents stopped.">
               <ProjectForm project={p.project} status={p.daemon} sandboxed={sandboxed} caps={p.caps ?? p.status?.caps}
-                running={p.running} />
+                running={p.running} onDaemonCap={p.onDaemonCap} />
             </Section>
             <Section title="Branch clean-up" id="branch-cleanup"
               lede="Delete old agent-office branches whose work is in the merge target. Branches that are not merged are listed apart and deleted only after a second confirmation; every deleted head is recorded.">
@@ -153,6 +154,7 @@ export interface AppSettingsProps {
   onSignedOut: () => void;
   onSelectProject: (id: string) => void;
   onProjectSettings: (id: string) => void;
+  capFocusAt?: number; // Phase 20: focus the daemon-wide cap
 }
 
 // AppSettings is the app's: every project, the paired devices, the user's profile.
@@ -170,7 +172,7 @@ export function AppSettings(p: AppSettingsProps): JSX.Element {
       <div className="settings-body" role="tabpanel" aria-label={appTabLabel[p.tab]}>
         {p.tab === "projects" && (
           <ProjectsPanel projects={p.projects} current={p.project.id} status={p.daemon} running={p.running} remote={p.remote}
-            onSelect={p.onSelectProject} onSettings={p.onProjectSettings} />
+            onSelect={p.onSelectProject} onSettings={p.onProjectSettings} capFocusAt={p.capFocusAt} />
         )}
         {p.tab === "devices" && <DevicesPanel remoteHosts={p.remoteHosts} run={p.run} onSignedOut={p.onSignedOut} />}
         {p.tab === "profile" && (

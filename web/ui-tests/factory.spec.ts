@@ -53,6 +53,30 @@ test("the effective agent cap is shown and the daemon-wide cap changes without a
   expect(errors).toEqual([]);
 });
 
+// Phase 20: a project's Max agents above the daemon-wide cap says so as you
+// type and when saved, with the effective value and a way to the daemon-wide cap.
+test("a project's Max agents above the daemon-wide cap says so at save time and links to it", async ({ page }) => {
+  const daemon = new MockDaemon(team(4));
+  const errors = await open(page, daemon);
+  await projectSettings(page, "General");
+  const field = page.getByRole("textbox", { name: "Max agents", exact: true });
+  await field.fill("12");
+  const note = page.getByTestId("cap-note");
+  await expect(note).toContainText("Effective: 8. The daemon-wide cap of 8 is below this project's 12: at most 8 agents run in all projects together.");
+  await expect(note.getByRole("button", { name: "Change the daemon-wide cap" })).toBeVisible();
+  await field.fill("3");
+  await expect(note).toContainText("Effective: 3 (the smaller of this project's 3 and the daemon's 8)");
+  await expect(note.getByRole("button", { name: "Change the daemon-wide cap" })).toHaveCount(0);
+  await field.fill("12");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  const saved = page.getByTestId("cap-saved");
+  await expect(saved).toContainText("Saved. Effective: 8. The daemon-wide cap of 8 is below this project's 12");
+  await saved.getByRole("button", { name: "Change the daemon-wide cap" }).click();
+  await expect(page.getByRole("tab", { name: "Projects" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("textbox", { name: "Max agents (all projects)" })).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
 test("a superseded sub-task is closed and links to what replaced it", async ({ page }) => {
   const w: World = team(4);
   w.tasks.push(task("t00000000008", "Tag model, first try", "done",

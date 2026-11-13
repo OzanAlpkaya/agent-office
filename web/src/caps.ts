@@ -2,14 +2,35 @@
 // the texts the settings and the agent list show.
 import type { Caps, ProjectSettings } from "./api";
 
-// capNote explains the cap a start meets.
+// capNote explains the cap a start meets. A daemon-wide cap below the
+// project's says so plainly (Phase 20): it limits every project together.
 export function capNote(c: Caps): string {
+  if (aboveDaemonCap(c)) {
+    return `Effective: ${c.effective}. The daemon-wide cap of ${c.daemon_max} is below this project's ${c.max_agents}: ` +
+      `at most ${c.daemon_max} agents run in all projects together. The Tech Lead, Architect and QA count too.`;
+  }
   const why = c.max_agents === c.daemon_max
     ? `this project's and the daemon's cap are both ${c.effective}`
-    : c.max_agents < c.daemon_max
-      ? `the smaller of this project's ${c.max_agents} and the daemon's ${c.daemon_max}`
-      : `the daemon's cap of ${c.daemon_max} is below this project's ${c.max_agents}`;
+    : `the smaller of this project's ${c.max_agents} and the daemon's ${c.daemon_max}`;
   return `Effective: ${c.effective} (${why}). The Tech Lead, Architect and QA count too.`;
+}
+
+// aboveDaemonCap reports whether the project's Max agents is more than the
+// daemon-wide cap lets run (Phase 20).
+export function aboveDaemonCap(c: Pick<Caps, "max_agents" | "daemon_max">): boolean {
+  return c.max_agents > c.daemon_max;
+}
+
+// draftCaps is the cap a project's settings draft would have: its Max agents,
+// or the daemon's default for projects when the field is empty, against the
+// daemon-wide cap. Undefined when the draft is not a number or nothing is known.
+export function draftCaps(draft: string, projectDefault: number | undefined, daemonMax: number | undefined,
+  running = 0): Caps | undefined {
+  const t = draft.trim();
+  if (daemonMax === undefined || (t !== "" && !/^\d+$/.test(t))) return undefined;
+  const own = t === "" ? projectDefault : Number(t);
+  if (own === undefined || own < 1) return undefined;
+  return { max_agents: own, daemon_max: daemonMax, effective: Math.min(own, daemonMax), running, max_sub_tasks: 0 };
 }
 
 // runningLabel is the agent list's header count, e.g. "3 / 4 running".
