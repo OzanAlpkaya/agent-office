@@ -58,3 +58,13 @@ this machine only, like the sandbox settings (ADR 0046). `PUT /api/daemon` from 
 `tailscale serve`, ADR 0038) is refused with 403 and the reason. On a remote device, Settings → Projects shows
 the cap without Save and says so. A project's settings, Max agents included, stay changeable from any
 paired device.
+
+## Amendment (Phase 20, 2026-11-13): the cap at save time
+
+Two projects with Max agents 8 under a daemon-wide cap of 4 ran 4 agents in total, and nothing said so
+when they were saved. A project's settings now show the effective cap of what is typed, and when its Max
+agents is above the daemon-wide cap they say that at most that many agents run in all projects together,
+at once and again after Save, with a "Change the daemon-wide cap" link to Settings → App (its field gets
+the focus). Nothing is clamped: the project's value applies once the daemon-wide cap rises.
+`TestDaemonCapFromTheUIEndToEnd` raises the cap through that link in a real browser and starts six agents
+across two projects in the same daemon process.

@@ -106,3 +106,12 @@ fits its width), and the pane scrolls. The choice is remembered per browser (loc
 wider than the pane is never picked while a narrower one fits. On a phone a name-only plate leaves out
 the role too, so plates do not overlap.
 
+
+## Amendment (2026-11-13, Phase 20): windows only on outside walls
+
+A custom layout's windows go only on the stretches of a room's back wall with no room behind it: at the
+grid's top, or below tiles no room covers. They keep 4 px clear of what hangs on the wall, of every
+doorway that reaches into the wall (the way into the user's office included) and of partitions. Tests
+check this for every preset, for 40 random valid layouts that `internal/office` generates from a fixed
+seed into `web/src/office/generated.gen.json` (`go test ./internal/office -update`; a stale file fails),
+and for the default plan at every desk grid the office uses.

@@ -119,3 +119,14 @@ sub-task. For small changes that was too much.
   question to the user, checked a few seconds after its turn ends so a message on its way wins. This covers
   an Architect started again for an escalation that only answered the lead. `--restore-agents` does not
   resume an Architect whose plan is approved and has no proposed version.
+
+## Amendment (Phase 20, 2026-11-13): a change request withdraws a proposed version
+
+Requesting changes on a **proposed** version now marks it superseded in the same update that stores the
+request, and marks the goal's unread "plan ready" notices read. Its approval no longer waits on the user:
+the Approvals badge, "Approve plan" and the Architect's "needs you" go away at once, and Approve refuses
+it. The goal keeps showing that version, labelled "changes requested" with the request, until the
+Architect submits the next one, which is the only version that asks for approval. A request on an
+**approved** version leaves it approved (its work goes on). The Architect's prompt still says which
+status the version had when the user asked; its idle end and restore treat a newest version with a
+request as unanswered, whatever its status.
