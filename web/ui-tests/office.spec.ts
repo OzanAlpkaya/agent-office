@@ -678,3 +678,72 @@ test("showcase: a moment in the office, for the README", async ({ page }) => {
   }
   expect(errorsOf(page)).toEqual([]);
 });
+
+// colorsIn lists which of the given colours (0xRRGGBB) a screenshot of the
+// clip shows, decoded in the page (no image library in the tests).
+async function colorsIn(page: Page, clip: { x: number; y: number; width: number; height: number }, colors: number[]): Promise<number[]> {
+  const png = (await page.screenshot({ clip })).toString("base64");
+  return page.evaluate(async ({ png, colors }) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${png}`;
+    await img.decode();
+    const c = document.createElement("canvas");
+    c.width = img.width;
+    c.height = img.height;
+    const ctx = c.getContext("2d");
+    if (!ctx) return [];
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, c.width, c.height).data;
+    const seen = new Set<number>();
+    for (let i = 0; i < d.length; i += 4) seen.add((d[i] << 16) | (d[i + 1] << 8) | d[i + 2]);
+    return colors.filter((x) => seen.has(x));
+  }, { png, colors });
+}
+
+// Phase 20: the office bar shows the Board's counts, each opening the Board
+// on its column, and the Tech Lead's whiteboard draws the same counts.
+test("the board summary is in the office bar and on the whiteboard, and opens the Board on a column", async ({ page }) => {
+  const daemon = new MockDaemon(team(10));
+  await openOffice(page, daemon);
+  // The Board's own column counts, read from the Board itself.
+  await page.getByRole("button", { name: "Board", exact: true }).click();
+  const columns = ["todo", "in_progress", "review", "done", "blocked"];
+  const board: Record<string, string> = {};
+  for (const c of columns) board[c] = (await page.locator(`.column[data-status="${c}"] h2 .count`).textContent()) ?? "";
+  await page.getByRole("button", { name: "Office", exact: true }).click();
+  const bar = page.getByTestId("board-summary");
+  for (const c of columns) await expect(bar.locator(`[data-status="${c}"]`)).toHaveAttribute("data-count", board[c]);
+  await expect(bar.locator('[data-status="todo"]')).toContainText("To do");
+  await expect(bar.getByRole("button", { name: /^Review: \d+$/ })).toBeVisible();
+  // The whiteboard: the same counts, drawn in each column's colour.
+  const wb = page.locator(".whiteboard-label");
+  await expect(wb).toHaveAttribute("data-counts", columns.map((c) => board[c]).join(","));
+  await expect(wb).toHaveAttribute("aria-label", /board To do: \d+ · In progress: \d+/);
+  const box = await wb.boundingBox();
+  if (!box) throw new Error("no whiteboard");
+  // in progress (blue) and done (green) have cards in this team: their counts are on the top line, above the notes
+  const shades = { in_progress: 0x5a8de0, done: 0x5cb860 };
+  const want = Object.entries(shades).filter(([k]) => Number(board[k]) > 0).map(([, v]) => v);
+  expect(want.length).toBeGreaterThan(0);
+  await expect.poll(() => colorsIn(page, { x: box.x, y: box.y, width: box.width, height: box.height * 0.24 }, want)).toEqual(want);
+  // A count opens the Board on its column.
+  await bar.locator('[data-status="review"]').click();
+  await expect(page.locator(".board")).toBeVisible();
+  await expect(page.locator('.column[data-status="review"]')).toHaveClass(/column-focused/);
+  await expect(page.locator('.column[data-status="review"]')).toBeInViewport();
+  await expect(page.getByRole("combobox", { name: "Goal" })).toHaveValue("all");
+  expect(errorsOf(page)).toEqual([]);
+});
+
+test("on a phone a count brings its column into view", async ({ browser }) => {
+  const ctx = await browser.newContext({ ...devices["Pixel 7"], serviceWorkers: "block" });
+  const page = await ctx.newPage();
+  const daemon = new MockDaemon(team(6));
+  await daemon.install(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Office", exact: true }).click();
+  await page.getByTestId("board-summary").locator('[data-status="blocked"]').click();
+  await expect(page.locator('.column[data-status="blocked"]')).toHaveClass(/column-focused/);
+  await expect(page.locator('.column[data-status="blocked"]')).toBeInViewport();
+  await ctx.close();
+});

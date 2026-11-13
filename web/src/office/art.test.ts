@@ -104,3 +104,36 @@ describe("pixel maps", () => {
     expect(art.wallScreen).toEqual(art.wallScreen);
   });
 });
+
+// Phase 20: the board summary's pixels fit on the whiteboard's count line.
+describe("whiteboard counts", () => {
+  it("writes counts up to 99, then 99+", () => {
+    expect([0, 7, 42, 99, 100, 512].map(art.countText)).toEqual(["0", "7", "42", "99", "99+", "99+"]);
+  });
+  it("has a 3×5 glyph for every character it writes", () => {
+    for (const [ch, rows] of Object.entries(art.glyphs)) {
+      expect(rows, ch).toHaveLength(5);
+      for (const r of rows) expect(r, ch).toMatch(/^[#.]{3}$/);
+    }
+  });
+  it("fits five counts on the line, the widest too, inside the whiteboard's frame", () => {
+    for (const counts of [[0, 0, 0, 0, 0], [3, 12, 4, 40, 1], [99, 99, 99, 99, 99], [120, 300, 999, 100, 101]]) {
+      const p = art.countPixels(counts);
+      expect(p.starts).toHaveLength(5);
+      expect(p.width).toBeLessThanOrEqual(art.countLine.w);
+      expect(art.countLine.x + p.width).toBeLessThanOrEqual(art.whiteboardSize.w - 2);
+      for (const d of p.ink) {
+        expect(d.y).toBeGreaterThanOrEqual(0);
+        expect(d.y).toBeLessThan(5);
+        expect(d.x).toBeLessThan(p.width);
+      }
+      // the counts stay above the sticky notes
+      expect(art.countLine.y + 5).toBeLessThanOrEqual(art.noteGrid.y);
+      // groups keep apart: each group's ink lies between its start and the next one's, 3 px clear
+      for (const d of p.ink) {
+        expect(d.x).toBeGreaterThanOrEqual(p.starts[d.group]);
+        if (d.group + 1 < p.starts.length) expect(d.x).toBeLessThan(p.starts[d.group + 1] - 2);
+      }
+    }
+  });
+});

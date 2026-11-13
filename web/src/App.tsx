@@ -24,6 +24,7 @@ import { unread } from "./workflow";
 import { type Waiting, waitingOnUser } from "./waiting";
 import { TerminalView } from "./TerminalView";
 import { capNote, runningLabel } from "./caps";
+import { boardSummary } from "./summary";
 import { useWorld } from "./useAgents";
 import { type UsageRow, formatMoney, formatTokens, sessionList, totalTokens, usageBy } from "./usage";
 
@@ -306,6 +307,14 @@ export function App({
     return res;
   };
 
+  // The Board's counts per column (Phase 20): the office bar and the whiteboard.
+  const summary = useMemo(() => boardSummary(tasks, qaRuns), [tasks, qaRuns]);
+  const [boardFocus, setBoardFocus] = useState<{ column: TaskStatus; at: number }>();
+  const openColumn = (column: TaskStatus): void => {
+    setBoardFocus({ column, at: Date.now() });
+    setView({ kind: "board" });
+  };
+
   // reviewPlan opens the goal's card, whose plan is open while it waits for approval.
   const reviewPlan = (goalId: string): void => {
     setView({ kind: "board" });
@@ -475,7 +484,8 @@ export function App({
                       waiting: e.waiting.length, running: e.running, current: false }))]
                     .sort((a, b) => projects.findIndex((p) => p.id === a.id) - projects.findIndex((p) => p.id === b.id))}
                   onFloor={(id) => onSelectProject(id, undefined, "office")} profile={profile}
-                  onLayoutSettings={() => openProjectSettings("office")} />
+                  onLayoutSettings={() => openProjectSettings("office")}
+                  summary={summary} onOpenColumn={openColumn} />
               </Suspense>
             ) : view.kind === "usage" ? (
               <Suspense fallback={<div className="empty">Loading usage…</div>}>
@@ -495,6 +505,7 @@ export function App({
                 running={running} />
             ) : view.kind === "board" || !current ? (
               <Board tasks={tasks} agents={agents} canStart={true} leadRunning={leadRunning} usageByTask={usageByTask} usageByAgent={usageByAgent}
+                focus={boardFocus}
                 usageByGoal={usageByGoal}
                 onStartLead={(t) => void startAgent(t.id, "lead")}
                 onCreate={async (title, description) => (await run(() => api.createTask(title, description))) !== undefined}

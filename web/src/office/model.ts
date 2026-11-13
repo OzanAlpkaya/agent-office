@@ -1,6 +1,7 @@
 // The office as data: who sits where, in which pose, and what the lead's
 // whiteboard shows. The scene draws this; the HTML nameplates label it. Pure.
 import type { Agent, Message, OfficeLayout, Task, TaskStatus } from "../api";
+import type { BoardSummary } from "../summary";
 import type { Waiting } from "../waiting";
 import { type Palette, noteGrid } from "./art";
 import { stationKinds } from "./floor";
@@ -37,6 +38,7 @@ export interface OfficeModel {
   taskStatus: Record<string, TaskStatus | undefined>; // every agent's task status, for errands (ADR 0045)
   deskless: Agent[]; // with a custom layout, agents beyond its desks: not drawn, listed in the office bar (ADR 0057)
   layout?: OfficeLayout; // the project's own layout; absent: the default plan
+  summary?: BoardSummary; // the Board's counts per column, on the whiteboard (Phase 20)
 }
 
 // The whiteboard has room for this many notes, as many as the sub-tasks a
@@ -50,7 +52,7 @@ export function buildOffice(
   agents: readonly Agent[],
   tasks: readonly Task[],
   waitingList: readonly Waiting[],
-  opts: { layout?: OfficeLayout } = {},
+  opts: { layout?: OfficeLayout; summary?: BoardSummary } = {},
 ): OfficeModel {
   // An exited agent leaves: its desk is free for the next agent (ADR 0024).
   const present = agents.filter((a) => a.state !== "exited");
@@ -97,7 +99,8 @@ export function buildOffice(
   for (const a of agents) taskStatus[a.id] = tasks.find((t) => t.id === a.task_id)?.status;
   const gone = agents.filter((a) => a.state === "exited").map((a) => a.id);
   const desks = capacity !== undefined ? Math.min(assignment.desks.length, capacity) : assignment.desks.length;
-  return { assignment, desks, seats, goal, exited: gone.length, gone, taskStatus, waiting: waiting.size, waitingSince, deskless, layout: opts.layout };
+  return { assignment, desks, seats, goal, exited: gone.length, gone, taskStatus, waiting: waiting.size, waitingSince, deskless, layout: opts.layout,
+    summary: opts.summary };
 }
 
 // freshMessages returns the messages not seen before that were created at or

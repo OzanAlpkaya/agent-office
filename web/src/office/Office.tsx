@@ -2,7 +2,8 @@
 // nameplates over it. It reads the same world as the rest of the UI and has
 // one action: open an agent.
 import { type JSX, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Agent, Message, OfficeInfo, Task, TaskStatus } from "../api";
+import { type Agent, type Message, type OfficeInfo, type Task, type TaskStatus, taskStatuses } from "../api";
+import { type BoardSummary, columnTitle, summaryText } from "../summary";
 import { type Presence, present, presenceText } from "../presence";
 import { narrowQuery, useMedia } from "../useMedia";
 import { type Profile, displayName, lookOfProfile } from "./avatar";
@@ -10,7 +11,7 @@ import type { Waiting } from "../waiting";
 import { type Assignment, type Zoom, emptyAssignment, inCell, planOf, slotOrigin, whiteboardAt } from "./layout";
 import { buildOffice, freshMessages } from "./model";
 import { type Pose, cssColor, poseLabel, shirtOf } from "./pose";
-import { whiteboardSize } from "./art";
+import { statusColors, whiteboardSize } from "./art";
 import { OfficeScene, type Transform, type Whereabouts } from "./scene";
 
 export interface OfficeProps {
@@ -29,6 +30,10 @@ export interface OfficeProps {
   presence?: Presence;
   onLayoutSettings?: () => void;
   profile?: Profile; // the user's name and look (Phase 18 review)
+  // Phase 20: the Board's counts per column, in the bar and on the whiteboard;
+  // a count opens the Board on its column.
+  summary?: BoardSummary;
+  onOpenColumn?: (column: TaskStatus) => void;
 }
 
 // Floor is one project's floor in the elevator panel.
@@ -80,7 +85,8 @@ function reducedMotion(): boolean {
 }
 
 export default function Office({
-  agents, tasks, messages, waiting, onOpenAgent, floors = [], onFloor, layout, presence, onLayoutSettings, profile,
+  agents, tasks, messages, waiting, onOpenAgent, floors = [], onFloor, layout, presence, onLayoutSettings, profile, summary,
+  onOpenColumn,
 }: OfficeProps): JSX.Element {
   // On a phone a nameplate shows the name only; a tap shows the task, a second tap opens the agent.
   const narrow = useMedia(narrowQuery);
@@ -111,10 +117,10 @@ export default function Office({
   // assignDesks is idempotent, so recomputing with the stored assignment
   // (e.g. in StrictMode) gives the same seats.
   const model = useMemo(() => {
-    const m = buildOffice(keptAssignments.get(floorId) ?? emptyAssignment, agents, tasks, waiting, { layout: custom });
+    const m = buildOffice(keptAssignments.get(floorId) ?? emptyAssignment, agents, tasks, waiting, { layout: custom, summary });
     keptAssignments.set(floorId, m.assignment);
     return m;
-  }, [agents, tasks, waiting, floorId, custom]);
+  }, [agents, tasks, waiting, floorId, custom, summary]);
 
   // Latest callback for the scene, which is created once.
   const open = useRef(onOpenAgent);
@@ -213,6 +219,19 @@ export default function Office({
         </nav>
       )}
       <div className="office-bar">
+        {summary && (
+          <nav className="board-summary" aria-label="Board summary" data-testid="board-summary">
+            {taskStatuses.map((k) => (
+              <button key={k} type="button" className="summary-count" data-status={k} data-count={summary[k]}
+                aria-label={`${columnTitle[k]}: ${summary[k]}`}
+                title={`${columnTitle[k]}: ${summary[k]} on the Board (all active goals). Open the Board on this column`}
+                onClick={() => onOpenColumn?.(k)}>
+                <span className="dot" style={{ color: cssColor(statusColors[k].base) }} aria-hidden="true" />
+                <span className="summary-label">{columnTitle[k]}</span> <span className="summary-n">{summary[k]}</span>
+              </button>
+            ))}
+          </nav>
+        )}
         <div className="segmented office-zoom" role="group" aria-label="Office zoom">
           <button aria-pressed={zoom === "fit"} onClick={() => setZoom("fit")} title="The whole floor in the pane">Fit</button>
           <button aria-pressed={zoom === "larger"} onClick={() => setZoom("larger")} title="One step larger, for details; the office scrolls">Zoom +</button>
@@ -315,7 +334,7 @@ export default function Office({
             </div>
           );
         })()}
-        {xf && model.goal && (
+        {xf && (model.goal || summary) && (
           <div className="whiteboard-label" role="note"
             style={{
               left: xf.x + whiteboardAt(xf.grid).x * xf.scale,
@@ -323,9 +342,17 @@ export default function Office({
               width: whiteboardSize.w * xf.scale,
               height: (whiteboardSize.h - 4) * xf.scale,
             }}
-            title={[`Goal: ${model.goal.title}`, ...model.goal.notes.map((n) => `• ${n.title} (${statusLabel[n.status]})`)].join("\n")}
-            aria-label={`Lead's whiteboard: ${model.goal.notes.length} sub-tasks of ${model.goal.title}`}
-            data-notes={model.goal.notes.length}
+            title={[
+              ...(summary ? [`Board: ${summaryText(summary)}`] : []),
+              ...(model.goal ? [`Goal: ${model.goal.title}`, ...model.goal.notes.map((n) => `• ${n.title} (${statusLabel[n.status]})`)] : []),
+            ].join("\n")}
+            aria-label={[
+              "Lead's whiteboard",
+              ...(summary ? [`board ${summaryText(summary)}`] : []),
+              ...(model.goal ? [`${model.goal.notes.length} sub-tasks of ${model.goal.title}`] : []),
+            ].join(": ")}
+            data-notes={model.goal?.notes.length ?? 0}
+            data-counts={summary ? taskStatuses.map((k) => summary[k]).join(",") : undefined}
           />
         )}
       </div>
