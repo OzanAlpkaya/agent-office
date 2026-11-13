@@ -76,11 +76,6 @@ test("a plan is changed by request, by a one-line edit, or approved in one click
   await expect(plan.getByRole("button", { name: "Approve plan" })).toBeVisible();
   // No big form: each sub-task has its own Edit and Remove.
   await expect(plan.getByRole("textbox")).toHaveCount(1); // only the change request box
-  await plan.getByRole("textbox", { name: "What to change" }).fill("Split the API sub-task in two.");
-  await plan.getByRole("button", { name: "Send to the Architect" }).click();
-  await expect.poll(() => daemon.requests).toContain('POST /api/specs/1/changes {"changes":"Split the API sub-task in two."}');
-  await expect(plan.getByTestId("change-pending")).toContainText("Split the API sub-task in two.");
-  await expect(plan.getByRole("textbox", { name: "What to change" })).toHaveValue("");
   // Remove asks once, then saves a version without it and without the dependency on it.
   await plan.getByRole("button", { name: "Remove schema" }).click();
   await plan.getByRole("button", { name: "Keep" }).click();
@@ -96,6 +91,38 @@ test("a plan is changed by request, by a one-line edit, or approved in one click
   await plan.getByRole("button", { name: "Cancel" }).click();
   await plan.getByRole("button", { name: "Approve plan" }).click();
   await expect.poll(() => daemon.requests).toContain("POST /api/specs/1/approve");
+  expect(errors).toEqual([]);
+});
+
+// Phase 20: a change request withdraws the proposed version: its approval
+// leaves the Approvals badge and the card, the Architect no longer needs you,
+// and only the revision can be approved.
+test("requesting changes withdraws the version until the Architect revises it", async ({ page }) => {
+  const w = workflow();
+  w.inbox = (w.inbox ?? []).filter((i) => i.kind !== "question"); // the plan is all the Architect waits on
+  const daemon = new MockDaemon(w);
+  const errors = await open(page, daemon);
+  const badge = page.getByRole("button", { name: /^Approvals:/ });
+  await expect(badge).toHaveAccessibleName(/Approvals: 1 waiting/);
+  await expect(page.locator('.agent-row[data-agent="a7c4e1000001"]')).toContainText("needs you");
+  await expect(page.locator("#task-g00000000001").getByTestId("card-status")).toHaveText("Plan to approve");
+  const goal = await openCard(page, "g00000000001");
+  const plan = goal.locator("details.plan");
+  await plan.getByRole("textbox", { name: "What to change" }).fill("Split the API sub-task in two.");
+  await plan.getByRole("button", { name: "Send to the Architect" }).click();
+  await expect.poll(() => daemon.requests).toContain('POST /api/specs/1/changes {"changes":"Split the API sub-task in two."}');
+  await expect(plan.getByTestId("change-pending")).toContainText("the Architect is revising this version");
+  await expect(plan.getByTestId("change-pending")).toContainText("Split the API sub-task in two.");
+  await expect(plan.locator("summary").first()).toContainText("changes requested");
+  await expect(plan.getByRole("button", { name: "Approve plan" })).toHaveCount(0);
+  await expect(plan.getByRole("textbox", { name: "What to change" })).toHaveCount(0);
+  await expect(badge).toHaveAccessibleName("Approvals: none waiting");
+  await expect(page.locator('.agent-row[data-agent="a7c4e1000001"]')).not.toContainText("needs you");
+  await expect(page.locator("#task-g00000000001").getByTestId("card-status")).not.toHaveText("Plan to approve");
+  // The revision asks for approval again.
+  daemon.send({ type: "spec", spec: { ...workflow().specs![0], id: 2, version: 3, status: "proposed" } });
+  await expect(plan.getByRole("button", { name: "Approve plan" })).toBeVisible();
+  await expect(badge).toHaveAccessibleName(/Approvals: 1 waiting/);
   expect(errors).toEqual([]);
 });
 

@@ -415,6 +415,11 @@ SELECT count(*) FROM inbox WHERE agent_id = ? AND read_at IS NULL;
 UPDATE inbox SET read_at = COALESCE(read_at, ?) WHERE id = ?
 RETURNING *;
 
+-- name: MarkGoalPlanNoticesRead :many
+-- The plan notices of a goal whose proposed version was withdrawn (Phase 20).
+UPDATE inbox SET read_at = ? WHERE goal_id = ? AND kind = 'plan' AND read_at IS NULL
+RETURNING *;
+
 -- name: AnswerInbox :one
 UPDATE inbox SET reply = ?, answered_at = ?, read_at = COALESCE(read_at, ?) WHERE id = ?
 RETURNING *;
@@ -649,7 +654,11 @@ ON CONFLICT (id) DO UPDATE SET max_agents = excluded.max_agents, updated_at = ex
 RETURNING *;
 
 -- name: RequestSpecChanges :one
-UPDATE specs SET change_request = ?, change_requested_at = ? WHERE id = ? AND status IN ('proposed', 'approved')
+-- A change request withdraws a proposed version (Phase 20): only the Architect's
+-- revision asks for approval. An approved version stays approved.
+UPDATE specs SET change_request = ?, change_requested_at = ?,
+    status = CASE WHEN status = 'proposed' THEN 'superseded' ELSE status END
+WHERE id = ? AND status IN ('proposed', 'approved')
 RETURNING *;
 
 -- name: InsertTaskReport :one

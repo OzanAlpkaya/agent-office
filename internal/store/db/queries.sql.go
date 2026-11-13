@@ -3800,6 +3800,53 @@ func (q *Queries) MarkGoalMergePushed(ctx context.Context, arg MarkGoalMergePush
 	return i, err
 }
 
+const markGoalPlanNoticesRead = `-- name: MarkGoalPlanNoticesRead :many
+UPDATE inbox SET read_at = ? WHERE goal_id = ? AND kind = 'plan' AND read_at IS NULL
+RETURNING id, project_id, agent_id, task_id, goal_id, role, kind, body, created_at, read_at, answered_at, reply
+`
+
+type MarkGoalPlanNoticesReadParams struct {
+	ReadAt sql.NullTime
+	GoalID sql.NullString
+}
+
+// The plan notices of a goal whose proposed version was withdrawn (Phase 20).
+func (q *Queries) MarkGoalPlanNoticesRead(ctx context.Context, arg MarkGoalPlanNoticesReadParams) ([]Inbox, error) {
+	rows, err := q.db.QueryContext(ctx, markGoalPlanNoticesRead, arg.ReadAt, arg.GoalID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Inbox{}
+	for rows.Next() {
+		var i Inbox
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.AgentID,
+			&i.TaskID,
+			&i.GoalID,
+			&i.Role,
+			&i.Kind,
+			&i.Body,
+			&i.CreatedAt,
+			&i.ReadAt,
+			&i.AnsweredAt,
+			&i.Reply,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markInboxRead = `-- name: MarkInboxRead :one
 UPDATE inbox SET read_at = COALESCE(read_at, ?) WHERE id = ?
 RETURNING id, project_id, agent_id, task_id, goal_id, role, kind, body, created_at, read_at, answered_at, reply
@@ -3940,7 +3987,9 @@ func (q *Queries) ReopenAgent(ctx context.Context, id string) error {
 }
 
 const requestSpecChanges = `-- name: RequestSpecChanges :one
-UPDATE specs SET change_request = ?, change_requested_at = ? WHERE id = ? AND status IN ('proposed', 'approved')
+UPDATE specs SET change_request = ?, change_requested_at = ?,
+    status = CASE WHEN status = 'proposed' THEN 'superseded' ELSE status END
+WHERE id = ? AND status IN ('proposed', 'approved')
 RETURNING id, goal_id, version, status, author, "plan", markdown, branch, commit_sha, path, created_at, approved_at, change_request, change_requested_at
 `
 
@@ -3950,6 +3999,8 @@ type RequestSpecChangesParams struct {
 	ID                int64
 }
 
+// A change request withdraws a proposed version (Phase 20): only the Architect's
+// revision asks for approval. An approved version stays approved.
 func (q *Queries) RequestSpecChanges(ctx context.Context, arg RequestSpecChangesParams) (Spec, error) {
 	row := q.db.QueryRowContext(ctx, requestSpecChanges, arg.ChangeRequest, arg.ChangeRequestedAt, arg.ID)
 	var i Spec

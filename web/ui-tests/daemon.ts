@@ -443,7 +443,9 @@ export class MockDaemon {
         if (changes) {
           const sp = (w.specs ?? []).find((x) => x.id === Number(changes[1]));
           const body = route.request().postDataJSON() as { changes: string };
-          const next = { ...sp, change_request: body.changes, change_requested_at: iso(40) };
+          // A request withdraws a proposed version (Phase 20), as the daemon does.
+          const status = sp?.status === "proposed" ? "superseded" : sp?.status;
+          const next = { ...sp, status, change_request: body.changes, change_requested_at: iso(40) } as Spec;
           if (w === this.world) this.send({ type: "spec", spec: next });
           return route.fulfill(json(next));
         }

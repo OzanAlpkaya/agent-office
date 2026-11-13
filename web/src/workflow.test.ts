@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { InboxItem, Plan, QARun, Spec, Task } from "./api";
 import {
   currentSpec, fromForm, goalBusy, groupInbox, inboxFor, isOpen, latestQA, needsAnswer, newSubTask, proposedSpec, specsOf, splitList, toForm, unread,
-  waitsFor, withSubTask, withoutSubTask, subTaskForm, fromSubTaskForm, pendingChanges,
+  waitsFor, withSubTask, withoutSubTask, subTaskForm, fromSubTaskForm, pendingChanges, withdrawn,
 } from "./workflow";
 import { agent } from "./office/testutil";
 
@@ -163,6 +163,21 @@ describe("light plan edits (Phase 19)", () => {
     expect(pendingChanges(v1, [v1])).toBe("split");
     const v2 = { ...v1, id: 2, version: 2, change_request: undefined };
     expect(pendingChanges(v1, [v1, v2])).toBeUndefined();
-    expect(pendingChanges({ ...v1, status: "superseded" }, [v1])).toBeUndefined();
+    // Phase 20: a request withdraws a proposed version; it still waits for the revision.
+    const gone = { ...v1, status: "superseded" } as Spec;
+    expect(pendingChanges(gone, [gone])).toBe("split");
+    expect(pendingChanges(gone, [gone, v2])).toBeUndefined();
+  });
+  it("shows a withdrawn version until the revision, and never as waiting for approval (Phase 20)", () => {
+    const approved = { id: 1, goal_id: "g", version: 1, status: "approved", plan, markdown: "", created_at: "" } as Spec;
+    const gone = { ...approved, id: 2, version: 2, status: "superseded", change_request: "drop docs" } as Spec;
+    expect(withdrawn(gone)).toBe(true);
+    expect(withdrawn({ ...gone, change_request: undefined })).toBe(false);
+    expect(currentSpec([approved, gone], "g")?.id).toBe(2);
+    expect(proposedSpec([approved, gone], "g")).toBeUndefined();
+    const v3 = { ...approved, id: 3, version: 3, status: "proposed" } as Spec;
+    expect(currentSpec([approved, gone, v3], "g")?.id).toBe(3);
+    // an old superseded version without a request is not current
+    expect(currentSpec([{ ...approved, status: "superseded" }, { ...approved, id: 4, version: 2 }], "g")?.id).toBe(4);
   });
 });

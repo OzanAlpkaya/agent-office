@@ -47,12 +47,31 @@ func (e *Engine) RequestSpecChanges(ctx context.Context, id int64, text string) 
 		return Spec{}, invalid("version %d was approved or replaced meanwhile", row.Version)
 	}
 	s := specFromRow(updated)
-	if err := e.deliverChangeRequest(ctx, goal, s, text); err != nil {
+	if row.Status == SpecProposed {
+		// The version is withdrawn (Phase 20): its approval no longer waits on the user.
+		e.closePlanNotices(ctx, goal.ID)
+	}
+	asked := s
+	asked.Status = row.Status // the Architect reads the status it was asked about
+	if err := e.deliverChangeRequest(ctx, goal, asked, text); err != nil {
 		return Spec{}, err
 	}
 	e.publishSpecs(ctx, goal.ID)
 	e.log.Info("plan changes requested", "task_id", goal.ID, "spec_id", id, "version", s.Version, "chars", len(text))
 	return s, nil
+}
+
+// closePlanNotices marks a goal's unread "plan ready" notices read.
+func (e *Engine) closePlanNotices(ctx context.Context, goalID string) {
+	rows, err := e.q.MarkGoalPlanNoticesRead(ctx, db.MarkGoalPlanNoticesReadParams{ReadAt: nullTime(now()), GoalID: nullString(goalID)})
+	if err != nil {
+		e.log.Warn("close plan notices", "task_id", goalID, "err", err)
+		return
+	}
+	for _, r := range rows {
+		it := inboxFromRow(r)
+		e.publish(Update{Type: "inbox", Inbox: &it})
+	}
 }
 
 func (e *Engine) deliverChangeRequest(ctx context.Context, goal db.Task, s Spec, text string) error {
@@ -174,5 +193,7 @@ func changeRequested(specs []db.Spec) bool {
 			newest = &specs[i]
 		}
 	}
-	return newest != nil && newest.ChangeRequest != "" && newest.Status != SpecSuperseded
+	// A proposed version with a change request is withdrawn (superseded) until
+	// the Architect submits the next one (Phase 20).
+	return newest != nil && newest.ChangeRequest != ""
 }
