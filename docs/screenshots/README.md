@@ -22,3 +22,17 @@ The mocked ones (Playwright's headless Chromium; `make ui-test` writes fresh one
 playground project only; the stills and frames sampled across the GIF were checked for local paths
 and personal data before they were committed (the repository path appears only in a tooltip,
 sandboxed terminals show `/workspace`). None contain captured agent data beyond what is visible.
+
+## Phase 20 (`phase-20/`)
+
+From `web/ui-tests/phase20.spec.ts` (mocked daemon, the tour's world; `AO_SHOTS_OUT` sets where they
+go). For the office before this phase, see `phase-18/after/office.png` (windows on the review room's
+and the QA lab's back walls, which have rooms behind them).
+
+| File | What it shows |
+|---|---|
+| `office.png` | The default office: the board summary in the office bar (To do, In progress, Review, Done, Blocked; each opens the Board on its column), the same counts on the Tech Lead's whiteboard, and windows only on the first band's outside walls. |
+| `office-whiteboard.png` | Close-up of the whiteboard: the counts in each column's colour above the sub-tasks' sticky notes. |
+| `office-classic.png`, `office-compact.png`, `office-open-plan.png`, `office-tall.png` | Each layout preset: windows only where no room is behind the wall; none on the workroom's back wall or over a doorway. |
+| `phone-office.png` | The office on a Pixel 7: the counts without labels, so the bar stays one line. |
+| `project-settings-cap.png` | A project's Max agents of 12 saved under a daemon-wide cap of 8: the effective value, what it means and the link to the daemon-wide setting. |
